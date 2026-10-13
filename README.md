@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 232 (v0.2.073). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 234 (v0.2.074). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 234 (v0.2.074) - REMOVE$/RETAIN$/REMAIN$ ANY sentinel fix, CHOOSE out-of-range type default (0/0.0/""), TREEVIEW INSERT ITEM x64 (PB_TVI_LAST=-2, i64->i32 store width); dual-run MATCH 62 / DIFF 49.
 > batch 232 (v0.2.073) - 2026-10-09: dual-compile verification (239/239 PBWin10 + fork) and 3 compiler bug fixes (STR$/PRINT number formatting, ERROR$ text parity, FixedString NUL safety)
 > > batch 230 (v0.2.072) - examples PBWin10 dual-compile parity complete: 239/239 compile under both PBWin10 and fork (163 -> 0). PBWin10 syntax rulings: #OPTION EXPLICIT unsupported (use #DIM ALL); #DEBUG/#BREAK/#UNIQUE/#BLOAT/#COM/#EXPORT/#MESSAGES meta commented; GRAPHIC ATTACH 2-arg; BITMAP NEW TO target LONG; STR$ balanced parens (ISFILE/LEN); LOCAL waitk decls; END IF closures; & STR$(q) QUAD concat. fork compile-all 239/0, headless 117/0.
 > > batch 226 (v0.2.071) - fix string `&` numeric concat type mismatch: `"x" & LEN(...)` / `& n` / `& q&` now convert the numeric operand to text instead of passing an i32 Val as a pointer to `pb_str_concat` (previously corrupted or dropped the whole output; behind the hello.bas 0xC0000005 family and the lost ISFILE/CURDIR$ values). Same conversion applied to numeric operands in string comparisons. New example batch226_test.bas, dual-compiler (fork + PBWin10). compile-all 239/0, headless 115/0.
@@ -724,6 +725,13 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.074 (2026-10-13) — batch 234: ANY / CHOOSE / TREEVIEW x64 fixes
+
+- **REMOVE$ / RETAIN$ / REMAIN$ `ANY`** — the `ANY` token was silently dropped by the parser (`any_flag` always 0); it is now passed through as a sentinel so `ANY "chars"` uses character-set semantics. batch082/083/084 dual-run DIFF → MATCH.
+- **CHOOSE out-of-range** — PBWin returns the type default (`0` / `0.0` / `""`) for an out-of-range index; the fork previously returned the first argument. batch038 now asserts `Check(i = 0, "choose out of range")` (MATCH).
+- **TREEVIEW INSERT ITEM (x64 crash fix)** — `PB_TVI_LAST` was `-0x0FFFE`, sign-extended to `0xFFFFFFFFFFFF0002` on x64; corrected to `-2` (`0xFFFFFFFE`). Codegen now truncates the i64 item handle to the i32 target slot where required. batch172 runs clean on both compilers (fork `FAILURES: 0`, PBWin rc=0).
+- Stage-C dual-run baseline: **MATCH 62 / DIFF 49 / EMPTY 2 / ONLY-PBWIN 3 / ONLY-FORK 1** (remaining DIFFs are documented environment/design differences).
+
 ### v0.2.073 (2026-10-09) - batch 232: dual-compile verification + STR$/PRINT number formatting + FixedString safety
 
 - **Full dual-compile verification**: all 239 examples compile under PBWin10 (239 OK / 0 FAIL) and this fork (239 ok / 0 failed).
