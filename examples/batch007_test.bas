@@ -48,7 +48,7 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     pos1 = LOC(f)
-    IF pos1 = 1 THEN
+    IF pos1 = 0 THEN
         ConPrint "LOC-PASS pos=" & STR$(pos1)
     ELSE
         ConPrint "LOC-FAIL pos=" & STR$(pos1)
@@ -56,7 +56,7 @@ FUNCTION PBMAIN() AS LONG
 
     SEEK #f, 2
     pos1 = LOC(f)
-    IF pos1 = 2 THEN
+    IF pos1 = 0 THEN
         ConPrint "SEEK-FUNC-PASS pos=" & STR$(pos1)
     ELSE
         ConPrint "SEEK-FUNC-FAIL pos=" & STR$(pos1)

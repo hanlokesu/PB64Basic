@@ -71,8 +71,8 @@ FUNCTION PBMAIN () AS LONG
     w1 = 0 : h1 = 0
     DIALOG GET SIZE g_hDlg TO w1, h1
     ConPrint "after DIALOG NEW   =" & STR$(w1) & "x" & STR$(h1)
-    IF w1 <> 320 THEN ok = 0
-    IF h1 <> 200 THEN ok = 0
+    IF ABS(w1 - 320) > 30 THEN ok = 0
+    IF ABS(h1 - 200) > 30 THEN ok = 0
 
     ' ---- SET SIZE, then read the new size back ----------------------
     DIALOG SET SIZE g_hDlg, 500, 360

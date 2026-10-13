@@ -56,11 +56,25 @@ TYPE Pt
     y AS LONG
 END TYPE
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 FUNCTION PBMAIN () AS LONG
     LOCAL fail AS LONG
     LOCAL v AS LONG
     LOCAL p AS Pt
-    LOCAL hil AS LONG
+    #IF %MY_PBVER = 0
+        LOCAL hil AS QUAD
+    #ELSE
+        LOCAL hil AS LONG
+    #ENDIF
     LOCAL cnt AS LONG
     LET v = 41
     v = v + 1

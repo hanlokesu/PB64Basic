@@ -105,13 +105,13 @@ FUNCTION PBMAIN () AS LONG
 
 #IF %MY_PBVER = 0
     ACCEL ATTACH hDlg, keys() TO acc
-#ELSE
-' (PBWin10: skipped: ACCEL ATTACH hDlg, keys() TO acc)
-#ENDIF
     ConPrint "accelerator table = " & STR$(acc)
     IF acc = 0 THEN
         fail = fail + 1
     END IF
+#ELSE
+' (PBWin10: ACCEL ATTACH is a fork-only statement - skipped, no assertion)
+#ENDIF
 
     ' A non-array argument carries no element count, so no table can be
     ' built: the handle must come back 0 - and the TO target must still be
@@ -119,13 +119,13 @@ FUNCTION PBMAIN () AS LONG
     none = 12345
 #IF %MY_PBVER = 0
     ACCEL ATTACH hDlg, plain TO none
-#ELSE
-' (PBWin10: skipped: ACCEL ATTACH hDlg, plain TO none)
-#ENDIF
     ConPrint "no-count attach   = " & STR$(none)
     IF none <> 0 THEN
         fail = fail + 1
     END IF
+#ELSE
+' (PBWin10: ACCEL ATTACH is a fork-only statement - skipped, no assertion)
+#ENDIF
 
     ConPrint "=== FAILURES:" & STR$(fail) & "==="
     FUNCTION = fail

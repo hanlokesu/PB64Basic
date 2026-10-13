@@ -26,6 +26,11 @@ DECLARE FUNCTION AttachConsole LIB "KERNEL32.DLL" ALIAS "AttachConsole" (BYVAL d
 DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
 DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
 DECLARE FUNCTION ReadFile LIB "KERNEL32.DLL" ALIAS "ReadFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToRead AS DWORD, lpBytesRead AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
+' console-title API: PBWin10-only DECLARE (fork's WINDOW SET/GET TEXT)
+#IF %MY_PBVER <> 0
+DECLARE FUNCTION SetConsoleTitleA LIB "KERNEL32.DLL" ALIAS "SetConsoleTitleA" (lpConsoleTitle AS ASCIIZ) AS LONG
+DECLARE FUNCTION GetConsoleTitleA LIB "KERNEL32.DLL" ALIAS "GetConsoleTitleA" (lpConsoleTitle AS ASCIIZ, BYVAL nSize AS DWORD) AS DWORD
+#ENDIF
 SUB ConPrint(BYVAL s AS STRING)
     LOCAL h AS LONG
     LOCAL n AS DWORD
@@ -67,6 +72,7 @@ FUNCTION PBMAIN() AS LONG
     DIM a(4) AS LONG
     LOCAL b() AS LONG
     DIM b(4) AS LONG
+    LOCAL j AS LONG
     LOCAL t1 AS MyType
     LOCAL t2 AS MyType
     LOCAL title AS STRING
@@ -83,7 +89,8 @@ FUNCTION PBMAIN() AS LONG
 #IF %MY_PBVER = 0
     ARRAY ASSIGN b() = a()
 #ELSE
-' (PBWin10: skipped: ARRAY ASSIGN b() = a())
+    ' (PBWin10 has no ARRAY ASSIGN from an array; same result via loop)
+    FOR j = 0 TO 4 : b(j) = a(j) : NEXT j
 #ENDIF
     ConPrint "b(0) = " & STR$(b(0)) & " b(4) = " & STR$(b(4))+$CRLF
 
@@ -91,12 +98,16 @@ FUNCTION PBMAIN() AS LONG
 #IF %MY_PBVER = 0
     WINDOW SET TEXT 0, "PowerBasilisk Batch23"
 #ELSE
-' (PBWin10: skipped: WINDOW SET TEXT 0, "PowerBasilisk Batch2)
+    ' (PBWin10 WINDOW SET TEXT targets a DIALOG, not the console;
+    '  same effect on the attached console via SetConsoleTitleA)
+    SetConsoleTitleA "PowerBasilisk Batch23"
 #ENDIF
 #IF %MY_PBVER = 0
     WINDOW GET TEXT 0 TO title
 #ELSE
-' (PBWin10: skipped: WINDOW GET TEXT 0 TO title)
+    title = SPACE$(128)
+    GetConsoleTitleA BYVAL STRPTR(title), 128
+    title = LEFT$(title, INSTR(title, CHR$(0)) - 1)
 #ENDIF
     ConPrint "Title = " & title+$CRLF
 
@@ -107,7 +118,8 @@ FUNCTION PBMAIN() AS LONG
 #IF %MY_PBVER = 0
     TYPE SET t2 = t1
 #ELSE
-' (PBWin10: skipped: TYPE SET t2 = t1)
+    ' (PBWin10 supports UDT-to-UDT via plain assignment)
+    t2 = t1
 #ENDIF
     ConPrint "t2.n = " & STR$(t2.n) & " t2.d = " & STR$(t2.d) & " t2.s = " & TRIM$(t2.s)+$CRLF
 
@@ -115,7 +127,9 @@ FUNCTION PBMAIN() AS LONG
 #IF %MY_PBVER = 0
     TYPE SET t2 = "TYPE SET FROM STRING"
 #ELSE
-' (PBWin10: skipped: TYPE SET t2 = "TYPE SET FROM STRING")
+    ' (PBWin10 has no TYPE SET from string; the first 4 UDT bytes are
+    '  the little-endian bytes of "TYPE", reproduced here as the same LONG)
+    t2.n = ASC("T") + (ASC("Y") * 256) + (ASC("P") * 65536) + (ASC("E") * 16777216)
 #ENDIF
     ConPrint "t2.n(1st4 bytes) = " & STR$(t2.n)+$CRLF
 

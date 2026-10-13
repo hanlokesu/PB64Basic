@@ -7264,8 +7264,17 @@ impl Compiler {
                 }
                 // Keep the original max-size allocation (from prescan); only
                 // refresh metadata. Never re-allocate here: prescan already
-                // sized every REDIM'd array at its maximum, and re-alloca would
-                // zero the array and destroy earlier data.
+                // sized every REDIM'd array at its maximum.
+                // PBWin10 semantics (measured): REDIM without PRESERVE ZEROES the
+                // array (HEX of redim_test: PB prints a(1)=0 after re-REDIM and
+                // fails its own assertion). So clear the whole max-size buffer
+                // before updating metadata.
+                if dim.is_redim {
+                    fb.store(
+                        &Val::new("zeroinitializer", prev.array_ir_type.clone()),
+                        &Val::new(prev.ptr_name.clone(), IrType::Ptr),
+                    );
+                }
                 self.symbols.insert_local_array(
                     name,
                     ArrayInfo {
@@ -16296,8 +16305,21 @@ impl Compiler {
                     let cv = self.compile_expr(fb, &call.args[0])?;
                     let m = self.to_i32(fb, &cv);
                     let p = fb.call(&IrType::Ptr, "pb_globalmem_lock", &[m]);
-                    let (ptr, _) = self.compile_lvalue_ptr(fb, &call.args[1])?;
-                    fb.store(&p, &ptr);
+                    let (ptr, ty) = self.compile_lvalue_ptr(fb, &call.args[1])?;
+                    // PBWin10 stores a truncated pointer into a LONG; the
+                    // full 64-bit address is only usable from a QUAD target
+                    // (needed for POKE in x64 builds). Store at the target's
+                    // own width so neither spills nor truncates wrongly.
+                    match ty {
+                        PbType::Quad => {
+                            let p64 = fb.ptrtoint64(&p);
+                            fb.store(&p64, &ptr);
+                        }
+                        _ => {
+                            let p32 = fb.ptrtoint(&p);
+                            fb.store(&p32, &ptr);
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -21333,14 +21355,16 @@ impl Compiler {
         Ok(bstr)
     }
 
-    /// HEX$(n [, digits]) — hexadecimal string, PB semantics:
-    /// LONG/DWORD values are treated as unsigned 32-bit (so HEX$(-1) = "FFFFFFFF"),
+    /// HEX$(n [, digits]) — hexadecimal string, PB semantics (measured on PBWin10):
+    /// negative LONG/Integer values are sign-extended and rendered as 64-bit hex
+    /// (HEX$(-1) = "FFFFFFFFFFFFFFFF"), positive values as their natural width.
     /// QUAD values as unsigned 64-bit. Optional digits sets a minimum zero-padded width.
     fn builtin_hex(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
-        // 32-bit (and smaller) types: zero-extend so negative LONGs format as u32 hex.
+        // 32-bit (and smaller) types: sign-extend so negative LONGs format as
+        // u64 hex (PBWin10 renders HEX$(-1) as 16 F's, not 8).
         let v64 = if val.ty == IrType::I32 || val.ty == IrType::I16 || val.ty == IrType::I8 {
-            fb.zext(&val, &IrType::I64)
+            fb.sext(&val, &IrType::I64)
         } else {
             self.to_i64(fb, &val)
         };
@@ -21889,8 +21913,10 @@ impl Compiler {
 
     fn builtin_parse(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         // PARSE$(string, delimiter, index) — 3-arg form (official)
-        // PARSE$(string, index)          — 2-arg form: space delimiter (official)
-        // PARSE$(string)                 — 1-arg form: space delimiter, count
+        // PARSE$(string, index)          — 2-arg form: default delimiter = comma
+        // PARSE$(string)                 — 1-arg form: default delimiter = comma
+        // (PBWin10 measured: PARSECOUNT("one two three four") = 1, so the
+        //  omitted delimiter is "," not " ".)
         let s = self.compile_expr(fb, &args[0])?;
         let (delim, index) = if args.len() >= 3 {
             (
@@ -21898,10 +21924,10 @@ impl Compiler {
                 self.compile_expr(fb, &args[2])?,
             )
         } else if args.len() == 2 {
-            let (n, _) = self.module.add_string_constant(" ");
+            let (n, _) = self.module.add_string_constant(",");
             (Val::new(n, IrType::Ptr), self.compile_expr(fb, &args[1])?)
         } else {
-            let (n, _) = self.module.add_string_constant(" ");
+            let (n, _) = self.module.add_string_constant(",");
             (Val::new(n, IrType::Ptr), fb.const_i32(0))
         };
         let index_i32 = self.to_i32(fb, &index);
@@ -21909,7 +21935,7 @@ impl Compiler {
     }
 
     fn builtin_parsecount(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // PARSECOUNT(string)         — space delimiter (official)
+        // PARSECOUNT(string)         — default delimiter = comma
         // PARSECOUNT(string, delim)  — explicit delimiter
         if args.is_empty() {
             return Ok(fb.const_i32(0));
@@ -21918,7 +21944,7 @@ impl Compiler {
         let delim = if args.len() >= 2 {
             self.compile_expr(fb, &args[1])?
         } else {
-            let (n, _) = self.module.add_string_constant(" ");
+            let (n, _) = self.module.add_string_constant(",");
             Val::new(n, IrType::Ptr)
         };
         Ok(fb.call(&IrType::I32, "pb_parsecount", &[s, delim]))

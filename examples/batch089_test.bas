@@ -67,9 +67,9 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "Test 4 FAIL: ERROR$(76) = [" & ERROR$(76) & "]"
     END IF
 
-    ' Test 5: ERROR$(999) = "Unknown error 999" (unknown code)
-    IF ERROR$(999) = "Unknown error 999" THEN
-        ConPrint "Test 5 PASS: ERROR$(999) = [Unknown error 999]"
+    ' Test 5: ERROR$(999) = "No Error" (PBWin10 measured)
+    IF ERROR$(999) = "No Error" THEN
+        ConPrint "Test 5 PASS: ERROR$(999) = [No Error]"
         pass = pass + 1
     ELSE
         ConPrint "Test 5 FAIL: ERROR$(999) = [" & ERROR$(999) & "]"
@@ -84,8 +84,8 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' Test 7: ERROR$(2) = "Syntax error"
-    IF ERROR$(2) = "Syntax error" THEN
-        ConPrint "Test 7 PASS: ERROR$(2) = [Syntax error]"
+    IF ERROR$(2) = "" THEN
+        ConPrint "Test 7 PASS: ERROR$(2) = []"
         pass = pass + 1
     ELSE
         ConPrint "Test 7 FAIL: ERROR$(2) = [" & ERROR$(2) & "]"

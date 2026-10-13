@@ -1372,9 +1372,11 @@ int pb_open(const char* path, int mode, int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES) return -1;
     const char* fmode;
     switch (mode) {
-        case 0: fmode = "r"; break;   /* INPUT */
-        case 1: fmode = "w"; break;   /* OUTPUT */
-        case 2: fmode = "a"; break;   /* APPEND */
+        case 0: fmode = "rb"; break;  /* INPUT (binary: PBWin10 writes CRLF raw; a
+                                         text-mode fopen would translate \r\n and
+                                         corrupt LOF/byte counts - measured) */
+        case 1: fmode = "wb"; break;  /* OUTPUT */
+        case 2: fmode = "ab"; break;  /* APPEND */
         case 3:
             /* BINARY: open existing file read/write without truncating;
                create it if it does not exist (PB semantics). */
@@ -1674,76 +1676,28 @@ int pb_err_active = 0;   /* 1 while executing the ON ERROR handler (trapping sus
 /* ===== ERROR$ � PB error message lookup ===== */
 static const char* pb_error_msgs[] = {
     [0] = "No Error",
-    [1] = "Out of memory",
-    [2] = "Syntax error",
-    [3] = "Return without Gosub",
-    [4] = "Out of data",
     [5] = "Illegal function call",
     [6] = "Overflow",
     [7] = "Out of memory",
-    [8] = "Undefined line number",
-    [9] = "Subscript out of range",
-    [10] = "Duplicate definition",
+    [9] = "Subscript/Pointer out of range",
     [11] = "Division by zero",
-    [13] = "Type mismatch",
-    [14] = "Out of string space",
-    [15] = "String too long",
-    [16] = "String formula too complex",
-    [17] = "Can't continue",
-    [18] = "Function not defined",
-    [19] = "No RESUME",
-    [20] = "RESUME without error",
-    [24] = "Device Timeout",
-    [25] = "Device Fault",
-    [26] = "FOR without NEXT",
-    [27] = "Out of paper",
-    [28] = "WHILE without WEND",
-    [29] = "WEND without WHILE",
-    [31] = "Bad file number",
-    [32] = "File not found",
-    [33] = "Bad file mode",
-    [34] = "File already open",
-    [35] = "File already exists",
-    [36] = "Bad filename",
-    [37] = "Too many files",
-    [38] = "Device Unavailable",
-    [39] = "Communication buffer overflow",
-    [40] = "Permission denied",
-    [41] = "Disk not ready",
-    [42] = "Disk media error",
-    [50] = "Field overflow",
+    [24] = "Device timeout",
     [51] = "Internal error",
-    [52] = "Bad file number",
+    [52] = "Bad file name or number",
     [53] = "File not found",
     [54] = "Bad file mode",
-    [55] = "File already open",
-    [56] = "File already exists",
-    [57] = "Bad filename",
-    [58] = "Too many files",
-    [59] = "Device Unavailable",
-    [60] = "Communication buffer overflow",
-    [61] = "Permission denied",
-    [62] = "Disk not ready",
-    [63] = "Disk media error",
-    [64] = "Bad filename",
-    [65] = "Too many files",
-    [66] = "File already open",
-    [67] = "Bad file mode",
-    [68] = "Bad file number",
-    [69] = "Communication buffer overflow",
+    [55] = "File is open",
+    [57] = "Device I/O error",
+    [58] = "File already exists",
+    [61] = "Disk full",
+    [62] = "Input past end",
+    [63] = "Bad record number",
+    [64] = "Bad file name",
+    [67] = "Too many files",
     [70] = "Permission denied",
-    [71] = "Disk not ready",
-    [72] = "Disk media error",
-    [73] = "File already exists",
-    [74] = "Bad filename",
-    [75] = "Too many files",
     [76] = "Path not found",
-    [77] = "Bad file mode",
-    [78] = "Bad file number",
-    [79] = "Communication buffer overflow",
-    [80] = "Permission denied",
-    [81] = "Disk not ready",
-    [82] = "Disk media error",
+    [99] = "Object error",
+    [999] = "No Error",
 };
 #define PB_ERROR_MSG_COUNT (sizeof(pb_error_msgs)/sizeof(pb_error_msgs[0]))
 
@@ -1756,11 +1710,13 @@ char* pb_error_message(int n) {
         msg = pb_error_msgs[code];
     }
     if (!msg) {
-        /* Unknown error code � format "Unknown error N" */
-        static char buf[64];
-        snprintf(buf, sizeof(buf), "Unknown error %d", code);
-        msg = buf;
+        /* PBWin10 returns an empty string for error codes that have no
+           table entry (measured 2026-10-13: 1-4, 8, 10, 12-23, 25-50, 56,
+           59-60, 65-66, 68-98, 100-500+ all empty). */
+        static const char empty[] = "";
+        msg = empty;
     }
+
     return pb_bstr_alloc(msg, (unsigned int)strlen(msg));
 }
 
@@ -2889,22 +2845,34 @@ void pb_array_delete(char* base, int elem_size, long long total, long long index
     if (count <= 0) count = 1;
     if (index > total) return;
     if (index + count > total) count = total - index + 1;
-    long long from = index - 1;
-    memmove(base + from * elem_size, base + (from + count) * elem_size,
-            (size_t)((total - from - count) * elem_size));
-    if (is_string) {
-        for (long long i = total - count; i < total; i++) {
-            char** sp = (char**)(base + i * elem_size);
-            if (*sp) {
-                SysFreeString(*sp);
-                *sp = NULL;
-            }
+    long long from = index - 1;  /* 0-based */
+    if (count == 1) {
+        /* No FOR (or FOR 1): delete one element and shift everything left,
+           zeroing the vacated tail slot (PB measured case4). */
+        memmove(base + from * elem_size, base + (from + 1) * elem_size,
+                (size_t)((total - from - 1) * elem_size));
+        if (is_string) {
+            char** sp = (char**)(base + (total - 1) * elem_size);
+            if (*sp) { SysFreeString(*sp); *sp = NULL; }
+        } else {
+            memset(base + (total - 1) * elem_size, 0, (size_t)elem_size);
         }
     } else {
-        memset(base + (total - count) * elem_size, 0,
-               (size_t)(count * elem_size));
+        /* FOR N (N>1): PBWin10 measured behavior - the deleted span
+           [index .. index+N-1] collapses only within itself: the N-1
+           following slots shift up by one, the last span slot is zeroed,
+           and slots after the span are left untouched (PB case1/2/3). */
+        memmove(base + from * elem_size, base + (from + 1) * elem_size,
+                (size_t)((count - 1) * elem_size));
+        if (is_string) {
+            char** sp = (char**)(base + (from + count - 1) * elem_size);
+            if (*sp) { SysFreeString(*sp); *sp = NULL; }
+        } else {
+            memset(base + (from + count - 1) * elem_size, 0, (size_t)elem_size);
+        }
     }
 }
+
 
 /* ARRAY ARRAYIX arr() � set each element to its element index (1-based).
    Numeric arrays: value = index (widened to element size).
@@ -2940,22 +2908,23 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
 #define CF_TEXT 1
 #define GMEM_MOVEABLE 0x0042
 int pb_clipboard_set_text(const char* text) {
-    if (!OpenClipboard(0)) return -1;
+    if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
     unsigned long len = (unsigned long)strlen(text);
     void* h = GlobalAlloc(GMEM_MOVEABLE, len + 1);
-    int ok = -1;
+    int ok = 0;
     if (h) {
         char* p = (char*)GlobalLock(h);
         if (p) {
             memcpy(p, text, len + 1);
             GlobalUnlock(h);
         }
-        if (SetClipboardData(CF_TEXT, h)) ok = 0;
+        if (SetClipboardData(CF_TEXT, h)) ok = -1;  /* TRUE on success (PBWin10) */
     }
     CloseClipboard();
     return ok;
 }
+
 
 char* pb_clipboard_get_text(void) {
     char* empty = pb_bstr_alloc("", 0);
@@ -2972,12 +2941,11 @@ char* pb_clipboard_get_text(void) {
 }
 
 int pb_clipboard_reset(void) {
-    if (!OpenClipboard(0)) return -1;
+    if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
     CloseClipboard();
-    return 0;
+    return -1;                          /* TRUE on success (PBWin10) */
 }
-
 static int pb_winsock_inited = 0;
 static int pb_winsock_init(void) {
     if (pb_winsock_inited) return 0;
@@ -3284,7 +3252,14 @@ long long pb_lof(int filenum) {
 
 long long pb_loc(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        return ftell(file_handles[filenum]) + 1;
+        /* PB semantics by mode (measured on PBWin10):
+           RANDOM  -> current record number
+           BINARY  -> 1-based byte position (SEEK #f,4 then LOC = 4)
+           sequential INPUT/OUTPUT/APPEND -> byte position / 128 (fresh INPUT = 0) */
+        int m = file_modes[filenum];
+        if (m == 4) return rec_pos[filenum];
+        if (m == 3) return ftell(file_handles[filenum]) + 1;
+        return ftell(file_handles[filenum]) / 128;
     }
     return 0;
 }

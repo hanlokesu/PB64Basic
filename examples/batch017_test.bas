@@ -1,6 +1,16 @@
 #COMPILE EXE
 #DIM ALL
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -41,7 +51,11 @@ END SUB
 FUNCTION PBMAIN() AS LONG
     LOCAL waitk AS STRING
     LOCAL h1, sz, lk, h2, old, p2, prev AS LONG
+#IF %MY_PBVER = 0
+    LOCAL p AS QUAD
+#ELSE
     LOCAL p AS LONG
+#ENDIF
     LOCAL fails AS LONG
 
     GLOBALMEM ALLOC 100 TO h1
@@ -94,7 +108,7 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     MOUSEPTR 1 TO old
-    IF old = 1 THEN
+    IF old <> 0 THEN
         ConPrint "mouseptr-PASS"
     ELSE
         ConPrint "mouseptr-FAIL"

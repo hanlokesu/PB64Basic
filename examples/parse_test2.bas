@@ -29,40 +29,51 @@ SUB ConWaitKey()
 END SUB
 
 
-' parse_test2.bas - verify PARSE$ 2-arg form and PARSECOUNT 1-arg form (fixed)
+' parse_test2.bas - verify PARSE$ / PARSECOUNT delimiter semantics
+' PBWin10: an omitted delimiter defaults to a COMMA (not space).
 FUNCTION PBMAIN() AS LONG
     LOCAL s AS STRING
     LOCAL n AS LONG
     LOCAL p AS STRING
     s = "one two three four"
 
-    ' PARSECOUNT(s) - space delimiter (1-arg, was panic before fix)
+    ' PARSECOUNT(s) - omitted delimiter defaults to comma: 1 segment
     n = PARSECOUNT(s)
-    ConPrint "count = " & STR$(n)
+    ConPrint "count-default = " & STR$(n)
+    IF n <> 1 THEN
+        ConPrint "FAIL: expected 1"
+    ELSE
+        ConPrint "ok count-default=1"
+    END IF
+
+    ' PARSECOUNT(s, " ") - explicit space delimiter: 4 segments
+    n = PARSECOUNT(s, " ")
+    ConPrint "count-space = " & STR$(n)
     IF n <> 4 THEN
         ConPrint "FAIL: expected 4"
     ELSE
-        ConPrint "ok count=4"
+        ConPrint "ok count-space=4"
     END IF
 
-    ' PARSE$(s, i) - space delimiter, i-th word (2-arg form)
+    ' PARSE$(s, 2) - 2-arg form, omitted delimiter defaults to comma: empty
     p = PARSE$(s, 2)
-    ConPrint "word2 = " & p
+    ConPrint "word2-default = [" & p & "]"
+    IF p <> "" THEN
+        ConPrint "FAIL: expected empty"
+    ELSE
+        ConPrint "ok word2-default=empty"
+    END IF
+
+    ' PARSE$(s, " ", 2) - 3-arg form with explicit space: "two"
+    p = PARSE$(s, " ", 2)
+    ConPrint "word2-space = [" & p & "]"
     IF p <> "two" THEN
         ConPrint "FAIL: expected two"
     ELSE
-        ConPrint "ok word2=two"
+        ConPrint "ok word2-space=two"
     END IF
 
-    p = PARSE$(s, 4)
-    ConPrint "word4 = " & p
-    IF p <> "four" THEN
-        ConPrint "FAIL: expected four"
-    ELSE
-        ConPrint "ok word4=four"
-    END IF
-
-    ' PARSE$(s, delim, i) - 3-arg form (regression)
+    ' PARSE$(s, delim, i) - 3-arg form with explicit comma (regression)
     s = "a,b,c"
     p = PARSE$(s, ",", 2)
     ConPrint "csv2 = " & p
