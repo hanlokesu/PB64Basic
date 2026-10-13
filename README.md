@@ -259,7 +259,7 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 234 (v0.2.074). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 235 (v0.2.075). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
 > batch 234 (v0.2.074) - REMOVE$/RETAIN$/REMAIN$ ANY sentinel fix, CHOOSE out-of-range type default (0/0.0/""), TREEVIEW INSERT ITEM x64 (PB_TVI_LAST=-2, i64->i32 store width); dual-run MATCH 62 / DIFF 49.
 > batch 232 (v0.2.073) - 2026-10-09: dual-compile verification (239/239 PBWin10 + fork) and 3 compiler bug fixes (STR$/PRINT number formatting, ERROR$ text parity, FixedString NUL safety)
 > > batch 230 (v0.2.072) - examples PBWin10 dual-compile parity complete: 239/239 compile under both PBWin10 and fork (163 -> 0). PBWin10 syntax rulings: #OPTION EXPLICIT unsupported (use #DIM ALL); #DEBUG/#BREAK/#UNIQUE/#BLOAT/#COM/#EXPORT/#MESSAGES meta commented; GRAPHIC ATTACH 2-arg; BITMAP NEW TO target LONG; STR$ balanced parens (ISFILE/LEN); LOCAL waitk decls; END IF closures; & STR$(q) QUAD concat. fork compile-all 239/0, headless 117/0.
@@ -725,6 +725,18 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.075 (2026-10-13) - batch 235
+
+- **batch224 example fixed**: `WriteFile`/`ReadFile` declarations were missing `BYVAL lpOverlapped AS LONG` - the fork passed the parameter by reference, `WriteFile` failed, and console output came back empty. Now matches the canonical declaration; dual-run is `MATCH`.
+- **pb_runtime.c measured fixes** (verified against PBWin10):
+  - `ERROR$` returns empty string for error codes without a table entry (PBWin10 behavior), text table aligned to PB's own wording.
+  - `OPEN` uses binary modes (`rb`/`wb`/`ab`) so `LOF`/byte counts are exact.
+  - `LOC` now returns record/byte position per file mode (RANDOM/BINARY/sequential).
+  - `CLIPBOARD SET/RESET` return TRUE/FALSE exactly as PBWin10 does.
+  - `ARRAY DELETE` collapse semantics measured on PBWin10 (FOR N span behavior).
+- **codegen fixes**: `REDIM` without `PRESERVE` zeroes the array (PBWin10 semantics); `GLOBALMEM LOCK` stores full 64-bit pointer into a `QUAD` target; `HEX$` sign-extends negative LONGs (PBWin10 renders `HEX$(-1)` as 16 F's); `PARSE$` default delimiter is comma (PBWin10 measured `PARSECOUNT("one two three four") = 1`).
+- **Full dual-run baseline** (118 headless examples): `MATCH 72 / DIFF 40 / EMPTY 3 / ONLY-PBWIN 2 / ONLY-FORK 1`. Known gaps: batch174 (fork `CALL DWORD` of an `IMPORT ADDR` 32-bit truncated x64 address crashes; PBWin10 also reports FAILURES on modeless GetMenu), batch205 (fork TCP loopback hangs).
+
 ### v0.2.074 (2026-10-13) — batch 234: ANY / CHOOSE / TREEVIEW x64 fixes
 
 - **REMOVE$ / RETAIN$ / REMAIN$ `ANY`** — the `ANY` token was silently dropped by the parser (`any_flag` always 0); it is now passed through as a sentinel so `ANY "chars"` uses character-set semantics. batch082/083/084 dual-run DIFF → MATCH.
