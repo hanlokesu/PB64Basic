@@ -3555,10 +3555,8 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
-                IrType::I32,
-                IrType::I32,
-                IrType::I32,
-                IrType::I32,
+                IrType::Double,
+                IrType::Double,
             ],
             false,
         );
@@ -3576,19 +3574,13 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
-                IrType::I32,
-                IrType::I32,
-                IrType::I32,
-                IrType::I32,
+                IrType::Double,
+                IrType::Double,
             ],
             false,
         );
-        self.module.declare_function(
-            "pb_xprint_set_font",
-            &IrType::I32,
-            &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
-            false,
-        );
+        self.module
+            .declare_function("pb_xprint_set_font", &IrType::I32, &[IrType::I32], false);
         self.module
             .declare_function("pb_xprint_set_mix", &IrType::I32, &[IrType::I32], false);
         self.module
@@ -3652,19 +3644,19 @@ impl Compiler {
         self.module.declare_function(
             "pb_xprint_get_clip",
             &IrType::I32,
-            &[IrType::Ptr, IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            &[IrType::Ptr, IrType::Ptr],
             false,
         );
         self.module.declare_function(
             "pb_xprint_scale",
             &IrType::I32,
-            &[IrType::I32, IrType::I32],
+            &[IrType::I32, IrType::I32, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_xprint_get_scale",
             &IrType::I32,
-            &[IrType::Ptr, IrType::Ptr],
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr, IrType::Ptr],
             false,
         );
         self.module
@@ -3789,11 +3781,13 @@ impl Compiler {
         self.module
             .declare_function("pb_xprint_preview", &IrType::I32, &[IrType::I32], false);
         self.module
+            .declare_function("pb_xprint_preview_close", &IrType::I32, &[], false);
+        self.module
             .declare_function("pb_xprint_render", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_xprint_split",
             &IrType::I32,
-            &[IrType::I32, IrType::I32, IrType::I32, IrType::I32],
+            &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -8075,11 +8069,16 @@ impl Compiler {
                 }
             }
             "XPRINT_ARC" => {
+                // batch 234: official XPRINT ARC (x1,y1)-(x2,y2), start, end
                 let mut ia = Vec::new();
-                for i in 0..8 {
+                for i in 0..4 {
                     let v = self.compile_expr(fb, &call.args[i])?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
+                let sa = self.compile_expr(fb, &call.args[4])?;
+                let sv = self.convert_value(fb, &sa, &IrType::Double, &PbType::Single);
+                let ea = self.compile_expr(fb, &call.args[5])?;
+                let ev = self.convert_value(fb, &ea, &IrType::Double, &PbType::Single);
                 fb.call_void(
                     "pb_xprint_arc",
                     &[
@@ -8087,10 +8086,8 @@ impl Compiler {
                         ia[1].clone(),
                         ia[2].clone(),
                         ia[3].clone(),
-                        ia[4].clone(),
-                        ia[5].clone(),
-                        ia[6].clone(),
-                        ia[7].clone(),
+                        sv,
+                        ev,
                     ],
                 );
             }
@@ -8106,11 +8103,16 @@ impl Compiler {
                 );
             }
             "XPRINT_PIE" => {
+                // batch 234: official XPRINT PIE (x1,y1)-(x2,y2), start, end
                 let mut ia = Vec::new();
-                for i in 0..8 {
+                for i in 0..4 {
                     let v = self.compile_expr(fb, &call.args[i])?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
+                let sa = self.compile_expr(fb, &call.args[4])?;
+                let sv = self.convert_value(fb, &sa, &IrType::Double, &PbType::Single);
+                let ea = self.compile_expr(fb, &call.args[5])?;
+                let ev = self.convert_value(fb, &ea, &IrType::Double, &PbType::Single);
                 fb.call_void(
                     "pb_xprint_pie",
                     &[
@@ -8118,22 +8120,16 @@ impl Compiler {
                         ia[1].clone(),
                         ia[2].clone(),
                         ia[3].clone(),
-                        ia[4].clone(),
-                        ia[5].clone(),
-                        ia[6].clone(),
-                        ia[7].clone(),
+                        sv,
+                        ev,
                     ],
                 );
             }
             "XPRINT_SET_FONT" => {
-                let name = self.compile_expr(fb, &call.args[0])?;
-                let size = self.compile_expr(fb, &call.args[1])?;
-                let sv = self.convert_value(fb, &size, &IrType::I32, &PbType::Long);
-                let bold = self.compile_expr(fb, &call.args[2])?;
-                let bv = self.convert_value(fb, &bold, &IrType::I32, &PbType::Long);
-                let italic = self.compile_expr(fb, &call.args[3])?;
-                let iv = self.convert_value(fb, &italic, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_xprint_set_font", &[name, sv, bv, iv]);
+                // batch 234: official XPRINT SET FONT fonthndl& (single handle)
+                let h = self.compile_expr(fb, &call.args[0])?;
+                let hv = self.convert_value(fb, &h, &IrType::I32, &PbType::Long);
+                fb.call_void("pb_xprint_set_font", &[hv]);
             }
             "XPRINT_SET_MIX" => {
                 let v = self.compile_expr(fb, &call.args[0])?;
@@ -8219,27 +8215,34 @@ impl Compiler {
                 );
             }
             "XPRINT_GET_CLIP" => {
+                // batch 234: official XPRINT GET CLIP TO WidthVar!, HeightVar!
                 if let Some((p0, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
                     if let Some((p1, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                        if let Some((p2, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                            if let Some((p3, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                                fb.call_void("pb_xprint_get_clip", &[p0, p1, p2, p3]);
-                            }
-                        }
+                        fb.call_void("pb_xprint_get_clip", &[p0, p1]);
                     }
                 }
             }
             "XPRINT_SCALE" => {
-                let w = self.compile_expr(fb, &call.args[0])?;
-                let wv = self.convert_value(fb, &w, &IrType::I32, &PbType::Long);
-                let h = self.compile_expr(fb, &call.args[1])?;
-                let hv = self.convert_value(fb, &h, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_xprint_scale", &[wv, hv]);
+                // batch 234: official XPRINT SCALE (x1,y1)-(x2,y2)
+                let mut ia = Vec::new();
+                for i in 0..4 {
+                    let v = self.compile_expr(fb, &call.args[i])?;
+                    ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
+                }
+                fb.call_void(
+                    "pb_xprint_scale",
+                    &[ia[0].clone(), ia[1].clone(), ia[2].clone(), ia[3].clone()],
+                );
             }
             "XPRINT_GET_SCALE" => {
-                if let Some((wp, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
-                    if let Some((hp, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                        fb.call_void("pb_xprint_get_scale", &[wp, hp]);
+                // batch 234: official XPRINT GET SCALE TO x1!,y1!,x2!,y2!
+                if let Some((p0, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    if let Some((p1, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        if let Some((p2, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
+                            if let Some((p3, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
+                                fb.call_void("pb_xprint_get_scale", &[p0, p1, p2, p3]);
+                            }
+                        }
                     }
                 }
             }
@@ -8447,19 +8450,22 @@ impl Compiler {
                 let iv = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
                 fb.call_void("pb_xprint_preview", &[iv]);
             }
+            "XPRINT_PREVIEW_CLOSE" => {
+                fb.call_void("pb_xprint_preview_close", &[]);
+            }
             "XPRINT_RENDER" => {
                 fb.call_void("pb_xprint_render", &[]);
             }
             "XPRINT_SPLIT" => {
-                let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
-                    ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
+                // batch 234: official XPRINT SPLIT "str", len TO s1$, s2$
+                let src = self.compile_expr(fb, &call.args[0])?;
+                let len = self.compile_expr(fb, &call.args[1])?;
+                let lv = self.convert_value(fb, &len, &IrType::I32, &PbType::Long);
+                if let Some((p1, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
+                    if let Some((p2, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
+                        fb.call_void("pb_xprint_split", &[src, lv, p1, p2]);
+                    }
                 }
-                fb.call_void(
-                    "pb_xprint_split",
-                    &[ia[0].clone(), ia[1].clone(), ia[2].clone(), ia[3].clone()],
-                );
             }
             "XPRINT_STRETCH" => {
                 let mut ia = Vec::new();
@@ -13989,10 +13995,14 @@ impl Compiler {
                         "pb_treeview_insert_item",
                         &[hd, id, hparent, hafter, image, simage, text, outp.clone()],
                     );
-                    if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[7]) {
+                    if let Some((ptr, ty, _)) = self.lvalue_ptr(fb, &call.args[7]) {
                         let rv = fb.load(&IrType::Ptr, &outp);
                         let rv_i = fb.ptrtoint64(&rv);
-                        fb.store(&rv_i, &ptr);
+                        let store_val = match &ty {
+                            IrType::I32 => self.to_i32(fb, &rv_i),
+                            _ => rv_i,
+                        };
+                        fb.store(&store_val, &ptr);
                     }
                 }
                 return Ok(());
@@ -20733,10 +20743,20 @@ impl Compiler {
         }
         let idx = self.compile_expr(fb, &args[0])?;
         let idx_i = self.to_i64(fb, &idx);
-        let mut r = self.compile_expr(fb, &args[1])?;
-        for (i, c) in args[2..].iter().enumerate() {
+        // PBWin10: out-of-range index returns the type's default value
+        // (0 for numerics, "" for strings) - probe: CHOOSE(9,10,20,30)=0.
+        let first = self.compile_expr(fb, &args[1])?;
+        let mut r = match first.ty {
+            IrType::Ptr => {
+                let (s, _) = self.module.add_string_constant("");
+                Val::new(s, IrType::Ptr)
+            }
+            IrType::Double | IrType::Float => fb.const_f64(0.0),
+            _ => fb.const_i64(0),
+        };
+        for (i, c) in args[1..].iter().enumerate() {
             let cv = self.compile_expr(fb, c)?;
-            let n_i = fb.const_i64(i as i64 + 2);
+            let n_i = fb.const_i64(i as i64 + 1);
             let eq = fb.icmp("eq", &idx_i, &n_i);
             r = match r.ty {
                 IrType::Ptr => fb.select(&eq, &cv, &r),
@@ -21910,10 +21930,10 @@ impl Compiler {
         }
         let s = self.compile_expr(fb, &args[0])?;
         // Check for ANY keyword: REMOVE$(main, ANY, matchchars)
-        let any_flag = if let Expr::Variable(ref name) = args[1] {
-            name.to_uppercase() == "ANY"
-        } else {
-            false
+        let any_flag = match &args[1] {
+            Expr::Variable(ref name) => name.to_uppercase() == "ANY",
+            Expr::StringLit(s) => s == "__ANY__",
+            _ => false,
         };
         let match_idx = if any_flag { 2 } else { 1 };
         if args.len() <= match_idx {
@@ -21929,10 +21949,10 @@ impl Compiler {
             return Err(PbError::runtime("RETAIN$ requires at least 2 arguments"));
         }
         let s = self.compile_expr(fb, &args[0])?;
-        let any_flag = if let Expr::Variable(ref name) = args[1] {
-            name.to_uppercase() == "ANY"
-        } else {
-            false
+        let any_flag = match &args[1] {
+            Expr::Variable(ref name) => name.to_uppercase() == "ANY",
+            Expr::StringLit(s) => s == "__ANY__",
+            _ => false,
         };
         let match_idx = if any_flag { 2 } else { 1 };
         if args.len() <= match_idx {
@@ -21962,10 +21982,10 @@ impl Compiler {
         // Check for ANY after main
         let any_pos = main_idx + 1;
         let any_flag = if any_pos < args.len() {
-            if let Expr::Variable(ref name) = args[any_pos] {
-                name.to_uppercase() == "ANY"
-            } else {
-                false
+            match &args[any_pos] {
+                Expr::Variable(ref name) => name.to_uppercase() == "ANY",
+                Expr::StringLit(s) => s == "__ANY__",
+                _ => false,
             }
         } else {
             false

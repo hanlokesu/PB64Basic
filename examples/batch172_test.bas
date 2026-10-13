@@ -1,4 +1,5 @@
 #COMPILE EXE
+
 #IF %DEF(%PB_REVISION)
     #IF (%PB_REVISION AND &H0FF00) = &H1000
         %MY_PBVER = 10
@@ -12,11 +13,7 @@
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -107,21 +104,26 @@ END SUB
 '   DIALOG END hDlg, fail, so the sample never waits for a key and is safe
 '   for the non-interactive verification harness.  The exit code is the
 '   number of failed assertions.
-'   Handles are declared AS QUAD on purpose: an item handle is a real
-'   x64 pointer and truncating it to LONG would make every comparison
-'   below meaningless.
+'   Handles are declared AS QUAD: an item handle is a real x64 pointer,
+'   LONG would truncate it and break every comparison below.
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg    AS LONG
-    LOCAL hTv     AS QUAD    ' default style + %TVS_CHECKBOXES
-    LOCAL hTvDef  AS QUAD    ' documented default style, no checkboxes
+    LOCAL hTv     AS LONG    ' default style + %TVS_CHECKBOXES
+    LOCAL hTvDef  AS LONG    ' documented default style, no checkboxes
+#IF %MY_PBVER = 10
+    LOCAL hRoot   AS LONG
+    LOCAL hA      AS LONG
+    LOCAL hB      AS LONG
+    LOCAL h       AS LONG
+#ELSE
     LOCAL hRoot   AS QUAD
     LOCAL hA      AS QUAD
     LOCAL hB      AS QUAD
     LOCAL h       AS QUAD
+#ENDIF
     LOCAL n       AS LONG
     LOCAL fail    AS LONG
     LOCAL bad     AS LONG
@@ -134,8 +136,10 @@ FUNCTION PBMAIN () AS LONG
 
     ' 295 = %TVS_HASBUTTONS(1) | %TVS_HASLINES(2) | %TVS_LINESATROOT(4)
     '     | %TVS_SHOWSELALWAYS(&H20) | %TVS_CHECKBOXES(&H100)
-    CONTROL ADD TREEVIEW, hDlg, 601, 10, 10, 150, 180, 295 TO hTv
-    CONTROL ADD TREEVIEW, hDlg, 602, 175, 10, 150, 180 TO hTvDef
+    CONTROL ADD TREEVIEW, hDlg, 601, "", 10, 10, 150, 180, 295
+    CONTROL HANDLE hDlg, 601 TO hTv
+    CONTROL ADD TREEVIEW, hDlg, 602, "", 175, 10, 150, 180
+    CONTROL HANDLE hDlg, 602 TO hTvDef
 
     IF hTv = 0 OR hTvDef = 0 THEN
         ConPrint "FAIL: a TREEVIEW control came back NULL"
@@ -248,7 +252,7 @@ FUNCTION PBMAIN () AS LONG
     TREEVIEW SET TEXT hDlg, 601, hB, "Renamed"
     t = ""
     TREEVIEW GET TEXT hDlg, 601, hB TO t
-    ConPrint "text         -> [" & STR$(t) & "]"
+    ConPrint "text         -> [" & t & "]"
     ' Byte-wise comparison on purpose: this fork's CHR$() emits
     ' "trunc i8 to i8" for a BYTE argument and clang rejects that, so the
     ' expected string is compared through ASC()/MID$() instead.
@@ -320,4 +324,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

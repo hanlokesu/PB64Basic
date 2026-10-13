@@ -1,0 +1,82 @@
+﻿cargo :    Compiling pbcompiler v0.1.1 
+(C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc\pbcompiler)
+At line:3 char:1
++ cargo build --release -p pbcompiler 2>&1 > _b234_build_err.txt; Get-C ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (   Compiling pb...src\pbcompiler):String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error[E0599]: no variant, associated function, or constant named `F64` found for enum `IrType` in the current scope
+    --> pbcompiler\src\codegen.rs:8085:63
+     |
+8085 |                 let sv = self.convert_value(fb, &sa, &IrType::F64, &PbType::Single);
+     |                                                               ^^^ variant, associated function, or constant not 
+found in `IrType`
+     |
+    ::: pbcompiler\src\llvm_ir.rs:12:1
+     |
+  12 | pub enum IrType {
+     | --------------- variant, associated function, or constant `F64` not found for this enum
+     |
+help: there is a variant with a similar name
+     |
+8085 -                 let sv = self.convert_value(fb, &sa, &IrType::F64, &PbType::Single);
+8085 +                 let sv = self.convert_value(fb, &sa, &IrType::I64, &PbType::Single);
+     |
+
+error[E0599]: no variant, associated function, or constant named `F64` found for enum `IrType` in the current scope
+    --> pbcompiler\src\codegen.rs:8087:63
+     |
+8087 |                 let ev = self.convert_value(fb, &ea, &IrType::F64, &PbType::Single);
+     |                                                               ^^^ variant, associated function, or constant not 
+found in `IrType`
+     |
+    ::: pbcompiler\src\llvm_ir.rs:12:1
+     |
+  12 | pub enum IrType {
+     | --------------- variant, associated function, or constant `F64` not found for this enum
+     |
+help: there is a variant with a similar name
+     |
+8087 -                 let ev = self.convert_value(fb, &ea, &IrType::F64, &PbType::Single);
+8087 +                 let ev = self.convert_value(fb, &ea, &IrType::I64, &PbType::Single);
+     |
+
+error[E0599]: no variant, associated function, or constant named `F64` found for enum `IrType` in the current scope
+    --> pbcompiler\src\codegen.rs:8112:63
+     |
+8112 |                 let sv = self.convert_value(fb, &sa, &IrType::F64, &PbType::Single);
+     |                                                               ^^^ variant, associated function, or constant not 
+found in `IrType`
+     |
+    ::: pbcompiler\src\llvm_ir.rs:12:1
+     |
+  12 | pub enum IrType {
+     | --------------- variant, associated function, or constant `F64` not found for this enum
+     |
+help: there is a variant with a similar name
+     |
+8112 -                 let sv = self.convert_value(fb, &sa, &IrType::F64, &PbType::Single);
+8112 +                 let sv = self.convert_value(fb, &sa, &IrType::I64, &PbType::Single);
+     |
+
+error[E0599]: no variant, associated function, or constant named `F64` found for enum `IrType` in the current scope
+    --> pbcompiler\src\codegen.rs:8114:63
+     |
+8114 |                 let ev = self.convert_value(fb, &ea, &IrType::F64, &PbType::Single);
+     |                                                               ^^^ variant, associated function, or constant not 
+found in `IrType`
+     |
+    ::: pbcompiler\src\llvm_ir.rs:12:1
+     |
+  12 | pub enum IrType {
+     | --------------- variant, associated function, or constant `F64` not found for this enum
+     |
+help: there is a variant with a similar name
+     |
+8114 -                 let ev = self.convert_value(fb, &ea, &IrType::F64, &PbType::Single);
+8114 +                 let ev = self.convert_value(fb, &ea, &IrType::I64, &PbType::Single);
+     |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `pbcompiler` (bin "pbcompiler") due to 4 previous errors

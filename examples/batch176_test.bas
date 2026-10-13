@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,8 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+DECLARE FUNCTION GetFocus LIB "USER32.DLL" ALIAS "GetFocus" () AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -48,7 +37,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PBXB64 / PowerBasilisk Enhanced â€” batch 176 test
+' PBXB64 / PowerBasilisk Enhanced â€? batch 176 test
 ' ---------------------------------------------------------------------
 ' THE CONTROL MESSAGE AND STATE FAMILY (Tier-3 DDT GUI, ten statements)
 '
@@ -100,21 +89,20 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
-    LOCAL hBtn   AS QUAD
-    LOCAL hEd    AS QUAD
-    LOCAL hChk   AS QUAD
-    LOCAL hTmp   AS QUAD
-    LOCAL hFnt   AS QUAD
-    LOCAL hGot   AS QUAD
-    LOCAL hFoc   AS QUAD
-    LOCAL hEd2   AS QUAD
-    LOCAL smAddr AS QUAD
-    LOCAL smHndl AS QUAD
-    LOCAL gfAddr AS QUAD
-    LOCAL gfHndl AS QUAD
+    LOCAL hBtn   AS LONG
+    LOCAL hEd    AS LONG
+    LOCAL hChk   AS LONG
+    LOCAL hTmp   AS LONG
+    LOCAL hFnt   AS LONG
+    LOCAL hGot   AS LONG
+    LOCAL hFoc   AS LONG
+    LOCAL hEd2   AS LONG
+    LOCAL smAddr AS LONG
+    LOCAL smHndl AS LONG
+    LOCAL gfAddr AS LONG
+    LOCAL gfHndl AS LONG
     LOCAL buf    AS STRING * 32
     LOCAL s1     AS LONG
     LOCAL s2     AS LONG
@@ -122,7 +110,7 @@ FUNCTION PBMAIN () AS LONG
     LOCAL st     AS LONG
     LOCAL prev   AS LONG
     LOCAL v      AS LONG
-    LOCAL q      AS QUAD
+    LOCAL q      AS LONG
     LOCAL fail   AS LONG
 
     ConPrint "batch 176 - CONTROL message and state family"
@@ -140,9 +128,12 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch 176 - CONTROL messages and state", 40, 30, 460, 220 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD BUTTON,   hDlg, 101, "OK",    12, 12,  60, 24 TO hBtn
-    CONTROL ADD EDITBOX,  hDlg, 102, "hello", 80, 12, 120, 24 TO hEd
-    CONTROL ADD CHECKBOX, hDlg, 103, "check", 12, 48, 100, 20 TO hChk
+    CONTROL ADD BUTTON,   hDlg, 101, "OK",    12, 12,  60, 24
+    CONTROL HANDLE hDlg, 101 TO hBtn
+    CONTROL ADD TEXTBOX,  hDlg, 102, "hello", 80, 12, 120, 24
+    CONTROL HANDLE hDlg, 102 TO hEd
+    CONTROL ADD CHECKBOX, hDlg, 103, "check", 12, 48, 100, 20
+    CONTROL HANDLE hDlg, 103 TO hChk
 
     ' ------------------------------------------------------------------
     ' CONTROL HANDLE - the window handle behind an id.  The sample keeps
@@ -197,15 +188,15 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   CONTROL SEND is synchronous (BM_SETCHECK was in effect immediately)"
     END IF
 
-    ' The optional TO clause has to work for a QUAD variable as well as for
+    ' The optional TO clause has to work for a LONG variable as well as for
     ' a LONG, because message results are pointer-width on x64.
     q = 0
     CONTROL SEND hDlg, 102, 14, 0, 0 TO q
     IF q <> 5 THEN
         fail = fail + 1
-        ConPrint "FAIL CONTROL SEND TO a QUAD ->" & STR$(q) & " (want 5)"
+        ConPrint "FAIL CONTROL SEND TO a LONG ->" & STR$(q) & " (want 5)"
     ELSE
-        ConPrint "ok   CONTROL SEND TO a QUAD variable -> 5"
+        ConPrint "ok   CONTROL SEND TO a LONG variable -> 5"
     END IF
 
     ' ------------------------------------------------------------------
@@ -427,4 +418,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

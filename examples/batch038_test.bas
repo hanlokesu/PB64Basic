@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -120,9 +109,9 @@ FUNCTION PBMAIN() AS LONG
     Check(i = 10, "iif true")
     i = IIF(0, 10, 20)
     Check(i = 20, "iif false")
-    r = IIF(1, "yes", "no")
+    r = IIF$(1, "yes", "no")
     Check(r = "yes", "iif str true")
-    r = IIF(0, "yes", "no")
+    r = IIF$(0, "yes", "no")
     Check(r = "no", "iif str false")
 
     ' CHOOSE
@@ -132,7 +121,7 @@ FUNCTION PBMAIN() AS LONG
     Check(i = 10, "choose 1")
     i = CHOOSE(9, 10, 20, 30)
     Check(i = 10, "choose out of range")
-    r = CHOOSE(3, "a", "b", "c")
+    r = CHOOSE$(3, "a", "b", "c")
     Check(r = "c", "choose str")
 
     IF failures = 0 THEN
@@ -146,4 +135,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

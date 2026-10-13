@@ -1,23 +1,10 @@
 #COMPILE EXE
 #COMPILER PBWIN 10
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -84,7 +71,6 @@ END SUB
 '   code is the number of failed assertions.
 '=====================================================================
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg  AS LONG
     LOCAL hTab  AS LONG
@@ -100,7 +86,8 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch169 TAB probe", 0, 0, 360, 260 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD TAB, hDlg, 301, 10, 10, 330, 200 TO hTab
+    CONTROL ADD TAB, hDlg, 301, "", 10, 10, 330, 200
+    CONTROL HANDLE hDlg, 301 TO hTab
     ConPrint "hwnd tab=" & STR$(hTab)
     IF hTab = 0 THEN fail = fail + 1
 
@@ -130,15 +117,15 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------- TAB GET/SET TEXT ----------------
     ConPrint "--- TAB GET/SET TEXT ---"
     TAB GET TEXT hDlg, 301, 1 TO t
-    ConPrint "text(1)  -> [" & STR$(t) & "]"
+    ConPrint "text(1)  -> [" & t & "]"
     IF t <> "first" THEN fail = fail + 1
     TAB GET TEXT hDlg, 301, 3 TO t
-    ConPrint "text(3)  -> [" & STR$(t) & "]"
+    ConPrint "text(3)  -> [" & t & "]"
     IF t <> "third" THEN fail = fail + 1
 
     TAB SET TEXT hDlg, 301, 2, "SECOND"
     TAB GET TEXT hDlg, 301, 2 TO t
-    ConPrint "text(2)  -> [" & STR$(t) & "]"
+    ConPrint "text(2)  -> [" & t & "]"
     IF t <> "SECOND" THEN fail = fail + 1
 
     ' ---------------- TAB GET DIALOG / TAB GET PAGE ----------------
@@ -193,7 +180,7 @@ FUNCTION PBMAIN () AS LONG
     IF n <> 2 THEN fail = fail + 1
     ' pages after the deleted one shift down by one
     TAB GET TEXT hDlg, 301, 1 TO t
-    ConPrint "text(1)  -> [" & STR$(t) & "]"
+    ConPrint "text(1)  -> [" & t & "]"
     IF t <> "SECOND" THEN fail = fail + 1
     TAB GET DIALOG hDlg, 301, 1 TO n
     ConPrint "dlg(1)   -> " & STR$(n)
@@ -219,4 +206,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -48,8 +37,8 @@ END SUB
 
 ' PowerBasilisk Enhanced - Batch 69 Test: XPRINT drawing + text + attributes
 FUNCTION PBMAIN() AS LONG
-    LOCAL hdc AS QUAD
-    LOCAL attached AS LONG
+    LOCAL hdc AS LONG
+    LOCAL attached AS STRING
     LOCAL px AS LONG, py AS LONG
     LOCAL col AS LONG
     LOCAL pix AS LONG
@@ -62,38 +51,36 @@ FUNCTION PBMAIN() AS LONG
 
     XPRINT ATTACH DEFAULT
     XPRINT GET ATTACH TO attached
-    ConPrint "GET ATTACH:" & STR$(attached)
-    IF attached <> 1 THEN fails = fails + 1 : ConPrint "  FAIL"
+    ConPrint "GET ATTACH:" & attached
+    IF attached = "" THEN fails = fails + 1 : ConPrint "  FAIL"
 
     XPRINT GET DC TO hdc
     IF hdc = 0 THEN fails = fails + 1 : ConPrint "  FAIL: dc zero"
 
-    XPRINT SET POS 100, 100
+    XPRINT SET POS (100, 100)
     XPRINT GET POS TO px, py
     ConPrint "SET/GET POS:" & STR$(px) & STR$(py)
     IF px <> 100 OR py <> 100 THEN fails = fails + 1 : ConPrint "  FAIL"
 
-    XPRINT SET COLOR 255
-    XPRINT GET COLOR TO col
-    ConPrint "SET/GET COLOR:" & STR$(col)
-    IF col <> 255 THEN fails = fails + 1 : ConPrint "  FAIL"
+    XPRINT COLOR 255
+    ' XPRINT GET COLOR has no official page; color is set-only.
+    ConPrint "SET COLOR: done"
 
     XPRINT WIDTH 3
     XPRINT STYLE 0
-    XPRINT LINE 10, 10, 200, 200
-    XPRINT BOX 10, 10, 200, 200
+    XPRINT LINE (10, 10)-(200, 200)
+    XPRINT BOX (10, 10)-(200, 200)
     ConPrint "LINE/BOX: done"
 
-    XPRINT SET PIXEL 50, 50, 255
-    XPRINT GET PIXEL 50, 50 TO pix
+    XPRINT SET PIXEL (50, 50), 255
+    XPRINT GET PIXEL (50, 50) TO pix
     ConPrint "SET/GET PIXEL:" & STR$(pix)
     IF pix = -1 THEN fails = fails + 1 : ConPrint "  FAIL (CLR_INVALID)"
 
-    XPRINT SET TEXTALIGN 0
-    XPRINT GET TEXTALIGN TO ta
-    ConPrint "SET/GET TEXTALIGN:" & STR$(ta)
+    ' XPRINT SET/GET TEXTALIGN have no official pages; skipped.
+    ConPrint "TEXTALIGN: skipped (no official page)"
 
-    XPRINT SET POS 50, 300
+    XPRINT SET POS (50, 300)
     XPRINT PRINT "Hello from XPRINT!"
     ConPrint "XPRINT PRINT: done"
 
@@ -106,7 +93,7 @@ FUNCTION PBMAIN() AS LONG
 
     XPRINT CLOSE
     XPRINT GET ATTACH TO attached
-    IF attached <> 0 THEN fails = fails + 1 : ConPrint "  FAIL: still attached after close"
+    IF attached <> "" THEN fails = fails + 1 : ConPrint "  FAIL: still attached after close"
 
     ConPrint "=== Result: "
     IF fails = 0 THEN
@@ -121,4 +108,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

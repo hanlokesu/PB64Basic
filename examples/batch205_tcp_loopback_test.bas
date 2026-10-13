@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -79,23 +68,26 @@ END SUB
 GLOBAL g_accepted AS LONG
 GLOBAL g_server_line AS STRING
 
-FUNCTION Acceptor () AS LONG
+THREAD FUNCTION Acceptor(byval dummy AS LONG) AS LONG
     LOCAL s AS STRING
-    TCP ACCEPT #1 AS #2
+    LOCAL newf AS LONG
+    TCP ACCEPT #1 AS newf
     g_accepted = 1
-    TCP LINE INPUT #2, s
+    TCP LINE INPUT newf, s
     g_server_line = s
-    TCP PRINT #2, "pong"
-    TCP CLOSE #2
+    TCP PRINT newf, "pong"
+    TCP CLOSE newf
     FUNCTION = 0
 END FUNCTION
 
 FUNCTION PBMAIN () AS LONG
     LOCAL s AS STRING
+    LOCAL newf AS LONG
     LOCAL fails AS LONG
+    LOCAL th AS LONG
     fails = 0
     TCP OPEN SERVER PORT 46219 AS #1
-    THREAD CREATE Acceptor
+    THREAD CREATE Acceptor(0) TO th
     SLEEP 400
     TCP OPEN PORT 46219 AT "127.0.0.1" AS #3
     TCP PRINT #3, "ping"
@@ -103,7 +95,7 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "client got: " & s
     IF s <> "pong" THEN fails = fails + 1
     SLEEP 500
-    ConPrint "server read: " & STR$(g_server_line)
+    ConPrint "server read: " & g_server_line
     IF g_server_line <> "ping" THEN fails = fails + 1
     ConPrint "accepted flag: " & STR$(g_accepted)
     IF g_accepted <> 1 THEN fails = fails + 1
@@ -117,4 +109,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

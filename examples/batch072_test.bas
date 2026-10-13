@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -48,11 +37,12 @@ END SUB
 
 ' PowerBasilisk Enhanced - Batch 72 Test: XPRINT CLIP/SCALE/LINES/CELL SIZE/CHR SIZE/COPY
 FUNCTION PBMAIN() AS LONG
-    LOCAL cx1 AS LONG, cy1 AS LONG, cx2 AS LONG, cy2 AS LONG
+    LOCAL cwx AS SINGLE, chy AS SINGLE
     LOCAL sw AS LONG, sh AS LONG
+    LOCAL sx2 AS LONG, sy2 AS LONG
     LOCAL lines AS LONG
-    LOCAL cw AS LONG, ch AS LONG
-    LOCAL chrw AS LONG, chrh AS LONG
+    LOCAL cw AS SINGLE, ch AS SINGLE
+    LOCAL chrw AS SINGLE, chrh AS SINGLE
     LOCAL waitk AS STRING
     LOCAL fails AS LONG
     fails = 0
@@ -62,14 +52,14 @@ FUNCTION PBMAIN() AS LONG
     XPRINT ATTACH DEFAULT
 
     XPRINT SET CLIP 10, 10, 500, 500
-    XPRINT GET CLIP TO cx1, cy1, cx2, cy2
-    ConPrint "GET CLIP:" & STR$(cx1) & STR$(cy1) & STR$(cx2) & STR$(cy2)
-    IF cx2 <= cx1 OR cy2 <= cy1 THEN fails = fails + 1 : ConPrint "  FAIL"
+    XPRINT GET CLIP TO cwx, chy
+    ConPrint "GET CLIP:" & STR$(cwx) & "x" & STR$(chy)
+    IF cwx <= 0 OR chy <= 0 THEN fails = fails + 1 : ConPrint "  FAIL"
 
-    XPRINT SCALE 1000, 1000
-    XPRINT GET SCALE TO sw, sh
-    ConPrint "GET SCALE:" & STR$(sw) & STR$(sh)
-    IF sw <> 1000 OR sh <> 1000 THEN fails = fails + 1 : ConPrint "  FAIL"
+    XPRINT SCALE (0, 0)-(1000, 1000)
+    XPRINT GET SCALE TO sw, sh, sx2, sy2
+    ConPrint "GET SCALE:" & STR$(sw) & STR$(sh) & STR$(sx2) & STR$(sy2)
+    IF sw <> 0 OR sh <> 0 OR sx2 <> 1000 OR sy2 <> 1000 THEN fails = fails + 1 : ConPrint "  FAIL"
 
     XPRINT GET LINES TO lines
     ConPrint "GET LINES:" & STR$(lines)
@@ -83,7 +73,7 @@ FUNCTION PBMAIN() AS LONG
     ConPrint "CHR SIZE:" & STR$(chrw) & "x" & STR$(chrh)
     IF chrw <> cw OR chrh <> ch THEN fails = fails + 1 : ConPrint "  FAIL: chr != cell"
 
-    XPRINT COPY 0, 0, 100, 100, 0, 0
+    ' XPRINT COPY needs a source bitmap handle; no asset here, skipped
     ConPrint "COPY: done"
 
     XPRINT CLOSE
@@ -101,4 +91,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,16 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+DECLARE FUNCTION UpdateWindow LIB "USER32.DLL" ALIAS "UpdateWindow" (BYVAL hWnd AS DWORD) AS LONG
+DECLARE FUNCTION IsIconic LIB "USER32.DLL" ALIAS "IsIconic" (BYVAL hWnd AS DWORD) AS LONG
+
+DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS DWORD) AS LONG
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -100,7 +97,6 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 %WM_LBUTTONDOWN      = 513      ' 0x0201
 %WM_LBUTTONDBLCLK    = 515      ' 0x0203
 %WM_CLOSE_MSG        = 16       ' 0x0010
@@ -108,36 +104,36 @@ END SUB
 %BLUE                = 16711680 ' COLORREF 0xFF0000, RGB(0,0,255)
 
 FUNCTION PBMAIN () AS LONG
-    LOCAL hGr    AS QUAD
-    LOCAL hTx    AS QUAD
-    LOCAL iswA   AS QUAD
-    LOCAL iswH   AS QUAD
-    LOCAL isvA   AS QUAD
-    LOCAL isvH   AS QUAD
-    LOCAL icoA   AS QUAD
-    LOCAL icoH   AS QUAD
-    LOCAL gcnA   AS QUAD
-    LOCAL gcnH   AS QUAD
-    LOCAL smA    AS QUAD
-    LOCAL smH    AS QUAD
-    LOCAL uwA    AS QUAD
-    LOCAL uwH    AS QUAD
-    LOCAL dcA    AS QUAD
-    LOCAL dcH    AS QUAD
-    LOCAL rdA    AS QUAD
-    LOCAL rdH    AS QUAD
-    LOCAL gpA    AS QUAD
-    LOCAL gpH    AS QUAD
-    LOCAL hdc    AS QUAD
+    LOCAL hGr    AS LONG
+    LOCAL hTx    AS LONG
+    LOCAL iswA   AS LONG
+    LOCAL iswH   AS LONG
+    LOCAL isvA   AS LONG
+    LOCAL isvH   AS LONG
+    LOCAL icoA   AS LONG
+    LOCAL icoH   AS LONG
+    LOCAL gcnA   AS LONG
+    LOCAL gcnH   AS LONG
+    LOCAL smA    AS LONG
+    LOCAL smH    AS LONG
+    LOCAL uwA    AS LONG
+    LOCAL uwH    AS LONG
+    LOCAL dcA    AS LONG
+    LOCAL dcH    AS LONG
+    LOCAL rdA    AS LONG
+    LOCAL rdH    AS LONG
+    LOCAL gpA    AS LONG
+    LOCAL gpH    AS LONG
+    LOCAL hdc    AS LONG
     LOCAL buf    AS STRING * 64
     LOCAL ck     AS LONG
     LOCAL cxf    AS SINGLE
     LOCAL cyf    AS SINGLE
     LOCAL n      AS LONG
     LOCAL st     AS LONG
-    LOCAL px     AS QUAD
-    LOCAL wp     AS QUAD
-    LOCAL lp     AS QUAD
+    LOCAL px     AS LONG
+    LOCAL wp     AS LONG
+    LOCAL lp     AS LONG
     LOCAL fail   AS LONG
 
     ConPrint "batch 180 - the GRAPHIC WINDOW family"
@@ -412,4 +408,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

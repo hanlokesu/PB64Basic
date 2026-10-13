@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -86,13 +75,13 @@ FUNCTION PBMAIN () AS LONG
     fails = 0
     COMM OPEN "COM404" AS #1
     ConPrint "survived a failed COMM OPEN written the correct way"
-    COMM SEND 1, "x"
+    COMM SEND #1, "x"
     ConPrint "survived COMM SEND on a closed channel"
-    COMM CLOSE 1
+    COMM CLOSE #1
     ConPrint "survived COMM CLOSE on a closed channel"
-    COMM SET 1, "DTR", 1
+    COMM SET #1, BAUD = 9600
     ConPrint "survived COMM SET on a closed channel"
-    COMM RESET
+    COMM RESET #1, FLOW
     IF fails = 0 THEN ConPrint "=== FAILURES: 0"
     FUNCTION = 0
 ' Press any key to exit...
@@ -101,4 +90,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

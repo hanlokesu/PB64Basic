@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -83,7 +72,7 @@ FUNCTION PBMAIN () AS LONG
     LOCAL fails AS LONG
     fails = 0
     UDP OPEN PORT 46217 AS #1
-    UDP SEND #1, AT "127.0.0.1", 46217, "self-ping"
+    UDP SEND #1, AT &H7F000001, 46217, "self-ping"
     UDP RECV #1, FROM ip, pnum, buf
     ConPrint "received: " & buf
     IF buf <> "self-ping" THEN fails = fails + 1
@@ -97,4 +86,5 @@ ConWaitKey
 END FUNCTION
 
 
-#ENDIF
+
+

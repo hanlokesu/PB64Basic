@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -69,10 +58,10 @@ FUNCTION PBMAIN() AS LONG
     s = EXTRACT$(5, "the cat sat on the mat", " on")
     Check(s = "cat sat", "extract start")
     ' EXTRACT$ ANY: stop at any char of match set
-    s = EXTRACT$("hello world", " ", "world")  ' first space
+    s = EXTRACT$("hello world", ANY " ")  ' first space
     Check(s = "hello", "extract space")
     ' EXTRACT$ ANY marker form
-    s = EXTRACT$("ab,cd;ef", ",;", ANY)  ' stop at first , or ;
+    s = EXTRACT$("ab,cd;ef", ANY ",;")  ' stop at first , or ;
     Check(s = "ab", "extract any")
     ' EXTRACT$ missing match -> whole remainder
     s = EXTRACT$("abcdef", "xyz")
@@ -85,7 +74,7 @@ FUNCTION PBMAIN() AS LONG
     n = RGB(255, 0, 0)
     Check(n = &HFF, "rgb red")
     n = RGB(0, 255, 0)
-    Check(n = &HFF00, "rgb green")
+    Check(n = &H0000FF00, "rgb green")
     n = RGB(0, 0, 255)
     Check(n = &HFF0000, "rgb blue")
     n = RGB(1, 2, 3)
@@ -126,4 +115,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

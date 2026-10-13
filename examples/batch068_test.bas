@@ -46,7 +46,7 @@ FUNCTION PBMAIN() AS LONG
     XPRINT ATTACH DEFAULT
     ConPrint "XPRINT ATTACH DEFAULT: done"
 
-    ' 2. GET DC â€” should be non-zero
+    ' 2. GET DC â€? should be non-zero
     XPRINT GET DC TO hdc
     ConPrint "XPRINT GET DC: hdc=" & STR$(hdc)
     IF hdc = 0 THEN
@@ -56,7 +56,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "  PASS: hdc non-zero"
     END IF
 
-    ' 3. GET PPI â€” screen is typically 96 DPI
+    ' 3. GET PPI â€? screen is typically 96 DPI
     XPRINT GET PPI TO px, py
     ConPrint "XPRINT GET PPI: x=" & STR$(px) & " y=" & STR$(py)
     IF px = 0 OR py = 0 THEN
@@ -66,7 +66,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "  PASS: PPI non-zero"
     END IF
 
-    ' 4. GET SIZE â€” physical width/height in pixels
+    ' 4. GET SIZE â€? physical width/height in pixels
     XPRINT GET SIZE TO pw, ph
     ConPrint "XPRINT GET SIZE: w=" & STR$(pw) & " h=" & STR$(ph)
     IF pw = 0 OR ph = 0 THEN
@@ -80,7 +80,7 @@ FUNCTION PBMAIN() AS LONG
     XPRINT CLOSE
     ConPrint "XPRINT CLOSE: done"
 
-    ' 6. GET DC after CLOSE â€” should be zero
+    ' 6. GET DC after CLOSE â€? should be zero
     XPRINT GET DC TO hdc2
     ConPrint "XPRINT GET DC (after close): hdc=" & STR$(hdc2)
     IF hdc2 <> 0 THEN

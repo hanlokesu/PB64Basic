@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -47,7 +36,7 @@ SUB ConWaitKey()
 END SUB
 
 ' =====================================================================
-' batch160_test.bas â€” METRICS, UCODE$ and ACODE$
+' batch160_test.bas â€? METRICS, UCODE$ and ACODE$
 ' ---------------------------------------------------------------------
 ' Purpose:  exercise the three functions added in batch 160 and print the
 '           values so the numbers can be checked against the Windows SDK.
@@ -105,8 +94,8 @@ FUNCTION PBMAIN () AS LONG
     IF n <= 0 THEN ok = 0
 
     ' ---- METRICS: a plain metric index (SM_CXSCREEN = 0) ------------
-    n = METRICS(0)
-    ConPrint "METRICS(0)     =" & STR$(n)
+    n = METRICS(Scroll.Horz)
+    ConPrint "METRICS(ScrollHorz)=" & STR$(n)
     IF n <= 0 THEN ok = 0
 
     ' ---- UCODE$ / ACODE$ -------------------------------------------
@@ -115,11 +104,11 @@ FUNCTION PBMAIN () AS LONG
     IF LEN(u) <> 6 THEN ok = 0
 
     back = ACODE$(u)
-    ConPrint "ACODE$ restored =" & STR$(back)
+    ConPrint "ACODE$ restored =" & back
     IF back <> "ABC" THEN ok = 0
 
     back = UCODE$("Hello") : back = ACODE$(back)
-    ConPrint "round trip      =" & STR$(back)
+    ConPrint "round trip      =" & back
     IF back <> "Hello" THEN ok = 0
 
     ' ---- result ----------------------------------------------------
@@ -136,4 +125,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

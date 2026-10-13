@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,12 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+
+DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS DWORD) AS LONG
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -114,24 +107,23 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 %RED     = 255      ' COLORREF 0x000000FF
 %GREEN   = 65280    ' COLORREF 0x0000FF00
 %BLUE    = 16711680 ' COLORREF 0x00FF0000
 
 FUNCTION PBMAIN () AS LONG
-    LOCAL hGr    AS QUAD
-    LOCAL iswA   AS QUAD
-    LOCAL iswH   AS QUAD
-    LOCAL isvA   AS QUAD
-    LOCAL isvH   AS QUAD
-    LOCAL dcA    AS QUAD
-    LOCAL dcH    AS QUAD
-    LOCAL rdA    AS QUAD
-    LOCAL rdH    AS QUAD
-    LOCAL gpA    AS QUAD
-    LOCAL gpH    AS QUAD
-    LOCAL hdc    AS QUAD
+    LOCAL hGr    AS LONG
+    LOCAL iswA   AS LONG
+    LOCAL iswH   AS LONG
+    LOCAL isvA   AS LONG
+    LOCAL isvH   AS LONG
+    LOCAL dcA    AS LONG
+    LOCAL dcH    AS LONG
+    LOCAL rdA    AS LONG
+    LOCAL rdH    AS LONG
+    LOCAL gpA    AS LONG
+    LOCAL gpH    AS LONG
+    LOCAL hdc    AS LONG
     LOCAL st     AS LONG
     LOCAL px     AS LONG
     LOCAL ov     AS LONG
@@ -380,4 +372,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' Batch 89: ERROR$ â€” error message function
+' Batch 89: ERROR$ â€? error message function
 FUNCTION PBMAIN() AS LONG
     LOCAL pass AS LONG
     LOCAL waitk AS STRING

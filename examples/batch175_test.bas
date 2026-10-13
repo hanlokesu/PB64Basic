@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -117,10 +104,9 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
-    LOCAL hBtn AS QUAD
+    LOCAL hBtn AS LONG
     LOCAL v1   AS LONG
     LOCAL v2   AS LONG
     LOCAL fail AS LONG
@@ -128,7 +114,8 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch175 CONTROL geometry", 40, 30, 400, 200 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD BUTTON, hDlg, 101, "OK", 12, 12, 60, 24 TO hBtn
+    CONTROL ADD BUTTON, hDlg, 101, "OK", 12, 12, 60, 24
+    CONTROL HANDLE hDlg, 101 TO hBtn
     IF hBtn = 0 THEN
         fail = fail + 1
         ConPrint "FAIL CONTROL ADD BUTTON returned no handle"
@@ -255,4 +242,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

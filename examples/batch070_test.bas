@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -48,7 +37,7 @@ END SUB
 
 ' PowerBasilisk Enhanced - Batch 70 Test: XPRINT ARC/ELLIPSE/PIE/FONT/MIX/STRETCHMODE
 FUNCTION PBMAIN() AS LONG
-    LOCAL attached AS LONG
+    LOCAL attached AS STRING
     LOCAL mix AS LONG
     LOCAL sm AS LONG
     LOCAL waitk AS STRING
@@ -59,22 +48,25 @@ FUNCTION PBMAIN() AS LONG
 
     XPRINT ATTACH DEFAULT
     XPRINT GET ATTACH TO attached
-    IF attached <> 1 THEN fails = fails + 1 : ConPrint "FAIL: attach"
+    IF attached = "" THEN fails = fails + 1 : ConPrint "FAIL: attach"
 
-    XPRINT SET COLOR 255
-    XPRINT ARC 10, 10, 200, 200, 10, 10, 200, 200
+    XPRINT COLOR 255
+    XPRINT ARC (10, 10)-(200, 200), 0, 3.14159
     ConPrint "ARC: done"
 
-    XPRINT ELLIPSE 50, 50, 250, 200
+    XPRINT ELLIPSE (50, 50)-(250, 200)
     ConPrint "ELLIPSE: done"
 
-    XPRINT PIE 10, 10, 300, 300, 10, 10, 300, 10
+    XPRINT PIE (10, 10)-(300, 300), 0, 3.14159
     ConPrint "PIE: done"
 
-    XPRINT SET FONT "Arial", 24, 1, 0
-    XPRINT SET POS 50, 350
+    LOCAL hFnt AS LONG
+    FONT NEW "Arial", 24, 1 TO hFnt
+    XPRINT SET FONT hFnt
+    XPRINT SET POS (50, 350)
     XPRINT PRINT "Bold 24pt Arial"
     ConPrint "SET FONT: done"
+    FONT END hFnt
 
     XPRINT SET MIX 11
     XPRINT GET MIX TO mix
@@ -101,4 +93,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

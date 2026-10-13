@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -79,7 +66,6 @@ END SUB
 ' control id) - NOT by the control handle returned from CONTROL ADD.
 '=====================================================================
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
     LOCAL hLV  AS LONG
@@ -92,7 +78,8 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch170 LISTVIEW probe", 0, 0, 420, 300 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD LISTVIEW, hDlg, 401, 10, 10, 390, 240 TO hLV
+    CONTROL ADD LISTVIEW, hDlg, 401, "", 10, 10, 390, 240
+    CONTROL HANDLE hDlg, 401 TO hLV
     ConPrint "hwnd listview  -> " & STR$(hLV)
     IF hLV = 0 THEN fail = fail + 1
 
@@ -113,24 +100,24 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------- GET / SET TEXT (1-based) ----------------
     ConPrint "--- GET / SET TEXT ---"
     LISTVIEW GET TEXT hDlg, 401, 1, 1 TO t
-    ConPrint "text(1,1)      -> [" & STR$(t) & "]"
+    ConPrint "text(1,1)      -> [" & t & "]"
     IF t <> "alpha" THEN fail = fail + 1
     LISTVIEW GET TEXT hDlg, 401, 4, 1 TO t
-    ConPrint "text(4,1)      -> [" & STR$(t) & "]"
+    ConPrint "text(4,1)      -> [" & t & "]"
     IF t <> "delta" THEN fail = fail + 1
     LISTVIEW SET TEXT hDlg, 401, 2, 2, "20"
     LISTVIEW GET TEXT hDlg, 401, 2, 2 TO t
-    ConPrint "text(2,2)      -> [" & STR$(t) & "]"
+    ConPrint "text(2,2)      -> [" & t & "]"
     IF t <> "20" THEN fail = fail + 1
 
     ' ---------------- GET / SET HEADER ----------------
     ConPrint "--- GET / SET HEADER ---"
     LISTVIEW GET HEADER hDlg, 401, 1 TO t
-    ConPrint "header(1)      -> [" & STR$(t) & "]"
+    ConPrint "header(1)      -> [" & t & "]"
     IF t <> "Name" THEN fail = fail + 1
     LISTVIEW SET HEADER hDlg, 401, 2, "Amount"
     LISTVIEW GET HEADER hDlg, 401, 2 TO t
-    ConPrint "header(2)      -> [" & STR$(t) & "]"
+    ConPrint "header(2)      -> [" & t & "]"
     IF t <> "Amount" THEN fail = fail + 1
 
     ' ---------------- GET HEADERID ----------------
@@ -256,18 +243,18 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "--- SORT ---"
     LISTVIEW SORT hDlg, 401, 1, DESCEND
     LISTVIEW GET TEXT hDlg, 401, 1, 1 TO t
-    ConPrint "sort desc(1)   -> [" & STR$(t) & "]"
+    ConPrint "sort desc(1)   -> [" & t & "]"
     IF t <> "gamma" THEN fail = fail + 1
     LISTVIEW GET TEXT hDlg, 401, 4, 1 TO t
-    ConPrint "sort desc(4)   -> [" & STR$(t) & "]"
+    ConPrint "sort desc(4)   -> [" & t & "]"
     IF t <> "BETA" THEN fail = fail + 1
 
     LISTVIEW SORT hDlg, 401, 1, ASCEND, UCASE
     LISTVIEW GET TEXT hDlg, 401, 1, 1 TO t
-    ConPrint "sort asc(1)    -> [" & STR$(t) & "]"
+    ConPrint "sort asc(1)    -> [" & t & "]"
     IF t <> "alpha" THEN fail = fail + 1
     LISTVIEW GET TEXT hDlg, 401, 4, 1 TO t
-    ConPrint "sort asc(4)    -> [" & STR$(t) & "]"
+    ConPrint "sort asc(4)    -> [" & t & "]"
     IF t <> "gamma" THEN fail = fail + 1
 
     ' ---------------- DELETE COLUMN / DELETE ITEM ----------------
@@ -275,7 +262,7 @@ FUNCTION PBMAIN () AS LONG
     ' Windows cannot delete column 1, so column 3 goes first.
     LISTVIEW DELETE COLUMN hDlg, 401, 3
     LISTVIEW GET HEADER hDlg, 401, 3 TO t
-    ConPrint "header(3)      -> [" & STR$(t) & "]"
+    ConPrint "header(3)      -> [" & t & "]"
     IF t <> "" THEN fail = fail + 1
 
     LISTVIEW DELETE ITEM hDlg, 401, 1
@@ -283,7 +270,7 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "count          -> " & STR$(n)
     IF n <> 3 THEN fail = fail + 1
     LISTVIEW GET TEXT hDlg, 401, 1, 1 TO t
-    ConPrint "text(1,1)      -> [" & STR$(t) & "]"
+    ConPrint "text(1,1)      -> [" & t & "]"
     IF t <> "BETA" THEN fail = fail + 1
 
     ' ---------------- GET MODE / SET MODE ----------------
@@ -329,4 +316,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

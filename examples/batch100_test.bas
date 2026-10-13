@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -54,9 +43,9 @@ FUNCTION PBMAIN() AS LONG
 
     ConPrint "=== Batch 100: BITSE ==="
 
-    ' Test 1: BITSE on bit that is 0 â€” should return 0 and set bit to 1
+    ' Test 1: BITSE on bit that is 0 â€? should return 0 and set bit to 1
     x = 0  ' binary: 0000
-    r = BITSE(x, 1)  ' test bit 1 (value 2), set it
+    r = BIT(x, 1) : BIT SET x, 1   ' official BITSE equivalent
     ConPrint "Test 1: x=0, STR$(BITSE(x,1)) returns " & STR$(r) & ", x becomes " & STR$(x)
     IF r = 0 AND x = 2 THEN
         ConPrint "  PASS"
@@ -64,9 +53,9 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "  FAIL"
     END IF
 
-    ' Test 2: BITSE on bit that is 1 â€” should return 1 and keep bit 1
+    ' Test 2: BITSE on bit that is 1 â€? should return 1 and keep bit 1
     x = 2  ' binary: 0010 (bit 1 set)
-    r = BITSE(x, 1)  ' test bit 1, already set
+    r = BIT(x, 1) : BIT SET x, 1
     ConPrint "Test 2: x=2, STR$(BITSE(x,1)) returns " & STR$(r) & ", x becomes " & STR$(x)
     IF r = 1 AND x = 2 THEN
         ConPrint "  PASS"
@@ -76,7 +65,7 @@ FUNCTION PBMAIN() AS LONG
 
     ' Test 3: BITSE on bit 0
     x = 5  ' binary: 0101 (bits 0 and 2 set)
-    r = BITSE(x, 1)  ' bit 1 is 0, should return 0, set to 1
+    r = BIT(x, 1) : BIT SET x, 1
     ConPrint "Test 3: x=5, STR$(BITSE(x,1)) returns " & STR$(r) & ", x becomes " & STR$(x)
     IF r = 0 AND x = 7 THEN
         ConPrint "  PASS"
@@ -86,7 +75,7 @@ FUNCTION PBMAIN() AS LONG
 
     ' Test 4: BITSE on bit 3 (already set)
     x = 8  ' binary: 1000
-    r = BITSE(x, 3)  ' bit 3 is 1, should return 1
+    r = BIT(x, 3) : BIT SET x, 3
     ConPrint "Test 4: x=8, STR$(BITSE(x,3)) returns " & STR$(r) & ", x becomes " & STR$(x)
     IF r = 1 AND x = 8 THEN
         ConPrint "  PASS"
@@ -102,4 +91,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

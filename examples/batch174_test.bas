@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,8 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+
+DECLARE FUNCTION GetMenu LIB "USER32.DLL" ALIAS "GetMenu" (BYVAL hWnd AS DWORD) AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -103,15 +92,14 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg  AS LONG
-    LOCAL hBar1 AS QUAD
-    LOCAL hBar2 AS QUAD
-    LOCAL hPop  AS QUAD
-    LOCAL hGot  AS QUAD
-    LOCAL gaddr AS QUAD
-    LOCAL ghndl AS QUAD
+    LOCAL hBar1 AS LONG
+    LOCAL hBar2 AS LONG
+    LOCAL hPop  AS LONG
+    LOCAL hGot  AS LONG
+    LOCAL gaddr AS LONG
+    LOCAL ghndl AS LONG
     LOCAL cw    AS LONG
     LOCAL ch0   AS LONG         ' client height with no menu
     LOCAL ch1   AS LONG         ' client height with bar1
@@ -165,9 +153,9 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "FAIL the two bars are the same handle"
     END IF
 
-    MENU ADD STRING hBar1, "File", 100, 0
-    MENU ADD POPUP hBar1, hPop, 0
-    MENU ADD STRING hBar2, "Edit", 200, 0
+    MENU ADD STRING, hBar1, "File", 100, 0
+    MENU ADD POPUP, hBar1, "View", hPop, 0
+    MENU ADD STRING, hBar2, "Edit", 200, 0
     ConPrint "ok   MENU ADD STRING / ADD POPUP -> items added"
 
     ' ---------------------------------------------------------------
@@ -216,7 +204,7 @@ FUNCTION PBMAIN () AS LONG
     ' disturb which menu is attached.
     ' ---------------------------------------------------------------
     MENU DRAW BAR hDlg
-    MENU ADD STRING hBar2, "More", 300, 0
+    MENU ADD STRING, hBar2, "More", 300, 0
     MENU DRAW BAR hDlg
     hGot = 0
     CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
@@ -273,4 +261,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

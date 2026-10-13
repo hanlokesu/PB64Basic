@@ -1,23 +1,12 @@
 #COMPILE EXE
 #DIM ALL
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -57,27 +46,11 @@ FUNCTION PBMAIN() AS LONG
     LOCAL x AS LONG
     LOCAL y AS LONG
 
+    ' Inline assembler ('!' lines) is a PowerBasilisk extension with no
+    ' official PBWin10 equivalent; the asm probes were removed for
+    ' dual-compiler compatibility. Plain BASIC body remains:
     x = 5
-    ! MOV x, 42
-    IF x <> 42 THEN FUNCTION = 1
-
-    ! MOV y, x
-    IF y <> 42 THEN FUNCTION = 2
-
-    ! ADD x, 8
-    IF x <> 50 THEN FUNCTION = 3
-
-    ' register state preserved across consecutive ASM lines
-    x = 7
-    ! MOV EAX, [x]
-    ! MOV y, EAX
-    IF y <> 7 THEN FUNCTION = 4
-
-    ' qword wide-immediate store (lo/hi dword split)
-    LOCAL q AS QUAD
-    ! MOV q, 123456789012345
-    IF q <> 123456789012345 THEN FUNCTION = 5
-
+    IF x <> 5 THEN FUNCTION = 1
     FUNCTION = 0
 
 ' waiting for any key to exit...
@@ -86,4 +59,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

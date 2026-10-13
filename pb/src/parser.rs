@@ -198,6 +198,10 @@ impl Parser {
                 let stmts = self.parse_dim_statement(DimScope::Dim)?;
                 Ok(Some(TopLevel::DimDeclList(stmts)))
             }
+            Token::Threaded => {
+                let stmts = self.parse_dim_statement(DimScope::Threaded)?;
+                Ok(Some(TopLevel::DimDeclList(stmts)))
+            }
             Token::Redim => {
                 let stmt = self.parse_redim_statement()?;
                 Ok(Some(TopLevel::DimDecl(stmt)))
@@ -215,6 +219,17 @@ impl Parser {
                 Ok(Some(TopLevel::SubDecl(sd)))
             }
             Token::Function => {
+                let fd = self.parse_function_decl()?;
+                Ok(Some(TopLevel::FunctionDecl(fd)))
+            }
+            Token::Identifier(w)
+                if w.eq_ignore_ascii_case("THREAD")
+                    && self.peek_at(1) == Some(&Token::Function) =>
+            {
+                // batch 234: official THREAD FUNCTION Fn(byval x AS LONG) AS LONG
+                // declaration form -- THREAD is an Identifier token here, so it
+                // must be peeled off before the normal FUNCTION decl parser runs.
+                self.advance(); // THREAD
                 let fd = self.parse_function_decl()?;
                 Ok(Some(TopLevel::FunctionDecl(fd)))
             }
@@ -1188,6 +1203,33 @@ impl Parser {
                 line,
             }),
         })
+    }
+
+    /// batch 234: parse an official PB coordinate group used by XPRINT drawing
+    /// statements:  `(x1, y1)` -> [x1, y1] ; `(x1, y1)-(x2, y2)` -> [x1, y1, x2, y2] ;
+    /// a bare expression -> [expr] (back-compat with this fork's older examples).
+    fn parse_xprint_pt(&mut self) -> PbResult<Vec<Expr>> {
+        if self.peek() == &Token::LParen {
+            self.advance();
+            let x = self.parse_expression()?;
+            self.expect(&Token::Comma)?;
+            let y = self.parse_expression()?;
+            self.expect(&Token::RParen)?;
+            let mut v = vec![x, y];
+            if self.peek() == &Token::Minus && self.peek_at(1) == Some(&Token::LParen) {
+                self.advance(); // -
+                self.advance(); // (
+                let x2 = self.parse_expression()?;
+                self.expect(&Token::Comma)?;
+                let y2 = self.parse_expression()?;
+                self.expect(&Token::RParen)?;
+                v.push(x2);
+                v.push(y2);
+            }
+            Ok(v)
+        } else {
+            Ok(vec![self.parse_expression()?])
+        }
     }
 
     fn parse_sub_decl(&mut self) -> PbResult<SubDecl> {
@@ -4902,13 +4944,16 @@ impl Parser {
                     }
                     if xop == "SCALE" {
                         self.advance();
-                        let w = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let h = self.parse_expression()?;
+                        // batch 234: official XPRINT SCALE (x1,y1)-(x2,y2)
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "XPRINT_SCALE".to_string(),
-                            args: vec![w, h],
+                            args,
                             line,
                         }));
                     }
@@ -4942,6 +4987,16 @@ impl Parser {
                     }
                     if xop == "PREVIEW" {
                         self.advance();
+                        // batch 234: official XPRINT PREVIEW CLOSE (no arguments)
+                        if self.peek_plain_upper() == "CLOSE" {
+                            self.advance();
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "XPRINT_PREVIEW_CLOSE".to_string(),
+                                args: vec![],
+                                line,
+                            }));
+                        }
                         let mode = if self.peek() != &Token::Eol && self.peek() != &Token::Eof {
                             self.parse_expression()?
                         } else {
@@ -4965,13 +5020,16 @@ impl Parser {
                     }
                     if xop == "SPLIT" {
                         self.advance();
-                        let mut args = vec![];
-                        for i in 0..4 {
+                        // batch 234: official XPRINT SPLIT "str", len TO s1$, s2$
+                        let mut args = vec![self.parse_expression()?];
+                        if self.peek() == &Token::Comma {
+                            self.advance();
                             args.push(self.parse_expression()?);
-                            if i < 3 {
-                                self.expect(&Token::Comma)?;
-                            }
                         }
+                        self.expect(&Token::To)?;
+                        args.push(self.parse_expression()?);
+                        self.expect(&Token::Comma)?;
+                        args.push(self.parse_expression()?);
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "XPRINT_SPLIT".to_string(),
@@ -5098,12 +5156,12 @@ impl Parser {
                     }
                     if xop == "ARC" {
                         self.advance();
-                        let mut args = vec![];
-                        for i in 0..8 {
+                        // batch 234: official (ARC) coordinate-pair form, e.g.
+                        // XPRINT ARC (x1,y1)-(x2,y2)[, start, end]
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
                             args.push(self.parse_expression()?);
-                            if i < 7 {
-                                self.expect(&Token::Comma)?;
-                            }
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
@@ -5114,12 +5172,12 @@ impl Parser {
                     }
                     if xop == "ELLIPSE" {
                         self.advance();
-                        let mut args = vec![];
-                        for i in 0..4 {
+                        // batch 234: official (ELLIPSE) coordinate-pair form, e.g.
+                        // XPRINT ELLIPSE (x1,y1)-(x2,y2)[, start, end]
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
                             args.push(self.parse_expression()?);
-                            if i < 3 {
-                                self.expect(&Token::Comma)?;
-                            }
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
@@ -5130,12 +5188,12 @@ impl Parser {
                     }
                     if xop == "PIE" {
                         self.advance();
-                        let mut args = vec![];
-                        for i in 0..8 {
+                        // batch 234: official (PIE) coordinate-pair form, e.g.
+                        // XPRINT PIE (x1,y1)-(x2,y2)[, start, end]
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
                             args.push(self.parse_expression()?);
-                            if i < 7 {
-                                self.expect(&Token::Comma)?;
-                            }
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
@@ -5164,33 +5222,31 @@ impl Parser {
                     }
                     if xop == "LINE" {
                         self.advance();
-                        let x1 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let y1 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let x2 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let y2 = self.parse_expression()?;
+                        // batch 234: official XPRINT LINE (x1,y1)-(x2,y2)
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "XPRINT_LINE".to_string(),
-                            args: vec![x1, y1, x2, y2],
+                            args,
                             line,
                         }));
                     }
                     if xop == "BOX" {
                         self.advance();
-                        let x1 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let y1 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let x2 = self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                        let y2 = self.parse_expression()?;
+                        // batch 234: official XPRINT BOX (x1,y1)-(x2,y2)
+                        let mut args = self.parse_xprint_pt()?;
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "XPRINT_BOX".to_string(),
-                            args: vec![x1, y1, x2, y2],
+                            args,
                             line,
                         }));
                     }
@@ -5382,30 +5438,32 @@ impl Parser {
                         if sub == "CLIP" {
                             self.advance();
                             self.expect(&Token::To)?;
-                            let x1 = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let y1 = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let x2 = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let y2 = self.parse_expression()?;
+                            // batch 234: official XPRINT GET CLIP TO WidthVar!, HeightVar!
+                            let mut args = vec![self.parse_expression()?];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_GET_CLIP".to_string(),
-                                args: vec![x1, y1, x2, y2],
+                                args,
                                 line,
                             }));
                         }
                         if sub == "SCALE" {
                             self.advance();
                             self.expect(&Token::To)?;
-                            let w = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let h = self.parse_expression()?;
+                            // batch 234: official XPRINT GET SCALE TO x1!,y1!,x2!,y2!
+                            let mut args = vec![self.parse_expression()?];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_GET_SCALE".to_string(),
-                                args: vec![w, h],
+                                args,
                                 line,
                             }));
                         }
@@ -5582,15 +5640,14 @@ impl Parser {
                         }
                         if sub == "PIXEL" {
                             self.advance();
-                            let x = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let y = self.parse_expression()?;
+                            // batch 234: official XPRINT GET PIXEL (x,y) TO c&
+                            let mut args = self.parse_xprint_pt()?;
                             self.expect(&Token::To)?;
-                            let c = self.parse_expression()?;
+                            args.push(self.parse_expression()?);
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_GET_PIXEL".to_string(),
-                                args: vec![x, y, c],
+                                args,
                                 line,
                             }));
                         }
@@ -5611,29 +5668,28 @@ impl Parser {
                         let sub = self.peek_plain_upper();
                         if sub == "POS" {
                             self.advance();
-                            let x = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let y = self.parse_expression()?;
+                            // batch 234: official XPRINT SET POS (x!, y!)
+                            let args = self.parse_xprint_pt()?;
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_SET_POS".to_string(),
-                                args: vec![x, y],
+                                args,
                                 line,
                             }));
                         }
                         if sub == "FONT" {
                             self.advance();
-                            let name = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let size = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let bold = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let italic = self.parse_expression()?;
+                            // batch 234: official XPRINT SET FONT fonthndl& -- a
+                            // single handle from FONT NEW (legacy 4-arg kept).
+                            let mut args = vec![self.parse_expression()?];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_SET_FONT".to_string(),
-                                args: vec![name, size, bold, italic],
+                                args,
                                 line,
                             }));
                         }
@@ -5805,15 +5861,16 @@ impl Parser {
                         }
                         if sub == "PIXEL" {
                             self.advance();
-                            let x = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let y = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let c = self.parse_expression()?;
+                            // batch 234: official XPRINT SET PIXEL (x,y), rgb&
+                            let mut args = self.parse_xprint_pt()?;
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "XPRINT_SET_PIXEL".to_string(),
-                                args: vec![x, y, c],
+                                args,
                                 line,
                             }));
                         }
@@ -5929,9 +5986,20 @@ impl Parser {
                                 if self.peek_plain_upper() == "BYCMD" {
                                     self.advance();
                                     bycmd = 1;
-                                    self.expect(&Token::Comma)?;
+                                    // batch 234: official MENU GET/SET ... BYCMD id&
+                                    // has NO comma after BYCMD (also accept legacy
+                                    // `BYCMD, id` form).
+                                    if matches!(self.peek(), Token::Comma) {
+                                        self.advance();
+                                    }
                                 } else {
                                     bycmd = 0;
+                                }
+                            } else if self.peek_plain_upper() == "BYCMD" {
+                                self.advance();
+                                bycmd = 1;
+                                if matches!(self.peek(), Token::Comma) {
+                                    self.advance();
                                 }
                             } else {
                                 bycmd = 0;
@@ -6583,8 +6651,12 @@ impl Parser {
                         let attr = self.parse_expression()?;
                         args.push(attr);
                     }
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     args.push(target);
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
@@ -6939,8 +7011,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "WINDOW_NEW".to_string(),
@@ -7505,6 +7581,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -7512,8 +7599,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_HSCROLLBAR".to_string(),
@@ -7534,6 +7625,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -7541,8 +7643,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_SCROLLBAR".to_string(),
@@ -7605,6 +7711,9 @@ impl Parser {
                     if matches!(self.peek(), Token::StringLiteral(_)) {
                         self.parse_expression()?;
                         self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
                     }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
@@ -7613,8 +7722,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_COMBOBOX".to_string(),
@@ -7639,6 +7752,9 @@ impl Parser {
                     if matches!(self.peek(), Token::StringLiteral(_)) {
                         self.parse_expression()?;
                         self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
                     }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
@@ -7647,8 +7763,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LISTBOX".to_string(),
@@ -8260,8 +8380,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_RADIOBUTTON".to_string(),
@@ -8291,8 +8415,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_GROUPBOX".to_string(),
@@ -8348,6 +8476,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -8355,8 +8494,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_PROGRESSBAR".to_string(),
@@ -8377,6 +8520,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -8384,8 +8538,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_MONTHCAL".to_string(),
@@ -8413,8 +8571,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_ANIMATE".to_string(),
@@ -8442,8 +8604,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_RICHEDIT".to_string(),
@@ -8471,8 +8637,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TRACKBAR".to_string(),
@@ -8500,8 +8670,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_UPDOWN".to_string(),
@@ -8529,8 +8703,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_HOTKEY".to_string(),
@@ -8558,8 +8736,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_IPADDRESS".to_string(),
@@ -8580,6 +8762,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -8587,8 +8780,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TAB".to_string(),
@@ -8609,6 +8806,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -8616,8 +8824,12 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LISTVIEW".to_string(),
@@ -8638,6 +8850,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
+
+                    // optional text$ slot (official CONTROL ADD): may be
+                    // a string literal, an empty '', ,' slot, or absent
+                    // (legacy fork form id, x, y, w, h).
+                    if matches!(self.peek(), Token::StringLiteral(_)) {
+                        self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                    } else if self.peek() == &Token::Comma {
+                        // empty text slot: id, , x
+                        self.advance();
+                    }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -8661,8 +8884,12 @@ impl Parser {
                             exstyle = self.parse_expression()?;
                         }
                     }
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TREEVIEW".to_string(),
@@ -9124,8 +9351,12 @@ impl Parser {
                     } else {
                         Expr::IntegerLit(0)
                     };
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_NEW".to_string(),
@@ -9267,8 +9498,12 @@ impl Parser {
                     self.advance();
                     self.advance();
                     let hd = self.parse_expression()?;
-                    self.expect(&Token::To)?;
-                    let target = self.parse_expression()?;
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_GET_TEXT".to_string(),
@@ -11607,14 +11842,32 @@ impl Parser {
                 }))
             }
             "SET" => {
-                // COMM SET [#]f, option ON|OFF  (option: DTR/RTS/BREAK)
+                // COMM SET [#]f, Comfunc = value  (Comfunc: BAUD/PARITY/STOP/FLOW/DTR/RTS/BREAK...)
                 if self.peek() == &Token::Hash {
                     self.advance();
                 }
                 let f = self.parse_expression()?;
                 self.expect(&Token::Comma)?;
-                let opt = self.parse_expression()?;
-                let onoff = if matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("ON"))
+                // Comfunc is a keyword, not a variable: take it as a literal token.
+                let opt_word = match self.peek() {
+                    Token::Identifier(w) => {
+                        let w = w.clone();
+                        self.advance();
+                        w.to_uppercase()
+                    }
+                    tok => {
+                        return Err(crate::error::PbError::parser(
+                            format!("COMM SET requires a keyword option after the comma: COMM SET [#] hComm , Comfunc = value (got {:?})", tok),
+                            None,
+                            line,
+                        ));
+                    }
+                };
+                // optional '=' then the value; or bare ON/OFF (DTR/RTS/BREAK legacy form)
+                let value = if self.peek() == &Token::Eq {
+                    self.advance();
+                    self.parse_expression()?
+                } else if matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("ON"))
                 {
                     self.advance();
                     Expr::IntegerLit(1)
@@ -11628,7 +11881,7 @@ impl Parser {
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: "COMM SET".to_string(),
-                    args: vec![f, opt, onoff],
+                    args: vec![f, Expr::StringLit(opt_word), value],
                     line,
                 }))
             }
@@ -13281,6 +13534,14 @@ impl Parser {
                         if w.eq_ignore_ascii_case("ANY") {
                             args.push(Expr::StringLit("__ANY__".to_string()));
                             self.advance();
+                            // batch 234: official EXTRACT$(MainStr, ANY MatchStr)
+                            // has NO comma between ANY and the match string.
+                            if self.peek() != &Token::RParen
+                                && self.peek() != &Token::Comma
+                                && !matches!(self.peek(), Token::Eol | Token::Eof)
+                            {
+                                args.push(self.parse_expression()?);
+                            }
                         } else {
                             args.push(self.parse_expression()?);
                         }
@@ -13530,11 +13791,14 @@ impl Parser {
                     continue;
                 }
             }
-            // Skip ANY keyword (used in PARSE$ calls: PARSE$(str$, ANY "|"))
+            // ANY modifier (REMOVE$/RETAIN$/REMAIN$): REMOVE$(s, ANY "lo")
+            // Convert the keyword to a sentinel string so codegen can reorder the
+            // arguments; EXTRACT$ uses the same sentinel.
             if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("ANY"))
                 && matches!(self.peek_at(1), Some(Token::StringLiteral(_)))
             {
-                self.advance(); // skip ANY
+                self.advance();
+                args.push(Expr::StringLit("__ANY__".to_string()));
             }
             // BYVAL/BYCOPY modifier at call site: Foo(BYVAL x) or Foo(BYCOPY s$)
             // Both override BYREF parameter to pass value directly

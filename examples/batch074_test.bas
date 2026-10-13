@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -49,6 +38,7 @@ END SUB
 ' PowerBasilisk Enhanced - Batch 74 Test: XPRINT printer properties SET/GET
 FUNCTION PBMAIN() AS LONG
     LOCAL v AS LONG
+    LOCAL v2 AS LONG
     LOCAL waitk AS STRING
     LOCAL fails AS LONG
     fails = 0
@@ -87,10 +77,10 @@ FUNCTION PBMAIN() AS LONG
     ConPrint "COLORMODE:" & STR$(v)
     IF v <> 1 THEN fails = fails + 1 : ConPrint "  FAIL"
 
-    XPRINT SET PAGES 5
-    XPRINT GET PAGES TO v
-    ConPrint "PAGES:" & STR$(v)
-    IF v <> 5 THEN fails = fails + 1 : ConPrint "  FAIL"
+    XPRINT SET PAGES 1, 5
+    XPRINT GET PAGES TO v, v2
+    ConPrint "PAGES:" & STR$(v) & "-" & STR$(v2)
+    IF v <> 1 OR v2 <> 5 THEN fails = fails + 1 : ConPrint "  FAIL"
 
     XPRINT CLOSE
 
@@ -107,4 +97,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

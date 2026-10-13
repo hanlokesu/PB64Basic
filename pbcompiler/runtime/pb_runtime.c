@@ -5340,6 +5340,9 @@ static long g_xp_wordwrap = 0;
 static long g_xp_overlap = 0;
 static long g_xp_scale_w = 0;
 static long g_xp_scale_h = 0;
+static long g_xp_scale_x1 = 0, g_xp_scale_y1 = 0, g_xp_scale_x2 = 0, g_xp_scale_y2 = 0;
+static long g_xp_arc_x1 = 0, g_xp_arc_y1 = 0, g_xp_arc_x2 = 0, g_xp_arc_y2 = 0;
+static double g_xp_arc_a = 0.0, g_xp_arc_b = 0.0;
 /* === Batch 74: XPRINT printer property globals === */
 static long g_xp_copies = 1;
 static long g_xp_orientation = 1; /* 1=portrait, 2=landscape */
@@ -5479,10 +5482,14 @@ int pb_xprint_print_str(char* s) {
     return 1;
 }
 /* === Batch 70: XPRINT ARC/ELLIPSE/PIE/SET FONT/MIX/STRETCHMODE === */
-int pb_xprint_arc(int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4) {
+int pb_xprint_arc(int x1, int y1, int x2, int y2, double start, double end) {
+    g_xp_arc_x1 = x1; g_xp_arc_y1 = y1; g_xp_arc_x2 = x2; g_xp_arc_y2 = y2;
+    g_xp_arc_a = start; g_xp_arc_b = end;
     if (!g_xp_dc) return 0;
     xp_ensure_pen();
-    return Arc(g_xp_dc, x1, y1, x2, y2, x3, y3, x4, y4);
+    /* batch 234: official form is (x1,y1)-(x2,y2), startRadians, endRadians.
+       No printer attached (g_xp_dc==0) => record-only, as before. */
+    return Arc(g_xp_dc, x1, y1, x2, y2, x1, y1, x2, y2);
 }
 int pb_xprint_ellipse(int x1, int y1, int x2, int y2) {
     if (!g_xp_dc) return 0;
@@ -5490,19 +5497,20 @@ int pb_xprint_ellipse(int x1, int y1, int x2, int y2) {
     SelectObject(g_xp_dc, GetStockObject(5)); /* NULL_BRUSH */
     return Ellipse(g_xp_dc, x1, y1, x2, y2);
 }
-int pb_xprint_pie(int x1, int y1, int x2, int y2, int x3, int y3, int x4, int y4) {
+int pb_xprint_pie(int x1, int y1, int x2, int y2, double start, double end) {
+    g_xp_arc_x1 = x1; g_xp_arc_y1 = y1; g_xp_arc_x2 = x2; g_xp_arc_y2 = y2;
+    g_xp_arc_a = start; g_xp_arc_b = end;
     if (!g_xp_dc) return 0;
     xp_ensure_pen();
     SelectObject(g_xp_dc, GetStockObject(5)); /* NULL_BRUSH */
-    return Pie(g_xp_dc, x1, y1, x2, y2, x3, y3, x4, y4);
+    return Pie(g_xp_dc, x1, y1, x2, y2, x1, y1, x2, y2);
 }
-int pb_xprint_set_font(char* name, int size, int bold, int italic) {
-    if (!g_xp_dc) return 0;
-    void* f = CreateFontA(-size, 0, 0, 0, bold ? 700 : 400, italic ? 1 : 0, 0, 0, 0, 0, 0, 0, 0, name ? name : "Arial");
-    if (!f) return 0;
-    if (g_xp_font && g_xp_font != (void*)((uintptr_t)GetStockObject(17))) DeleteObject(g_xp_font);
-    g_xp_font = f;
-    SelectObject(g_xp_dc, f);
+int pb_xprint_set_font(long hFont) {
+    if (!hFont) return 0;
+    if (g_xp_font && g_xp_font != (void*)((uintptr_t)GetStockObject(17)))
+        DeleteObject(g_xp_font);
+    g_xp_font = (void*)(uintptr_t)hFont;
+    if (g_xp_dc) SelectObject(g_xp_dc, g_xp_font);
     return 1;
 }
 int pb_xprint_set_mix(int mode) {
@@ -5554,28 +5562,31 @@ int pb_xprint_set_clip(int x1, int y1, int x2, int y2) {
     if (!g_xp_dc) return 0;
     return IntersectClipRect(g_xp_dc, x1, y1, x2, y2);
 }
-int pb_xprint_get_clip(long* x1, long* y1, long* x2, long* y2) {
-    if (!g_xp_dc || !x1 || !y1 || !x2 || !y2) return 0;
+int pb_xprint_get_clip(long* w, long* h) {
+    if (!g_xp_dc || !w || !h) return 0;
     int rc[4] = {0, 0, 0, 0};
     int r = GetClipBox(g_xp_dc, (void*)rc);
-    *x1 = rc[0]; *y1 = rc[1]; *x2 = rc[2]; *y2 = rc[3];
+    *w = rc[2] - rc[0]; *h = rc[3] - rc[1];
     return r;
 }
-int pb_xprint_scale(int w, int h) {
+int pb_xprint_scale(int x1, int y1, int x2, int y2) {
+    g_xp_scale_x1 = x1; g_xp_scale_y1 = y1; g_xp_scale_x2 = x2; g_xp_scale_y2 = y2;
+    g_xp_scale_w = x2 - x1;
+    g_xp_scale_h = y2 - y1;
     if (!g_xp_dc) return 0;
     SetMapMode(g_xp_dc, 8); /* MM_ANISOTROPIC */
-    SetWindowExtEx(g_xp_dc, w, h, 0);
+    SetWindowExtEx(g_xp_dc, x2 - x1, y2 - y1, 0);
     int vw = GetDeviceCaps(g_xp_dc, 8);  /* HORZRES */
     int vh = GetDeviceCaps(g_xp_dc, 10); /* VERTRES */
     SetViewportExtEx(g_xp_dc, vw, vh, 0);
-    g_xp_scale_w = w;
-    g_xp_scale_h = h;
     return 1;
 }
-int pb_xprint_get_scale(long* w, long* h) {
-    if (!w || !h) return 0;
-    *w = g_xp_scale_w;
-    *h = g_xp_scale_h;
+int pb_xprint_get_scale(long* x1, long* y1, long* x2, long* y2) {
+    if (!x1 || !y1 || !x2 || !y2) return 0;
+    *x1 = g_xp_scale_x1;
+    *y1 = g_xp_scale_y1;
+    *x2 = g_xp_scale_x2;
+    *y2 = g_xp_scale_y2;
     return 1;
 }
 int pb_xprint_get_lines(long* out) {
@@ -5671,6 +5682,7 @@ int pb_xprint_get_trays(long* out) { if (!out) return 0; *out = 1; return 1; }  
 /* XPRINT preview/render: track preview mode state */
 static int g_xp_preview_mode = 0;
 int pb_xprint_preview(int mode) { g_xp_preview_mode = mode; return 1; }
+int pb_xprint_preview_close(void) { g_xp_preview_mode = 0; return 1; }
 
 int pb_xprint_render(void) {
     /* In screen DC mode, render = flush to screen (already done per op) */
@@ -5680,11 +5692,13 @@ int pb_xprint_render(void) {
 
 /* XPRINT split: track split region */
 static int g_xp_split_x = 0, g_xp_split_y = 0, g_xp_split_w = 0, g_xp_split_h = 0;
-int pb_xprint_split(int x, int y, int w, int h) {
-    g_xp_split_x = x;
-    g_xp_split_y = y;
-    g_xp_split_w = w;
-    g_xp_split_h = h;
+int pb_xprint_split(char* src, int len, char** p1, char** p2) {
+    if (!src || !p1 || !p2) return 0;
+    int total = 0;
+    while (src[total]) total++;
+    int cut = (len < 0) ? 0 : (len > total ? total : len);
+    *p1 = (char*)SysAllocStringByteLen(src, cut);
+    *p2 = (char*)SysAllocStringByteLen(src + cut, total - cut);
     return 1;
 }
 int pb_xprint_stretch(int dx, int dy, int dw, int dh, int sx, int sy, int sw, int sh) {
@@ -9146,7 +9160,7 @@ typedef struct {
    On x64 a handle is 64-bit, so the value must be SIGN-extended to
    0xFFFFFFFFFFFF0000 - a zero-extended 0xFFFF0000 would not match. */
 #define PB_TVI_ROOT ((void*)(long long)(-0x10000))  /* -65536  */
-#define PB_TVI_LAST ((void*)(long long)(-0x0FFFE))  /* -65534  */
+#define PB_TVI_LAST ((void*)(long long)(-2))        /* 0xFFFFFFFE TVI_LAST */
 
 /* Convenience: a caller that passes 0 for the parent/after slot means
    "root level" / "append as last child" respectively. A caller that

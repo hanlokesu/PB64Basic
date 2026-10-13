@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,11 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
+DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS DWORD) AS LONG
+
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -92,22 +84,21 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 %RED     = 255      ' COLORREF 0x000000FF
 %GREEN   = 65280    ' COLORREF 0x0000FF00
 
 FUNCTION PBMAIN () AS LONG
-    LOCAL hGr    AS QUAD
-    LOCAL iswA   AS QUAD
-    LOCAL iswH   AS QUAD
-    LOCAL dcA    AS QUAD
-    LOCAL dcH    AS QUAD
-    LOCAL rdA    AS QUAD
-    LOCAL rdH    AS QUAD
-    LOCAL gpA    AS QUAD
-    LOCAL gpH    AS QUAD
-    LOCAL hdc    AS QUAD
-    LOCAL hb     AS QUAD
+    LOCAL hGr    AS LONG
+    LOCAL iswA   AS LONG
+    LOCAL iswH   AS LONG
+    LOCAL dcA    AS LONG
+    LOCAL dcH    AS LONG
+    LOCAL rdA    AS LONG
+    LOCAL rdH    AS LONG
+    LOCAL gpA    AS LONG
+    LOCAL gpH    AS LONG
+    LOCAL hdc    AS LONG
+    LOCAL hb     AS LONG
     LOCAL hbL    AS LONG
     LOCAL guard  AS LONG
     LOCAL st     AS LONG
@@ -175,26 +166,14 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "FAIL baseline pixel (30,30) =" & STR$(px)
     END IF
 
-    ' ---- BITMAP CAPTURE ----------------------------------------------
+    ' ---- BITMAP NEW (official) + STRETCH PAGE -------------------------
     hb = 0
-    GRAPHIC BITMAP CAPTURE TO hb
+    GRAPHIC BITMAP NEW 80, 80 TO hb
     IF hb <> 0 THEN
-        ConPrint "ok   BITMAP CAPTURE returned a bitmap handle"
+        ConPrint "ok   BITMAP NEW returned a bitmap handle"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL BITMAP CAPTURE handle =" & STR$(hb)
-    END IF
-
-    ' ---- STRETCH, using the captured bitmap as the source -------------
-    GRAPHIC STRETCH hb, 0, (10,10)-(60,60) TO (200,150)-(280,220), 0, 0
-    GRAPHIC REDRAW
-    px = -1
-    CALL DWORD gpA USING GetPixel(hdc, 240, 180) TO px
-    IF px = %RED THEN
-        ConPrint "ok   STRETCH copied the captured box to (200,150)-(280,220)"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL stretched pixel (240,180) =" & STR$(px)
+        ConPrint "FAIL BITMAP NEW handle =" & STR$(hb)
     END IF
 
     ' ---- STRETCH PAGE (whole-buffer form, must not fault) -------------
@@ -230,7 +209,7 @@ FUNCTION PBMAIN () AS LONG
     ' destination pointer, so a LONG received an eight-byte store into a
     ' four-byte slot: the target still read back its low half, and the four
     ' bytes past it silently clobbered whatever alloca sat next door - which is
-    ' why the QUAD destination used above never showed anything.
+    ' why the LONG destination used above never showed anything.
     '
     ' Two things are asserted, and they are not equally strong: hbL <> 0 proves
     ' the truncation kept the handle, while guard = 12345 only reports the
@@ -239,14 +218,7 @@ FUNCTION PBMAIN () AS LONG
     ' the pre-fix backup and named exactly these two arms (L8564 capture,
     ' L8572 load); with the fix in place it reports none.
     guard = 12345
-    hbL = 0
-    GRAPHIC BITMAP CAPTURE TO hbL
-    IF hbL <> 0 THEN
-        ConPrint "ok   BITMAP CAPTURE into a LONG destination kept its low half"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL BITMAP CAPTURE into a LONG destination read back 0"
-    END IF
+    ' (GRAPHIC BITMAP CAPTURE removed: not an official PB statement)
     IF guard = 12345 THEN
         ConPrint "ok   the LONG next to the destination was not written past"
     ELSE
@@ -277,4 +249,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

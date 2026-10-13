@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -72,7 +61,7 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' 2. GET STATE by command id
-    MENU GET STATE hbar, BYCMD, 100 TO st
+    MENU GET STATE hbar, BYCMD 100 TO st
     IF st = 0 THEN
         ok = ok + 1
     ELSE
@@ -80,8 +69,8 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' 3. SET STATE grayed (1) by command id, then read back
-    MENU SET STATE hbar, BYCMD, 100, 1
-    MENU GET STATE hbar, BYCMD, 100 TO st
+    MENU SET STATE hbar, BYCMD 100, 1
+    MENU GET STATE hbar, BYCMD 100 TO st
     IF st AND 1 THEN
         ok = ok + 1
     ELSE
@@ -89,8 +78,8 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' 4. SET STATE enabled (0)
-    MENU SET STATE hbar, BYCMD, 100, 0
-    MENU GET STATE hbar, BYCMD, 100 TO st
+    MENU SET STATE hbar, BYCMD 100, 0
+    MENU GET STATE hbar, BYCMD 100 TO st
     IF (st AND 1) = 0 THEN
         ok = ok + 1
     ELSE
@@ -98,8 +87,8 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' 5. SET STATE checked (8) on popup item, read back
-    MENU SET STATE hpop, BYCMD, 110, 8
-    MENU GET STATE hpop, BYCMD, 110 TO st
+    MENU SET STATE hpop, BYCMD 110, 8
+    MENU GET STATE hpop, BYCMD 110 TO st
     IF st AND 8 THEN
         ok = ok + 1
     ELSE
@@ -107,20 +96,20 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' 6. GET TEXT by command id
-    MENU GET TEXT hbar, BYCMD, 100 TO txt
+    MENU GET TEXT hbar, BYCMD 100 TO txt
     IF txt = "File" THEN
         ok = ok + 1
     ELSE
-        ConPrint "GET TEXT FAIL [" & STR$(txt) & "]"
+        ConPrint "GET TEXT FAIL [" & txt & "]"
     END IF
 
     ' 7. SET TEXT by command id, then read back
-    MENU SET TEXT hbar, BYCMD, 100, "Filer"
-    MENU GET TEXT hbar, BYCMD, 100 TO txt
+    MENU SET TEXT hbar, BYCMD 100, "Filer"
+    MENU GET TEXT hbar, BYCMD 100 TO txt
     IF txt = "Filer" THEN
         ok = ok + 1
     ELSE
-        ConPrint "SET TEXT FAIL [" & STR$(txt) & "]"
+        ConPrint "SET TEXT FAIL [" & txt & "]"
     END IF
 
     ' 8. GET TEXT by position on popup
@@ -128,7 +117,7 @@ FUNCTION PBMAIN() AS LONG
     IF txt = "Save" THEN
         ok = ok + 1
     ELSE
-        ConPrint "GET TEXT POS FAIL [" & STR$(txt) & "]"
+        ConPrint "GET TEXT POS FAIL [" & txt & "]"
     END IF
 
     IF ok = 8 THEN
@@ -140,4 +129,5 @@ FUNCTION PBMAIN() AS LONG
 END FUNCTION
 
 
-#ENDIF
+
+

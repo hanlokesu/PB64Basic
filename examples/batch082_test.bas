@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -82,7 +71,7 @@ FUNCTION PBMAIN() AS LONG
 
     ' Test 3: ANY - remove any character in match
     s = "hello world"
-    r = REMOVE$(s, ANY, "lo")
+    r = REMOVE$(s, ANY "lo")
     ConPrint "Test 3: ANY remove 'l','o' from ['hello world']"
     ConPrint "  Result: [" & r & "]"
     IF r = "he wrd" THEN
@@ -111,4 +100,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,9 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -126,23 +116,22 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
-    LOCAL hOpt1  AS QUAD
-    LOCAL hOpt2  AS QUAD
-    LOCAL hOpt3  AS QUAD
-    LOCAL hC3    AS QUAD
-    LOCAL hFr    AS QUAD
-    LOCAL hTb    AS QUAD
-    LOCAL hLn    AS QUAD
-    LOCAL hTmp   AS QUAD
-    LOCAL gwlA   AS QUAD
-    LOCAL gwlH   AS QUAD
-    LOCAL gcnA   AS QUAD
-    LOCAL gcnH   AS QUAD
-    LOCAL smA    AS QUAD
-    LOCAL smH    AS QUAD
+    LOCAL hOpt1  AS LONG
+    LOCAL hOpt2  AS LONG
+    LOCAL hOpt3  AS LONG
+    LOCAL hC3    AS LONG
+    LOCAL hFr    AS LONG
+    LOCAL hTb    AS LONG
+    LOCAL hLn    AS LONG
+    LOCAL hTmp   AS LONG
+    LOCAL gwlA   AS LONG
+    LOCAL gwlH   AS LONG
+    LOCAL gcnA   AS LONG
+    LOCAL gcnH   AS LONG
+    LOCAL smA    AS LONG
+    LOCAL smH    AS LONG
     LOCAL idx    AS LONG
     LOCAL st     AS LONG
     LOCAL ex     AS LONG
@@ -174,13 +163,19 @@ FUNCTION PBMAIN () AS LONG
     ' converts dialog units to pixels with the base 7 x 14 (PB_CTL_DLU_X/Y),
     ' and CONTROL GET divides back with 4/7 and 8/14 - an exact round trip
     ' only when the requested value is a multiple of 4.
-    CONTROL ADD OPTION,      hDlg, 201, "alpha",   8,   8,  80, 16 TO hOpt1
-    CONTROL ADD OPTION,      hDlg, 202, "beta",   92,   8,  80, 16 TO hOpt2
-    CONTROL ADD OPTION,      hDlg, 203, "gamma", 176,   8,  80, 16 TO hOpt3
-    CONTROL ADD CHECK3STATE, hDlg, 211, "maybe",   8,  32, 100, 16 TO hC3
+    CONTROL ADD OPTION,      hDlg, 201, "alpha",   8,   8,  80, 16
+    CONTROL HANDLE hDlg, 201 TO hOpt1
+    CONTROL ADD OPTION,      hDlg, 202, "beta",   92,   8,  80, 16
+    CONTROL HANDLE hDlg, 202 TO hOpt2
+    CONTROL ADD OPTION,      hDlg, 203, "gamma", 176,   8,  80, 16
+    CONTROL HANDLE hDlg, 203 TO hOpt3
+    CONTROL ADD CHECK3STATE, hDlg, 211, "maybe",   8,  32, 100, 16
+    CONTROL HANDLE hDlg, 211 TO hC3
     CONTROL ADD FRAME,       hDlg, 221, "group",   8,  56, 180, 40
-    CONTROL ADD TEXTBOX,     hDlg, 231, "box",   200,  32, 120, 16 TO hTb
-    CONTROL ADD LINE,        hDlg, 241, "sep",    200,  56, 120,  4 TO hLn
+    CONTROL ADD TEXTBOX,     hDlg, 231, "box",   200,  32, 120, 16
+    CONTROL HANDLE hDlg, 231 TO hTb
+    CONTROL ADD LINE,        hDlg, 241, "sep",    200,  56, 120,  4
+    CONTROL HANDLE hDlg, 241 TO hLn
 
     ' ------------------------------------------------------------------
     ' Every ADD must hand back a real handle.  FRAME is created without a TO
@@ -520,4 +515,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

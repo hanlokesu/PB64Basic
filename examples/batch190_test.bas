@@ -1,21 +1,9 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -36,6 +24,9 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -97,16 +88,16 @@ END SUB
 '=====================================================================
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
-    LOCAL hMc    AS QUAD
-    LOCAL hAn    AS QUAD
-    LOCAL hRe    AS QUAD
-    LOCAL hTmp   AS QUAD
-    LOCAL gcnA   AS QUAD
-    LOCAL gcnH   AS QUAD
-    LOCAL gwlA   AS QUAD
-    LOCAL gwlH   AS QUAD
-    LOCAL smA    AS QUAD
-    LOCAL smH    AS QUAD
+    LOCAL hMc    AS LONG
+    LOCAL hAn    AS LONG
+    LOCAL hRe    AS LONG
+    LOCAL hTmp   AS LONG
+    LOCAL gcnA   AS LONG
+    LOCAL gcnH   AS LONG
+    LOCAL gwlA   AS LONG
+    LOCAL gwlH   AS LONG
+    LOCAL smA    AS LONG
+    LOCAL smH    AS LONG
     LOCAL buf    AS STRING * 64
     LOCAL n      AS LONG
     LOCAL idx    AS LONG
@@ -153,9 +144,12 @@ FUNCTION PBMAIN () AS LONG
     ' Coordinates are multiples of 4: CONTROL ADD converts dialog units to
     ' pixels with the base 7 x 14, and CONTROL GET divides back exactly only
     ' for multiples of 4.
-    CONTROL ADD MONTHCAL, hDlg, 401,   8,   8, 180, 120 TO hMc
-    CONTROL ADD ANIMATE,  hDlg, 402, 200,   8, 120,  60 TO hAn
-    CONTROL ADD RICHEDIT, hDlg, 403,   8, 144, 312,  64 TO hRe
+    CONTROL ADD "SysMonthCal32", hDlg, 401, "",   8,   8, 180, 120
+    CONTROL HANDLE hDlg, 401 TO hMc
+    CONTROL ADD "SysAnimate32", hDlg, 402, "", 200,   8, 120,  60
+    CONTROL HANDLE hDlg, 402 TO hAn
+    CONTROL ADD "RichEdit20A", hDlg, 403, "",   8, 144, 312,  64
+    CONTROL HANDLE hDlg, 403 TO hRe
 
     ' ------------------------------------------------------------------
     ' 1. Every ADD must hand back a real handle.
@@ -187,7 +181,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   MONTHCAL created a SysMonthCal32 window"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL MONTHCAL class (len" & STR$(n) & ") -> " & STR$(buf)
+        ConPrint "FAIL MONTHCAL class (len" & STR$(n) & ") -> " & buf
     END IF
 
     buf = ""
@@ -197,7 +191,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   ANIMATE created a SysAnimate32 window"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL ANIMATE class (len" & STR$(n) & ") -> " & STR$(buf)
+        ConPrint "FAIL ANIMATE class (len" & STR$(n) & ") -> " & buf
     END IF
 
     buf = ""
@@ -207,7 +201,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   RICHEDIT created a RICHEDIT50W window (msftedit.dll loaded)"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL RICHEDIT class (len" & STR$(n) & ") -> " & STR$(buf)
+        ConPrint "FAIL RICHEDIT class (len" & STR$(n) & ") -> " & buf
     END IF
 
     ' ------------------------------------------------------------------
@@ -292,7 +286,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   RICHEDIT took WM_CHAR 'A' and gave it back (len" & STR$(v) & ")"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL RICHEDIT text round trip (len" & STR$(v) & " got" & STR$(n) & " -> " & STR$(buf) & ")"
+        ConPrint "FAIL RICHEDIT text round trip (len" & STR$(v) & " got" & STR$(n) & " -> " & buf & ")"
     END IF
 
     ' A rich edit is not a plain EDIT: WM_SETTEXT must also work.
@@ -313,4 +307,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

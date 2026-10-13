@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -135,11 +122,10 @@ END SUB
 ' Notes:  the dialog is opened MODELESS and closed with DIALOG END hDlg,
 '   fail, so the sample never waits for input and is safe for the
 '   non-interactive verification harness.  The exit code is the number of
-'   failed assertions.  Handles are AS QUAD because an item handle is a
+'   failed assertions.  Handles are AS LONG because an item handle is a
 '   real x64 pointer.
 '=====================================================================
 #COMPILER PBWIN 10
-
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
@@ -149,11 +135,11 @@ FUNCTION PBMAIN () AS LONG
     LOCAL hLv2 AS LONG
     LOCAL hTv2 AS LONG
     LOCAL hSb2 AS LONG
-    LOCAL hRoot AS QUAD
-    LOCAL hA   AS QUAD
-    LOCAL hB   AS QUAD
-    LOCAL hC   AS QUAD
-    LOCAL h    AS QUAD
+    LOCAL hRoot AS LONG
+    LOCAL hA   AS LONG
+    LOCAL hB   AS LONG
+    LOCAL hC   AS LONG
+    LOCAL h    AS LONG
     LOCAL n    AS LONG
     LOCAL m    AS LONG
     LOCAL fail AS LONG
@@ -162,9 +148,12 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch191 LISTVIEW / TREEVIEW / SCROLLBAR probe", 0, 0, 420, 240 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD LISTVIEW, hDlg, 401, 10, 10, 190, 210 TO hLv
-    CONTROL ADD TREEVIEW, hDlg, 402, 210, 10, 190, 210 TO hTv
-    CONTROL ADD HSCROLLBAR, hDlg, 403, 10, 226, 390, 12 TO hSb
+    CONTROL ADD LISTVIEW, hDlg, 401, "", 10, 10, 190, 210
+    CONTROL HANDLE hDlg, 401 TO hLv
+    CONTROL ADD TREEVIEW, hDlg, 402, "", 210, 10, 190, 210
+    CONTROL HANDLE hDlg, 402 TO hTv
+    CONTROL ADD SCROLLBAR, hDlg, 403, "", 10, 226, 390, 12
+    CONTROL HANDLE hDlg, 403 TO hSb
 
     ' second handle witness: CONTROL HANDLE must resolve to the window that
     ' CONTROL ADD returned, or the statements below are aimed at a different
@@ -192,16 +181,16 @@ FUNCTION PBMAIN () AS LONG
     LISTVIEW INSERT COLUMN hDlg, 401, 2, "Qty", 50, 0
     t = ""
     LISTVIEW GET HEADER hDlg, 401, 2 TO t
-    ConPrint "lv header        -> [" & STR$(t) & "]"
+    ConPrint "lv header        -> [" & t & "]"
     IF t <> "Qty" THEN fail = fail + 1
 
-    LISTVIEW INSERT ITEM hDlg, 401, 1, 0, "Apple"  TO n
-    LISTVIEW INSERT ITEM hDlg, 401, 2, 0, "Banana" TO n
-    LISTVIEW INSERT ITEM hDlg, 401, 3, 0, "Cherry" TO n
+    LISTVIEW INSERT ITEM hDlg, 401, 1, 0, "Apple"
+    LISTVIEW INSERT ITEM hDlg, 401, 2, 0, "Banana"
+    LISTVIEW INSERT ITEM hDlg, 401, 3, 0, "Cherry"
     n = 0
     LISTVIEW GET COUNT hDlg, 401 TO n
     m = n
-    LISTVIEW INSERT ITEM hDlg, 401, 4, 0, "Date" TO n
+    LISTVIEW INSERT ITEM hDlg, 401, 4, 0, "Date"
     n = 0
     LISTVIEW GET COUNT hDlg, 401 TO n
     ConPrint "lv count         -> " & STR$(m) & "   after insert 4 -> " & STR$(n)
@@ -210,7 +199,7 @@ FUNCTION PBMAIN () AS LONG
     LISTVIEW SET TEXT hDlg, 401, 1, 1, "Apricot"
     t = ""
     LISTVIEW GET TEXT hDlg, 401, 1, 1 TO t
-    ConPrint "lv text          -> [" & STR$(t) & "]"
+    ConPrint "lv text          -> [" & t & "]"
     IF t <> "Apricot" THEN fail = fail + 1
 
     LISTVIEW SET USER hDlg, 401, 2, 1234
@@ -296,7 +285,7 @@ FUNCTION PBMAIN () AS LONG
     TREEVIEW SET TEXT hDlg, 402, hB, "Renamed"
     t = ""
     TREEVIEW GET TEXT hDlg, 402, hB TO t
-    ConPrint "tv text          -> [" & STR$(t) & "]"
+    ConPrint "tv text          -> [" & t & "]"
     IF t <> "Renamed" THEN fail = fail + 1
 
     TREEVIEW SELECT hDlg, 402, hB
@@ -360,4 +349,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

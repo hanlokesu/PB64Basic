@@ -1,23 +1,10 @@
 #COMPILE EXE
 #COMPILER PBWIN 10
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -88,7 +75,6 @@ END SUB
 '   code is the number of failed assertions.
 '=====================================================================
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
     LOCAL hCb  AS LONG
@@ -102,9 +88,12 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch168 probe", 0, 0, 320, 240 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    CONTROL ADD COMBOBOX,  hDlg, 201,  10,  10, 140, 100 TO hCb
-    CONTROL ADD LISTBOX,   hDlg, 202, 160,  10, 120, 100 TO hLb
-    CONTROL ADD SCROLLBAR, hDlg, 203,  10, 150, 200,  20 TO hSb
+    CONTROL ADD COMBOBOX,  hDlg, 201, ,  10,  10, 140, 100
+    CONTROL HANDLE hDlg, 201 TO hCb
+    CONTROL ADD LISTBOX,   hDlg, 202, , 160,  10, 120, 100
+    CONTROL HANDLE hDlg, 202 TO hLb
+    CONTROL ADD SCROLLBAR, hDlg, 203, "",  10, 150, 200,  20
+    CONTROL HANDLE hDlg, 203 TO hSb
 
     ConPrint "hwnd cb=" & STR$(hCb) & " lb=" & STR$(hLb) & " sb=" & STR$(hSb)
 
@@ -140,14 +129,14 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "state(2)  -> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
     COMBOBOX GET TEXT hDlg, 201 TO t
-    ConPrint "text(cur) -> [" & STR$(t) & "]"
+    ConPrint "text(cur) -> [" & t & "]"
     IF t <> "beta" THEN fail = fail + 1
     COMBOBOX GET TEXT hDlg, 201, 3 TO t
-    ConPrint "text(3)   -> [" & STR$(t) & "]"
+    ConPrint "text(3)   -> [" & t & "]"
     IF t <> "gamma" THEN fail = fail + 1
     COMBOBOX SET TEXT hDlg, 201, 2, "BETA2"
     COMBOBOX GET TEXT hDlg, 201, 2 TO t
-    ConPrint "text(2)   -> [" & STR$(t) & "]"
+    ConPrint "text(2)   -> [" & t & "]"
     IF t <> "BETA2" THEN fail = fail + 1
     COMBOBOX GET USER hDlg, 201, 1 TO n
     ConPrint "getuser   -> " & STR$(n)
@@ -198,14 +187,14 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "state(3)  -> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
     LISTBOX GET TEXT hDlg, 202 TO t
-    ConPrint "text(cur) -> [" & STR$(t) & "]"
+    ConPrint "text(cur) -> [" & t & "]"
     IF t <> "three" THEN fail = fail + 1
     LISTBOX GET TEXT hDlg, 202, 2 TO t
-    ConPrint "text(2)   -> [" & STR$(t) & "]"
+    ConPrint "text(2)   -> [" & t & "]"
     IF t <> "two" THEN fail = fail + 1
     LISTBOX SET TEXT hDlg, 202, 2, "TWO2"
     LISTBOX GET TEXT hDlg, 202, 2 TO t
-    ConPrint "text(2)   -> [" & STR$(t) & "]"
+    ConPrint "text(2)   -> [" & t & "]"
     IF t <> "TWO2" THEN fail = fail + 1
     LISTBOX FIND hDlg, 202, 1, "THR" TO n
     ConPrint "find thr  -> " & STR$(n)
@@ -258,4 +247,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

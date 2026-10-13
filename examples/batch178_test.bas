@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,9 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -108,18 +98,18 @@ END SUB
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
-    LOCAL hImg1  AS QUAD
-    LOCAL hImg2  AS QUAD
-    LOCAL hBtn1  AS QUAD
-    LOCAL hBtn2  AS QUAD
-    LOCAL hTmp   AS QUAD
-    LOCAL gwlA   AS QUAD
-    LOCAL gwlH   AS QUAD
-    LOCAL gcnA   AS QUAD
-    LOCAL gcnH   AS QUAD
-    LOCAL smA    AS QUAD
-    LOCAL smH    AS QUAD
-    LOCAL img    AS QUAD
+    LOCAL hImg1  AS LONG
+    LOCAL hImg2  AS LONG
+    LOCAL hBtn1  AS LONG
+    LOCAL hBtn2  AS LONG
+    LOCAL hTmp   AS LONG
+    LOCAL gwlA   AS LONG
+    LOCAL gwlH   AS LONG
+    LOCAL gcnA   AS LONG
+    LOCAL gcnH   AS LONG
+    LOCAL smA    AS LONG
+    LOCAL smH    AS LONG
+    LOCAL img    AS LONG
     LOCAL st     AS LONG
     LOCAL idx    AS LONG
     LOCAL typ    AS LONG
@@ -148,10 +138,14 @@ FUNCTION PBMAIN () AS LONG
 
     ' Coordinates are multiples of 4 so they survive the dialog-unit round
     ' trip exactly (the CONTROL ADD helpers convert with the base 7 x 14).
-    CONTROL ADD IMAGE,       hDlg, 101, "#100",   8,   8, 48, 48 TO hImg1
-    CONTROL ADD IMAGEX,      hDlg, 102, "#100",  64,   8, 48, 48 TO hImg2
-    CONTROL ADD IMGBUTTON,   hDlg, 103, "#100",   8,  64, 60, 24 TO hBtn1
-    CONTROL ADD IMGBUTTONX,  hDlg, 104, "#100",  76,  64, 60, 24 TO hBtn2
+    CONTROL ADD IMAGE,       hDlg, 101, "#100",   8,   8, 48, 48
+    CONTROL HANDLE hDlg, 101 TO hImg1
+    CONTROL ADD IMAGEX,      hDlg, 102, "#100",  64,   8, 48, 48
+    CONTROL HANDLE hDlg, 102 TO hImg2
+    CONTROL ADD IMGBUTTON,   hDlg, 103, "#100",   8,  64, 60, 24
+    CONTROL HANDLE hDlg, 103 TO hBtn1
+    CONTROL ADD IMGBUTTONX,  hDlg, 104, "#100",  76,  64, 60, 24
+    CONTROL HANDLE hDlg, 104 TO hBtn2
     ' No TO clause on purpose: the official syntax makes it optional, and the
     ' parser has to reach the same statement through its dummy target.
     CONTROL ADD IMAGE,       hDlg, 105, "#100",   8, 104, 48, 48
@@ -415,4 +409,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

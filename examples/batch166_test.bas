@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -85,7 +72,6 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg    AS LONG      ' deliberately LOCAL - the batch 166 fix
     LOCAL hTrack  AS LONG
@@ -108,15 +94,18 @@ FUNCTION PBMAIN () AS LONG
     ' With no style given, the runtime supplies WS_CHILD + WS_VISIBLE so
     ' the control is actually visible; the official custom-control page
     ' warns that DDT applies no default style of its own.
-    CONTROL ADD "msctls_trackbar32", hDlg, 101, "", 10, 10, 120, 24 TO hTrack
+    CONTROL ADD "msctls_trackbar32", hDlg, 101, "", 10, 10, 120, 24
+    CONTROL HANDLE hDlg, 101 TO hTrack
 
     ' ---- 1b. explicit primary style + extended style -------------------
     ' &H50000000 is WS_CHILD + WS_VISIBLE written out by hand.
-    CONTROL ADD "msctls_progress32", hDlg, 102, "", 10, 46, 120, 24, &H50000000, 0 TO hProg
+    CONTROL ADD "msctls_progress32", hDlg, 102, "", 10, 46, 120, 24, &H50000000, 0
+    CONTROL HANDLE hDlg, 102 TO hProg
 
     ' ---- 1c. the class name held in a STRING variable ------------------
     cls = "msctls_statusbar32"
-    CONTROL ADD cls, hDlg, 103, "", 10, 82, 290, 24 TO hStatus
+    CONTROL ADD cls, hDlg, 103, "", 10, 82, 290, 24
+    CONTROL HANDLE hDlg, 103 TO hStatus
 
     IF hTrack = 0 OR hProg = 0 OR hStatus = 0 THEN
         ConPrint "FAIL: a custom control came back NULL"
@@ -137,4 +126,3 @@ END FUNCTION
 
 
 
-#ENDIF

@@ -1,23 +1,12 @@
 #COMPILE EXE
 #DIM ALL
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -65,26 +54,24 @@ GLOBAL worker_msg AS STRING
 THREADED tcount AS LONG
 THREADED tmsg AS STRING
 
-SUB Worker()
-    THREADED tcount AS LONG
-    THREADED tmsg AS STRING
+THREAD FUNCTION Worker(byval dummy AS LONG) AS LONG
     tcount = 2
     tmsg = "worker"
     worker_val = tcount
     worker_msg = tmsg
     worker_ran = 1
-END SUB
+    FUNCTION = 0
+END FUNCTION
 
 FUNCTION PBMAIN() AS LONG
     LOCAL waitk AS STRING
+    LOCAL lres AS LONG
     LOCAL th AS LONG
-    THREADED tcount AS LONG
-    THREADED tmsg AS STRING
 
     tcount = 1
     tmsg = "main"
 
-    THREAD CREATE Worker() TO th
+    THREAD CREATE Worker(0) TO th
 
     ' Give the child thread time to run (SLEEP is a call boundary, so the
     ' loads below are fresh; THREAD CLOSE itself does not wait).
@@ -93,20 +80,21 @@ FUNCTION PBMAIN() AS LONG
     IF worker_ran = 0 THEN
         ConPrint "worker did NOT run -> THREAD CREATE issue"
     ELSE
-        ConPrint "worker ran: worker_val=" & STR$(worker_val) & " worker_msg=" & STR$(worker_msg)
+        ConPrint "worker ran: worker_val=" & STR$(worker_val) & " worker_msg=" & worker_msg
     END IF
 
     IF tcount = 1 AND tmsg = "main" THEN
         ConPrint "main still sees tcount=1 tmsg=main  -> TLS OK"
     ELSE
-        ConPrint "main sees tcount=" & STR$(tcount) & " tmsg=" & STR$(tmsg) & " -> TLS FAIL"
+        ConPrint "main sees tcount=" & STR$(tcount) & " tmsg=" & tmsg & " -> TLS FAIL"
     END IF
 
-    THREAD CLOSE th
+    THREAD CLOSE th TO lres
     ConPrint "Press any key to exit..."
     ConWaitKey
 END FUNCTION
 
 
 
-#ENDIF
+
+

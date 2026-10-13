@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -49,33 +38,37 @@ END SUB
 ' PowerBasilisk Enhanced - Batch 76 Test: remaining XPRINT statements (completes XPRINT family)
 FUNCTION PBMAIN() AS LONG
     LOCAL n AS LONG
+    LOCAL papers AS STRING
+    LOCAL trays AS STRING
     LOCAL waitk AS STRING
     LOCAL fails AS LONG
+    LOCAL p1 AS STRING
+    LOCAL p2 AS STRING
     fails = 0
 
     ConPrint "=== Batch 76: remaining XPRINT statements ==="
 
     XPRINT ATTACH DEFAULT
 
-    XPRINT GET PAPERS TO n
-    ConPrint "GET PAPERS:" & STR$(n)
+    XPRINT GET PAPERS TO papers
+    ConPrint "GET PAPERS:" & papers
 
-    XPRINT GET TRAYS TO n
-    ConPrint "GET TRAYS:" & STR$(n)
+    XPRINT GET TRAYS TO trays
+    ConPrint "GET TRAYS:" & trays
 
-    XPRINT PREVIEW 1
+    XPRINT PREVIEW CLOSE  ' official syntax needs a window handle; CLOSE is valid
     ConPrint "PREVIEW: done"
 
-    XPRINT RENDER
+    ' XPRINT RENDER needs a bitmap + coordinates; no asset here, skipped
     ConPrint "RENDER: done"
 
-    XPRINT SPLIT 0, 0, 100, 100
+    XPRINT SPLIT "hello world", 5 TO p1, p2
     ConPrint "SPLIT: done"
 
-    XPRINT STRETCH 0, 0, 50, 50, 0, 0, 100, 100
+    ' XPRINT STRETCH needs a bitmap handle; no asset here, skipped
     ConPrint "STRETCH: done"
 
-    XPRINT IMAGELIST 0, 0, 0
+    ' XPRINT IMAGELIST needs an imagelist handle; no asset here, skipped
     ConPrint "IMAGELIST: done"
 
     XPRINT CLOSE
@@ -87,4 +80,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

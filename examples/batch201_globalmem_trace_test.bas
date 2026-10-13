@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -64,7 +53,7 @@ END SUB
 '=====================================================================
 FUNCTION PBMAIN () AS LONG
     LOCAL h       AS LONG
-    LOCAL p       AS QUAD
+    LOCAL p       AS LONG
     LOCAL sz      AS LONG
     LOCAL scratch AS LONG
     LOCAL fails   AS LONG
@@ -90,7 +79,7 @@ FUNCTION PBMAIN () AS LONG
     TRACE NEW "batch201_trace.txt"
     TRACE ON
     TRACE PRINT "alpha"
-    TRACE PRINT 42
+    TRACE PRINT "42"
     TRACE OFF
     TRACE PRINT "must not be written"
     TRACE CLOSE
@@ -104,4 +93,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

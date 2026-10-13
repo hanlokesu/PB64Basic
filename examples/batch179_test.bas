@@ -1,22 +1,9 @@
 #COMPILE EXE
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -37,6 +24,14 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+DECLARE FUNCTION GetStockObject LIB "GDI32.DLL" ALIAS "GetStockObject" (BYVAL nIndex AS LONG) AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -110,33 +105,32 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
-
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
-    LOCAL hGr    AS QUAD
-    LOCAL hGr2   AS QUAD
-    LOCAL hGrC   AS QUAD
-    LOCAL hHd    AS QUAD
-    LOCAL gwlA   AS QUAD
-    LOCAL gwlH   AS QUAD
-    LOCAL gcnA   AS QUAD
-    LOCAL gcnH   AS QUAD
-    LOCAL smA    AS QUAD
-    LOCAL smH    AS QUAD
-    LOCAL dcA    AS QUAD
-    LOCAL dcH    AS QUAD
-    LOCAL rdA    AS QUAD
-    LOCAL rdH    AS QUAD
-    LOCAL gpA    AS QUAD
-    LOCAL gpH    AS QUAD
-    LOCAL gsoA   AS QUAD
-    LOCAL gsoH   AS QUAD
-    LOCAL hdc    AS QUAD
-    LOCAL hdc2   AS QUAD
-    LOCAL br     AS QUAD
-    LOCAL br0    AS QUAD
-    LOCAL nullb  AS QUAD
-    LOCAL px     AS QUAD
+    LOCAL hGr    AS LONG
+    LOCAL hGr2   AS LONG
+    LOCAL hGrC   AS LONG
+    LOCAL hHd    AS LONG
+    LOCAL gwlA   AS LONG
+    LOCAL gwlH   AS LONG
+    LOCAL gcnA   AS LONG
+    LOCAL gcnH   AS LONG
+    LOCAL smA    AS LONG
+    LOCAL smH    AS LONG
+    LOCAL dcA    AS LONG
+    LOCAL dcH    AS LONG
+    LOCAL rdA    AS LONG
+    LOCAL rdH    AS LONG
+    LOCAL gpA    AS LONG
+    LOCAL gpH    AS LONG
+    LOCAL gsoA   AS LONG
+    LOCAL gsoH   AS LONG
+    LOCAL hdc    AS LONG
+    LOCAL hdc2   AS LONG
+    LOCAL br     AS LONG
+    LOCAL br0    AS LONG
+    LOCAL nullb  AS LONG
+    LOCAL px     AS LONG
     LOCAL st     AS LONG
     LOCAL typ    AS LONG
     LOCAL n      AS LONG
@@ -168,10 +162,12 @@ FUNCTION PBMAIN () AS LONG
 
     ' Coordinates are multiples of 4 so they survive the dialog-unit round
     ' trip exactly (the CONTROL ADD helpers convert with the base 7 x 14).
-    CONTROL ADD GRAPHIC, hDlg, 201, "", 8,   8, 160, 80 TO hGr
+    CONTROL ADD GRAPHIC, hDlg, 201, "", 8,   8, 160, 80
+    CONTROL HANDLE hDlg, 201 TO hGr
     ' 8388864 = %WS_BORDER(8388608) + %SS_NOTIFY(256): a supplied style, which
     ' the help page's default does not get added to.
-    CONTROL ADD GRAPHIC, hDlg, 202, "", 8, 112, 160, 60, 8388864 TO hGr2
+    CONTROL ADD GRAPHIC, hDlg, 202, "", 8, 112, 160, 60, 8388864
+    CONTROL HANDLE hDlg, 202 TO hGr2
     ' No TO clause on purpose: the official syntax makes it optional, and the
     ' parser has to reach the same statement through its dummy target.
     CONTROL ADD HEADER,  hDlg, 203, "", 8, 184, 200, 24
@@ -403,4 +399,4 @@ FUNCTION PBMAIN () AS LONG
 END FUNCTION
 
 
-#ENDIF
+

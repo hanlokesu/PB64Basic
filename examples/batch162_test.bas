@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -66,12 +55,12 @@ FUNCTION PBMAIN () AS LONG
     LOCAL n AS LONG
     LOCAL u AS STRING
     LOCAL back AS STRING
-    n = METRICS(0)
+    n = METRICS(Scroll.Horz)
     u = UCODE$("ABC")
     back = ACODE$(u)
-    ConPrint "METRICS(0)   = " & STR$(n)
+    ConPrint "METRICS(ScrollHorz) = " & STR$(n)
     ConPrint "UCODE$ len   = " & STR$(LEN(u))
-    ConPrint "ACODE$ back  = " & STR$(back)
+    ConPrint "ACODE$ back  = " & back
     IF n <= 0 THEN
         fail = fail + 1
     END IF
@@ -89,4 +78,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

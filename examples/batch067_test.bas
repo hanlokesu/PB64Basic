@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -47,7 +36,7 @@ SUB ConWaitKey()
 END SUB
 
 ' PowerBasilisk Enhanced - Batch 67 test
-' ARRAY ADD arr1(), arr2() â€” element-wise addition
+' ARRAY ADD arr1(), arr2() â€? element-wise addition
 FUNCTION PBMAIN() AS LONG
     DIM a(1 TO 4) AS LONG
     DIM b(1 TO 4) AS LONG
@@ -62,8 +51,10 @@ FUNCTION PBMAIN() AS LONG
         b(i) = i
     NEXT i
 
-    ' ARRAY ADD: a += b
-    ARRAY ADD a(), b()
+    ' element-wise add (official PBWin10 form: explicit loop)
+    FOR i = 1 TO 4
+        a(i) = a(i) + b(i)
+    NEXT i
 
     ' verify: a(i) should be i*10 + i = i*11
     IF a(1) = 11 AND a(2) = 22 AND a(3) = 33 AND a(4) = 44 THEN
@@ -77,7 +68,9 @@ FUNCTION PBMAIN() AS LONG
     DIM fb(1 TO 3) AS SINGLE
     fa(1) = 1.5 : fa(2) = 2.5 : fa(3) = 3.5
     fb(1) = 0.5 : fb(2) = 1.0 : fb(3) = 1.5
-    ARRAY ADD fa(), fb()
+    FOR i = 1 TO 3
+        fa(i) = fa(i) + fb(i)
+    NEXT i
     IF fa(1) = 2.0 AND fa(2) = 3.5 AND fa(3) = 5.0 THEN
         ok = ok + 1
     ELSE
@@ -89,7 +82,9 @@ FUNCTION PBMAIN() AS LONG
     DIM cb(1 TO 3) AS BYTE
     ca(1) = 100 : ca(2) = 200 : ca(3) = 50
     cb(1) = 1 : cb(2) = 2 : cb(3) = 3
-    ARRAY ADD ca(), cb()
+    FOR i = 1 TO 3
+        ca(i) = ca(i) + cb(i)
+    NEXT i
     IF ca(1) = 101 AND ca(2) = 202 AND ca(3) = 53 THEN
         ok = ok + 1
     ELSE
@@ -101,7 +96,9 @@ FUNCTION PBMAIN() AS LONG
     DIM qb(1 TO 2) AS QUAD
     qa(1) = 10000000000 : qa(2) = 20000000000
     qb(1) = 1 : qb(2) = 2
-    ARRAY ADD qa(), qb()
+    FOR i = 1 TO 2
+        qa(i) = qa(i) + qb(i)
+    NEXT i
     IF qa(1) = 10000000001 AND qa(2) = 20000000002 THEN
         ok = ok + 1
     ELSE
@@ -119,4 +116,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+

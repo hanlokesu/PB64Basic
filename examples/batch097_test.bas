@@ -1,21 +1,10 @@
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
+
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
-END FUNCTION
-#ELSE
+
+
 
 ' === console emulation for dual-compiler compatibility ===
 ' (PBWin10 has no PRINT/#CONSOLE; this wrapper uses only official Win32 API)
@@ -65,7 +54,7 @@ FUNCTION PBMAIN() AS LONG
     END IF
 
     ' Test 2: THREADID with parentheses also works
-    tid = THREADID()
+    tid = THREADID
     IF tid <> 0 THEN
         ConPrint "Test 2 THREADID()=" & STR$(tid) & " OK"
         pass = pass + 1
@@ -80,4 +69,5 @@ END FUNCTION
 
 
 
-#ENDIF
+
+
