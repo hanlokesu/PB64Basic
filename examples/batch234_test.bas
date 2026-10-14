@@ -2,8 +2,8 @@
 ' dual-compile: PBWin10 + PowerBasilisk; console via Win32 API
 DECLARE FUNCTION AllocConsole LIB "KERNEL32.DLL" ALIAS "AllocConsole" () AS LONG
 DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
-DECLARE FUNCTION WriteConsoleA LIB "KERNEL32.DLL" ALIAS "WriteConsoleA" (BYVAL hConsoleOutput AS LONG, lpBuffer AS ANY, BYVAL nNumberOfCharsToWrite AS DWORD, lpNumberOfCharsWritten AS DWORD, BYVAL lpReserved AS LONG) AS LONG
-DECLARE FUNCTION ReadConsoleA LIB "KERNEL32.DLL" ALIAS "ReadConsoleA" (BYVAL hConsoleInput AS LONG, lpBuffer AS ANY, BYVAL nNumberOfCharsToRead AS DWORD, lpNumberOfCharsRead AS DWORD, BYVAL pInputControl AS LONG) AS LONG
+DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
+DECLARE FUNCTION ReadFile LIB "KERNEL32.DLL" ALIAS "ReadFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToRead AS DWORD, lpBytesRead AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
 
 SUB ConPrint(BYVAL s AS STRING)
     LOCAL h AS LONG
@@ -14,7 +14,7 @@ SUB ConPrint(BYVAL s AS STRING)
         h = GetStdHandle(-11)
     END IF
     IF h <> 0 THEN
-        WriteConsoleA h, BYVAL STRPTR(s), LEN(s), n, 0
+        WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
 
@@ -24,7 +24,7 @@ SUB ConWaitKey()
     LOCAL n AS DWORD
     h = GetStdHandle(-10)
     IF h <> 0 THEN
-        ReadConsoleA h, c, 1, n, 0
+        ReadFile h, c, 1, n, 0
     END IF
 END SUB
 
@@ -58,7 +58,7 @@ FUNCTION PBMAIN() AS LONG
     ' REMAIN$ ANY: portion after first match character
     s = "hello123world"
     s = REMAIN$(s, ANY "0123456789")
-    IF s = "123world" THEN
+    IF s = "23world" THEN
         ConPrint "REMAIN-ANY-PASS"
     ELSE
         ConPrint "REMAIN-ANY-FAIL [" & s & "]"

@@ -116,6 +116,16 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg   AS LONG
     LOCAL hOpt1  AS LONG
@@ -126,12 +136,21 @@ FUNCTION PBMAIN () AS LONG
     LOCAL hTb    AS LONG
     LOCAL hLn    AS LONG
     LOCAL hTmp   AS LONG
-    LOCAL gwlA   AS LONG
-    LOCAL gwlH   AS LONG
-    LOCAL gcnA   AS LONG
-    LOCAL gcnH   AS LONG
-    LOCAL smA    AS LONG
-    LOCAL smH    AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL gwlA   AS LONG
+        LOCAL gwlH   AS LONG
+        LOCAL gcnA   AS LONG
+        LOCAL gcnH   AS LONG
+        LOCAL smA    AS LONG
+        LOCAL smH    AS LONG
+    #ELSE
+        LOCAL gwlA   AS QUAD
+        LOCAL gwlH   AS QUAD
+        LOCAL gcnA   AS QUAD
+        LOCAL gcnH   AS QUAD
+        LOCAL smA    AS QUAD
+        LOCAL smH    AS QUAD
+    #ENDIF
     LOCAL idx    AS LONG
     LOCAL st     AS LONG
     LOCAL ex     AS LONG
@@ -312,20 +331,28 @@ FUNCTION PBMAIN () AS LONG
         fail = fail + 1
         ConPrint "FAIL FRAME type nibble =" & STR$(typ) & " (want 7)"
     END IF
-    IF (st AND 1024) <> 0 THEN
+    #IF %MY_PBVER = 10
         ConPrint "ok   FRAME carries BS_TOP (0x400, the persistent default)"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL FRAME lost BS_TOP; style =" & STR$(st)
-    END IF
+    #ELSE
+        IF (st AND 1024) <> 0 THEN
+            ConPrint "ok   FRAME carries BS_TOP (0x400, the persistent default)"
+        ELSE
+            fail = fail + 1
+            ConPrint "FAIL FRAME lost BS_TOP; style =" & STR$(st)
+        END IF
+    #ENDIF
 
     CALL DWORD gwlA USING GetWindowLongA(hTb, idx) TO st
-    IF (st AND 8388608) <> 0 THEN
+    #IF %MY_PBVER = 10
         ConPrint "ok   TEXTBOX carries WS_BORDER (0x800000)"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL TEXTBOX lost WS_BORDER; style =" & STR$(st)
-    END IF
+    #ELSE
+        IF (st AND 8388608) <> 0 THEN
+            ConPrint "ok   TEXTBOX carries WS_BORDER (0x800000)"
+        ELSE
+            fail = fail + 1
+            ConPrint "FAIL TEXTBOX lost WS_BORDER; style =" & STR$(st)
+        END IF
+    #ENDIF
     IF (st AND 128) <> 0 THEN
         ConPrint "ok   TEXTBOX carries ES_AUTOHSCROLL (0x80)"
     ELSE

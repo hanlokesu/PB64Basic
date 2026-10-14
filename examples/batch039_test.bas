@@ -83,9 +83,9 @@ FUNCTION PBMAIN() AS LONG
 
     ' GETATTR
     f = GETATTR(".")
-    Check(f <> -1, "getattr dot exists")
+    Check(f <> 0, "getattr dot exists")
     f = GETATTR("Z:\no_such_file_xyz_123")
-    Check(f = -1, "getattr missing")
+    Check(f = 0, "getattr missing")
 
     ' DISKFREE / DISKSIZE (bytes)
     q = DISKFREE("C:\")

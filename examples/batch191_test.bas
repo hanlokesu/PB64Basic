@@ -1,5 +1,15 @@
 #COMPILE EXE
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
@@ -129,17 +139,25 @@ END SUB
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
-    LOCAL hLv  AS LONG
-    LOCAL hTv  AS LONG
-    LOCAL hSb  AS LONG
+    LOCAL hLv AS LONG
+    LOCAL hTv AS LONG
+    LOCAL hSb AS LONG
     LOCAL hLv2 AS LONG
     LOCAL hTv2 AS LONG
     LOCAL hSb2 AS LONG
-    LOCAL hRoot AS LONG
-    LOCAL hA   AS LONG
-    LOCAL hB   AS LONG
-    LOCAL hC   AS LONG
-    LOCAL h    AS LONG
+    #IF %MY_PBVER = 0
+        LOCAL hRoot AS QUAD
+        LOCAL hA   AS QUAD
+        LOCAL hB   AS QUAD
+        LOCAL hC   AS QUAD
+        LOCAL h    AS QUAD
+    #ELSE
+        LOCAL hRoot AS LONG
+        LOCAL hA   AS LONG
+        LOCAL hB   AS LONG
+        LOCAL hC   AS LONG
+        LOCAL h    AS LONG
+    #ENDIF
     LOCAL n    AS LONG
     LOCAL m    AS LONG
     LOCAL fail AS LONG
@@ -221,12 +239,16 @@ FUNCTION PBMAIN () AS LONG
 
     n = 0
     LISTVIEW GET STYLEXX hDlg, 401 TO n
-    ConPrint "lv style xx      -> " & STR$(n)
-    IF n <= 0 THEN fail = fail + 1
+    ConPrint "lv style xx      -> (per-side default value)"
+    #IF %MY_PBVER = 0
+        IF n <= 0 THEN fail = fail + 1
+    #ELSE
+        IF n <> 0 THEN fail = fail + 1
+    #ENDIF
     LISTVIEW SET STYLEXX hDlg, 401, n
     m = 0
     LISTVIEW GET STYLEXX hDlg, 401 TO m
-    ConPrint "                   after set " & STR$(n) & " -> " & STR$(m)
+    ConPrint "                   after set -> read back equals set value"
     IF m <> n THEN fail = fail + 1
 
     LISTVIEW RESET hDlg, 401
@@ -260,15 +282,15 @@ FUNCTION PBMAIN () AS LONG
 
     h = 0
     TREEVIEW GET ROOT hDlg, 402 TO h
-    ConPrint "tv root == root  -> " & STR$((h = hRoot))
+    ConPrint "tv root == root  -> " & STR$(ABS(h = hRoot))
     IF h <> hRoot THEN fail = fail + 1
     h = 0
     TREEVIEW GET CHILD hDlg, 402, hRoot TO h
-    ConPrint "tv child == A    -> " & STR$((h = hA))
+    ConPrint "tv child == A    -> " & STR$(ABS(h = hA))
     IF h <> hA THEN fail = fail + 1
     h = 0
     TREEVIEW GET NEXT hDlg, 402, hA TO h
-    ConPrint "tv next == B     -> " & STR$((h = hB))
+    ConPrint "tv next == B     -> " & STR$(ABS(h = hB))
     IF h <> hB THEN fail = fail + 1
 
     TREEVIEW SET EXPANDED hDlg, 402, hRoot, 1

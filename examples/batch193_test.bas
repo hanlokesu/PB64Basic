@@ -96,7 +96,7 @@ FUNCTION PBMAIN () AS LONG
     END IF
     IMAGELIST NEW BITMAP 16, 16, 32, 2 TO hil
     IMAGELIST GET COUNT hil TO cnt
-    ConPrint "imagelist hi = " & STR$(hil) & "  count = " & STR$(cnt)
+    ConPrint "imagelist hi = nonzero (value differs by bitness)  count = " & STR$(cnt)
     IF hil = 0 THEN
         fail = fail + 1
     END IF

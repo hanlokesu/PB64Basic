@@ -1,3 +1,12 @@
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
@@ -24,9 +33,21 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS QUAD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ELSE
 DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS QUAD, BYVAL nIndex AS LONG) AS LONG
+#ELSE
 DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS QUAD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ELSE
 DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ENDIF
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -95,18 +116,66 @@ END SUB
 ' need a human to dismiss it.
 '=====================================================================
 FUNCTION PBMAIN () AS LONG
+#IF %MY_PBVER = 0
+    LOCAL hDlg   AS QUAD
+#ELSE
     LOCAL hDlg   AS LONG
-    LOCAL hTb    AS LONG
-    LOCAL hUd    AS LONG
-    LOCAL hHk    AS LONG
-    LOCAL hIp    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hTb   AS QUAD
+#ELSE
+    LOCAL hTb   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hUd   AS QUAD
+#ELSE
+    LOCAL hUd   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hHk   AS QUAD
+#ELSE
+    LOCAL hHk   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hIp   AS QUAD
+#ELSE
+    LOCAL hIp   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hTmp   AS QUAD
+#ELSE
     LOCAL hTmp   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnA   AS QUAD
+#ELSE
     LOCAL gcnA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnH   AS QUAD
+#ELSE
     LOCAL gcnH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlA   AS QUAD
+#ELSE
     LOCAL gwlA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlH   AS QUAD
+#ELSE
     LOCAL gwlH   AS LONG
-    LOCAL smA    AS LONG
-    LOCAL smH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smA   AS QUAD
+#ELSE
+    LOCAL smA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smH   AS QUAD
+#ELSE
+    LOCAL smH   AS LONG
+#ENDIF
     LOCAL buf    AS STRING * 64
     LOCAL n      AS LONG
     LOCAL idx    AS LONG
@@ -158,13 +227,13 @@ FUNCTION PBMAIN () AS LONG
     ' Every coordinate is a multiple of 4 on purpose: CONTROL ADD converts
     ' dialog units to pixels with the base 7 x 14, and CONTROL GET divides
     ' back - an exact round trip only for multiples of 4.
-    CONTROL ADD "msctls_trackbar32", hDlg, 301, "",   8,  8, 160, 24
+    CONTROL ADD "msctls_trackbar32", hDlg, 301, "",   8,  8, 160, 24, &H50000000, 0
     CONTROL HANDLE hDlg, 301 TO hTb
-    CONTROL ADD "msctls_updown32", hDlg, 302, "", 200,  8,  40, 24
+    CONTROL ADD "msctls_updown32", hDlg, 302, "", 200,  8,  40, 24, &H50000000, 0
     CONTROL HANDLE hDlg, 302 TO hUd
-    CONTROL ADD "msctls_hotkey32", hDlg, 303, "",   8, 44, 160, 16
+    CONTROL ADD "msctls_hotkey32", hDlg, 303, "",   8, 44, 160, 16, &H50000000, 0
     CONTROL HANDLE hDlg, 303 TO hHk
-    CONTROL ADD "SysIPAddress32", hDlg, 304, "", 200, 44, 160, 16
+    CONTROL ADD "SysIPAddress32", hDlg, 304, "", 200, 44, 160, 16, &H50000000, 0
     CONTROL HANDLE hDlg, 304 TO hIp
 
     ' ------------------------------------------------------------------

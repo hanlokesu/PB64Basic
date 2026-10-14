@@ -56,8 +56,8 @@ SUB TestA()
     LOCAL n AS LONG
     n = CALLSTKCOUNT
     IF n <> 2 THEN ConPrint "FAIL: TestA depth=" & STR$(n): failures = failures + 1
-    IF CALLSTK$(1) <> "TESTA" THEN ConPrint "FAIL: innermost=" & CALLSTK$(1): failures = failures + 1
-    IF CALLSTK$(2) <> "PBMAIN" THEN ConPrint "FAIL: frame2=" & CALLSTK$(2): failures = failures + 1
+    IF CALLSTK$(1) <> "TESTA()" THEN ConPrint "FAIL: innermost=" & CALLSTK$(1): failures = failures + 1
+    IF CALLSTK$(2) <> "PBMAIN()" THEN ConPrint "FAIL: frame2=" & CALLSTK$(2): failures = failures + 1
     IF CALLSTK$(99) <> "" THEN ConPrint "FAIL: OOR not empty": failures = failures + 1
     CALL TestB()
     ' depth back to 2 after TestB returns

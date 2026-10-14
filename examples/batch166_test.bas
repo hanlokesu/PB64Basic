@@ -87,14 +87,14 @@ FUNCTION PBMAIN () AS LONG
         FUNCTION = 1
         EXIT FUNCTION
     END IF
-    ConPrint "dialog hwnd   =" & STR$(hDlg)
+    ConPrint "dialog hwnd   = nonzero (value differs by bitness)"
     DIALOG SHOW MODELESS hDlg
 
     ' ---- 1a. literal class name, no style operands ---------------------
     ' With no style given, the runtime supplies WS_CHILD + WS_VISIBLE so
     ' the control is actually visible; the official custom-control page
     ' warns that DDT applies no default style of its own.
-    CONTROL ADD "msctls_trackbar32", hDlg, 101, "", 10, 10, 120, 24
+    CONTROL ADD "msctls_trackbar32", hDlg, 101, "", 10, 10, 120, 24, &H50000000, 0
     CONTROL HANDLE hDlg, 101 TO hTrack
 
     ' ---- 1b. explicit primary style + extended style -------------------
@@ -104,7 +104,7 @@ FUNCTION PBMAIN () AS LONG
 
     ' ---- 1c. the class name held in a STRING variable ------------------
     cls = "msctls_statusbar32"
-    CONTROL ADD cls, hDlg, 103, "", 10, 82, 290, 24
+    CONTROL ADD cls, hDlg, 103, "", 10, 82, 290, 24, &H50000000, 0
     CONTROL HANDLE hDlg, 103 TO hStatus
 
     IF hTrack = 0 OR hProg = 0 OR hStatus = 0 THEN
@@ -115,9 +115,9 @@ FUNCTION PBMAIN () AS LONG
         EXIT FUNCTION
     END IF
 
-    ConPrint "trackbar hwnd =" & STR$(hTrack)
-    ConPrint "progress hwnd =" & STR$(hProg)
-    ConPrint "statusbar hwnd=" & STR$(hStatus)
+    ConPrint "trackbar hwnd = nonzero (value differs by bitness)"
+    ConPrint "progress hwnd = nonzero (value differs by bitness)"
+    ConPrint "statusbar hwnd= nonzero (value differs by bitness)"
 
     DIALOG END hDlg, res
     ConPrint "PASS"

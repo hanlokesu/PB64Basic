@@ -28,6 +28,15 @@ SUB ConWaitKey()
 END SUB
 
 ' PowerBasilisk Enhanced - batch 36: MKE$ (EXT = 8-byte double in this compiler)
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)
@@ -47,13 +56,23 @@ FUNCTION PBMAIN() AS LONG
     e = 1.5
     a = MKE$(e)
     b = MKD$(e)
-    ' MKE$ and MKD$ produce the same 8 bytes because EXT == DOUBLE here
+#IF %MY_PBVER = 0
+    ' fork: EXT is an 8-byte IEEE-754 double here, so MKE$ == MKD$
     Check(a = b, "mke = mkd bytes")
     Check(LEN(a) = 8, "mke length 8")
 
     e = -123.25
     Check(MKE$(e) = MKD$(e), "mke neg")
     Check(LEN(MKE$(e)) = 8, "mke neg len")
+#ELSE
+    ' PBWin10: EXT is the 80-bit format (10 bytes), so MKE$ differs from MKD$
+    Check(a <> b, "mke differs from mkd (EXT 10-byte)")
+    Check(LEN(a) = 10, "mke length 10")
+
+    e = -123.25
+    Check(MKE$(e) <> MKD$(e), "mke neg differs")
+    Check(LEN(MKE$(e)) = 10, "mke neg len 10")
+#ENDIF
 
     IF failures = 0 THEN
         ConPrint "batch36: ALL PASS"

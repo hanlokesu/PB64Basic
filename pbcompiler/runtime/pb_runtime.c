@@ -748,7 +748,9 @@ long long pb_verify(char* s, char* m, long long start) {
 }
 long long pb_getattr(char* path) {
     unsigned long attrs = GetFileAttributesA(path);
-    if (attrs == 0xFFFFFFFFUL) return -1;
+    /* PBWin10 measured (2026-10-14 probe39): a missing path returns 0, not
+     * GetFileAttributes' 0xFFFFFFFF.  Map INVALID_FILE_ATTRIBUTES -> 0. */
+    if (attrs == 0xFFFFFFFFUL) return 0;
     return (long long)attrs;
 }
 static void pb_root_of(char* root, char* path) {
@@ -3432,6 +3434,8 @@ __declspec(dllimport) int __stdcall sendto(pb_sock_t s, const char* buf, int len
 __declspec(dllimport) int __stdcall recvfrom(pb_sock_t s, char* buf, int len, int flags, void* from, int* fromlen);
 __declspec(dllimport) int __stdcall closesocket(pb_sock_t s);
 __declspec(dllimport) unsigned short __stdcall htons(unsigned short hostshort);
+__declspec(dllimport) unsigned long __stdcall htonl(unsigned long hostlong);
+__declspec(dllimport) unsigned long __stdcall ntohl(unsigned long netlong);
 __declspec(dllimport) unsigned long __stdcall inet_addr(const char* cp);
 __declspec(dllimport) int __stdcall setsockopt(pb_sock_t s, int level, int optname, const char* optval, int optlen);
 
@@ -3457,7 +3461,12 @@ static void pb_net_fill_addr(struct pb_sockaddr_in* a, unsigned long ip, int por
     memset(a, 0, sizeof(*a));
     a->sin_family = 2; /* AF_INET */
     a->sin_port = htons((unsigned short)port);
-    a->sin_addr = ip;
+    /* PB's numeric AT operand is host order (batch203: AT &H7F000001 must mean
+     * 127.0.0.1).  Storing it raw made 0x7F000001 come out as 1.0.0.127 on a
+     * little-endian box, so the self-ping vanished and UDP RECV blocked
+     * forever.  String paths (inet_addr / gethostbyname) yield network order,
+     * so callers convert them with ntohl() before this. */
+    a->sin_addr = htonl(ip);
 }
 
 int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout) {
@@ -3475,7 +3484,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout)
         pb_sock_state[filenum] = 3;
         return 0;
     }
-    /* client: connect */
+    /* connect */
     unsigned long ip = pb_net_ip(addr);
     if (ip == (unsigned long)-1) { closesocket(s); pb_err = 57; return -1; }
     if (timeout > 0) {
@@ -3483,7 +3492,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout)
         setsockopt(s, 0xFFFF, 0x1006, (const char*)&t, 4); /* SO_RCVTIMEO */
         setsockopt(s, 0xFFFF, 0x1005, (const char*)&t, 4); /* SO_SNDTIMEO */
     }
-    pb_net_fill_addr(&a, ip, port);
+    pb_net_fill_addr(&a, ntohl(ip), port);   /* pb_net_ip returns network order */
     if (connect(s, &a, sizeof(a)) != 0) { closesocket(s); pb_err = 57; return -1; }
     pb_sock[filenum] = s;
     pb_sock_state[filenum] = 1;
@@ -3584,7 +3593,8 @@ int pb_udp_open(int port, int filenum, long timeout) {
 int pb_udp_send(int f, unsigned long ip, int port, const char* data);
 
 int pb_udp_send_str(int f, const char* ipstr, int port, const char* data) {
-    return pb_udp_send(f, inet_addr(ipstr ? ipstr : "0.0.0.0"), port, data);
+    /* inet_addr yields network order; pb_udp_send expects host order */
+    return pb_udp_send(f, ntohl(inet_addr(ipstr ? ipstr : "0.0.0.0")), port, data);
 }
 
 int pb_udp_send(int f, unsigned long ip, int port, const char* data) {
@@ -3611,7 +3621,7 @@ int pb_udp_recv(int f, unsigned long* ip, int* port, char** out) {
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
-    if (ip) *ip = a.sin_addr;
+    if (ip) *ip = ntohl(a.sin_addr);   /* PB wants host order back */
     if (port) *port = ntohs_s(a.sin_port);
     *out = buf;
     return n;

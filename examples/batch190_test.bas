@@ -1,3 +1,14 @@
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
+DECLARE FUNCTION LoadLibraryA LIB "KERNEL32.DLL" ALIAS "LoadLibraryA" (BYVAL lpLibFileName AS QUAD) AS DWORD
 
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
@@ -24,9 +35,22 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS QUAD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ELSE
 DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS QUAD, BYVAL nIndex AS LONG) AS LONG
+#ELSE
 DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetClassNameA
+ LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS QUAD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ELSE
 DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ENDIF
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -87,17 +111,63 @@ END SUB
 ' need a human to dismiss it.
 '=====================================================================
 FUNCTION PBMAIN () AS LONG
+    LOCAL hRichDll AS DWORD
+    LOCAL dllName AS ASCIIZ * 32
+#IF %MY_PBVER = 0
+    LOCAL hDlg   AS QUAD
+#ELSE
     LOCAL hDlg   AS LONG
-    LOCAL hMc    AS LONG
-    LOCAL hAn    AS LONG
-    LOCAL hRe    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hMc   AS QUAD
+#ELSE
+    LOCAL hMc   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hAn   AS QUAD
+#ELSE
+    LOCAL hAn   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hRe   AS QUAD
+#ELSE
+    LOCAL hRe   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hTmp   AS QUAD
+#ELSE
     LOCAL hTmp   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnA   AS QUAD
+#ELSE
     LOCAL gcnA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnH   AS QUAD
+#ELSE
     LOCAL gcnH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlA   AS QUAD
+#ELSE
     LOCAL gwlA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlH   AS QUAD
+#ELSE
     LOCAL gwlH   AS LONG
-    LOCAL smA    AS LONG
-    LOCAL smH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smA   AS QUAD
+#ELSE
+    LOCAL smA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smH   AS QUAD
+#ELSE
+    LOCAL smH   AS LONG
+#ENDIF
     LOCAL buf    AS STRING * 64
     LOCAL n      AS LONG
     LOCAL idx    AS LONG
@@ -144,11 +214,14 @@ FUNCTION PBMAIN () AS LONG
     ' Coordinates are multiples of 4: CONTROL ADD converts dialog units to
     ' pixels with the base 7 x 14, and CONTROL GET divides back exactly only
     ' for multiples of 4.
-    CONTROL ADD "SysMonthCal32", hDlg, 401, "",   8,   8, 180, 120
+    CONTROL ADD "SysMonthCal32", hDlg, 401, "",   8,   8, 180, 120, &H50000000, 0
     CONTROL HANDLE hDlg, 401 TO hMc
-    CONTROL ADD "SysAnimate32", hDlg, 402, "", 200,   8, 120,  60
+    CONTROL ADD "SysAnimate32", hDlg, 402, "", 200,   8, 120,  60, &H50000000, 0
     CONTROL HANDLE hDlg, 402 TO hAn
-    CONTROL ADD "RichEdit20A", hDlg, 403, "",   8, 144, 312,  64
+    dllName = "riched20.dll"
+    hRichDll = LoadLibraryA(VARPTR(dllName))
+    IF hRichDll = 0 THEN ConPrint "WARN riched20.dll not loaded"
+    CONTROL ADD "RichEdit20A", hDlg, 403, "",   8, 144, 312,  64, &H50000000, 0
     CONTROL HANDLE hDlg, 403 TO hRe
 
     ' ------------------------------------------------------------------
@@ -177,31 +250,34 @@ FUNCTION PBMAIN () AS LONG
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hMc, VARPTR(buf), 64) TO n
+    buf = LEFT$(buf, n)
     IF n > 0 AND INSTR(buf, "SysMonthCal32") > 0 THEN
         ConPrint "ok   MONTHCAL created a SysMonthCal32 window"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL MONTHCAL class (len" & STR$(n) & ") -> " & buf
+        ConPrint "FAIL MONTHCAL class (len" & STR$(n) & ") -> " & RTRIM$(buf)
     END IF
 
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hAn, VARPTR(buf), 64) TO n
+    buf = LEFT$(buf, n)
     IF n > 0 AND INSTR(buf, "SysAnimate32") > 0 THEN
         ConPrint "ok   ANIMATE created a SysAnimate32 window"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL ANIMATE class (len" & STR$(n) & ") -> " & buf
+        ConPrint "FAIL ANIMATE class (len" & STR$(n) & ") -> " & RTRIM$(buf)
     END IF
 
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hRe, VARPTR(buf), 64) TO n
+    buf = LEFT$(buf, n)
     IF n > 0 AND INSTR(buf, "RICHEDIT50W") > 0 THEN
         ConPrint "ok   RICHEDIT created a RICHEDIT50W window (msftedit.dll loaded)"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL RICHEDIT class (len" & STR$(n) & ") -> " & buf
+        ConPrint "FAIL RICHEDIT class (len" & STR$(n) & ") -> " & RTRIM$(buf)
     END IF
 
     ' ------------------------------------------------------------------
@@ -286,7 +362,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   RICHEDIT took WM_CHAR 'A' and gave it back (len" & STR$(v) & ")"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL RICHEDIT text round trip (len" & STR$(v) & " got" & STR$(n) & " -> " & buf & ")"
+        ConPrint "FAIL RICHEDIT text round trip (len" & STR$(v) & " got" & STR$(n) & " -> " & RTRIM$(buf) & ")"
     END IF
 
     ' A rich edit is not a plain EDIT: WM_SETTEXT must also work.

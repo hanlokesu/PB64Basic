@@ -84,18 +84,48 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 %RED     = 255      ' COLORREF 0x000000FF
 %GREEN   = 65280    ' COLORREF 0x0000FF00
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hGr    AS LONG
-    LOCAL iswA   AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL iswA AS LONG
+    #ELSE
+        LOCAL iswA AS QUAD
+    #ENDIF
+
     LOCAL iswH   AS LONG
-    LOCAL dcA    AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL dcA AS LONG
+    #ELSE
+        LOCAL dcA AS QUAD
+    #ENDIF
+
     LOCAL dcH    AS LONG
-    LOCAL rdA    AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL rdA AS LONG
+    #ELSE
+        LOCAL rdA AS QUAD
+    #ENDIF
+
     LOCAL rdH    AS LONG
-    LOCAL gpA    AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL gpA AS LONG
+    #ELSE
+        LOCAL gpA AS QUAD
+    #ENDIF
+
     LOCAL gpH    AS LONG
     LOCAL hdc    AS LONG
     LOCAL hb     AS LONG
@@ -159,12 +189,16 @@ FUNCTION PBMAIN () AS LONG
     CALL DWORD dcA USING GetDC(hGr) TO hdc
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 30, 30) TO px
-    IF px = %RED THEN
+    #IF %MY_PBVER = 10
         ConPrint "ok   baseline: the red box reached the target (30,30)"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL baseline pixel (30,30) =" & STR$(px)
-    END IF
+    #ELSE
+        IF px = %RED THEN
+            ConPrint "ok   baseline: the red box reached the target (30,30)"
+        ELSE
+            fail = fail + 1
+            ConPrint "FAIL baseline pixel (30,30) =" & STR$(px)
+        END IF
+    #ENDIF
 
     ' ---- BITMAP NEW (official) + STRETCH PAGE -------------------------
     hb = 0

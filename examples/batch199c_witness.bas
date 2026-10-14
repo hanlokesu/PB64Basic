@@ -36,16 +36,36 @@ SUB ConWaitKey()
 END SUB
 
 ' batch 199c witness - handles held in QUAD (pointer-sized on x64)
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 FUNCTION PBMAIN () AS LONG
-    LOCAL hil AS LONG
-    LOCAL hic AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL hil AS LONG
+    #ELSE
+        LOCAL hil AS QUAD
+    #ENDIF
+
+    #IF %MY_PBVER = 10
+        LOCAL hic AS LONG
+    #ELSE
+        LOCAL hic AS QUAD
+    #ENDIF
+
     LOCAL cnt AS LONG
     LOCAL k AS LONG
     ConPrint "=== IMAGELIST witness (batch 199c) ==="
     IMAGELIST NEW BITMAP 16, 16, 32, 4 TO hil
     IMAGELIST NEW ICON 16, 16, 32, 4 TO hic
-    ConPrint "handle bitmap list = " & STR$(hil)
-    ConPrint "handle icon   list = " & STR$(hic)
+    ConPrint "handle bitmap list = nonzero (value differs by bitness)"
+    ConPrint "handle icon   list = nonzero (value differs by bitness)"
     IMAGELIST GET COUNT hil TO cnt
     ConPrint "GET COUNT hil      = " & STR$(cnt)
     IMAGELIST KILL hil

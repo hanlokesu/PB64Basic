@@ -5912,7 +5912,10 @@ impl Compiler {
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
         // CALLSTK tracing (batch 33): push this procedure's name
-        fb.call_void("pb_callstk_push", &[Val::new(fn_name_str, IrType::Ptr)]);
+        // PBWin10's CALLSTK$(n) returns the frame name WITH trailing "()"
+        // (measured 2026-10-14: innermost=TESTA(), frame2=PBMAIN()); match it.
+        let (callstk_name, _) = self.module.add_string_constant(&format!("{}()", fd.name));
+        fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
 
         // Noop EZLIB/EZGUI functions → old Win32 UI, replaced by Electron
         if Self::should_noop_function(&name) {
@@ -6005,7 +6008,9 @@ impl Compiler {
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
         // CALLSTK tracing (batch 33): push this procedure's name
-        fb.call_void("pb_callstk_push", &[Val::new(fn_name_str, IrType::Ptr)]);
+        // PBWin10's CALLSTK$(n) returns the frame name WITH trailing "()".
+        let (callstk_name, _) = self.module.add_string_constant(&format!("{}()", sd.name));
+        fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
 
         // Noop EZLIB/EZGUI subs → old Win32 UI, replaced by Electron
         if Self::should_noop_function(&name) {

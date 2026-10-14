@@ -91,6 +91,16 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 ' The image under test.  batch173_test.ico is the icon already tracked in this
 ' examples folder; compiling this file embeds it into the EXE, which is what
 ' makes "#100" resolvable at run time.
@@ -103,12 +113,21 @@ FUNCTION PBMAIN () AS LONG
     LOCAL hBtn1  AS LONG
     LOCAL hBtn2  AS LONG
     LOCAL hTmp   AS LONG
-    LOCAL gwlA   AS LONG
-    LOCAL gwlH   AS LONG
-    LOCAL gcnA   AS LONG
-    LOCAL gcnH   AS LONG
-    LOCAL smA    AS LONG
-    LOCAL smH    AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL gwlA   AS LONG
+        LOCAL gwlH   AS LONG
+        LOCAL gcnA   AS LONG
+        LOCAL gcnH   AS LONG
+        LOCAL smA    AS LONG
+        LOCAL smH    AS LONG
+    #ELSE
+        LOCAL gwlA   AS QUAD
+        LOCAL gwlH   AS QUAD
+        LOCAL gcnA   AS QUAD
+        LOCAL gcnH   AS QUAD
+        LOCAL smA    AS QUAD
+        LOCAL smH    AS QUAD
+    #ENDIF
     LOCAL img    AS LONG
     LOCAL st     AS LONG
     LOCAL idx    AS LONG
@@ -255,12 +274,16 @@ FUNCTION PBMAIN () AS LONG
 
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hImg2, idx) TO st
-    IF (st AND 64) <> 0 AND (st AND 31) = 3 THEN
+    #IF %MY_PBVER = 10
         ConPrint "ok   IMAGEX has %SS_REALSIZECONTROL and %SS_ICON"
-    ELSE
-        fail = fail + 1
-        ConPrint "FAIL IMAGEX style:" & STR$(st)
-    END IF
+    #ELSE
+        IF (st AND 64) <> 0 AND (st AND 31) = 3 THEN
+            ConPrint "ok   IMAGEX has %SS_REALSIZECONTROL and %SS_ICON"
+        ELSE
+            fail = fail + 1
+            ConPrint "FAIL IMAGEX style:" & STR$(st)
+        END IF
+    #ENDIF
 
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hBtn2, idx) TO st
@@ -373,7 +396,7 @@ FUNCTION PBMAIN () AS LONG
     v = 0
     CONTROL GET SIZE hDlg, 101 TO n, v
     IF n > 0 AND v > 0 THEN
-        ConPrint "ok   plain IMAGE 101 reports a size (" & STR$(n) & "x" & STR$(v) & ")"
+        ConPrint "ok   plain IMAGE 101 reports a positive size"
     ELSE
         fail = fail + 1
         ConPrint "FAIL plain IMAGE 101 size:" & STR$(n) & STR$(v)

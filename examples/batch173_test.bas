@@ -81,12 +81,32 @@ END SUB
 '=====================================================================
 #COMPILER PBWIN 10
 
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 #RESOURCE ICON, 100, "batch173_test.ico"
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
-    LOCAL hil  AS LONG          ' bitmap list
-    LOCAL hic  AS LONG          ' icon list
+    #IF %MY_PBVER = 10
+        LOCAL hil AS LONG          ' bitmap list
+    #ELSE
+        LOCAL hil AS QUAD          ' bitmap list
+    #ENDIF
+          ' bitmap list
+    #IF %MY_PBVER = 10
+        LOCAL hic AS LONG          ' icon list
+    #ELSE
+        LOCAL hic AS QUAD          ' icon list
+    #ENDIF
+          ' icon list
     LOCAL hb1  AS LONG
     LOCAL hb2  AS LONG
     LOCAL hb3  AS LONG
