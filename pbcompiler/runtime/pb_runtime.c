@@ -5456,8 +5456,12 @@ int pb_xprint_get_textalign(long* a) {
     return 1;
 }
 
-int pb_xprint_get_attach(long* v) {
-    *v = g_xp_dc ? 1 : 0;
+int pb_xprint_get_attach(char** v) {
+    /* target is a PB STRING variable (BSTR slot); writing a raw LONG here
+       corrupts the 8-byte slot and crashes the next dereference (0xC0000005
+       on batch069/070) - write "1"/"0" as a proper BSTR instead */
+    if (!v) return 0;
+    *v = (char*)SysAllocStringByteLen(g_xp_dc ? "1" : "0", 1);
     return 1;
 }
 
@@ -5667,9 +5671,10 @@ int pb_resource_save_file(const char* resname, const char* filename) {
     return 1;
 }
 /* === Batch 76: remaining XPRINT statements (completes XPRINT family) === */
-/* XPRINT papers/trays: return default counts (screen DC emulation) */
-int pb_xprint_get_papers(long* out) { if (!out) return 0; *out = 1; return 1; } /* A4 default */
-int pb_xprint_get_trays(long* out) { if (!out) return 0; *out = 1; return 1; }  /* one tray default */
+/* XPRINT papers/trays: targets are PB STRING variables (BSTR slots), same
+   crash hazard as pb_xprint_get_attach - write BSTR strings, not raw LONGs */
+int pb_xprint_get_papers(char** out) { if (!out) return 0; *out = (char*)SysAllocStringByteLen("1", 1); return 1; } /* A4 default */
+int pb_xprint_get_trays(char** out) { if (!out) return 0; *out = (char*)SysAllocStringByteLen("1", 1); return 1; }  /* one tray default */
 
 /* XPRINT preview/render: track preview mode state */
 static int g_xp_preview_mode = 0;

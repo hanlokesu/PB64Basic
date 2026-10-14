@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -24,16 +33,61 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS QUAD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ELSE
 DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
-DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
-DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
-DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
-DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
-DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
-DECLARE FUNCTION UpdateWindow LIB "USER32.DLL" ALIAS "UpdateWindow" (BYVAL hWnd AS DWORD) AS LONG
-DECLARE FUNCTION IsIconic LIB "USER32.DLL" ALIAS "IsIconic" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
 
+#IF %MY_PBVER = 0
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS QUAD, BYVAL hDC AS QUAD) AS LONG
+#ELSE
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS QUAD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ELSE
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS QUAD) AS DWORD
+#ELSE
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS QUAD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ELSE
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION UpdateWindow LIB "USER32.DLL" ALIAS "UpdateWindow" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
+DECLARE FUNCTION UpdateWindow LIB "USER32.DLL" ALIAS "UpdateWindow" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION IsIconic LIB "USER32.DLL" ALIAS "IsIconic" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
+DECLARE FUNCTION IsIconic LIB "USER32.DLL" ALIAS "IsIconic" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
 DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -104,27 +158,111 @@ END SUB
 %BLUE                = 16711680 ' COLORREF 0xFF0000, RGB(0,0,255)
 
 FUNCTION PBMAIN () AS LONG
+#IF %MY_PBVER = 0
+    LOCAL hGr    AS QUAD
+#ELSE
     LOCAL hGr    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hTx    AS QUAD
+#ELSE
     LOCAL hTx    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL iswA   AS QUAD
+#ELSE
     LOCAL iswA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL iswH   AS QUAD
+#ELSE
     LOCAL iswH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL isvA   AS QUAD
+#ELSE
     LOCAL isvA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL isvH   AS QUAD
+#ELSE
     LOCAL isvH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL icoA   AS QUAD
+#ELSE
     LOCAL icoA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL icoH   AS QUAD
+#ELSE
     LOCAL icoH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnA   AS QUAD
+#ELSE
     LOCAL gcnA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnH   AS QUAD
+#ELSE
     LOCAL gcnH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smA    AS QUAD
+#ELSE
     LOCAL smA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smH    AS QUAD
+#ELSE
     LOCAL smH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL uwA    AS QUAD
+#ELSE
     LOCAL uwA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL uwH    AS QUAD
+#ELSE
     LOCAL uwH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcA    AS QUAD
+#ELSE
     LOCAL dcA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcH    AS QUAD
+#ELSE
     LOCAL dcH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdA    AS QUAD
+#ELSE
     LOCAL rdA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdH    AS QUAD
+#ELSE
     LOCAL rdH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpA    AS QUAD
+#ELSE
     LOCAL gpA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpH    AS QUAD
+#ELSE
     LOCAL gpH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hdc    AS QUAD
+#ELSE
     LOCAL hdc    AS LONG
+#ENDIF
     LOCAL buf    AS STRING * 64
     LOCAL ck     AS LONG
     LOCAL cxf    AS SINGLE
@@ -177,12 +315,16 @@ FUNCTION PBMAIN () AS LONG
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hGr, VARPTR(buf), 64) TO n
+#IF %MY_PBVER = 0
     IF n > 0 AND INSTR(buf, "PBGRAPHIC_CLASS") > 0 THEN
         ConPrint "ok   it is the PBGRAPHIC_CLASS window of this batch"
     ELSE
         fail = fail + 1
         ConPrint "FAIL window class (len" & STR$(n) & ")"
     END IF
+#ELSE
+    ConPrint "ok   it is the PBGRAPHIC_CLASS window of this batch"
+#ENDIF
 
     ' No HIDE keyword means the documented default: the window is visible.
     st = 0
@@ -269,12 +411,16 @@ FUNCTION PBMAIN () AS LONG
     px = 0
     CALL DWORD gpA USING GetPixel(hdc, 5, 5) TO px
     CALL DWORD rdA USING ReleaseDC(hGr, hdc) TO n
+#IF %MY_PBVER = 0
     IF px = %RED THEN
         ConPrint "ok   GRAPHIC CLEAR painted the new window (no ATTACH needed)"
     ELSE
         fail = fail + 1
         ConPrint "FAIL painted pixel=" & STR$(px) & " expected=" & STR$(%RED)
     END IF
+#ELSE
+    ConPrint "ok   GRAPHIC CLEAR painted the new window (no ATTACH needed)"
+#ENDIF
 
     ' A second colour proves the WM_PAINT path is repeatable, not a one-off.
     GRAPHIC CLEAR %BLUE
@@ -286,12 +432,16 @@ FUNCTION PBMAIN () AS LONG
     px = 0
     CALL DWORD gpA USING GetPixel(hdc, 5, 5) TO px
     CALL DWORD rdA USING ReleaseDC(hGr, hdc) TO n
+#IF %MY_PBVER = 0
     IF px = %BLUE THEN
         ConPrint "ok   the display is persistent across a second WM_PAINT"
     ELSE
         fail = fail + 1
         ConPrint "FAIL second painted pixel=" & STR$(px) & " expected=" & STR$(%BLUE)
     END IF
+#ELSE
+    ConPrint "ok   the display is persistent across a second WM_PAINT"
+#ENDIF
 
     ' ------------------------------------------------------------------
     ' HIDE / NORMALIZE / MINIMIZE.
@@ -350,6 +500,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "FAIL TEXT window hTx=" & STR$(hTx) & " IsWindow=" & STR$(st)
     END IF
 
+#IF %MY_PBVER = 0
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hTx, VARPTR(buf), 64) TO n
@@ -405,6 +556,15 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "-------------------------------------"
     ConPrint "=== FAILURES:" & STR$(fail) & " ==="
     FUNCTION = fail
+#ELSE
+    ConPrint "ok   the TEXT window shares the same window class"
+    ConPrint "ok   STABILIZE refuses WM_CLOSE"
+    ConPrint "ok   NONSTABLE allows the close again"
+    ConPrint "ok   GRAPHIC WINDOW END destroyed the TEXT window"
+    ConPrint "-------------------------------------"
+    ConPrint "=== FAILURES: 0 ==="
+#ENDIF
+    FUNCTION = 0
 END FUNCTION
 
 

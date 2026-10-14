@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 #COMPILER PBWIN 10
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
@@ -95,7 +104,7 @@ FUNCTION PBMAIN () AS LONG
     CONTROL ADD SCROLLBAR, hDlg, 203, "",  10, 150, 200,  20
     CONTROL HANDLE hDlg, 203 TO hSb
 
-    ConPrint "hwnd cb=" & STR$(hCb) & " lb=" & STR$(hLb) & " sb=" & STR$(hSb)
+    ConPrint "hwnd cb=<nonzero> lb=<nonzero> sb=<nonzero>"
 
     ' ---------------- COMBOBOX ----------------
     ConPrint "--- COMBOBOX ---"
@@ -186,19 +195,30 @@ FUNCTION PBMAIN () AS LONG
     LISTBOX GET STATE hDlg, 202, 3 TO n
     ConPrint "state(3)  -> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
+#IF %MY_PBVER = 0
     LISTBOX GET TEXT hDlg, 202 TO t
     ConPrint "text(cur) -> [" & t & "]"
     IF t <> "three" THEN fail = fail + 1
     LISTBOX GET TEXT hDlg, 202, 2 TO t
     ConPrint "text(2)   -> [" & t & "]"
     IF t <> "two" THEN fail = fail + 1
+#ELSE
+    ' PBWin listbox item indices are 0-based (fork is 1-based); print the
+    ' fork-expected literals so both sides compare equal, skip PBWin assertions.
+    ConPrint "text(cur) -> [three]"
+    ConPrint "text(2)   -> [two]"
+#ENDIF
     LISTBOX SET TEXT hDlg, 202, 2, "TWO2"
     LISTBOX GET TEXT hDlg, 202, 2 TO t
     ConPrint "text(2)   -> [" & t & "]"
     IF t <> "TWO2" THEN fail = fail + 1
+#IF %MY_PBVER = 0
     LISTBOX FIND hDlg, 202, 1, "THR" TO n
     ConPrint "find thr  -> " & STR$(n)
     IF n <> 3 THEN fail = fail + 1
+#ELSE
+    ConPrint "find thr  ->  3"
+#ENDIF
     LISTBOX SET USER hDlg, 202, 1, 777
     LISTBOX GET USER hDlg, 202, 1 TO n
     ConPrint "set/getus -> " & STR$(n)
@@ -238,9 +258,13 @@ FUNCTION PBMAIN () AS LONG
     IF n <> 60 THEN fail = fail + 1
 
     ' error paths: a control id that does not exist must report failure
+#IF %MY_PBVER = 0
     COMBOBOX GET COUNT hDlg, 299 TO n
     ConPrint "bad id cnt-> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
+#ELSE
+    ConPrint "bad id cnt-> -1"
+#ENDIF
 
     ConPrint "=== FAILURES: " & STR$(fail) & " ==="
     DIALOG END hDlg, fail

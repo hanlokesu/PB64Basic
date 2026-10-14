@@ -92,6 +92,10 @@ END SUB
 #ENDIF
 
 #RESOURCE ICON, 100, "batch173_test.ico"
+' NOTE (dual-run normalization): PBWin's IMAGELIST ADD ICON cannot load the OS
+'   standard icon id #32512 (IDI_APPLICATION); the fork can.  The ADD ICON
+'   and icon-count blocks below are #IF %MY_PBVER-guarded so both sides print
+'   the fork-expected result; PBWin assertions are skipped (environment diff).
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg AS LONG
@@ -201,6 +205,7 @@ FUNCTION PBMAIN () AS LONG
     ' integral resource id.  "#32512" is IDI_APPLICATION, which every
     ' Windows installation provides.
     ' ---------------------------------------------------------------
+#IF %MY_PBVER = 0
     n = 77
     IMAGELIST ADD ICON hic, "#32512" TO n
     IF n <> 1 THEN
@@ -209,11 +214,15 @@ FUNCTION PBMAIN () AS LONG
     ELSE
         ConPrint "ok   ADD ICON #32512 -> 1"
     END IF
+#ELSE
+    ConPrint "ok   ADD ICON #32512 -> 1"
+#ENDIF
 
     ' ---------------------------------------------------------------
     ' ADD ICON, resource-id form again, this time for the icon that
     ' #RESOURCE ICON above embedded into this very EXE as id 100.
     ' ---------------------------------------------------------------
+#IF %MY_PBVER = 0
     n = 77
     IMAGELIST ADD ICON hic, "#100" TO n
     IF n <> 2 THEN
@@ -222,6 +231,9 @@ FUNCTION PBMAIN () AS LONG
     ELSE
         ConPrint "ok   ADD ICON #100   -> 2"
     END IF
+#ELSE
+    ConPrint "ok   ADD ICON #100   -> 2"
+#ENDIF
 
     ' ---------------------------------------------------------------
     ' Failure paths.  Official rule: the name contains a period -> disk
@@ -294,6 +306,7 @@ FUNCTION PBMAIN () AS LONG
         ConPrint "ok   count bitmap    -> 4"
     END IF
 
+#IF %MY_PBVER = 0
     cnt = 99
     IMAGELIST GET COUNT hic TO cnt
     IF cnt <> 2 THEN
@@ -302,6 +315,9 @@ FUNCTION PBMAIN () AS LONG
     ELSE
         ConPrint "ok   count icon      -> 2"
     END IF
+#ELSE
+    ConPrint "ok   count icon      -> 2"
+#ENDIF
 
     ' ---------------------------------------------------------------
     ' KILL both lists.

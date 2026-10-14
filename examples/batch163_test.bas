@@ -42,7 +42,10 @@ END SUB
 '           * DIALOG SET SIZE resizes the window, and a second
 '             DIALOG GET SIZE reports exactly the new size.
 ' Expected output (run mode):
-'   after DIALOG NEW   = 320 x 200
+'   after DIALOG NEW   = (per-side default)   ' PBWin10 and fork report different DIALOG NEW
+'                                            ' default template size (324x218 vs 320x200);
+'                                            ' normalized to fixed text. Assertions still use the
+'                                            ' +/-30 tolerance on the real values below.
 '   after DIALOG SET   = 500 x 360
 '   PASS
 ' Exit code: 0 = both checks passed, 1 = a check failed.
@@ -70,7 +73,7 @@ FUNCTION PBMAIN () AS LONG
     ' ---- GET SIZE on the freshly created dialog ---------------------
     w1 = 0 : h1 = 0
     DIALOG GET SIZE g_hDlg TO w1, h1
-    ConPrint "after DIALOG NEW   =" & STR$(w1) & "x" & STR$(h1)
+    ConPrint "after DIALOG NEW   = (per-side default)"
     IF ABS(w1 - 320) > 30 THEN ok = 0
     IF ABS(h1 - 200) > 30 THEN ok = 0
 

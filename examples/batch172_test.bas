@@ -169,27 +169,27 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "--- navigation ---"
     h = 0
     TREEVIEW GET ROOT hDlg, 601 TO h
-    ConPrint "root == hRoot -> " & STR$(h) & " / " & STR$(hRoot)
+    ConPrint "root == hRoot -> <equal nonzero handles>"
     IF h <> hRoot THEN fail = fail + 1
 
     h = 0
     TREEVIEW GET CHILD hDlg, 601, hRoot TO h
-    ConPrint "child == hA  -> " & STR$(h) & " / " & STR$(hA)
+    ConPrint "child == hA  -> <equal nonzero handles>"
     IF h <> hA THEN fail = fail + 1
 
     h = 0
     TREEVIEW GET NEXT hDlg, 601, hA TO h
-    ConPrint "next == hB   -> " & STR$(h) & " / " & STR$(hB)
+    ConPrint "next == hB   -> <equal nonzero handles>"
     IF h <> hB THEN fail = fail + 1
 
     h = 0
     TREEVIEW GET PREVIOUS hDlg, 601, hB TO h
-    ConPrint "prev == hA   -> " & STR$(h) & " / " & STR$(hA)
+    ConPrint "prev == hA   -> <equal nonzero handles>"
     IF h <> hA THEN fail = fail + 1
 
     h = 0
     TREEVIEW GET PARENT hDlg, 601, hA TO h
-    ConPrint "parent == hRoot -> " & STR$(h) & " / " & STR$(hRoot)
+    ConPrint "parent == hRoot -> <equal nonzero handles>"
     IF h <> hRoot THEN fail = fail + 1
 
     ' The four "there is no such item" paths all promise 0.
@@ -269,7 +269,7 @@ FUNCTION PBMAIN () AS LONG
     TREEVIEW SELECT hDlg, 601, hB
     h = 0
     TREEVIEW GET SELECT hDlg, 601 TO h
-    ConPrint "select       -> " & STR$(h) & " / " & STR$(hB)
+    ConPrint "select       -> <equal nonzero handles>"
     IF h <> hB THEN fail = fail + 1
 
     TREEVIEW UNSELECT hDlg, 601

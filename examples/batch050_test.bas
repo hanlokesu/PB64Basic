@@ -36,6 +36,8 @@ SUB ConWaitKey()
 END SUB
 
 ' PowerBasilisk Enhanced - batch50_test.bas
+' NOTE: menu bar/popup handles are per-process values (PBWin32 vs fork x64);
+'       print normalized, assertion only checks <>0.
 ' MENU NEW BAR / NEW POPUP / ADD STRING / ADD POPUP / DELETE (batch 50)
 FUNCTION PBMAIN() AS LONG
     LOCAL hbar AS LONG
@@ -48,7 +50,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "FAIL: menu bar handle is zero"
         INCR fails
     ELSE
-        ConPrint "OK: menu bar handle " & STR$(hbar)
+        ConPrint "OK: menu bar handle (nonzero; value differs by bitness)"
     END IF
 
     MENU NEW POPUP TO hpop
@@ -56,7 +58,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "FAIL: popup handle is zero"
         INCR fails
     ELSE
-        ConPrint "OK: popup handle " & STR$(hpop)
+        ConPrint "OK: popup handle (nonzero; value differs by bitness)"
     END IF
 
     MENU ADD STRING, hbar, "File", 100, 0

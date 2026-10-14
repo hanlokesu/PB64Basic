@@ -49,6 +49,9 @@ END SUB
 ' Pointer results (GLOBALMEM LOCK, IMPORT ADDR, IMAGELIST NEW) are 64-bit
 ' addresses: hold them in QUAD.  A LONG truncates them to 0 on this target.
 ' The trace file this program writes is checked externally by the harness:
+' NOTE: alloc handle and LOCK pointer are per-process values (PBWin32 vs fork
+'   x64; the LOCK pointer truncates to 32-bit and may print negative). Both are
+'   normalized to <nonzero>; the non-zero assertions are retained.
 ' it must contain exactly the two lines "alpha" and "42".
 '=====================================================================
 FUNCTION PBMAIN () AS LONG
@@ -61,7 +64,7 @@ FUNCTION PBMAIN () AS LONG
     fails = 0
 
     GLOBALMEM ALLOC 64 TO h
-    ConPrint "alloc handle = " & STR$(h)
+    ConPrint "alloc handle = <nonzero>"
     IF h = 0 THEN fails = fails + 1
 
     GLOBALMEM SIZE h TO sz
@@ -69,7 +72,7 @@ FUNCTION PBMAIN () AS LONG
     IF sz < 64 THEN fails = fails + 1
 
     GLOBALMEM LOCK h TO p
-    ConPrint "lock pointer = " & STR$(p)
+    ConPrint "lock pointer = <nonzero>"
     IF p = 0 THEN fails = fails + 1
 
     GLOBALMEM UNLOCK h TO scratch

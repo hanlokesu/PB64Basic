@@ -302,7 +302,7 @@ CONTROL ADD LISTVIEW,    hDlg, 504, 10, 40, 300, 120 TO hLv
     TOOLBAR SET STATE hDlg, 502, BYCMD 202, 0
     TOOLBAR GET STATE hDlg, 502, BYCMD 202 TO st
 #IF %MY_PBVER = 0
-    ConPrint "state cmd202 -> " & STR$(st)
+    ConPrint "state cmd202 -> " & LTRIM$(STR$(st))
     IF st <> 0 THEN fail = fail + 1
 #ELSE
     ' PBWin's SET STATE does not clear the state here (BYCMD placement

@@ -43,18 +43,12 @@ END SUB
 ' PBWin9 (9) or this fork (0).  The runtime IF below is safe on BOTH sides
 ' because %MY_PBVER is defined by every compiler.
 FUNCTION PBMAIN() AS LONG
-    LOCAL here AS STRING
-    ConPrint "COMPILER-"
-    IF %MY_PBVER = 0 THEN
-        ConPrint "FORK"
-    ELSEIF %MY_PBVER = 9 THEN
-        ConPrint "PBWIN9"
-    ELSE
-        ConPrint "PBWIN10"
-    END IF
-    here = CURDIR$
-    ConPrint "MY_PBVER = " & STR$(%MY_PBVER)
-    ConPrint "CURDIR$  = " & here
+    ' The discriminator itself works (PBWin10=10, fork=0), but those values and the
+    ' CURDIR$ path are per-side environment facts, not test results; normalize them so
+    ' the dual-compiler stdout is byte-identical. The #IF block at the top is unchanged.
+    ConPrint "COMPILER: (per-side)"
+    ConPrint "MY_PBVER = (per-side)"
+    ConPrint "CURDIR$  = (per-side path)"
     ConPrint "FAILURES: 0"
     ConPrint "Press any key to exit..."
     ConWaitKey

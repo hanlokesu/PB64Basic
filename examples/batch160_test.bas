@@ -81,7 +81,7 @@ FUNCTION PBMAIN () AS LONG
     IF n <= 0 THEN ok = 0
 
     n = METRICS(Frame.Resize.X)
-    ConPrint "Frame.Resize.X =" & STR$(n)
+    ConPrint "Frame.Resize.X = (per-side value)"
     IF n <= 0 THEN ok = 0
 
     ' ---- METRICS: single-word names --------------------------------

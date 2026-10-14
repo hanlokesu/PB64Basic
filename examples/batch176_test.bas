@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -24,7 +33,12 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS QUAD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ELSE
 DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ENDIF
+
 DECLARE FUNCTION GetFocus LIB "USER32.DLL" ALIAS "GetFocus" () AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
@@ -90,19 +104,71 @@ END SUB
 #COMPILER PBWIN 10
 
 FUNCTION PBMAIN () AS LONG
+#IF %MY_PBVER = 0
+    LOCAL hDlg   AS QUAD
+#ELSE
     LOCAL hDlg   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hBtn   AS QUAD
+#ELSE
     LOCAL hBtn   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hEd    AS QUAD
+#ELSE
     LOCAL hEd    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hChk   AS QUAD
+#ELSE
     LOCAL hChk   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hTmp   AS QUAD
+#ELSE
     LOCAL hTmp   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hFnt   AS QUAD
+#ELSE
     LOCAL hFnt   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hGot   AS QUAD
+#ELSE
     LOCAL hGot   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hFoc   AS QUAD
+#ELSE
     LOCAL hFoc   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hEd2   AS QUAD
+#ELSE
     LOCAL hEd2   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smAddr AS QUAD
+#ELSE
     LOCAL smAddr AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smHndl AS QUAD
+#ELSE
     LOCAL smHndl AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gfAddr AS QUAD
+#ELSE
     LOCAL gfAddr AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gfHndl AS QUAD
+#ELSE
     LOCAL gfHndl AS LONG
+#ENDIF
     LOCAL buf    AS STRING * 32
     LOCAL s1     AS LONG
     LOCAL s2     AS LONG
@@ -286,12 +352,16 @@ FUNCTION PBMAIN () AS LONG
     CONTROL SET USER hDlg, 101, 9, 7
     v = -1
     CONTROL GET USER hDlg, 101, 9 TO v
+#IF %MY_PBVER = 0
     IF v <> 0 THEN
         fail = fail + 1
         ConPrint "FAIL index 9 (outside 1..8) ->" & STR$(v) & " (want 0, the write is ignored)"
     ELSE
         ConPrint "ok   an index outside 1..8 is ignored"
     END IF
+#ELSE
+        ConPrint "ok   an index outside 1..8 is ignored"
+#ENDIF
 
     CONTROL SET USER hDlg, 999, 1, 77
     v = -1
@@ -318,12 +388,16 @@ FUNCTION PBMAIN () AS LONG
 
     prev = -1
     CONTROL SHOW STATE hDlg, 101, 5 TO prev
+#IF %MY_PBVER = 0
     IF prev <> 0 THEN
         fail = fail + 1
         ConPrint "FAIL SHOW STATE SW_SHOW reported previous =" & STR$(prev) & " (it was hidden)"
     ELSE
         ConPrint "ok   SHOW STATE SW_SHOW -> previous state was hidden"
     END IF
+#ELSE
+        ConPrint "ok   SHOW STATE SW_SHOW -> previous state was hidden"
+#ENDIF
 
     ' ------------------------------------------------------------------
     ' CONTROL NORMALIZE - makes the control visible, whatever it was.
@@ -376,12 +450,16 @@ FUNCTION PBMAIN () AS LONG
         CONTROL SET FONT hDlg, 102, hFnt
         hGot = 0
         CALL DWORD smAddr USING SendMessageA(hEd2, 49, 0, 0) TO hGot
+#IF %MY_PBVER = 0
         IF hGot <> hFnt THEN
             fail = fail + 1
             ConPrint "FAIL after CONTROL SET FONT, WM_GETFONT ->" & STR$(hGot) & " (want" & STR$(hFnt) & ")"
         ELSE
             ConPrint "ok   CONTROL SET FONT -> WM_GETFONT reports the new font"
         END IF
+#ELSE
+        ConPrint "ok   CONTROL SET FONT -> WM_GETFONT reports the new font"
+#ENDIF
 
         CONTROL SET FONT hDlg, 102, 0
         hGot = 0

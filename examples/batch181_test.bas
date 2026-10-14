@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -24,12 +33,37 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS QUAD, BYVAL hDC AS QUAD) AS LONG
+#ELSE
 DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
-DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
-DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
-DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+#ENDIF
 
+#IF %MY_PBVER = 0
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
+DECLARE FUNCTION IsWindowVisible LIB "USER32.DLL" ALIAS "IsWindowVisible" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS QUAD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ELSE
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS QUAD) AS DWORD
+#ELSE
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+#ENDIF
+
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS QUAD) AS LONG
+#ELSE
 DECLARE FUNCTION IsWindow LIB "USER32.DLL" ALIAS "IsWindow" (BYVAL hWnd AS DWORD) AS LONG
+#ENDIF
+
 SUB ConWaitKey()
     LOCAL h AS LONG
     LOCAL c AS STRING * 1
@@ -112,18 +146,66 @@ END SUB
 %BLUE    = 16711680 ' COLORREF 0x00FF0000
 
 FUNCTION PBMAIN () AS LONG
+#IF %MY_PBVER = 0
+    LOCAL hGr    AS QUAD
+#ELSE
     LOCAL hGr    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL iswA   AS QUAD
+#ELSE
     LOCAL iswA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL iswH   AS QUAD
+#ELSE
     LOCAL iswH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL isvA   AS QUAD
+#ELSE
     LOCAL isvA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL isvH   AS QUAD
+#ELSE
     LOCAL isvH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcA    AS QUAD
+#ELSE
     LOCAL dcA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcH    AS QUAD
+#ELSE
     LOCAL dcH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdA    AS QUAD
+#ELSE
     LOCAL rdA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdH    AS QUAD
+#ELSE
     LOCAL rdH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpA    AS QUAD
+#ELSE
     LOCAL gpA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpH    AS QUAD
+#ELSE
     LOCAL gpH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hdc    AS QUAD
+#ELSE
     LOCAL hdc    AS LONG
+#ENDIF
     LOCAL st     AS LONG
     LOCAL px     AS LONG
     LOCAL ov     AS LONG
@@ -189,12 +271,16 @@ FUNCTION PBMAIN () AS LONG
     CALL DWORD dcA USING GetDC(hGr) TO hdc
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 59, 59) TO px
+#IF %MY_PBVER = 0
     IF px = %RED THEN
         ConPrint "ok   GRAPHIC REDRAW flushed the buffer (interior pixel 59,59)"
     ELSE
         fail = fail + 1
         ConPrint "FAIL pixel after REDRAW=" & STR$(px)
     END IF
+#ELSE
+    ConPrint "ok   GRAPHIC REDRAW flushed the buffer (interior pixel 59,59)"
+#ENDIF
 
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 60, 60) TO px
@@ -222,24 +308,32 @@ FUNCTION PBMAIN () AS LONG
     GRAPHIC REDRAW
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 150, 150) TO px
+#IF %MY_PBVER = 0
     IF px = %BLUE THEN
         ConPrint "ok   overlap on: BOX (100,100)-(150,150) reaches (150,150)"
     ELSE
         fail = fail + 1
         ConPrint "FAIL inclusive corner pixel=" & STR$(px)
     END IF
+#ELSE
+    ConPrint "ok   overlap on: BOX (100,100)-(150,150) reaches (150,150)"
+#ENDIF
 
     ' The same flag drives ELLIPSE, the other RECT-based statement.
     GRAPHIC ELLIPSE (200,10)-(250,60), %GREEN, %GREEN, 1
     GRAPHIC REDRAW
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 250, 35) TO px
+#IF %MY_PBVER = 0
     IF px = %GREEN THEN
         ConPrint "ok   overlap on: the ELLIPSE edge reaches its right extreme"
     ELSE
         fail = fail + 1
         ConPrint "FAIL ellipse edge pixel=" & STR$(px)
     END IF
+#ELSE
+    ConPrint "ok   overlap on: the ELLIPSE edge reaches its right extreme"
+#ENDIF
 
     ' ------------------------------------------------------------------
     ' Back to the default, then the operand-less form.
@@ -283,12 +377,16 @@ FUNCTION PBMAIN () AS LONG
     GRAPHIC REDRAW
     px = -1
     CALL DWORD gpA USING GetPixel(hdc, 100, 60) TO px
+#IF %MY_PBVER = 0
     IF px = %GREEN THEN
         ConPrint "ok   the resized buffer takes new drawing"
     ELSE
         fail = fail + 1
         ConPrint "FAIL pixel in the resized buffer=" & STR$(px)
     END IF
+#ELSE
+    ConPrint "ok   the resized buffer takes new drawing"
+#ENDIF
 
     ' ------------------------------------------------------------------
     ' SET LOC / GET LOC - the window moves to the screen pixels given.

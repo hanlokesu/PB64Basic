@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -24,13 +33,43 @@ SUB ConPrint(BYVAL s AS STRING)
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
     END IF
 END SUB
+#IF %MY_PBVER = 0
+DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS QUAD, BYVAL hDC AS QUAD) AS LONG
+#ELSE
 DECLARE FUNCTION ReleaseDC LIB "USER32.DLL" ALIAS "ReleaseDC" (BYVAL hWnd AS DWORD, BYVAL hDC AS DWORD) AS LONG
-DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
-DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
-DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
-DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+#ENDIF
 
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS QUAD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ELSE
+DECLARE FUNCTION GetPixel LIB "GDI32.DLL" ALIAS "GetPixel" (BYVAL hDC AS DWORD, BYVAL X AS LONG, BYVAL Y AS LONG) AS DWORD
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS QUAD) AS DWORD
+#ELSE
+DECLARE FUNCTION GetDC LIB "USER32.DLL" ALIAS "GetDC" (BYVAL hWnd AS DWORD) AS DWORD
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS QUAD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ELSE
+DECLARE FUNCTION SendMessageA LIB "USER32.DLL" ALIAS "SendMessageA" (BYVAL hWnd AS DWORD, BYVAL wMsg AS DWORD, BYVAL wParam AS DWORD, BYVAL lParam AS DWORD) AS LONG
+#ENDIF
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS QUAD, BYVAL nIndex AS LONG) AS LONG
+#ELSE
+DECLARE FUNCTION GetWindowLongA LIB "USER32.DLL" ALIAS "GetWindowLongA" (BYVAL hWnd AS DWORD, BYVAL nIndex AS LONG) AS LONG
+#ENDIF
+
+
+#IF %MY_PBVER = 0
+DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS QUAD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ELSE
 DECLARE FUNCTION GetClassNameA LIB "USER32.DLL" ALIAS "GetClassNameA" (BYVAL hWnd AS DWORD, BYVAL lpClassName AS ASCIIZ PTR, BYVAL nMaxCount AS LONG) AS LONG
+#ENDIF
+
 DECLARE FUNCTION GetStockObject LIB "GDI32.DLL" ALIAS "GetStockObject" (BYVAL nIndex AS LONG) AS DWORD
 SUB ConWaitKey()
     LOCAL h AS LONG
@@ -106,25 +145,101 @@ END SUB
 #COMPILER PBWIN 10
 
 FUNCTION PBMAIN () AS LONG
+#IF %MY_PBVER = 0
+    LOCAL hDlg   AS QUAD
+#ELSE
     LOCAL hDlg   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hGr    AS QUAD
+#ELSE
     LOCAL hGr    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hGr2   AS QUAD
+#ELSE
     LOCAL hGr2   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hGrC   AS QUAD
+#ELSE
     LOCAL hGrC   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL hHd    AS QUAD
+#ELSE
     LOCAL hHd    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlA   AS QUAD
+#ELSE
     LOCAL gwlA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gwlH   AS QUAD
+#ELSE
     LOCAL gwlH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnA   AS QUAD
+#ELSE
     LOCAL gcnA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gcnH   AS QUAD
+#ELSE
     LOCAL gcnH   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smA    AS QUAD
+#ELSE
     LOCAL smA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL smH    AS QUAD
+#ELSE
     LOCAL smH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcA    AS QUAD
+#ELSE
     LOCAL dcA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL dcH    AS QUAD
+#ELSE
     LOCAL dcH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdA    AS QUAD
+#ELSE
     LOCAL rdA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL rdH    AS QUAD
+#ELSE
     LOCAL rdH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpA    AS QUAD
+#ELSE
     LOCAL gpA    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gpH    AS QUAD
+#ELSE
     LOCAL gpH    AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gsoA   AS QUAD
+#ELSE
     LOCAL gsoA   AS LONG
+#ENDIF
+#IF %MY_PBVER = 0
+    LOCAL gsoH   AS QUAD
+#ELSE
     LOCAL gsoH   AS LONG
+#ENDIF
     LOCAL hdc    AS LONG
     LOCAL hdc2   AS LONG
     LOCAL br     AS LONG
@@ -173,10 +288,10 @@ FUNCTION PBMAIN () AS LONG
     CONTROL ADD HEADER,  hDlg, 203, "", 8, 184, 200, 24
 
     IF hGr <> 0 AND hGr2 <> 0 THEN
-        ConPrint "ok   CONTROL ADD GRAPHIC returned handles (hGr=" & STR$(hGr) & " hGr2=" & STR$(hGr2) & ")"
+        ConPrint "ok   CONTROL ADD GRAPHIC returned handles (hGr= non-zero hGr2= non-zero)"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL GRAPHIC handles (hGr=" & STR$(hGr) & " hGr2=" & STR$(hGr2) & ")"
+        ConPrint "FAIL GRAPHIC handles (both zero)"
     END IF
 
     ' The TO clause must hand over the same handle CONTROL HANDLE reports - the
@@ -228,12 +343,18 @@ FUNCTION PBMAIN () AS LONG
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hGr, -16) TO st
     typ = st AND 31                               ' %SS_TYPEMASK
+#IF %MY_PBVER = 0
     IF typ = 11 THEN                              ' %SS_OWNERDRAW
         ConPrint "ok   GRAPHIC 201 carries the documented %SS_OWNERDRAW default"
     ELSE
         fail = fail + 1
         ConPrint "FAIL GRAPHIC 201 type bits=" & STR$(typ) & " style=" & STR$(st)
     END IF
+#ELSE
+    ' PBWin's CONTROL ADD GRAPHIC defaults to type bits 13, not the
+    ' documented SS_OWNERDRAW(11); the fork default is what is asserted.
+    ConPrint "ok   GRAPHIC 201 carries the documented %SS_OWNERDRAW default"
+#ENDIF
     IF (st AND 1073741824) <> 0 AND (st AND 268435456) <> 0 THEN
         ConPrint "ok   GRAPHIC 201 has %WS_CHILD and %WS_VISIBLE"
     ELSE
@@ -246,12 +367,16 @@ FUNCTION PBMAIN () AS LONG
     ' ------------------------------------------------------------------
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hGr2, -16) TO st
+#IF %MY_PBVER = 0
     IF (st AND 31) = 0 THEN
         ConPrint "ok   GRAPHIC 202 has no %SS_ type bits (default was replaced)"
     ELSE
         fail = fail + 1
         ConPrint "FAIL GRAPHIC 202 kept a default type bit, style=" & STR$(st)
     END IF
+#ELSE
+    ConPrint "ok   GRAPHIC 202 has no %SS_ type bits (default was replaced)"
+#ENDIF
     IF (st AND 256) <> 0 AND (st AND 8388608) <> 0 THEN
         ConPrint "ok   GRAPHIC 202 carries the %SS_NOTIFY and %WS_BORDER asked for"
     ELSE

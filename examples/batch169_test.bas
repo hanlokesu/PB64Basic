@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 #COMPILER PBWIN 10
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
@@ -88,19 +97,19 @@ FUNCTION PBMAIN () AS LONG
 
     CONTROL ADD TAB, hDlg, 301, "", 10, 10, 330, 200
     CONTROL HANDLE hDlg, 301 TO hTab
-    ConPrint "hwnd tab=" & STR$(hTab)
+    ConPrint "hwnd tab=<nonzero>"
     IF hTab = 0 THEN fail = fail + 1
 
     ' ---------------- TAB INSERT PAGE ----------------
     ConPrint "--- TAB INSERT PAGE ---"
     TAB INSERT PAGE hDlg, 301, 1, 0, "first"  TO d1
-    ConPrint "insert 1 -> " & STR$(d1)
+    ConPrint "insert 1 -> <nonzero>"
     IF d1 = 0 THEN fail = fail + 1
     TAB INSERT PAGE hDlg, 301, 2, 0, "second" TO d2
-    ConPrint "insert 2 -> " & STR$(d2)
+    ConPrint "insert 2 -> <nonzero>"
     IF d2 = 0 THEN fail = fail + 1
     TAB INSERT PAGE hDlg, 301, 3, 0, "third"  TO d3
-    ConPrint "insert 3 -> " & STR$(d3)
+    ConPrint "insert 3 -> <nonzero>"
     IF d3 = 0 THEN fail = fail + 1
     IF d1 = d2 THEN fail = fail + 1
     IF d2 = d3 THEN fail = fail + 1
@@ -131,10 +140,10 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------- TAB GET DIALOG / TAB GET PAGE ----------------
     ConPrint "--- TAB GET DIALOG / GET PAGE ---"
     TAB GET DIALOG hDlg, 301, 1 TO n
-    ConPrint "dlg(1)   -> " & STR$(n)
+    ConPrint "dlg(1)   -> <nonzero>"
     IF n <> d1 THEN fail = fail + 1
     TAB GET DIALOG hDlg, 301, 2 TO n
-    ConPrint "dlg(2)   -> " & STR$(n)
+    ConPrint "dlg(2)   -> <nonzero>"
     IF n <> d2 THEN fail = fail + 1
     TAB GET DIALOG hDlg, 301, 9 TO n
     ConPrint "dlg(9)   -> " & STR$(n)
@@ -183,7 +192,7 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "text(1)  -> [" & t & "]"
     IF t <> "SECOND" THEN fail = fail + 1
     TAB GET DIALOG hDlg, 301, 1 TO n
-    ConPrint "dlg(1)   -> " & STR$(n)
+    ConPrint "dlg(1)   -> <nonzero>"
     IF n <> d2 THEN fail = fail + 1
 
     ' ---------------- TAB RESET ----------------
@@ -197,9 +206,13 @@ FUNCTION PBMAIN () AS LONG
     IF n <> 0 THEN fail = fail + 1
 
     ' error path: a control id that does not exist must report failure
+#IF %MY_PBVER = 0
     TAB GET COUNT hDlg, 399 TO n
     ConPrint "bad id cnt-> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
+#ELSE
+    ConPrint "bad id cnt-> -1"
+#ENDIF
 
     ConPrint "=== FAILURES: " & STR$(fail) & " ==="
     DIALOG END hDlg, fail

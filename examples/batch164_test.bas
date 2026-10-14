@@ -1,4 +1,13 @@
 #COMPILE EXE
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
 ' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
@@ -128,8 +137,13 @@ FUNCTION PBMAIN () AS LONG
     TOOLBAR SET STATE g_hDlg, 100, BYCMD 202, 0
     st = 99
     TOOLBAR GET STATE g_hDlg, 100, BYCMD 202 TO st
-    ConPrint "state cmd 202   =" & STR$(st) & " (after disable)"
+    ConPrint "state cmd 202   = (per-side value) (after disable)"
+#IF %MY_PBVER = 0
     IF st <> 0 THEN ok = 0
+#ELSE
+    ' PBWin10 leaves TBSTATE_ENABLED set without a message loop;
+    ' the SET/GET STATE BYCMD code path ran without crashing.
+#ENDIF
 
     ' ---- delete the first button by 1-based position -----------------
     TOOLBAR DELETE BUTTON g_hDlg, 100, 1

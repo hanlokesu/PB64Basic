@@ -36,6 +36,8 @@ SUB ConWaitKey()
 END SUB
 
 ' Batch 97: THREADID (missing function from CHM audit)
+' NOTE: THREADID is a per-process value (PBWin32 vs fork x64); print normalized,
+'       assertion only checks <>0.
 FUNCTION PBMAIN() AS LONG
     LOCAL tid AS LONG
     LOCAL pass AS LONG
@@ -47,7 +49,7 @@ FUNCTION PBMAIN() AS LONG
     ' Test 1: THREADID returns non-zero
     tid = THREADID
     IF tid <> 0 THEN
-        ConPrint "Test 1 THREADID=" & STR$(tid) & " OK"
+        ConPrint "Test 1 THREADID=<nonzero> OK"
         pass = pass + 1
     ELSE
         ConPrint "Test 1 THREADID=" & STR$(tid) & " FAIL (expected non-zero)"
@@ -56,7 +58,7 @@ FUNCTION PBMAIN() AS LONG
     ' Test 2: THREADID with parentheses also works
     tid = THREADID
     IF tid <> 0 THEN
-        ConPrint "Test 2 THREADID()=" & STR$(tid) & " OK"
+        ConPrint "Test 2 THREADID()=<nonzero> OK"
         pass = pass + 1
     ELSE
         ConPrint "Test 2 THREADID()=" & STR$(tid) & " FAIL (expected non-zero)"

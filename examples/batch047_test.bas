@@ -28,6 +28,8 @@ SUB ConWaitKey()
 END SUB
 
 ' PowerBasilisk Enhanced - batch47_test.bas
+' NOTE: font handles are per-process values (PBWin32 vs fork x64); print normalized,
+'       assertion only checks <>0. See dual-run normalization recipe.
 ' FONT NEW / FONT END (tier-3 -> implemented, batch 47)
 FUNCTION PBMAIN() AS LONG
     LOCAL hfont AS LONG
@@ -41,7 +43,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "FAIL: font handle is zero"
         INCR fails
     ELSE
-        ConPrint "OK: font handle " & STR$(hfont)
+        ConPrint "OK: font handle (nonzero; value differs by bitness)"
     END IF
 
     ' FONT NEW with style (bold+italic), points, charset
@@ -50,7 +52,7 @@ FUNCTION PBMAIN() AS LONG
         ConPrint "FAIL: styled font handle is zero"
         INCR fails
     ELSE
-        ConPrint "OK: styled font handle " & STR$(h2)
+        ConPrint "OK: styled font handle (nonzero; value differs by bitness)"
     END IF
 
     ' FONT END both
