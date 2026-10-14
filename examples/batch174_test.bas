@@ -91,6 +91,16 @@ END SUB
 ' Complexity note: O(1) - a fixed sequence of menu and dialog calls.
 '=====================================================================
 #COMPILER PBWIN 10
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 
 FUNCTION PBMAIN () AS LONG
     LOCAL hDlg  AS LONG
@@ -98,8 +108,13 @@ FUNCTION PBMAIN () AS LONG
     LOCAL hBar2 AS LONG
     LOCAL hPop  AS LONG
     LOCAL hGot  AS LONG
-    LOCAL gaddr AS LONG
-    LOCAL ghndl AS LONG
+    #IF %MY_PBVER = 10
+        LOCAL gaddr AS LONG
+        LOCAL ghndl AS LONG
+    #ELSE
+        LOCAL gaddr AS QUAD
+        LOCAL ghndl AS QUAD
+    #ENDIF
     LOCAL cw    AS LONG
     LOCAL ch0   AS LONG         ' client height with no menu
     LOCAL ch1   AS LONG         ' client height with bar1
@@ -114,7 +129,13 @@ FUNCTION PBMAIN () AS LONG
 
     ' GetMenu from USER32 - the only way a PB program can read back which menu a
     ' dialog carries.
-    IMPORT ADDR "GetMenu", "USER32.DLL" TO gaddr, ghndl
+    #IF %MY_PBVER = 10
+        ' PBWin: CALL DWORD cannot read GetMenu (returns 0 and breaks the
+        ' dialog's client queries - probe174pb); use the direct DECLARE call.
+        gaddr = 1
+    #ELSE
+        IMPORT ADDR "GetMenu", "USER32.DLL" TO gaddr, ghndl
+    #ENDIF
     IF gaddr = 0 THEN
         fail = fail + 1
         ConPrint "FAIL IMPORT ADDR GetMenu failed - cannot verify attachment"
@@ -124,7 +145,11 @@ FUNCTION PBMAIN () AS LONG
     ' A fresh dialog carries no menu.
     ' ---------------------------------------------------------------
     hGot = 12345
-    CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #IF %MY_PBVER = 10
+        hGot = GetMenu(hDlg)
+    #ELSE
+        CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #ENDIF
     IF hGot <> 0 THEN
         fail = fail + 1
         ConPrint "FAIL GetMenu before attach ->" & STR$(hGot) & " (expected 0, a bare dialog has no menu)"
@@ -164,7 +189,11 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------------------------------------------------------
     MENU ATTACH hBar1, hDlg
     hGot = 0
-    CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #IF %MY_PBVER = 10
+        hGot = GetMenu(hDlg)
+    #ELSE
+        CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #ENDIF
     IF hGot <> hBar1 THEN
         fail = fail + 1
         ConPrint "FAIL GetMenu after attach ->" & STR$(hGot) & " (expected the bar" & STR$(hBar1) & ")"
@@ -176,7 +205,7 @@ FUNCTION PBMAIN () AS LONG
         fail = fail + 1
         ConPrint "FAIL client height with menu ->" & STR$(ch1) & " (expected < " & STR$(ch0) & ")"
     ELSE
-        ConPrint "ok   client height shrinks by the menu bar (" & STR$(ch0) & " -> " & STR$(ch1) & ")"
+        ConPrint "ok   client height shrinks by the menu bar (relative)"
     END IF
 
     ' ---------------------------------------------------------------
@@ -184,7 +213,11 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------------------------------------------------------
     MENU ATTACH hBar2, hDlg
     hGot = 0
-    CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #IF %MY_PBVER = 10
+        hGot = GetMenu(hDlg)
+    #ELSE
+        CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #ENDIF
     IF hGot <> hBar2 THEN
         fail = fail + 1
         ConPrint "FAIL GetMenu after replace ->" & STR$(hGot) & " (expected the second bar" & STR$(hBar2) & ")"
@@ -207,7 +240,11 @@ FUNCTION PBMAIN () AS LONG
     MENU ADD STRING, hBar2, "More", 300, 0
     MENU DRAW BAR hDlg
     hGot = 0
-    CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #IF %MY_PBVER = 10
+        hGot = GetMenu(hDlg)
+    #ELSE
+        CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #ENDIF
     IF hGot <> hBar2 THEN
         fail = fail + 1
         ConPrint "FAIL GetMenu after DRAW BAR ->" & STR$(hGot) & " (expected " & STR$(hBar2) & ")"
@@ -235,7 +272,11 @@ FUNCTION PBMAIN () AS LONG
     ' ---------------------------------------------------------------
     MENU ATTACH 0, hDlg
     hGot = 0
-    CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #IF %MY_PBVER = 10
+        hGot = GetMenu(hDlg)
+    #ELSE
+        CALL DWORD gaddr USING GetMenu(hDlg) TO hGot
+    #ENDIF
     IF hGot <> 0 THEN
         fail = fail + 1
         ConPrint "FAIL GetMenu after removal ->" & STR$(hGot) & " (expected 0)"
@@ -247,13 +288,17 @@ FUNCTION PBMAIN () AS LONG
         fail = fail + 1
         ConPrint "FAIL client height after removal ->" & STR$(ch3) & " (expected " & STR$(ch0) & ")"
     ELSE
-        ConPrint "ok   client height restored (" & STR$(ch3) & ")"
+        ConPrint "ok   client height restored (relative)"
     END IF
     MENU DRAW BAR hDlg
     ConPrint "ok   MENU DRAW BAR on a menu-less dialog is harmless"
 
     IF gaddr <> 0 THEN
-        IMPORT CLOSE ghndl
+        #IF %MY_PBVER = 10
+            REM (PBWin branch: nothing was imported)
+        #ELSE
+            IMPORT CLOSE ghndl
+        #ENDIF
     END IF
     ConPrint "=== FAILURES:" & STR$(fail) & " ==="
     DIALOG END hDlg, fail

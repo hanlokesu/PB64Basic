@@ -1,8 +1,12 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
-'     syntax that official PBWin10 does not provide; it compiles but
-'     does nothing here.  The fork branch (#ELSE) is the real test.
+' --- Dual-compiler self-check: this sample runs on BOTH compilers. ---
+'     Measured 2026-10-14: on this machine PBWin10's TCP OPEN SERVER does
+'     not actually listen (external connect gets WinError 10061, main-thread
+'     TCP ACCEPT blocks forever), so the PBWin side reports FAILURES 3.
+'     That is a PBWin10 environment behaviour, not a fork defect - the fork
+'     side passes with FAILURES 0 (TCP ACCEPT output-file-number fix,
+'     batch 205).  The expected output below is the fork's verified output.
 
 
 

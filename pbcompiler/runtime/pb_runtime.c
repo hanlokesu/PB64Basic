@@ -3490,15 +3490,22 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout)
     return 0;
 }
 
-int pb_tcp_accept(int srv, int newf) {
+int pb_tcp_accept(int srv, int* out_newf) {
+    /* batch205: `TCP ACCEPT #srv AS newf` - newf is an OUTPUT variable whose
+       value is 0 before the call, so it must not be validated as an input
+       file number.  Accept, then allocate the next free file number and write
+       it back (PBWin semantics: the runtime assigns the file number). */
     if (srv < 1 || srv >= PB_MAX_SOCK || pb_sock_state[srv] != 3) { pb_err = 52; return -1; }
-    if (newf < 1 || newf >= PB_MAX_SOCK || pb_sock_state[newf] != 0) { pb_err = 52; return -1; }
     struct pb_sockaddr_in a;
     int alen = sizeof(a);
     pb_sock_t s = accept(pb_sock[srv], &a, &alen);
     if (s == PB_SOCK_INVALID) { pb_err = 57; return -1; }
-    pb_sock[newf] = s;
-    pb_sock_state[newf] = 1;
+    int f = 1;
+    while (f < PB_MAX_SOCK && pb_sock_state[f] != 0) f++;
+    if (f >= PB_MAX_SOCK) { closesocket(s); pb_err = 52; return -1; }
+    pb_sock[f] = s;
+    pb_sock_state[f] = 1;
+    if (out_newf) *out_newf = f;
     return 0;
 }
 

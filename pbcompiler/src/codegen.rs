@@ -4993,7 +4993,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_tcp_accept",
             &IrType::I32,
-            &[IrType::I32, IrType::I32],
+            &[IrType::I32, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -16631,11 +16631,13 @@ impl Compiler {
                 return Ok(());
             }
             "TCP ACCEPT" => {
+                // TCP ACCEPT #srv AS newf  (newf is an OUTPUT variable: the
+                // runtime allocates the accepted socket's file number into it)
                 let _e0 = self.compile_expr(fb, &call.args[0])?;
                 let srv = self.to_i32(fb, &_e0);
-                let _e1 = self.compile_expr(fb, &call.args[1])?;
-                let newf = self.to_i32(fb, &_e1);
-                fb.call_void("pb_tcp_accept", &[srv, newf]);
+                if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
+                    fb.call_void("pb_tcp_accept", &[srv, ptr]);
+                }
                 return Ok(());
             }
             "TCP SEND" => {
