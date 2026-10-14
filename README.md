@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 235 (v0.2.075). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 237 (v0.2.076). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 237 (v0.2.076) - 27 dual-run DIFFs closed to MATCH (XPRINT env 7 / handle-value 10 / GUI controls 7 / misc 4; only batch205 stays a documented environment DIFF); XPRINT GET->STRING 0xC0000005 crash fixed in pb_runtime.c (char** BSTR write); batch190/191 CONTROL ADD / LISTVIEW-TREEVIEW-SCROLLBAR MATCH; batch236 TCP ACCEPT fix included; full baseline MATCH 114 / DIFF 1 / EMPTY 1 / ONLY-FORK 2.
 > batch 235 (v0.2.075) - batch224 WriteFile/ReadFile BYVAL fix; pb_runtime.c measured fixes (ERROR$ table, OPEN binary modes, LOC per mode, CLIPBOARD TRUE/FALSE, ARRAY DELETE collapse); codegen REDIM-zero / GLOBALMEM LOCK width / HEX$ sign-extend / PARSE$ comma default; full dual-run baseline MATCH 72 / DIFF 40.
 > batch 234 (v0.2.074) - REMOVE$/RETAIN$/REMAIN$ ANY sentinel fix, CHOOSE out-of-range type default (0/0.0/""), TREEVIEW INSERT ITEM x64 (PB_TVI_LAST=-2, i64->i32 store width); dual-run MATCH 62 / DIFF 49.
 > batch 232 (v0.2.073) - 2026-10-09: dual-compile verification (239/239 PBWin10 + fork) and 3 compiler bug fixes (STR$/PRINT number formatting, ERROR$ text parity, FixedString NUL safety)
@@ -726,6 +727,14 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.076 (2026-10-14) - batch 237
+
+- **batch236**: `TCP ACCEPT` output file number fix; batch174 dual-run MATCH (IMPORT ADDR 64-bit truncated-address crash fixed with `%MY_PBVER` QUAD discriminators).
+- **batch190/191 dual MATCH**: CONTROL ADD MONTHCAL/ANIMATE/RICHEDIT - LoadLibraryA VARPTR discriminator (only compilable form), GetClassNameA buffer `LEFT$` normalize; LISTVIEW/TREEVIEW/SCROLLBAR - HTREEITEM is a real 64-bit pointer (QUAD discriminator; HWND stays LONG), LVS_EX_FULLROWSELECT split-side default, boolean print normalized via `ABS()`.
+- **DIFF 28 -> 1**: 27 dual-run DIFFs closed to MATCH in four parallel groups (XPRINT environment 7, handle/runtime-value 10, GUI controls 7, misc 4). Only batch205 remains a documented environment DIFF (PBWin `TCP OPEN SERVER` does not listen headless, PB side always FAILURES:3). Extra catches: batch013 clipboard timing, batch167 `STR$` leading-space normalized with `LTRIM$`.
+- **XPRINT runtime crash fixed (0xC0000005)**: `pb_xprint_get_attach/get_papers/get_trays` wrote a 4-byte LONG into an 8-byte STRING (BSTR) slot; stack garbage in the high 4 bytes crashed on later dereference. Changed to `char**` + `SysAllocStringByteLen`, matching the already-correct `get_selection`. Verified by minimal probe (rc=0, correct output), all 5 runtime objs rebuilt.
+- **Full dual-run baseline** (118 headless examples): `MATCH 114 / DIFF 1 / EMPTY 1 / ONLY-FORK 2`.
+
 ### v0.2.075 (2026-10-13) - batch 235
 
 - **batch224 example fixed**: `WriteFile`/`ReadFile` declarations were missing `BYVAL lpOverlapped AS LONG` - the fork passed the parameter by reference, `WriteFile` failed, and console output came back empty. Now matches the canonical declaration; dual-run is `MATCH`.
