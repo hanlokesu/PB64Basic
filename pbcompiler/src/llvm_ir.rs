@@ -1,3 +1,8 @@
+// =====================================================================
+// Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+// Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
+// See LICENSE for the full license terms.
+// =====================================================================
 //! Type-safe LLVM IR text builder.
 //!
 //! Generates LLVM IR (.ll) text that can be compiled by `clang`.

@@ -1,3 +1,8 @@
+' =====================================================================
+' Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+' Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
+' See LICENSE for the full license terms.
+' =====================================================================
 ' L9: FORMAT$, PARSE$, PARSECOUNT, REMOVE$
 ' Tests PB runtime library functions.
 ' Exit 0 = all tests pass.

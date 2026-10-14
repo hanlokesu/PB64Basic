@@ -1,3 +1,8 @@
+' =====================================================================
+' Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+' Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
+' See LICENSE for the full license terms.
+' =====================================================================
 ' L12: File I/O — OPEN, CLOSE, PRINT#, LINE INPUT#, EOF, FREEFILE, KILL
 FUNCTION PBMAIN() AS LONG
   LOCAL f AS LONG
