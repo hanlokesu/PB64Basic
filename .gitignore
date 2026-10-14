@@ -31,3 +31,6 @@ _bak/
 _bak*/
 *.bak
 *.bak[0-9]
+
+# UTF-8 view copies of GBK+CRLF .bas sources (read-only, never compiled)
+*_source_view.txt
