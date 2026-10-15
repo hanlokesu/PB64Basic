@@ -38,8 +38,8 @@ silently dropped during code generation.
 > - **Early snapshot** — the first implementations from the initial releases of
 > this project (derived from [benstopics/powerbasilisk](https://github.com/benstopics/powerbasilisk)).
 > Later batches were added after this table was written; the complete,
-> current list of every statement/function this branch implements is in the
-> [Newly implemented by this branch](#newly-implemented-by-this-branch)
+> current list of every statement/function this project implements is in the
+> [Newly implemented by this project](#newly-implemented-by-this-project)
 > table below.
 >
 > - **Why this matters:** upstream `pbcompiler` would report "compiled
@@ -485,7 +485,7 @@ exit code 0:
 | CSNG | GRAPHIC SCALE PIXELS | MENU ADD POPUP | TAB SELECT |  |
 | CSTR | GRAPHIC SET AUTOSIZE | MENU ADD STRING | TAB SET IMAGE |  |
 
-## **Newly** implemented by this branch
+## **Newly** implemented by this project
 
 > **713 official keywords implemented by this project** (every official keyword this project added or completed). Verified via live compilation and testing. Listed alphabetically below.
 
