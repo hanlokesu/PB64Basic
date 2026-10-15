@@ -118,17 +118,17 @@ and expression functions with no implementation (`Unknown function — 0`).
 
 **Option A — no toolchain needed (recommended): download the prebuilt
 package from [Releases](https://github.com/hanlokesu/PB64Basic/releases).**
-Pick the latest `PowerBasilisk-Enhanced-vX.Y.Z-x64.zip`; it already contains
+Pick the latest `PB64Basic-vX.Y.Z-x64.zip`; it already contains
 the compiled `pbcompiler.exe`, the 64-bit runtime `pb_runtime_x64.obj`, sample
 programs and a one-click `compile.bat`. Unzip and run:
 
 ```bat
-cd PowerBasilisk-Enhanced-v0.1.21-x64
+cd PB64Basic-v0.1.21-x64
 compile.bat          :: builds examples\demo.bas -> examples\demo.exe
 ```
 
 > **Which download should I use?** The green **Code → Download ZIP** button
-> (named `powerbasilisk-main.zip` by GitHub) is the **raw source tree only** —
+> (named `PB64Basic-main.zip` by GitHub) is the **raw source tree only** —
 > no executable inside; it is meant for developers building from source. New
 > users who just want to compile PB programs should use the **Releases**
 > package instead. (GitHub also auto-attaches "Source code (zip)" archives to
