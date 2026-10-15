@@ -164,10 +164,12 @@ impl PbError {
         if m.contains("not an lvalue") || m.contains("may not be altered") {
             return 542;
         }
-        // Missing declaration (undeclared identifier under #DIM ALL etc.)
+        // Missing declaration (undeclared identifier under #DIM ALL /
+        // OPTION EXPLICIT / ...)
         if m.contains("missing declaration")
             || m.contains("not declared")
             || m.contains("undeclared")
+            || m.contains("must be declared")
         {
             return 519;
         }
@@ -176,6 +178,11 @@ impl PbError {
         // AS... required").
         if m.contains("deftype") || m.contains("type id") || m.contains("type-id") {
             return 516;
+        }
+        // String operand expected -> Error 421 (PBWin: assigning a numeric
+        // value to a string-typed variable, e.g. `x AS STRING : x = 5`).
+        if m.contains("string operand") {
+            return 421;
         }
         // Token expectations -> generic syntax error 477 (a more specific 4xx
         // "expected" code is left as future work; 477 is what PBWin returns for

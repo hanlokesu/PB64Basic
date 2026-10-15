@@ -6810,6 +6810,24 @@ impl Compiler {
                     let ptr_name = info.ptr_name.clone();
                     let target_ir = info.ir_type.clone();
                     let target_pb = info.pb_type.clone();
+                    // PBWin10 Error 421 (String operand expected): assigning a
+                    // numeric value to a string-typed variable is a hard error
+                    // in the official compiler; align instead of silently
+                    // converting (which the old convert_value fallback did).
+                    if matches!(
+                        target_pb,
+                        PbType::String | PbType::FixedString(_) | PbType::Field
+                    ) && value.ty != IrType::Ptr
+                    {
+                        return Err(PbError::parser(
+                            format!(
+                                "String operand expected: cannot assign a numeric value to string variable `{}`",
+                                orig_name
+                            ),
+                            None,
+                            self.current_line,
+                        ));
+                    }
                     // FixedString (ASCIIZ*N): use strncpy instead of store
                     if let PbType::FixedString(n) = &target_pb {
                         let buf_ptr = Val::new(ptr_name, IrType::Ptr);
@@ -22349,6 +22367,18 @@ impl Compiler {
     ) -> PbResult<String> {
         if let Some(info) = self.symbols.lookup(name) {
             return Ok(info.ptr_name.clone());
+        }
+        // #DIM ALL / OPTION EXPLICIT: every identifier must be declared first
+        // -> PBWin10 Error 519 "Missing declaration".
+        if self.option_explicit {
+            return Err(PbError::parser(
+                format!(
+                    "Missing declaration: variable `{}` must be declared before use",
+                    original_name
+                ),
+                None,
+                self.current_line,
+            ));
         }
         // Official PB: an undeclared variable needs a type source (name suffix
         // or DEFxxx). This fork has no DEFxxx support yet, so a bare name is
