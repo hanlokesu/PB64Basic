@@ -1,5 +1,5 @@
 // =====================================================================
-// Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+// Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
 // =====================================================================
@@ -7755,6 +7755,23 @@ void pb_message_loop(void) {
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
+}
+
+int pb_show_modal_to(void) {
+    /* DIALOG SHOW MODAL hDlg TO result - official PB form (batch 238:
+       HelloDDT from C:\PBWin10\samples\DDT).  Runs the same message loop;
+       when DIALOG END records pb_modal_result and destroys the dialog
+       (WM_DESTROY -> PostQuitMessage), GetMessage returns 0 and the
+       recorded modal result is handed back to the caller. */
+    pb_msg_t msg;
+    pb_modal_done = 0;
+    pb_modal_result = 0;
+    while (GetMessageA(&msg, 0, 0, 0) > 0) {
+        if (pb_accel_translate(&msg)) continue;
+        TranslateMessage(&msg);
+        DispatchMessageA(&msg);
+    }
+    return pb_modal_result;
 }
 
 /* Tier-3 DDT GUI #2: CONTROL ADD BUTTON */

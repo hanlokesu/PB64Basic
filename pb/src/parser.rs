@@ -1,5 +1,5 @@
 // =====================================================================
-// Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+// Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
 // =====================================================================
@@ -9389,15 +9389,35 @@ impl Parser {
                     self.advance();
                     self.advance(); // MODAL (now guaranteed by the guard)
                     let hd = self.parse_expression()?;
-                    // skip CALL (Token::Call)
+                    // DIALOG SHOW MODAL hDlg CALL proc   (fork callback form)
                     if self.peek() == &Token::Call {
                         self.advance();
+                        let proc = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_SHOW_MODAL".to_string(),
+                            args: vec![hd, proc],
+                            line,
+                        }));
                     }
-                    let proc = self.parse_expression()?;
+                    // DIALOG SHOW MODAL hDlg TO result   (official PB form;
+                    // batch 238: HelloDDT from C:\PBWin10\samples\DDT failed
+                    // with "Unexpected token in expression: To")
+                    if self.peek() == &Token::To {
+                        self.advance();
+                        let target = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_SHOW_MODAL_TO".to_string(),
+                            args: vec![hd, target],
+                            line,
+                        }));
+                    }
+                    // DIALOG SHOW MODAL hDlg   (no callback, no result)
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_SHOW_MODAL".to_string(),
-                        args: vec![hd, proc],
+                        args: vec![hd, Expr::IntegerLit(0)],
                         line,
                     }));
                 }

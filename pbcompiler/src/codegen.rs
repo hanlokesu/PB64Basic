@@ -1,5 +1,5 @@
 // =====================================================================
-// Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+// Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
 // =====================================================================
@@ -2884,6 +2884,8 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_message_loop", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_show_modal_to", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_control_add_hscrollbar",
             &IrType::Ptr,
@@ -14362,6 +14364,21 @@ impl Compiler {
                         } else {
                             eprintln!("warning: DIALOG SHOW MODAL: unknown sub '{}'", upper);
                         }
+                    }
+                }
+                return Ok(());
+            }
+            "DIALOG_SHOW_MODAL_TO" => {
+                // DIALOG SHOW MODAL hDlg TO result   (official PB form)
+                // batch 238: HelloDDT (C:\PBWin10\samples\DDT) - the modal
+                // result set by DIALOG END is written back to the target
+                // variable via pb_show_modal_to (returns pb_modal_result).
+                if call.args.len() >= 2 {
+                    let _hd = self.compile_expr(fb, &call.args[0])?;
+                    let res = fb.call(&IrType::I32, "pb_show_modal_to", &[]);
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        let cv = self.convert_value(fb, &res, &ty, &pty);
+                        fb.store(&cv, &ptr);
                     }
                 }
                 return Ok(());
