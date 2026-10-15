@@ -21,7 +21,7 @@ fn main() {
 
     if args.len() < 3 || args[1] != "build" {
         eprintln!(
-            "Usage: pbcompiler build <file.bas> [-o output] [--dll] [--exe] [--session-struct]"
+            "Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--session-struct]"
         );
         eprintln!("       [--emit-llvm] [--parse-only] [--runtime-lib path] [--lib-dir path]");
         eprintln!("       [--debug] [--target triple]");
@@ -49,14 +49,14 @@ fn main() {
         match &d {
             Some(path) => {
                 eprintln!(
-                    "[pbcompiler] Auto-detected Windows SDK lib dir: {}",
+                    "[PB64Basic] Auto-detected Windows SDK lib dir: {}",
                     path
                 )
             }
             None => {
                 if exe_mode {
                     eprintln!(
-                        "[pbcompiler] Warning: --lib-dir not given and no Windows SDK found under C:\\Program Files (x86)\\Windows Kits\\10\\Lib; linking may fail."
+                        "[PB64Basic] Warning: --lib-dir not given and no Windows SDK found under C:\\Program Files (x86)\\Windows Kits\\10\\Lib; linking may fail."
                     );
                 }
             }
@@ -82,7 +82,7 @@ fn main() {
 
     match compile_file(file_path, &output, parse_only, &mut opts) {
         Ok(()) => {
-            eprintln!("[pbcompiler] Success: {}", output);
+            eprintln!("[PB64Basic] Success: {}", output);
         }
         Err(e) => {
             eprintln!("Error: {}", e);
@@ -152,7 +152,7 @@ fn compile_file(
     let mut preprocessor = Preprocessor::new();
     let source_lines = preprocessor.process_file(path)?;
     eprintln!(
-        "[pbcompiler] Preprocessed {} lines ({:.1}s)",
+        "[PB64Basic] Preprocessed {} lines ({:.1}s)",
         source_lines.len(),
         t0.elapsed().as_secs_f64()
     );
@@ -178,7 +178,7 @@ fn compile_file(
         }
     }
     eprintln!(
-        "[pbcompiler] Lexed {} tokens ({:.1}s)",
+        "[PB64Basic] Lexed {} tokens ({:.1}s)",
         tokens.len(),
         t1.elapsed().as_secs_f64()
     );
@@ -188,7 +188,7 @@ fn compile_file(
     let mut parser = Parser::new(tokens);
     let program = parser.parse()?;
     eprintln!(
-        "[pbcompiler] Parsed {} top-level items ({:.1}s)",
+        "[PB64Basic] Parsed {} top-level items ({:.1}s)",
         program.items.len(),
         t2.elapsed().as_secs_f64()
     );
@@ -202,7 +202,7 @@ fn compile_file(
     opts.option_explicit = parser.option_explicit || preprocessor.dim_all();
 
     if parse_only {
-        eprintln!("[pbcompiler] Parse-only mode, skipping codegen");
+        eprintln!("[PB64Basic] Parse-only mode, skipping codegen");
         return Ok(());
     }
 
@@ -212,7 +212,7 @@ fn compile_file(
     let pp_constants: HashMap<String, i64> = preprocessor.constants().clone();
     codegen::compile(&program, output_path, opts, &pp_constants)?;
     eprintln!(
-        "[pbcompiler] Codegen complete ({:.1}s)",
+        "[PB64Basic] Codegen complete ({:.1}s)",
         t3.elapsed().as_secs_f64()
     );
 
@@ -230,7 +230,7 @@ fn compile_file(
             }
         } else {
             eprintln!(
-                "[pbcompiler] Warning: EXE not found for resource embedding: {}",
+                "[PB64Basic] Warning: EXE not found for resource embedding: {}",
                 exe_path.display()
             );
         }
@@ -291,19 +291,19 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
-                    "[pbcompiler] Embedded {} icon resource(s) into {}",
+                    "[PB64Basic] Embedded {} icon resource(s) into {}",
                     resources.len(),
                     exe_path.display()
                 );
             } else {
                 eprintln!(
-                    "[pbcompiler] Warning: icon embedding failed: {}",
+                    "[PB64Basic] Warning: icon embedding failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
         }
         Err(e) => eprintln!(
-            "[pbcompiler] Warning: cannot run powershell for icon embedding: {}",
+            "[PB64Basic] Warning: cannot run powershell for icon embedding: {}",
             e
         ),
     }
@@ -478,17 +478,17 @@ Write-Host "Version info embedded: $($bytes.Length) bytes"
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
-                    "[pbcompiler] Embedded VERSIONINFO into {}",
+                    "[PB64Basic] Embedded VERSIONINFO into {}",
                     exe_path.display()
                 );
             } else {
                 eprintln!(
-                    "[pbcompiler] Warning: VERSIONINFO embed failed: {}",
+                    "[PB64Basic] Warning: VERSIONINFO embed failed: {}",
                     String::from_utf8_lossy(&out.stderr)
                 );
             }
         }
-        Err(e) => eprintln!("[pbcompiler] Warning: VERSIONINFO embed error: {e}"),
+        Err(e) => eprintln!("[PB64Basic] Warning: VERSIONINFO embed error: {e}"),
     }
 }
 

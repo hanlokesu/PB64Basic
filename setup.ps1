@@ -6,7 +6,7 @@
 #   3. Windows SDK           (Microsoft.WindowsSDK.10.0.26100)
 # Then builds:
 #   4. pb_runtime_x64.obj    (from pbcompiler/runtime/pb_runtime.c)
-#   5. pbcompiler.exe        (release build via cargo)
+#   5. PB64Basic.exe        (release build via cargo)
 #
 # Run from setup.bat (double-click), or:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1
@@ -117,19 +117,19 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 cargo build --release -p pbcompiler
 if ($LASTEXITCODE -eq 0) { Write-Ok "pbcompiler built." }
-else { Write-Fail "pbcompiler build failed. Rust toolchain is required (step 1)." }
+else { Write-Fail "PB64Basic build failed. Rust toolchain is required (step 1)." }
 
 # ---------- 6. Summary ----------
 Write-Step "Setup summary"
-$pb = Join-Path $ScriptDir "target\release\pbcompiler.exe"
+$pb = Join-Path $ScriptDir "target\release\PB64Basic.exe"
 if (Test-Path $pb) {
     Write-Ok "Compiler ready: $pb"
     Write-Host ""
     Write-Host "Try it (from this folder):" -ForegroundColor White
-    Write-Host "   pbcompiler build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj" -ForegroundColor Gray
+    Write-Host "   PB64Basic build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj" -ForegroundColor Gray
     Write-Host "   (--lib-dir is optional: the compiler auto-detects the Windows SDK)" -ForegroundColor Gray
 } else {
-    Write-Fail "pbcompiler.exe not found after the build. Check the errors above."
+    Write-Fail "PB64Basic.exe not found after the build. Check the errors above."
 }
 Write-Host ""
 Write-Host "Setup finished." -ForegroundColor Cyan

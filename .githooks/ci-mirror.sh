@@ -77,7 +77,7 @@ pb_full_mirror() {
     return 1
   }
 
-  COMPILER="target/release/pbcompiler"
+  COMPILER="target/release/PB64Basic"
   if [ -f "$COMPILER.exe" ]; then
     COMPILER="$COMPILER.exe"
   fi

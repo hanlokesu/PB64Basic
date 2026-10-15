@@ -172,7 +172,7 @@ Compiled with `clang -c` and linked with the program:
 Compile with `--debug` to enable runtime diagnostics:
 
 ```bash
-pbcompiler build program.bas -o program --exe --debug \
+PB64Basic build program.bas -o program --exe --debug \
   --runtime-lib pbcompiler/runtime/pb_runtime.obj
 
 # Enable verbose function-level logging
@@ -222,7 +222,7 @@ Run all levels:
 cargo build --release
 for f in pbcompiler/tests/l*.bas; do
   echo "=== $f ==="
-  ./target/release/pbcompiler build "$f" -o "${f%.bas}" --exe \
+  ./target/release/PB64Basic build "$f" -o "${f%.bas}" --exe \
     --runtime-lib pbcompiler/runtime/pb_runtime.obj
   ./"${f%.bas}.exe"
   echo "Exit: $?"

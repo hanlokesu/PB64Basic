@@ -75,7 +75,7 @@ jobs:
 
     - name: Run compiler tests (32-bit)
       run: |
-        $compiler = "target/release/pbcompiler.exe"
+        $compiler = "target/release/PB64Basic.exe"
         $runtime = "pbcompiler/runtime/pb_runtime.obj"
         $tests = Get-ChildItem "pbcompiler/tests/l*.bas"
         $failed = 0
@@ -95,7 +95,7 @@ jobs:
 
     - name: Run compiler tests (64-bit)
       run: |
-        $compiler = "target/release/pbcompiler.exe"
+        $compiler = "target/release/PB64Basic.exe"
         $runtime = "pbcompiler/runtime/pb_runtime_x64.obj"
         $tests = Get-ChildItem "pbcompiler/tests/l*.bas"
         $failed = 0

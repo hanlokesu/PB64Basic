@@ -3,7 +3,7 @@ rem compile.bat - one-click build for any example .bas (PowerBasilisk Enhanced)
 setlocal
 set BAS=%~1
 if "%BAS%"=="" set BAS=examples\hello.bas
-pbcompiler.exe build "%BAS%" --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
+PB64Basic.exe build "%BAS%" --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
 if errorlevel 1 (
   echo.
   echo COMPILE FAILED - see %BAS%.unimplemented.log if present

@@ -6,5 +6,11 @@ description = "PowerBASIC compiler: PB source → LLVM IR → native object code
 license = "Apache-2.0"
 repository = "https://github.com/hanlokesu/PB64Basic"
 
+# Product name of the shipped compiler binary. Crate/package stays "pbcompiler"
+# (dependency graph + directory names unchanged); only the built EXE is branded.
+[[bin]]
+name = "PB64Basic"
+path = "src/main.rs"
+
 [dependencies]
 pb = { path = "../pb" }

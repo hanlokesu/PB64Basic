@@ -60,7 +60,7 @@ pub fn compile(
         std::fs::write(&warn_path, &report)
             .map_err(|e| PbError::io(format!("Failed to write unimplemented report: {}", e)))?;
         eprintln!(
-            "[pbcompiler] WARNING: {} statement(s) not implemented (silently dropped) - see {}",
+            "[PB64Basic] WARNING: {} statement(s) not implemented (silently dropped) - see {}",
             compiler.warnings.len(),
             warn_path.display()
         );
@@ -73,7 +73,7 @@ pub fn compile(
     std::fs::write(&ll_path, &ir)
         .map_err(|e| PbError::io(format!("Failed to write .ll: {}", e)))?;
     eprintln!(
-        "[pbcompiler] Wrote LLVM IR: {} ({} lines)",
+        "[PB64Basic] Wrote LLVM IR: {} ({} lines)",
         ll_path.display(),
         ir.lines().count()
     );
@@ -101,10 +101,7 @@ pub fn compile(
         let main_obj_path = output_path.with_extension("main.obj");
         // Use -O0 to avoid clang 17.0.1 crashes (Register Coalescer, DAG ISel)
         compile_with_clang(&main_ll_path, &main_obj_path, "-O0", &opts.target)?;
-        eprintln!(
-            "[pbcompiler] Wrote main object: {}",
-            main_obj_path.display()
-        );
+        eprintln!("[PB64Basic] Wrote main object: {}", main_obj_path.display());
         obj_paths.push(main_obj_path);
 
         // Write and compile the split .ll (large functions only)
@@ -112,14 +109,14 @@ pub fn compile(
         std::fs::write(&split_ll_path, split_ir_content)
             .map_err(|e| PbError::io(format!("Failed to write split .ll: {}", e)))?;
         eprintln!(
-            "[pbcompiler] Split large functions to: {}",
+            "[PB64Basic] Split large functions to: {}",
             split_ll_path.display()
         );
 
         let split_obj_path = output_path.with_extension("split.obj");
         compile_split_module(&split_ll_path, &split_obj_path, &opts.target)?;
         eprintln!(
-            "[pbcompiler] Wrote split object: {}",
+            "[PB64Basic] Wrote split object: {}",
             split_obj_path.display()
         );
         obj_paths.push(split_obj_path);
@@ -127,7 +124,7 @@ pub fn compile(
         // No split needed → compile as one unit
         let obj_path = output_path.with_extension("obj");
         compile_with_clang(&ll_path, &obj_path, "-O2", &opts.target)?;
-        eprintln!("[pbcompiler] Wrote object: {}", obj_path.display());
+        eprintln!("[PB64Basic] Wrote object: {}", obj_path.display());
         obj_paths.push(obj_path);
     }
 
@@ -135,14 +132,14 @@ pub fn compile(
     if opts.dll_mode {
         let dll_path = output_path.with_extension("dll");
         link_dll(&obj_paths[0], &dll_path, opts)?;
-        eprintln!("[pbcompiler] Linked DLL: {}", dll_path.display());
+        eprintln!("[PB64Basic] Linked DLL: {}", dll_path.display());
     }
 
     if opts.exe_mode {
         let exe_path = output_path.with_extension("exe");
         let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
         link_exe(&obj_refs, &exe_path, opts)?;
-        eprintln!("[pbcompiler] Linked EXE: {}", exe_path.display());
+        eprintln!("[PB64Basic] Linked EXE: {}", exe_path.display());
     }
 
     Ok(())
@@ -186,7 +183,7 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
     let obj_str = obj_path.to_string_lossy();
 
     // Strategy 1: Try -O1 (lighter optimization, may avoid DAG explosion)
-    eprintln!("[pbcompiler] Compiling split module with -O1...");
+    eprintln!("[PB64Basic] Compiling split module with -O1...");
     let result = std::process::Command::new("clang")
         .args([
             "-c",
@@ -205,7 +202,7 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
     }
 
     // Strategy 2: -O0 with fast-isel
-    eprintln!("[pbcompiler] -O1 failed, trying -O0 -mllvm -fast-isel...");
+    eprintln!("[PB64Basic] -O1 failed, trying -O0 -mllvm -fast-isel...");
     let result = std::process::Command::new("clang")
         .args([
             "-c",
@@ -226,7 +223,7 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
     }
 
     // Strategy 3: Plain -O0
-    eprintln!("[pbcompiler] fast-isel failed, trying plain -O0...");
+    eprintln!("[PB64Basic] fast-isel failed, trying plain -O0...");
     let result = std::process::Command::new("clang")
         .args([
             "-c",
@@ -247,8 +244,8 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
     // Strategy 4: Generate stub module for all functions
     // BIGLOOP and similar functions crash clang at ALL optimization levels.
     // Emit stub functions that return default values so linking can proceed.
-    eprintln!("[pbcompiler] All compilation strategies failed for split module.");
-    eprintln!("[pbcompiler] Generating stub functions for uncompilable functions...");
+    eprintln!("[PB64Basic] All compilation strategies failed for split module.");
+    eprintln!("[PB64Basic] Generating stub functions for uncompilable functions...");
     generate_stub_module(ll_path, obj_path, target)
 }
 
@@ -315,7 +312,7 @@ fn generate_stub_module(original_ll: &Path, obj_path: &Path, target: &str) -> Pb
             };
 
             eprintln!(
-                "[pbcompiler] Stubbing function: {} (returns {})",
+                "[PB64Basic] Stubbing function: {} (returns {})",
                 name, ret_type
             );
 
@@ -565,7 +562,7 @@ fn link_exe(obj_paths: &[&Path], exe_path: &Path, opts: &CompileOptions) -> PbRe
         // Print any warnings
         for line in stderr.lines() {
             if line.contains("warning") {
-                eprintln!("[pbcompiler] Link warning: {}", line);
+                eprintln!("[PB64Basic] Link warning: {}", line);
             }
         }
     }
@@ -650,7 +647,7 @@ fn split_large_functions(ir: &str, threshold: usize) -> (String, Option<String>)
         .map(|&idx| fn_ranges[idx].name.as_str())
         .collect();
     eprintln!(
-        "[pbcompiler] Splitting {} large function(s): {}",
+        "[PB64Basic] Splitting {} large function(s): {}",
         large_names.len(),
         large_names.join(", ")
     );
@@ -5567,7 +5564,7 @@ impl Compiler {
         }
         if codegen_errors > 0 {
             eprintln!(
-                "[pbcompiler] {} codegen errors (functions skipped)",
+                "[PB64Basic] {} codegen errors (functions skipped)",
                 codegen_errors
             );
         }
@@ -22299,7 +22296,7 @@ impl Compiler {
         }
 
         eprintln!(
-            "[pbcompiler] Session struct: {} fields in %{}",
+            "[PB64Basic] Session struct: {} fields in %{}",
             self.session_fields.len(),
             struct_name
         );

@@ -84,7 +84,7 @@ nothing. This branch adds an **unimplemented-statement report**:
 
 - Every statement that is parsed but produces **no code** is recorded.
 - After each build, the compiler prints a summary to stderr:
-  `[pbcompiler] WARNING: N statement(s) not implemented (silently dropped)`.
+  `[PB64Basic] WARNING: N statement(s) not implemented (silently dropped)`.
 - A full report is written next to your output, e.g.
   `program.unimplemented.log`, listing **the source line and the statement
   name** for every silent drop, so you can tell exactly what will not run.
@@ -119,7 +119,7 @@ and expression functions with no implementation (`Unknown function — 0`).
 **Option A — no toolchain needed (recommended): download the prebuilt
 package from [Releases](https://github.com/hanlokesu/PB64Basic/releases).**
 Pick the latest `PB64Basic-vX.Y.Z-x64.zip`; it already contains
-the compiled `pbcompiler.exe`, the 64-bit runtime `pb_runtime_x64.obj`, sample
+the compiled `PB64Basic.exe`, the 64-bit runtime `pb_runtime_x64.obj`, sample
 programs and a one-click `compile.bat`. Unzip and run:
 
 ```bat
@@ -143,12 +143,12 @@ compile.bat          :: builds examples\demo.bas -> examples\demo.exe
    - LLVM / Clang (`LLVM.LLVM`, ~500 MB download; a UAC prompt may appear
      - click YES)
    - Windows SDK (`Microsoft.WindowsSDK.10.0.26100`)
-   Then it builds `pb_runtime_x64.obj` and the release `pbcompiler.exe`
+   Then it builds `pb_runtime_x64.obj` and the release `PB64Basic.exe`
    for you.
 2. **Compile your first program:**
 
    ```bash
-   pbcompiler build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
+   PB64Basic build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
    ```
 
    (`--lib-dir` is optional — the compiler auto-detects the Windows SDK.)
@@ -165,7 +165,7 @@ Prerequisites: a Rust toolchain (`rustup`) and, for linking, LLVM/Clang.
 ```bash
 # inside the workspace root (pbsrc/)
 cargo build --release -p pbcompiler
-# binary: target/release/pbcompiler.exe
+# binary: target/release/PB64Basic.exe
 ```
 
 ## Usage
@@ -173,7 +173,7 @@ cargo build --release -p pbcompiler
 Compile a PB program to a 64-bit exe:
 
 ```bash
-pbcompiler build program.bas --exe \
+PB64Basic build program.bas --exe \
   --target x86_64-pc-windows-msvc \
   --runtime-lib pb_runtime_x64.obj \
   --lib-dir "<Windows SDK>\Lib\<ver>\um\x64"
@@ -913,7 +913,7 @@ batch 222 — OOP event bus: `EVENT SOURCE` / `EVENTS FROM` / `EVENTS END` / `RA
   report: the parked no-op arm also sat inside codegen's handled-family early-return
   guard, so control returned before ever reaching the unimplemented report. That arm now
   pushes to `compiler.warnings`, so any program using them gets
-  `[pbcompiler] WARNING: N statement(s) not implemented` plus an
+  `[PB64Basic] WARNING: N statement(s) not implemented` plus an
   `<output>.unimplemented.log` naming each statement and its line. The exit code stays 0 -
   accepted-but-empty is a report, not a compile error.
 - batch 195's comment ("the drop is now reported instead of being invisible") was never
