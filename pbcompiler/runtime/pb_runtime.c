@@ -3466,12 +3466,13 @@ static void pb_net_fill_addr(struct pb_sockaddr_in* a, unsigned long ip, int por
     memset(a, 0, sizeof(*a));
     a->sin_family = 2; /* AF_INET */
     a->sin_port = htons((unsigned short)port);
-    /* PB's numeric AT operand is host order (batch203: AT &H7F000001 must mean
-     * 127.0.0.1).  Storing it raw made 0x7F000001 come out as 1.0.0.127 on a
-     * little-endian box, so the self-ping vanished and UDP RECV blocked
-     * forever.  String paths (inet_addr / gethostbyname) yield network order,
-     * so callers convert them with ntohl() before this. */
-    a->sin_addr = htonl(ip);
+    /* PB's numeric AT/ipaddr& operand is NETWORK order, exactly like PBWin10:
+     * &H0100007F means 127.0.0.1 (bytes 7F 00 00 01 on little-endian memory).
+     * Measured on PBWin10 2026-10-15 (SEND numeric is stored as-is; UDP RECV
+     * returns the same network-order value).  So we store the value raw - no
+     * htonl - to be 100% compatible.  String paths (inet_addr/gethostbyname)
+     * already yield network order, so callers pass them through unchanged. */
+    a->sin_addr = ip;
 }
 
 int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout) {
@@ -3497,7 +3498,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout)
         setsockopt(s, 0xFFFF, 0x1006, (const char*)&t, 4); /* SO_RCVTIMEO */
         setsockopt(s, 0xFFFF, 0x1005, (const char*)&t, 4); /* SO_SNDTIMEO */
     }
-    pb_net_fill_addr(&a, ntohl(ip), port);   /* pb_net_ip returns network order */
+    pb_net_fill_addr(&a, ip, port);   /* pb_net_ip returns network order; fill_addr stores raw */
     if (connect(s, &a, sizeof(a)) != 0) { closesocket(s); pb_err = 57; return -1; }
     pb_sock[filenum] = s;
     pb_sock_state[filenum] = 1;
@@ -3598,8 +3599,9 @@ int pb_udp_open(int port, int filenum, long timeout) {
 int pb_udp_send(int f, unsigned long ip, int port, const char* data);
 
 int pb_udp_send_str(int f, const char* ipstr, int port, const char* data) {
-    /* inet_addr yields network order; pb_udp_send expects host order */
-    return pb_udp_send(f, ntohl(inet_addr(ipstr ? ipstr : "0.0.0.0")), port, data);
+    /* inet_addr yields network order, same as PBWin's ipaddr& semantics;
+     * pb_udp_send expects network order, so pass through unchanged. */
+    return pb_udp_send(f, inet_addr(ipstr ? ipstr : "0.0.0.0"), port, data);
 }
 
 int pb_udp_send(int f, unsigned long ip, int port, const char* data) {
@@ -3626,7 +3628,7 @@ int pb_udp_recv(int f, unsigned long* ip, int* port, char** out) {
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
-    if (ip) *ip = ntohl(a.sin_addr);   /* PB wants host order back */
+    if (ip) *ip = a.sin_addr;   /* network order back, same as PBWin10 (measured &H0100007F for 127.0.0.1) */
     if (port) *port = ntohs_s(a.sin_port);
     *out = buf;
     return n;
