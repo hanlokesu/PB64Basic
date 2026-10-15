@@ -4,7 +4,7 @@
 // See LICENSE for the full license terms.
 // =====================================================================
 /*
- * pb_runtime.c � PowerBASIC runtime support for pbcompiler
+ * pb_runtime.c � PowerBASIC runtime support for PB64Basic
  *
  * Implements FORMAT$, PARSE$, REPLACE, and other PB-specific functions
  * that don't have direct C library equivalents.

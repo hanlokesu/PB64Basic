@@ -1,5 +1,5 @@
 @echo off
-rem compile.bat - one-click build for any example .bas (PowerBasilisk Enhanced)
+rem compile.bat - one-click build for any example .bas (PB64Basic)
 setlocal
 set BAS=%~1
 if "%BAS%"=="" set BAS=examples\hello.bas

@@ -1,9 +1,9 @@
 @echo off
 setlocal
 chcp 65001 >nul
-title PowerBasilisk Enhanced Setup
+title PB64Basic Setup
 echo ==================================================
-echo   PowerBasilisk Enhanced - One-click Setup
+echo   PB64Basic - One-click Setup
 echo ==================================================
 echo.
 echo This script checks and installs:

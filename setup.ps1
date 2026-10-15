@@ -1,4 +1,4 @@
-# PowerBasilisk Enhanced - One-click dependency setup and build
+# PB64Basic - One-click dependency setup and build
 #
 # Checks / installs (via winget when missing):
 #   1. Rust toolchain        (Rustlang.Rustup)
