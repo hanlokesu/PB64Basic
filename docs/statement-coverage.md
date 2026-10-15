@@ -1,23 +1,23 @@
-# PowerBasilisk Enhanced — Official Statement Coverage Matrix
+# PB64Basic — Official Statement Coverage Matrix
 
 > **Last updated from batch 237 (v0.2.076)** — 2026-10-14. All statements through batch 237 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
-> **Status-column key**: `Implemented` = this branch generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this fork does not implement yet. `FORK EXTENSION` = implemented by this fork but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
+> **Status-column key**: `Implemented` = this branch generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
 - Rows in this matrix: **864** (10 BLOCK, 253 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
-- **861** official keywords currently available (✅ Implemented by this fork + ✅ Established in the official PB docs).
+- **861** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this fork) | 713 | Real codegen added by this fork (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 713 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 148 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **861** | Implemented + Established |
-| ❌ Not implemented | 0 | Official PB keywords this fork does not implement yet |
+| ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |

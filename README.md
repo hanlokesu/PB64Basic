@@ -1,4 +1,4 @@
-# PowerBasilisk Enhanced
+# PB64Basic
 
 [![CI](https://github.com/hanlokesu/PB64Basic/actions/workflows/ci.yml/badge.svg)](https://github.com/hanlokesu/PB64Basic/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/hanlokesu/PB64Basic)](https://github.com/hanlokesu/PB64Basic/releases)
@@ -7,10 +7,10 @@
 
 ![demo](assets/powerbasilisk-demo.gif)
 
-An enhanced 64-bit PowerBASIC compiler, forked from
+An enhanced 64-bit PowerBASIC compiler, derived from
 [`benstopics/powerbasilisk`](https://github.com/benstopics/powerbasilisk).
 
-**PowerBasilisk** is an open-source compiler that translates PowerBASIC source
+**PB64Basic** is an open-source compiler that translates PowerBASIC source
 code (`.bas`) into LLVM IR and then into native 64-bit Windows executables.
 The toolchain is written in Rust and has zero external crate dependencies.
 
@@ -36,7 +36,7 @@ silently dropped during code generation.
 
 ### New Built-ins (previously silently discarded)
 > - **Early snapshot** — the first implementations from the initial releases of
-> this fork (derived from [benstopics/powerbasilisk](https://github.com/benstopics/powerbasilisk)).
+> this project (derived from [benstopics/powerbasilisk](https://github.com/benstopics/powerbasilisk)).
 > Later batches were added after this table was written; the complete,
 > current list of every statement/function this branch implements is in the
 > [Newly implemented by this branch](#newly-implemented-by-this-branch)
@@ -92,7 +92,7 @@ nothing. This branch adds an **unimplemented-statement report**:
 Example report from a program using DDT GUI statements:
 
 ```text
-PowerBasilisk Enhanced - unimplemented / silently-dropped statement report
+PB64Basic - unimplemented / silently-dropped statement report
 3 statement(s) parsed but produced NO code. These make the .exe run but do nothing.
 Check each line below against your source:
   line 5: statement `DIALOG` parsed but NOT implemented (NOOP) - no code generated
@@ -253,7 +253,7 @@ exit code 0:
 
 > Summary:
 > - **861** official PowerBASIC statement/function keywords currently available for use
->   - **713** implemented or completed by this fork
+>   - **713** implemented or completed by this project
 >   - **148** official keywords that are long established in the PB documentation, listed in the established-keywords table below. The CSV label "Established" means *mature in the official PB docs* - it is **not** a claim about what upstream shipped.
 > - **0** DDT/GUI-class keywords deferred (Tier 3)
 > - **0** documented keywords not yet implemented
@@ -487,9 +487,9 @@ exit code 0:
 
 ## **Newly** implemented by this branch
 
-> **713 official keywords implemented by this fork** (every official keyword this fork added or completed). Verified via live compilation and testing. Listed alphabetically below.
+> **713 official keywords implemented by this project** (every official keyword this project added or completed). Verified via live compilation and testing. Listed alphabetically below.
 
-**The keywords implemented by this fork (alphabetical):**
+**The keywords implemented by this project (alphabetical):**
 
 | Keyword | Keyword | Keyword | Keyword |
 |---------|---------|---------|---------|
@@ -675,7 +675,7 @@ exit code 0:
 
 ## Established keywords (mature in the official PB docs)
 
-> These are the **148** keywords the coverage CSV labels `Established` — *mature in the official PB documentation*. That label is **not** a claim that upstream `benstopics/powerbasilisk` implemented them, and this fork does not publish a count of upstream's own keyword set. The next section lists the 8 keywords whose implementation this fork completed or corrected.
+> These are the **148** keywords the coverage CSV labels `Established` — *mature in the official PB documentation*. That label is **not** a claim that upstream `benstopics/powerbasilisk` implemented them, and this project does not publish a count of upstream's own keyword set. The next section lists the 8 keywords whose implementation this project completed or corrected.
 
 | Keyword | Keyword | Keyword | Keyword | Keyword |
 |---------|---------|---------|---------|---------|
@@ -711,11 +711,11 @@ exit code 0:
 | DESKTOP GET CLIENT | LOCK | ON ERROR | TCP ACCEPT |  |
 
 
-## Upstream keywords improved by this fork (8)
+## Upstream keywords improved by this project (8)
 
-> These 8 keywords came from upstream, but this fork fixed or completed their implementation to match real PowerBASIC behavior. They are counted in the upstream table above; the fix itself is this fork's contribution.
+> These 8 keywords came from upstream, but this project fixed or completed their implementation to match real PowerBASIC behavior. They are counted in the upstream table above; the fix itself is this project's contribution.
 
-| Keyword | What this fork improved |
+| Keyword | What this project improved |
 | --- | --- |
 | `CINT / CLNG` | Banker's rounding (ties-to-even) via llvm.nearbyint.f64, matching PB semantics; fixed l5 test expectation. |
 | `CVD / CVS` | Read bytes as binary doubles/singles instead of VAL() text semantics (was wrong for packed strings). |
