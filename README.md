@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 237 (v0.2.076). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 238 (v0.2.077). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 238 (v0.2.077) - DIALOG SHOW MODAL hDlg TO Result official syntax (HelloDDT x64); DIALOG END optional result; 421/519 error-code alignment with PBWin10 (#DIM ALL/OPTION EXPLICIT); numeric IP network-order unified &H0100007F (UDP SEND/TCP OPEN raw, UDP RECV network order); repository detached+renamed hanlokesu/PB64Basic, compiler binary PB64Basic.exe, full rebrand of examples/docs/demo/IDE; Apache-2.0 4(b) notices; dual-run baseline MATCH 116 / DIFF 1 / EMPTY 0 / ONLY-FORK 1.
 > batch 237 (v0.2.076) - 27 dual-run DIFFs closed to MATCH (XPRINT env 7 / handle-value 10 / GUI controls 7 / misc 4; only batch205 stays a documented environment DIFF); XPRINT GET->STRING 0xC0000005 crash fixed in pb_runtime.c (char** BSTR write); batch190/191 CONTROL ADD / LISTVIEW-TREEVIEW-SCROLLBAR MATCH; batch236 TCP ACCEPT fix included; full baseline MATCH 114 / DIFF 1 / EMPTY 1 / ONLY-FORK 2.
 > batch 235 (v0.2.075) - batch224 WriteFile/ReadFile BYVAL fix; pb_runtime.c measured fixes (ERROR$ table, OPEN binary modes, LOC per mode, CLIPBOARD TRUE/FALSE, ARRAY DELETE collapse); codegen REDIM-zero / GLOBALMEM LOCK width / HEX$ sign-extend / PARSE$ comma default; full dual-run baseline MATCH 72 / DIFF 40.
 > batch 234 (v0.2.074) - REMOVE$/RETAIN$/REMAIN$ ANY sentinel fix, CHOOSE out-of-range type default (0/0.0/""), TREEVIEW INSERT ITEM x64 (PB_TVI_LAST=-2, i64->i32 store width); dual-run MATCH 62 / DIFF 49.
@@ -727,6 +728,13 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.077 (2026-10-16) - batch 238: DIALOG SHOW MODAL TO + error-code alignment + PB64Basic rebrand
+
+- **batch238**: `DIALOG SHOW MODAL hDlg TO Result` official PBWin syntax now parses (HelloDDT from C:\PBWin10\samples\DDT compiles as x64); `DIALOG END hDlg` without the optional result argument is accepted (official form `DIALOG END hDlg& [, lResult&]`). New example `examples/batch238_test.bas` compiles on both PBWin10 and PB64Basic.
+- **Error-code alignment with PBWin10**: compiler exit codes map to PBWin error numbers via `pbwin_code()` - 421 (String operand expected) type-check on string assignment, 519 (missing declaration) under #DIM ALL / #OPTION EXPLICIT. Verified with 5 dual-compile scenarios (477/462/421/519/519 all MATCH).
+- **Numeric IP network-order alignment**: UDP SEND / TCP OPEN store `ipaddr&` raw, UDP RECV returns network order - both compilers agree on &H0100007F for 127.0.0.1 (probe-verified on PBWin10); batch203 drops the %MY_PBVER discriminator.
+- **Dual-run baseline**: batch029_x86 EMPTY->MATCH, batch203 ONLY-FORK->MATCH; full headless 118 = MATCH 116 / DIFF 1 (batch205 documented environment DIFF) / EMPTY 0 / ONLY-FORK 1 (batch029).
+- **Repository rebrand**: repo detached from the upstream fork network and renamed `hanlokesu/PB64Basic`; compiler binary renamed `PB64Basic.exe` (crate/package name stays `pbcompiler`); 178 example files + docs + demo assets + PB IDE rebranded to PB64Basic; Apache-2.0 4(b) derived notices added to 15 files.
 ### v0.2.076 (2026-10-14) - batch 237
 
 - **batch236**: `TCP ACCEPT` output file number fix; batch174 dual-run MATCH (IMPORT ADDR 64-bit truncated-address crash fixed with `%MY_PBVER` QUAD discriminators).

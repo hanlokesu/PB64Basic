@@ -9421,17 +9421,27 @@ impl Parser {
                         line,
                     }));
                 }
-                // DIALOG END hDlg, result
+                // DIALOG END hDlg, result   (result is optional in official
+                // PBWin syntax: DIALOG END hDlg& [, lResult&])
                 if name_upper == "DIALOG" && self.peek_at(1) == Some(&Token::End) {
                     self.advance();
                     self.advance();
                     let hd = self.parse_expression()?;
-                    self.expect(&Token::Comma)?;
-                    let result = self.parse_expression()?;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        let result = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_END".to_string(),
+                            args: vec![hd, result],
+                            line,
+                        }));
+                    }
+                    // DIALOG END hDlg   (no result)
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_END".to_string(),
-                        args: vec![hd, result],
+                        args: vec![hd, Expr::IntegerLit(0)],
                         line,
                     }));
                 }
