@@ -5522,12 +5522,16 @@ impl Compiler {
 
         // Second pass: compile function/sub bodies
         let mut codegen_errors = 0usize;
+        let mut first_codegen_err: Option<PbError> = None;
         for item in &program.items {
             match item {
                 TopLevel::FunctionDecl(fd) => {
                     if let Err(e) = self.compile_function(fd) {
                         eprintln!("Codegen warning: FUNCTION {} → {}", fd.name, e);
                         codegen_errors += 1;
+                        if first_codegen_err.is_none() {
+                            first_codegen_err = Some(e);
+                        }
                         // Emit stub declaration so call sites don't fail
                         let name = normalize_name(&fd.name);
                         if let Some(fi) = self.functions.get(&name) {
@@ -5544,6 +5548,9 @@ impl Compiler {
                     if let Err(e) = self.compile_sub(sd) {
                         eprintln!("Codegen warning: SUB {} → {}", sd.name, e);
                         codegen_errors += 1;
+                        if first_codegen_err.is_none() {
+                            first_codegen_err = Some(e);
+                        }
                         // Emit stub declaration so call sites don't fail
                         let name = normalize_name(&sd.name);
                         if let Some(fi) = self.subs.get(&name) {
@@ -5567,6 +5574,12 @@ impl Compiler {
                 "[PB64Basic] {} codegen errors (functions skipped)",
                 codegen_errors
             );
+            // Hard-fail on the first codegen error instead of continuing to a
+            // link step whose failure would mask the real semantic error and
+            // produce a misleading exit code (PBWin-aligned error codes).
+            if let Some(e) = first_codegen_err {
+                return Err(e);
+            }
         }
 
         // Emit main() entry point that calls PBMAIN() if it exists

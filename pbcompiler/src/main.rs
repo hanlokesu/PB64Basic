@@ -86,7 +86,9 @@ fn main() {
         }
         Err(e) => {
             eprintln!("Error: {}", e);
-            process::exit(1);
+            // Exit with the PBWin10-compatible error code (PBWin.exe returns the
+            // compile error number as its exit code, e.g. 477 = syntax error).
+            process::exit(e.pbwin_code());
         }
     }
 }
