@@ -45,12 +45,27 @@ END SUB
 FUNCTION PBMAIN() AS LONG
     LOCAL x AS LONG
     LOCAL y AS LONG
+    LOCAL pass AS LONG
+    LOCAL fail AS LONG
 
     ' Inline assembler ('!' lines) is a PB64Basic extension with no
     ' official PBWin10 equivalent; the asm probes were removed for
     ' dual-compiler compatibility. Plain BASIC body remains:
     x = 5
-    IF x <> 5 THEN FUNCTION = 1
+    pass = 0
+    fail = 0
+    IF x <> 5 THEN
+        fail = fail + 1
+    ELSE
+        pass = pass + 1
+    END IF
+    ConPrint "batch29 x86: pass=" & STR$(pass) & " fail=" & STR$(fail)
+    IF fail = 0 THEN
+        ConPrint "ALL PASS"
+    ELSE
+        ConPrint "SOME FAILED"
+    END IF
+    IF fail <> 0 THEN FUNCTION = 1
     FUNCTION = 0
 
 ' waiting for any key to exit...

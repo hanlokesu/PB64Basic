@@ -1,9 +1,24 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
-'     syntax that official PBWin10 does not provide; it compiles but
-'     does nothing here.  The fork branch (#ELSE) is the real test.
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
 
+' --- Dual-compiler self-check: this UDP loopback runs on BOTH compilers. ---
+'     The UDP SEND numeric IP is interpreted differently by each side:
+'     PBWin10 stores the number as-is (expects the NETWORK-order value
+'     &H0100007F = 127.0.0.1 bytes 7F 00 00 01), while PB64Basic converts
+'     the number host->network (expects the HOST-order value &H7F000001).
+'     Passing the wrong value makes sendto a black-hole (1.0.0.127) and
+'     RECV hangs forever - measured 2026-10-15 on both compilers.
+'     A string "127.0.0.1" is rejected by PBWin10 (Error 420 - AT takes
+'     ipaddr& only).  Hence the discriminator below.
 
 
 ' === console emulation for dual-compiler compatibility ===
@@ -72,7 +87,11 @@ FUNCTION PBMAIN () AS LONG
     LOCAL fails AS LONG
     fails = 0
     UDP OPEN PORT 46217 AS #1
-    UDP SEND #1, AT &H7F000001, 46217, "self-ping"
+#IF %MY_PBVER = 10
+    UDP SEND #1, AT &H0100007F, 46217, "self-ping"   ' PBWin: numeric stored as-is
+#ELSE
+    UDP SEND #1, AT &H7F000001, 46217, "self-ping"   ' fork: numeric host->network
+#ENDIF
     UDP RECV #1, FROM ip, pnum, buf
     ConPrint "received: " & buf
     IF buf <> "self-ping" THEN fails = fails + 1
