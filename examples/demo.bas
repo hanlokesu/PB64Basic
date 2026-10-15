@@ -8,12 +8,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -46,7 +46,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced  Full Feature Demo
+' PB64Basic  Full Feature Demo
 ' Compile: pbcompiler build demo.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
 '
 ' Shows every feature implemented by this branch:
@@ -74,7 +74,7 @@ FUNCTION PBMAIN() AS LONG
 
   ok = 1
   ConPrint "=============================================="
-  ConPrint "  PowerBasilisk Enhanced - Full Feature Demo"
+  ConPrint "  PB64Basic - Full Feature Demo"
   ConPrint "  PowerBASIC -> LLVM IR -> native x64 exe"
   ConPrint "=============================================="
 
@@ -283,11 +283,11 @@ FUNCTION PBMAIN() AS LONG
 
   ' ---------- 7. GUI popups (the show) ----------
   SHELL "calc.exe"                                   ' launch Calculator
-  MSGBOX "PowerBasilisk Enhanced - all features OK!" + $CRLF + $CRLF + _
+  MSGBOX "PB64Basic - all features OK!" + $CRLF + $CRLF + _
          "MSGBOX + SHELL + CURDIR$ + ISFILE + BEEP + SLEEP" + $CRLF + _
          "REPLACE + ERASE + LSET + RSET + SWAP + RANDOMIZE" + $CRLF + _
          "WRITE#/SEEK#/LOCK/UNLOCK/RESET/FLUSH/NAME/KILL" + $CRLF + _
-         "MKDIR/RMDIR/CHDIR + ERR/ERRCLEAR + 18 string equates", 64, "PowerBasilisk Demo"
+         "MKDIR/RMDIR/CHDIR + ERR/ERRCLEAR + 18 string equates", 64, "PB64Basic Demo"
 
   FUNCTION = 0
   EXIT FUNCTION
