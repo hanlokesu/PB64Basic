@@ -1,5 +1,5 @@
 // =====================================================================
-// Modified by the hanlokesu/powerbasilisk fork (https://github.com/hanlokesu/powerbasilisk).
+// Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
 // =====================================================================

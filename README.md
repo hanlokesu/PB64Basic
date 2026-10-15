@@ -1,7 +1,7 @@
 # PowerBasilisk Enhanced
 
-[![CI](https://github.com/hanlokesu/powerbasilisk/actions/workflows/ci.yml/badge.svg)](https://github.com/hanlokesu/powerbasilisk/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/hanlokesu/powerbasilisk)](https://github.com/hanlokesu/powerbasilisk/releases)
+[![CI](https://github.com/hanlokesu/PB64Basic/actions/workflows/ci.yml/badge.svg)](https://github.com/hanlokesu/PB64Basic/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/hanlokesu/PB64Basic)](https://github.com/hanlokesu/PB64Basic/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 
@@ -117,7 +117,7 @@ and expression functions with no implementation (`Unknown function — 0`).
 ## Getting Started (new users)
 
 **Option A — no toolchain needed (recommended): download the prebuilt
-package from [Releases](https://github.com/hanlokesu/powerbasilisk/releases).**
+package from [Releases](https://github.com/hanlokesu/PB64Basic/releases).**
 Pick the latest `PowerBasilisk-Enhanced-vX.Y.Z-x64.zip`; it already contains
 the compiled `pbcompiler.exe`, the 64-bit runtime `pb_runtime_x64.obj`, sample
 programs and a one-click `compile.bat`. Unzip and run:
@@ -788,14 +788,14 @@ exit code 0:
   concatenation (LONG variable, `LEN()`, `STR$`, `ISFILE`, QUAD, literal) and
   runs on both this fork and PBWin10.
 
-Full changelog: https://github.com/hanlokesu/powerbasilisk/releases/tag/v0.2.071
+Full changelog: https://github.com/hanlokesu/PB64Basic/releases/tag/v0.2.071
 
 ### v0.2.070 (2026-10-06) - batch 225: PBWin10 example compatibility + %MY_PBVER compiler discriminator
 - All 237 examples now carry a `#IF (%PB_REVISION AND &H0FF00)` block at the top defining `%MY_PBVER` (10 = PBWin10, 9 = PBWin9, 0 = this fork) - compile-time compiler identity for dual-compiler source.
 - PBWin10 example compile compatibility raised 46/191 -> 69/168: cleared `STR$(string)` Error 420 (41 files), nested `STR$(STR$(x))` (12 files), `INPUT FLUSH` Error 477, bare `WAITKEY$`, `XPRINT ATTACH DEFAULT`.
 - Fixed hello.bas startup crash (unused STRING local + CURDIR$ concatenation).
 - Full regression: fork compile-all 240/0, headless run 116/0.
-- Release: https://github.com/hanlokesu/powerbasilisk/releases/tag/v0.2.070
+- Release: https://github.com/hanlokesu/PB64Basic/releases/tag/v0.2.070
 
 ### v0.2.069 (2026-10-06)
 
