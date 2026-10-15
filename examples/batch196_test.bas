@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 196 test: one warning per statement, not two
+' PB64Basic Enhanced - Batch 196 test: one warning per statement, not two
 '
 ' The four statements below are the group that batch 195 started reporting: the empty
 ' codegen arm shared by INSTANCE / EVENTS / EVENT SOURCE / RAISEEVENT / ACCEL_ATTACH

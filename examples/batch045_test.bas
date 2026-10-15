@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 45: ERL$ / EXTRACT$ / RGB / BGR
+' PB64Basic Enhanced - batch 45: ERL$ / EXTRACT$ / RGB / BGR
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

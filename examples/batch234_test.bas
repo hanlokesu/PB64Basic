@@ -1,5 +1,5 @@
 ' Batch 234: REMOVE$/RETAIN$/REMAIN$ ANY + CHOOSE out-of-range default
-' dual-compile: PBWin10 + PowerBasilisk; console via Win32 API
+' dual-compile: PBWin10 + PB64Basic; console via Win32 API
 DECLARE FUNCTION AllocConsole LIB "KERNEL32.DLL" ALIAS "AllocConsole" () AS LONG
 DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
 DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG

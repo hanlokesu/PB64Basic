@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 43: BITS$ / PATHNAME$ / PRINTERCOUNT
+' PB64Basic Enhanced - batch 43: BITS$ / PATHNAME$ / PRINTERCOUNT
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

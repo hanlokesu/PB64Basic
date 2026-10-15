@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch52_test.bas
+' PB64Basic Enhanced - batch52_test.bas
 ' GRAPHIC ATTACH / DETACH / CLEAR (bitmap target, batch 52)
 FUNCTION PBMAIN() AS LONG
     LOCAL hbmp AS LONG

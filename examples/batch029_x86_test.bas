@@ -2,7 +2,7 @@
 #DIM ALL
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -37,7 +37,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 29 x86 (32-bit) verification
+' PB64Basic Enhanced - batch 29 x86 (32-bit) verification
 ' Uses exit code (no PRINT, avoiding the 32-bit printf symbol issue):
 ' 0 = all pass, 1/2/3 = specific failure.
 
@@ -46,7 +46,7 @@ FUNCTION PBMAIN() AS LONG
     LOCAL x AS LONG
     LOCAL y AS LONG
 
-    ' Inline assembler ('!' lines) is a PowerBasilisk extension with no
+    ' Inline assembler ('!' lines) is a PB64Basic extension with no
     ' official PBWin10 equivalent; the asm probes were removed for
     ' dual-compiler compatibility. Plain BASIC body remains:
     x = 5

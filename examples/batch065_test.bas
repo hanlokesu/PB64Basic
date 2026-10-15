@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 65 test
+' PB64Basic Enhanced - Batch 65 test
 ' GRAPHIC SET SIZE / SET CLIP / SET VIRTUAL / SET+GET WORDWRAP
 FUNCTION PBMAIN() AS LONG
     LOCAL hBmp AS LONG

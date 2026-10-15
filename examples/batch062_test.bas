@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch62_test.bas
+' PB64Basic Enhanced - batch62_test.bas
 ' MENU GET STATE / SET STATE / GET TEXT / SET TEXT (batch 62)
 FUNCTION PBMAIN() AS LONG
     LOCAL hbar AS LONG

@@ -10,7 +10,7 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -45,7 +45,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 172 regression test
+' PB64Basic Enhanced - batch 172 regression test
 '---------------------------------------------------------------------
 ' Purpose:  batch 172 completed the TREEVIEW statement family.  Before it
 '           this fork understood only RESET / GET COUNT / GET TEXT /

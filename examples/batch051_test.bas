@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch51_test.bas
+' PB64Basic Enhanced - batch51_test.bas
 ' GRAPHIC BITMAP NEW / GRAPHIC BITMAP END (batch 51)
 FUNCTION PBMAIN() AS LONG
     LOCAL hbmp AS LONG

@@ -96,11 +96,11 @@ FUNCTION PBMAIN() AS LONG
 
     ' 3. WINDOW SET TEXT / WINDOW GET TEXT (console title)
 #IF %MY_PBVER = 0
-    WINDOW SET TEXT 0, "PowerBasilisk Batch23"
+    WINDOW SET TEXT 0, "PB64Basic Batch23"
 #ELSE
     ' (PBWin10 WINDOW SET TEXT targets a DIALOG, not the console;
     '  same effect on the attached console via SetConsoleTitleA)
-    SetConsoleTitleA "PowerBasilisk Batch23"
+    SetConsoleTitleA "PB64Basic Batch23"
 #ENDIF
 #IF %MY_PBVER = 0
     WINDOW GET TEXT 0 TO title

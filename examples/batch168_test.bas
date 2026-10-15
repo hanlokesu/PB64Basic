@@ -10,7 +10,7 @@
 #ENDIF
 #COMPILER PBWIN 10
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -45,7 +45,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 168 regression test
+' PB64Basic Enhanced - batch 168 regression test
 '---------------------------------------------------------------------
 ' Purpose:  batch 168 implemented three whole DDT control families and
 '           left this probe behind as its evidence.  It is kept here so

@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 38: TALLY / STRREVERSE$ / STRINSERT$ / STRDELETE$ / REPEAT$ / FRAC / ISFOLDER / EXP2 / EXP10 / LOG2 / LOG10 / IIF / CHOOSE
+' PB64Basic Enhanced - batch 38: TALLY / STRREVERSE$ / STRINSERT$ / STRDELETE$ / REPEAT$ / FRAC / ISFOLDER / EXP2 / EXP10 / LOG2 / LOG10 / IIF / CHOOSE
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

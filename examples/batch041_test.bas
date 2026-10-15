@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 41: BUILD$ / CLIP$ / WRAP$ / UNWRAP$ / SHRINK$
+' PB64Basic Enhanced - batch 41: BUILD$ / CLIP$ / WRAP$ / UNWRAP$ / SHRINK$
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

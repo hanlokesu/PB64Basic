@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 30: ASMDATA / END ASMDATA read-only data blocks
+' PB64Basic Enhanced - Batch 30: ASMDATA / END ASMDATA read-only data blocks
 ' Verifies: DB/DW/DD/DQ byte layout, ANSI + WIDE string literals, CODEPTR() address,
 ' packed unaligned offsets, read-back via PEEK.
 ASMDATA ABC

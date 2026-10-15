@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch48_test.bas
+' PB64Basic Enhanced - batch48_test.bas
 ' IMAGELIST NEW / GET COUNT / KILL (tier-3 -> implemented, batch 48)
 ' NOTE: IMAGELIST NEW's initial& parameter is the INITIAL CAPACITY, not the
 ' image count (ImageList_Create semantics) — a fresh list has GET COUNT = 0.

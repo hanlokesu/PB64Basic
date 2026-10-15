@@ -1,6 +1,6 @@
 #COMPILE EXE
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 166 regression test
+' PB64Basic Enhanced - batch 166 regression test
 '---------------------------------------------------------------------
 ' Purpose:  Two things this batch fixed or added, in one runnable file.
 '

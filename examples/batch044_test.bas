@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 44: SWITCH / SWITCH$ / HI / LO / FILEATTR / FILENAME$ / PATHSCAN$
+' PB64Basic Enhanced - batch 44: SWITCH / SWITCH$ / HI / LO / FILEATTR / FILENAME$ / PATHSCAN$
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

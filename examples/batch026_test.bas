@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -39,7 +39,7 @@ FUNCTION PBMAIN() AS LONG
     LOCAL waitk AS STRING
     LOCAL errcode AS LONG
 
-    ' ===== 1. PREFIX is PowerBasilisk-only (no official PBWin10 equivalent);
+    ' ===== 1. PREFIX is PB64Basic-only (no official PBWin10 equivalent);
     '     removed for dual-compiler compatibility =====
 
     ' ===== 2. TRY/CATCH traps a run-time error (MKDIR existing dir -> ERR 75) =====

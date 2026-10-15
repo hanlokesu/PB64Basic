@@ -45,7 +45,7 @@ SUB ConWaitKey()
         ReadFile h, c, 1, n, 0
     END IF
 END SUB
-' PowerBasilisk Enhanced - Batch 79 Test: OOP foundation (CLASS/METHOD/OBJECT/INSTANCE) + ARRAY REDIM
+' PB64Basic Enhanced - Batch 79 Test: OOP foundation (CLASS/METHOD/OBJECT/INSTANCE) + ARRAY REDIM
 
 ' CLASS/END CLASS block (fork OOP extension; PBWin has no CLASS at this level)
 #IF %MY_PBVER = 0

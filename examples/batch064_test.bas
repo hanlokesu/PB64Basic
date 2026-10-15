@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 64 test
+' PB64Basic Enhanced - Batch 64 test
 ' GRAPHIC GET BITS / SET BITS / GET SCALE / SCALE / SET AUTOSIZE
 FUNCTION PBMAIN() AS LONG
     LOCAL hBmp AS LONG

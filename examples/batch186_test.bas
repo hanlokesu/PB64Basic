@@ -28,7 +28,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk example - batch 186 test
+' PB64Basic example - batch 186 test
 '---------------------------------------------------------------------
 ' What this tests: ConPrint STR$(on the 32-bit target.)
 '

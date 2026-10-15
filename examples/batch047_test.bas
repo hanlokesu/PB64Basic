@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch47_test.bas
+' PB64Basic Enhanced - batch47_test.bas
 ' NOTE: font handles are per-process values (PBWin32 vs fork x64); print normalized,
 '       assertion only checks <>0. See dual-run normalization recipe.
 ' FONT NEW / FONT END (tier-3 -> implemented, batch 47)

@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -36,7 +36,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 206 self-check - COMM failures are loud,
+' PB64Basic Enhanced - batch 206 self-check - COMM failures are loud,
 ' and the channel goes where you wrote it
 '---------------------------------------------------------------------
 ' TWO DEFECTS THIS PINS

@@ -28,7 +28,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 207 self-check - a failure the program can read
+' PB64Basic Enhanced - batch 207 self-check - a failure the program can read
 '---------------------------------------------------------------------
 ' THE POINT
 '   A statement can fail in two very different ways:

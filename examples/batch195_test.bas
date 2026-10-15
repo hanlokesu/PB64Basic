@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 195 test: no-op statement groups are now REPORTED
+' PB64Basic Enhanced - Batch 195 test: no-op statement groups are now REPORTED
 '
 ' COMPILE-ONLY by design: this batch changed diagnostics, not behaviour.  The four
 ' statements below are accepted and intentionally emit no code (they were parked in

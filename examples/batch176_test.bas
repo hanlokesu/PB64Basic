@@ -9,7 +9,7 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -51,7 +51,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PBXB64 / PowerBasilisk Enhanced â€? batch 176 test
+' PBXB64 / PB64Basic Enhanced â€? batch 176 test
 ' ---------------------------------------------------------------------
 ' THE CONTROL MESSAGE AND STATE FAMILY (Tier-3 DDT GUI, ten statements)
 '

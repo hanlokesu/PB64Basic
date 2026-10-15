@@ -2,7 +2,7 @@
 #DIM ALL
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -37,7 +37,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 28: THREADED (thread-local storage)
+' PB64Basic Enhanced - batch 28: THREADED (thread-local storage)
 ' THREADED vars are global to every Sub/Function but each thread has its
 ' own independent copy. We verify: main sets tcount=1, a child thread sets
 ' its own tcount=2 and copies it to a plain global; main still reads 1.

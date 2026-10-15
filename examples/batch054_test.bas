@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch54_test.bas
+' PB64Basic Enhanced - batch54_test.bas
 ' GRAPHIC WIDTH / STYLE / SAVE (batch 54)
 FUNCTION PBMAIN() AS LONG
     LOCAL hbmp AS LONG

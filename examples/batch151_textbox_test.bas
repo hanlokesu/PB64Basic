@@ -1,7 +1,7 @@
 #COMPILE EXE
 #DIM ALL
 ' Tier-3 DDT: TEXTBOX + LABEL + BUTTON (EnterMov)
-' Auto-generated: PowerBasilisk fork batch test
+' Auto-generated: PB64Basic fork batch test
 
 
 

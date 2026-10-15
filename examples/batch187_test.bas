@@ -28,7 +28,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk example - batch 187 test
+' PB64Basic example - batch 187 test
 '---------------------------------------------------------------------
 ' What this tests: a trailing `;` (or `,`) on PRINT suppresses the newline.
 '

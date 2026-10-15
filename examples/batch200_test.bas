@@ -28,7 +28,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk - batch 200 test: the 64-bit handle must reach the variable
+' PB64Basic - batch 200 test: the 64-bit handle must reach the variable
 '---------------------------------------------------------------------
 ' Purpose:   pin the batch 200e defect and its fix.  Before the fix, a handle assigned to a
 '            variable never arrived: the generated code stored 8 bytes into a 4-byte slot, the

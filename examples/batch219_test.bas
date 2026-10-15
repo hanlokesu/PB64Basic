@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch219_test.bas
+' PB64Basic Enhanced - batch219_test.bas
 ' batch 219: the statements whose argument-count guard became loud.
 ' This sample drives two of them (FILECOPY, SETATTR) with the argument counts
 ' the official help pages require - the positive half of the batch's witness.

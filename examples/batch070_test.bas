@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 70 Test: XPRINT ARC/ELLIPSE/PIE/FONT/MIX/STRETCHMODE
+' PB64Basic Enhanced - Batch 70 Test: XPRINT ARC/ELLIPSE/PIE/FONT/MIX/STRETCHMODE
 ' --- Dual-compiler self-check: this sample runs on BOTH compilers. ---
 '     Measured 2026-10-14: this machine's PBWin10 has NO default printer, so
 '     XPRINT ATTACH DEFAULT leaves hdc=0 and GET ATTACH / MIX / STRETCHMODE readbacks return empty/0;

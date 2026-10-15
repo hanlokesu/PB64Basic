@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 68 Test: XPRINT ATTACH/CLOSE/GET PPI/GET SIZE/GET DC
+' PB64Basic Enhanced - Batch 68 Test: XPRINT ATTACH/CLOSE/GET PPI/GET SIZE/GET DC
 ' Uses screen DC as fallback when no printer is available (CI-friendly)
 ' --- Dual-compiler self-check: this sample runs on BOTH compilers. ---
 '     Measured 2026-10-14: this machine's PBWin10 has NO default printer, so

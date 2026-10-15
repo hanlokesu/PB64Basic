@@ -8,12 +8,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -46,7 +46,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 78 Test: XPRINT GET MARGIN + DISPLAY common dialogs (6 statements)
+' PB64Basic Enhanced - Batch 78 Test: XPRINT GET MARGIN + DISPLAY common dialogs (6 statements)
 FUNCTION PBMAIN() AS LONG
     LOCAL ml AS LONG, mt AS LONG, mr AS LONG, mb AS LONG
     LOCAL result AS STRING

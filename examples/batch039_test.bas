@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 39: BIN$ / OCT$ / DEC$ / VERIFY / MOD / GETATTR / DISKFREE / DISKSIZE
+' PB64Basic Enhanced - batch 39: BIN$ / OCT$ / DEC$ / VERIFY / MOD / GETATTR / DISKFREE / DISKSIZE
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

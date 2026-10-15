@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 71 Test: XPRINT TEXT SIZE / GET CLIENT / GET CANVAS / WRAP / WORDWRAP / OVERLAP
+' PB64Basic Enhanced - Batch 71 Test: XPRINT TEXT SIZE / GET CLIENT / GET CANVAS / WRAP / WORDWRAP / OVERLAP
 ' --- Dual-compiler self-check: this sample runs on BOTH compilers. ---
 '     Measured 2026-10-14: this machine's PBWin10 has NO default printer, so
 '     XPRINT ATTACH DEFAULT leaves hdc=0 and XPRINT TEXT SIZE / GET CLIENT /

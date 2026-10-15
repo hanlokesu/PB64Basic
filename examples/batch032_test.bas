@@ -29,7 +29,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced — batch 32 test: MAT matrix algebra
+' PB64Basic Enhanced — batch 32 test: MAT matrix algebra
 ' Covers: CON / ZER / CON(expr) / assignment / + / - / scalar * / IDN / TRN / * / INV
 
 

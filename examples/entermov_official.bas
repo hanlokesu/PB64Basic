@@ -1,6 +1,6 @@
 #COMPILE EXE
 #DIM ALL
-' EnterMov.bas - PowerBasilisk modified version
+' EnterMov.bas - PB64Basic modified version
 
 
 

@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -85,7 +85,7 @@ FUNCTION PBMAIN() AS LONG
     DESKTOP GET LOC TO x, y
     IF x < 0 OR y < 0 THEN ok = ok + 100000
 
-    ' DESKTOP GET PPI is a PowerBasilisk extension with no official PB
+    ' DESKTOP GET PPI is a PB64Basic extension with no official PB
     ' equivalent; the PPI check is dropped for dual-compiler parity.
 
     IF ok = 0 THEN

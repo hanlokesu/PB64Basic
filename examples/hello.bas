@@ -28,11 +28,11 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' hello.bas - PowerBasilisk Enhanced v0.1.15 smoke demo
+' hello.bas - PB64Basic Enhanced v0.1.15 smoke demo
 
 FUNCTION PBMAIN() AS LONG
     LOCAL here AS STRING
-    ConPrint "Hello from PowerBasilisk Enhanced v0.1.15!"
+    ConPrint "Hello from PB64Basic Enhanced v0.1.15!"
     here = CURDIR$
     ConPrint "CURDIR$ = " & here
     ConPrint "Press any key to exit..."

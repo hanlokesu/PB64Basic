@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 33: CALLSTK call-stack tracing
+' PB64Basic Enhanced - batch 33: CALLSTK call-stack tracing
 ' Tests: CALLSTKCOUNT depth, CALLSTK$(n) frame names, CALLSTK file dump
 GLOBAL failures AS LONG
 

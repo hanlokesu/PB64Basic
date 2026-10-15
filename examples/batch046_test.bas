@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 46: MEMORY COPY / SWAP / FILL
+' PB64Basic Enhanced - batch 46: MEMORY COPY / SWAP / FILL
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

@@ -8,12 +8,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -46,7 +46,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch220_test.bas
+' PB64Basic Enhanced - batch220_test.bas
 ' batch 220: the remaining 125 guarded arms became loud (a short argument list
 ' is now a compile error, e.g. IMPORT ADDR without its TO AddrVar& target).
 ' This sample is the positive half of the witness: it drives a representative

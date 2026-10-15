@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 66 test
+' PB64Basic Enhanced - Batch 66 test
 ' GRAPHIC SET FIXED + GRAPHIC SET FONT
 FUNCTION PBMAIN() AS LONG
     LOCAL hBmp AS LONG

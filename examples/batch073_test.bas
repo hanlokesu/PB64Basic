@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -69,7 +69,7 @@ TYPE PolyPts5
     y5 AS SINGLE
 END TYPE
 
-' PowerBasilisk Enhanced - Batch 73 Test: XPRINT POLYGON / POLYLINE
+' PB64Basic Enhanced - Batch 73 Test: XPRINT POLYGON / POLYLINE
 FUNCTION PBMAIN() AS LONG
     LOCAL waitk AS STRING
     LOCAL fails AS LONG

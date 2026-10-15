@@ -8,12 +8,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -47,7 +47,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 204 self-check - THREAD STATUS / CLOSE
+' PB64Basic Enhanced - batch 204 self-check - THREAD STATUS / CLOSE
 '---------------------------------------------------------------------
 ' WHAT WAS MEASURED BEFORE THIS FILE WAS WRITTEN
 '   Worker sleeps 700 ms, main checks at 150 ms and again at 1350 ms:

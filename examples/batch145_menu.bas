@@ -9,12 +9,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -59,7 +59,7 @@ CALLBACK FUNCTION DlgProc()
             ELSEIF CB.CTL = 101 THEN
                 DIALOG END g_hDlg, 1
             ELSEIF CB.CTL = 102 THEN
-                MSGBOX "About: PowerBasilisk batch 145"
+                MSGBOX "About: PB64Basic batch 145"
             END IF
     END SELECT
 END FUNCTION

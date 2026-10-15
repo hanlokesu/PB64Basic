@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - Batch 63 test
+' PB64Basic Enhanced - Batch 63 test
 ' GRAPHIC GET CLIP / GET VIEW / SET VIEW / GET LINES / GET+SET WRAP
 ' All statements verified against a memory DIB bitmap (console-testable).
 FUNCTION PBMAIN() AS LONG

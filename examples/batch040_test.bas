@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 40: ChrToOem$ / OemToChr$ / ChrToUtf8$ / Utf8ToChr$
+' PB64Basic Enhanced - batch 40: ChrToOem$ / OemToChr$ / ChrToUtf8$ / Utf8ToChr$
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

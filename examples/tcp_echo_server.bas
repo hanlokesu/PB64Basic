@@ -9,12 +9,12 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 #IF %MY_PBVER = 10
 FUNCTION PBMAIN() AS LONG
-    ' PowerBasilisk-only sample: PBWin10 stub (compiles, does nothing).
+    ' PB64Basic-only sample: PBWin10 stub (compiles, does nothing).
 END FUNCTION
 #ELSE
 
@@ -48,7 +48,7 @@ SUB ConWaitKey()
 END SUB
 
 
-' tcp_echo.bas - TCP echo demo for PowerBasilisk Enhanced (batch 19)
+' tcp_echo.bas - TCP echo demo for PB64Basic Enhanced (batch 19)
 ' Run tcp_echo_server.exe and tcp_echo_client.exe in two consoles (server first).
 
 FUNCTION PBMAIN() AS LONG

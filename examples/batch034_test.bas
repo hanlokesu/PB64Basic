@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 34: PROFILE per-procedure call counts + elapsed ms
+' PB64Basic Enhanced - batch 34: PROFILE per-procedure call counts + elapsed ms
 GLOBAL failures AS LONG
 
 FUNCTION PBMAIN() AS LONG

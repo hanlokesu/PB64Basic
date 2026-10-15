@@ -10,7 +10,7 @@
     %MY_PBVER = 0
 #ENDIF
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -45,7 +45,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 191 regression test
+' PB64Basic Enhanced - batch 191 regression test
 '---------------------------------------------------------------------
 ' Purpose:  batch 191 turned the three DDT families' *unknown sub-command*
 '           fallbacks into hard compile errors.

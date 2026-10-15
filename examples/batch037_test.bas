@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 37: CVx family (binary string -> value)
+' PB64Basic Enhanced - batch 37: CVx family (binary string -> value)
 GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)

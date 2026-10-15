@@ -1,6 +1,6 @@
 
 
-' --- PBWin10 stub branch: this sample exercises PowerBasilisk-only ---
+' --- PBWin10 stub branch: this sample exercises PB64Basic-only ---
 '     syntax that official PBWin10 does not provide; it compiles but
 '     does nothing here.  The fork branch (#ELSE) is the real test.
 
@@ -35,7 +35,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch50_test.bas
+' PB64Basic Enhanced - batch50_test.bas
 ' NOTE: menu bar/popup handles are per-process values (PBWin32 vs fork x64);
 '       print normalized, assertion only checks <>0.
 ' MENU NEW BAR / NEW POPUP / ADD STRING / ADD POPUP / DELETE (batch 50)

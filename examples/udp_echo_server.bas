@@ -29,7 +29,7 @@ SUB ConWaitKey()
 END SUB
 
 
-' udp_echo.bas - UDP echo demo for PowerBasilisk Enhanced (batch 19)
+' udp_echo.bas - UDP echo demo for PB64Basic Enhanced (batch 19)
 ' Run udp_echo_server.exe and udp_echo_client.exe in two consoles (server first).
 
 FUNCTION PBMAIN() AS LONG

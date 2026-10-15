@@ -39,7 +39,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 167 regression test
+' PB64Basic Enhanced - batch 167 regression test
 '---------------------------------------------------------------------
 ' Purpose:  batch 167 was a coverage-correction batch: it replaced the
 '           eleven collapsed "bare family name" rows in the CSV with the

@@ -27,7 +27,7 @@ SUB ConWaitKey()
     END IF
 END SUB
 
-' PowerBasilisk Enhanced - batch 36: MKE$ (EXT = 8-byte double in this compiler)
+' PB64Basic Enhanced - batch 36: MKE$ (EXT = 8-byte double in this compiler)
 #IF %DEF(%PB_REVISION)
     #IF (%PB_REVISION AND &H0FF00) = &H1000
         %MY_PBVER = 10

@@ -40,7 +40,7 @@ SUB ConWaitKey()
 END SUB
 
 '=====================================================================
-' PowerBasilisk Enhanced - batch 205 self-check - TCP loopback in ONE program
+' PB64Basic Enhanced - batch 205 self-check - TCP loopback in ONE program
 '---------------------------------------------------------------------
 ' WHY BATCH 204 COULD NOT SHIP THIS
 '   Batch 204 sent bare bytes - `TCP SEND #3, "ping"` and `TCP SEND #2, "pong"` -
