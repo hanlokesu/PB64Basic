@@ -46,9 +46,7 @@ pub fn compile(
     if !compiler.warnings.is_empty() {
         let warn_path = output_path.with_extension("unimplemented.log");
         let mut report = String::new();
-        report.push_str(
-            "PowerBasilisk Enhanced - unimplemented / silently-dropped statement report\n",
-        );
+        report.push_str("PB64Basic - unimplemented / silently-dropped statement report\n");
         report.push_str(&format!(
             "{} statement(s) parsed but produced NO code. These make the .exe run but do nothing.\n",
             compiler.warnings.len()

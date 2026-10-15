@@ -1,6 +1,6 @@
 # pbcompiler
 
-LLVM IR code generation backend for PowerBasilisk. Compiles PowerBASIC AST to LLVM IR text, then invokes `clang` to produce native executables, DLLs, or object files.
+LLVM IR code generation backend for PB64Basic. Compiles PowerBASIC AST to LLVM IR text, then invokes `clang` to produce native executables, DLLs, or object files.
 
 ## Compilation Pipeline
 

@@ -322,7 +322,7 @@ void pb_debug_init(void) {
     pb_debug_enabled = 1;
     pb_debug_log = fopen("pb_debug.log", "w");
     if (pb_debug_log) {
-        fprintf(pb_debug_log, "=== PowerBasilisk Debug Log ===\n");
+        fprintf(pb_debug_log, "=== PB64Basic Debug Log ===\n");
         fflush(pb_debug_log);
     }
     /* Check environment variable for verbose debug mode */

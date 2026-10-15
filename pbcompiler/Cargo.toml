@@ -4,7 +4,7 @@ version = "0.1.1"
 edition = "2021"
 description = "PowerBASIC compiler: PB source → LLVM IR → native object code"
 license = "Apache-2.0"
-repository = "https://github.com/benstopics/powerbasilisk"
+repository = "https://github.com/hanlokesu/PB64Basic"
 
 [dependencies]
 pb = { path = "../pb" }
