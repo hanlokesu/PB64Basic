@@ -78,11 +78,10 @@ END SUB
 ' 1. WHICH WINDOW CLASS WAS REALLY CREATED (GetClassNameA):
 '       MONTHCAL SysMonthCal32
 '       ANIMATE  SysAnimate32
-'       RICHEDIT RICHEDIT50W
-'    RICHEDIT50W only exists once MSFTEDIT.DLL has been loaded - the local
-'    RichEdit.inc says so in as many words - so the runtime helper loads that
-'    DLL before CreateWindowExA.  A helper that forgot to would come back
-'    with class "Edit" instead, and check 1 would catch it here.
+'       RICHEDIT RichEdit20A
+'    RichEdit20A comes from RICHED20.DLL (loaded by hand above).  A helper
+'    that forgot to load the DLL would come back with class "Edit" instead,
+'    and check 1 would catch it here.
 '
 ' 2. WHICH STYLES REALLY REACHED THE WINDOW (GetWindowLongA GWL_STYLE):
 '    all three are WS_CHILD | WS_VISIBLE, MONTHCAL/RICHEDIT also WS_TABSTOP,
@@ -221,7 +220,7 @@ FUNCTION PBMAIN () AS LONG
     dllName = "riched20.dll"
     hRichDll = LoadLibraryA(VARPTR(dllName))
     IF hRichDll = 0 THEN ConPrint "WARN riched20.dll not loaded"
-    CONTROL ADD "RichEdit20A", hDlg, 403, "",   8, 144, 312,  64, &H50000000, 0
+    CONTROL ADD "RichEdit20A", hDlg, 403, "",   8, 144, 312,  64, &H50800000, 0
     CONTROL HANDLE hDlg, 403 TO hRe
 
     ' ------------------------------------------------------------------
@@ -273,8 +272,8 @@ FUNCTION PBMAIN () AS LONG
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hRe, VARPTR(buf), 64) TO n
     buf = LEFT$(buf, n)
-    IF n > 0 AND INSTR(buf, "RICHEDIT50W") > 0 THEN
-        ConPrint "ok   RICHEDIT created a RICHEDIT50W window (msftedit.dll loaded)"
+    IF n > 0 AND INSTR(buf, "RichEdit20A") > 0 THEN
+        ConPrint "ok   RICHEDIT created a RichEdit20A window (riched20.dll loaded)"
     ELSE
         fail = fail + 1
         ConPrint "FAIL RICHEDIT class (len" & STR$(n) & ") -> " & RTRIM$(buf)
