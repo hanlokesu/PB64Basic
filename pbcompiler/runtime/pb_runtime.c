@@ -6901,13 +6901,16 @@ void* pb_lookup_callback_hwnd(void* hwnd) {
 #define PB_CTL_DLU_X 6
 #define PB_CTL_DLU_Y 13
 
-/* DLU <-> px conversion, matching PBWin's rounding.  The +3/+6 offsets are
-   dx/2 and dy/2: a value that does not land on a whole pixel rounds to the
-   nearest one (12 DLU tall = 12*13/8 = 19.5 -> 20 px, which reads back as
-   20*8/13 = 12). */
-#define PB_DLU_X_TO_PX(v) (((v) * PB_CTL_DLU_X + 3) / 4)
+/* DLU <-> px conversion, matching PBWin's measured behaviour:
+   - X axis (position and width): truncate (14 DLU -> 21 px, 40 -> 60,
+     134 -> 201).
+   - Y axis (position and height): round to nearest half-pixel upward
+     (12 -> 20, 32 -> 52, 14 -> 23).  The +6 is dy/2.
+   - The DIALOG NEW client size is truncated (160x50 -> 240x81), which is
+     why pb_window_new uses plain multiplication, not these macros. */
+#define PB_DLU_X_TO_PX(v) (((v) * PB_CTL_DLU_X) / 4)
 #define PB_DLU_Y_TO_PX(v) (((v) * PB_CTL_DLU_Y + 6) / 8)
-#define PB_PX_X_TO_DLU(v) (((v) * 4 + 3) / PB_CTL_DLU_X)
+#define PB_PX_X_TO_DLU(v) (((v) * 4) / PB_CTL_DLU_X)
 #define PB_PX_Y_TO_DLU(v) (((v) * 8 + 6) / PB_CTL_DLU_Y)
 
 /* Convert dialog units to pixels (matching PBWin DDT) */
@@ -7019,6 +7022,24 @@ __declspec(dllimport) int __stdcall FillRect(void*, const void*, void*);
 __declspec(dllimport) int __stdcall DeleteObject(void*);
 
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
+    if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
+        /* PBWin's DIALOG windows are real dialog templates: 3px border each
+           side and a 26px caption (non-client (3,26,3,3), measured against
+           the original HelloDDT: 246x110 outer for a 240x81 client).  A
+           plain Win11 window class computes an 8px frame / 31px caption
+           instead, which is why the fork window was 10px bigger for the
+           same client.  Claiming the dialog non-client rect here makes the
+           outer window match PBWin pixel for pixel.  Both the simple form
+           (wParam=0, lParam = RECT*) and the NCCALCSIZE_PARAMS form
+           (wParam!=0, first member is the RECT) put the window rect at the
+           start of lParam, so one handler covers both. */
+        long* r = (long*)lParam;   /* RECT: left, top, right, bottom */
+        r[0] += 3;
+        r[1] += 26;
+        r[2] -= 3;
+        r[3] -= 3;
+        return 0;
+    }
     if (Msg == 0x0002) /* WM_DESTROY */ { pb_ctl_color_forget(hWnd); PostQuitMessage(0); return 0; }
         if (Msg == 0x0111) /* WM_COMMAND */ {
         cb_msg = Msg;
@@ -7161,8 +7182,32 @@ static void pb_dialog_base_units(int* dlu_x, int* dlu_y) {
     if (dlu_y) *dlu_y = dy;
 }
 
+/* batch 241: the dialog font every DIALOG/control uses.  A program-set
+   DIALOG DEFAULT FONT wins; otherwise the default dialog font - MS Shell
+   Dlg 8pt, the same template font PBWin's dialogs use (tmHeight 13 on this
+   system, which is the baseY the DLU conversions use).  The handle is
+   cached so every control shares one HFONT. */
+static void* pb_dialog_font(void) {
+    if (pb_default_font) return pb_default_font;
+    static void* f = 0;
+    if (!f) {
+        /* PBWin's DIALOG NEW has no FONT clause by default, and the
+           compiled dialog then carries MS Sans Serif at -11 (measured on
+           the original HelloDDT: height -11, weight 400, face
+           "MS Sans Serif").  The old CreateFontA(-10, "MS Shell Dlg")
+           was 8pt Tahoma-class, which is why the fork text looked smaller
+           and different; GetStockObject(DEFAULT_GUI_FONT) resolves to the
+           Win11 UI font (Segoe UI) which is also not a match. */
+        f = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 1,
+                        0, 0, 0, 0, "MS Sans Serif");
+        if (!f) f = (void*)1;   /* never return NULL (WM_SETFONT requires a font) */
+    }
+    return f;
+}
+
 void* pb_window_new(const char* title, int x, int y, int w, int h) {
     __declspec(dllimport) void __stdcall InitCommonControls(void); InitCommonControls();
+    __declspec(dllimport) int __stdcall SetWindowPos(void*, void*, int, int, int, int, unsigned int);
     static int registered = 0;
     if (!registered) {
         pb_wndclassex_t wc;
@@ -7182,28 +7227,38 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
        The created window is the client rect plus the non-client area. */
     int dluX = 6, dluY = 13;
     pb_dialog_base_units(&dluX, &dluY);
-    int px = (x * dluX + 3) / 4;
-    int py = (y * dluY + 6) / 8;
-    int cw = (w * dluX + 3) / 4;
-    int ch = (h * dluY + 6) / 8;
+    /* PBWin truncates: 160x50 DLU -> 240x81 px client rect */
+    int px = (x * dluX) / 4;
+    int py = (y * dluY) / 8;
+    int cw = (w * dluX) / 4;
+    int ch = (h * dluY) / 8;
     /* outer window = client rect + non-client (title bar, borders) */
     pb_rect_t rc;
     rc.left = 0; rc.top = 0; rc.right = cw; rc.bottom = ch;
-    AdjustWindowRectEx(&rc, 0x00CF0000 | 0x10000000, 0, 0);
-    int pw = rc.right - rc.left;
-    int ph = rc.bottom - rc.top;
-    void* hwnd = CreateWindowExA(0, "PBWIN_CLASS", title,
-        0x00CF0000 | 0x10000000,
-        px, py, pw, ph, 0, 0, GetModuleHandleA(0), 0);
+    /* batch 241: the DIALOG NEW style is the standard dialog style -
+       WS_CAPTION | WS_SYSMENU.  No WS_THICKFRAME (a dialog is not
+       resizable), no WS_MINIMIZEBOX / WS_MAXIMIZEBOX (PBWin dialogs have
+       only the close button).  The old WS_OVERLAPPEDWINDOW style drew the
+       minimize/maximize buttons and a thick resizable border, which is why
+       the fork window looked unlike the PBWin original.  The extended
+       style is the dialog one (WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE =
+       0x101).
+       The outer size is client + (6, 29): the dialog non-client frame
+       (3px borders + 26px caption, see the WM_NCCALCSIZE handler), which
+       is exactly what a PBWin dialog measures.  Creating the window at
+       this size makes its client rect come out as the requested cw x ch. */
+    void* hwnd = CreateWindowExA(0x101u, "PBWIN_CLASS", title,
+        0x00C80000u | 0x10000000u,
+        px, py, cw + 6, ch + 29, 0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
         ShowWindow(hwnd, 5);
         UpdateWindow(hwnd);
-        /* DIALOG DEFAULT FONT, when the program has set one, applies to
-           every dialog created afterwards. */
-        if (pb_default_font) {
-            SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
-                         (unsigned long long)(size_t)pb_default_font, 1);
-        }
+        /* the dialog font (DIALOG DEFAULT FONT if set, else MS Sans Serif
+           -11, matching a PBWin dialog) - batch 241: controls inherit it,
+           and without it the window and its children render in the system
+           default font (different glyphs, clipped text). */
+        SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
+                     (unsigned long long)(size_t)pb_dialog_font(), 1);
     }
     return hwnd;
 }
@@ -7853,9 +7908,12 @@ void* pb_control_add_button(void* parent, long id, const char* text,
                             int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x01 | 0x40000000 | 0x10000000 | 0x10000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030 /* WM_SETFONT */,
+                        (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 
@@ -7866,6 +7924,8 @@ void* pb_control_add_editbox(void* parent, long id, const char* text,
     void* hEdit = CreateWindowExA(0x200, "EDIT", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hEdit) SendMessageA(hEdit, 0x0030 /* WM_SETFONT */,
+                            (unsigned long long)(size_t)pb_dialog_font(), 1);
     return hEdit;
 }
 
@@ -8002,18 +8062,22 @@ void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h)
     /* CBS_DROPDOWNLIST=0x3, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
        WS_BORDER=0x800000, WS_VSCROLL=0x200000, WS_TABSTOP=0x10000 */
     unsigned long style = 0x3 | 0x40000000 | 0x10000000 | 0x800000 | 0x200000 | 0x10000;
-    return CreateWindowExA(0, "COMBOBOX", "", style,
+    void* hw = CreateWindowExA(0, "COMBOBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) {
     /* LBS_NOTIFY=0x1, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
        WS_BORDER=0x800000, WS_VSCROLL=0x200000, WS_TABSTOP=0x10000 */
     unsigned long style = 0x1 | 0x40000000 | 0x10000000 | 0x800000 | 0x200000 | 0x10000;
-    return CreateWindowExA(0, "LISTBOX", "", style,
+    void* hw = CreateWindowExA(0, "LISTBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 void* pb_control_add_checkbox(void* parent, long id, const char* text,
@@ -8022,27 +8086,33 @@ void* pb_control_add_checkbox(void* parent, long id, const char* text,
     /* BS_AUTOCHECKBOX=0x3, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
        WS_TABSTOP=0x10000 */
     unsigned long style = 0x3 | 0x40000000 | 0x10000000 | 0x10000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 void* pb_control_add_radiobutton(void* parent, long id, const char* text,
                                 int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x9 | 0x40000000 | 0x10000000 | 0x10000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 void* pb_control_add_groupbox(void* parent, long id, const char* text,
                                int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x7 | 0x40000000 | 0x10000000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* === batch 177: the plain and static CONTROL family ==================
@@ -8059,9 +8129,11 @@ void* pb_control_add_option(void* parent, long id, const char* text,
                             int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x9 | 0x100 | 0xC00 | 0x40000000 | 0x10000000 | 0x10000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* CONTROL ADD CHECK3STATE - auto 3-state checkbox (True / False /
@@ -8071,9 +8143,11 @@ void* pb_control_add_check3state(void* parent, long id, const char* text,
                                  int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x6 | 0x100 | 0xC00 | 0x40000000 | 0x10000000 | 0x10000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* CONTROL ADD FRAME - the "group" box.  Class BUTTON, type
@@ -8084,9 +8158,11 @@ void* pb_control_add_frame(void* parent, long id, const char* text,
                            int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x7 | 0x100 | 0x400 | 0x40000000 | 0x10000000;
-    return CreateWindowExA(0, "BUTTON", text, style,
+    void* hw = CreateWindowExA(0, "BUTTON", text, style,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* ---- the resource-image control family (batch 178) ---------------------
@@ -8183,6 +8259,7 @@ void* pb_control_add_image(void* parent, long id, const char* name,
         SendMessageA(hwnd, is_button ? 0xF7 : 0x172,
                      (pb_wparam_t)type, (pb_lparam_t)(intptr_t)img);
     }
+    if (hwnd) SendMessageA(hwnd, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
     return hwnd;
 }
 
@@ -8221,12 +8298,21 @@ int pb_control_set_image(void* parent, long id, const char* name,
    with %WS_EX_LEFT(0).  txt$ may be empty. */
 void* pb_control_add_textbox(void* parent, long id, const char* text,
                              int x, int y, int w, int h) {
-    pb_dlu_to_px(&x, &y, &w, &h);
+    /* TEXTBOX is the one control whose height is not the plain rounded
+       DLU value: PBWin's 12-DLU textbox measures 19 px (rounded 20 minus
+       the edit border inset).  So x/y/w go through pb_dlu_to_px and the
+       height is rounded once, here, minus 1. */
+    x = PB_DLU_X_TO_PX(x);
+    y = PB_DLU_Y_TO_PX(y);
+    w = PB_DLU_X_TO_PX(w);
+    int hpx = PB_DLU_Y_TO_PX(h) - 1;
     unsigned long style = 0x800000 | 0x80 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
-    return CreateWindowExA(ex, "EDIT", text, style,
-                           x, y, w, h, parent,
+    void* hw = CreateWindowExA(ex, "EDIT", text, style,
+                           x, y, w, hpx, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* CONTROL ADD LINE - a line, or an empty/filled rectangle.  Class STATIC;
@@ -8237,9 +8323,11 @@ void* pb_control_add_line(void* parent, long id, const char* text,
                           int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
     unsigned long style = 0x12 | 0x40000000 | 0x10000000;
-    return CreateWindowExA(0, "STATIC", text, style,
+    void* hw = CreateWindowExA(0, "STATIC", text, style,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
 }
 
 /* CONTROL SET OPTION hDlg, id&, minid&, maxid& -- CheckRadioButton() *is*
@@ -8259,6 +8347,7 @@ void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int h
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     /* Set default range 0-100 so scrollbar works immediately */
     SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
+    if (hbar) SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
     return hbar;
 }
 
@@ -8268,36 +8357,44 @@ void* pb_control_add_label(void* parent, long id, const char* text, int x, int y
     unsigned long style = 0x40000000 | 0x10000000;
     pb_dlu_to_px(&x,&y,&w,&ht);
     ht = 16; /* single-line label height, vertically centered with 24px edit */
-    return CreateWindowExA(0, "STATIC", text, style,
+    void* h = CreateWindowExA(0, "STATIC", text, style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD PROGRESSBAR */
 void* pb_control_add_progressbar(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x00000000 | 0x40000000 | 0x10000000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "msctls_progress32", "", style,
+    void* h = CreateWindowExA(0, "msctls_progress32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD MONTHCAL (batch 190) - class "SysMonthCal32" */
 void* pb_control_add_monthcal(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x40000000 | 0x10000000 | 0x00010000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "SysMonthCal32", "", style,
+    void* h = CreateWindowExA(0, "SysMonthCal32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD ANIMATE (batch 190) - class "SysAnimate32" */
 void* pb_control_add_animate(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x40000000 | 0x10000000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "SysAnimate32", "", style,
+    void* h = CreateWindowExA(0, "SysAnimate32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD RICHEDIT (batch 190) - class "RICHEDIT50W" */
@@ -8305,45 +8402,55 @@ void* pb_control_add_richedit(void* parent, long id, int x, int y, int w, int ht
     unsigned long style = 0x40000000 | 0x10000000 | 0x00010000 | 0x00800000 | 0x4 | 0x40;
     LoadLibraryA("msftedit.dll");  /* registers RICHEDIT50W */
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "RICHEDIT50W", "", style,
+    void* h = CreateWindowExA(0, "RICHEDIT50W", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD TRACKBAR (batch 189) - class "msctls_trackbar32" */
 void* pb_control_add_trackbar(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x0001 | 0x40000000 | 0x10000000 | 0x00010000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "msctls_trackbar32", "", style,
+    void* h = CreateWindowExA(0, "msctls_trackbar32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD UPDOWN (batch 189) - class "msctls_updown32" */
 void* pb_control_add_updown(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x0002 | 0x0004 | 0x40000000 | 0x10000000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "msctls_updown32", "", style,
+    void* h = CreateWindowExA(0, "msctls_updown32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD HOTKEY (batch 189) - class "msctls_hotkey32" */
 void* pb_control_add_hotkey(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x40000000 | 0x10000000 | 0x00010000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "msctls_hotkey32", "", style,
+    void* h = CreateWindowExA(0, "msctls_hotkey32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD IPADDRESS (batch 189) - class "SysIPAddress32" */
 void* pb_control_add_ipaddress(void* parent, long id, int x, int y, int w, int ht) {
     unsigned long style = 0x40000000 | 0x10000000 | 0x00010000;
     pb_dlu_to_px(&x,&y,&w,&ht);
-    return CreateWindowExA(0, "SysIPAddress32", "", style,
+    void* h = CreateWindowExA(0, "SysIPAddress32", "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* PROGRESSBAR SET RANGE/POS */
@@ -9366,9 +9473,11 @@ void* pb_control_add_treeview(void* parent, long id, int x, int y, int w, int ht
                                                : 0x00000200u /* WS_EX_CLIENTEDGE */;
     pb_icc(PB_ICC_TREEVIEW_CLASSES);
     pb_dlu_to_px(&x, &y, &w, &ht);
-    return CreateWindowExA(exstyle, "SysTreeView32", "",
+    void* h = CreateWindowExA(exstyle, "SysTreeView32", "",
                            style, x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* ---------------- CONTROL ADD TOOLBAR / STATUSBAR (batch 164) ----------------
@@ -9432,9 +9541,11 @@ void* pb_control_add_graphic(void* parent, long id, const char* text,
     if (!s) s = 0x0000000Bu /* SS_OWNERDRAW */;
     s |= 0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */;
     pb_dlu_to_px(&x, &y, &w, &ht);
-    return CreateWindowExA((unsigned long)exstyle, "STATIC", text, s,
+    void* h = CreateWindowExA((unsigned long)exstyle, "STATIC", text, s,
                            x, y, w, ht, parent, (void*)(long long)id,
                            GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD HEADER, hDlg, ID, Txt$, x, y, wide, high
@@ -9458,9 +9569,11 @@ void* pb_control_add_header(void* parent, long id, const char* text,
                       | 0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */;
     pb_icc(PB_ICC_WIN95_CLASSES);
     pb_dlu_to_px(&x, &y, &w, &ht);
-    return CreateWindowExA((unsigned long)exstyle, "SysHeader32", text, s,
+    void* h = CreateWindowExA((unsigned long)exstyle, "SysHeader32", text, s,
                            x, y, w, ht, parent, (void*)(long long)id,
                            GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* CONTROL ADD classname$ - the generic custom-control form (batch 166).
@@ -10007,9 +10120,11 @@ void* pb_control_add_tab(void* parent, long id, int x, int y, int w, int ht) {
                         | 0x40000000u | 0x10000000u | 0x04000000u | 0x00010000u;
     pb_icc(PB_ICC_TAB_CLASSES);
     pb_dlu_to_px(&x, &y, &w, &ht);
-    return CreateWindowExA(0x00000200 /* WS_EX_CLIENTEDGE */, "SysTabControl32", "",
+    void* h = CreateWindowExA(0x00000200 /* WS_EX_CLIENTEDGE */, "SysTabControl32", "",
                            style, x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return h;
 }
 
 /* ---------------- TAB DELETE hDlg, ID&, PageNum& ---------------- */

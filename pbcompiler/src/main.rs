@@ -223,9 +223,13 @@ fn compile_file(
         let exe_path = output_path.with_extension("exe");
         if exe_path.exists() {
             let has_icons = !preprocessor.resources().is_empty();
+            let has_manifest = !preprocessor.manifests().is_empty();
             let has_version = !preprocessor.version_info().strings.is_empty();
             if has_icons {
                 embed_resources(&exe_path, preprocessor.resources());
+            }
+            if has_manifest {
+                embed_manifest(&exe_path, preprocessor.manifests());
             }
             if has_version {
                 embed_version_info(&exe_path, preprocessor.version_info());
@@ -306,6 +310,68 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
         }
         Err(e) => eprintln!(
             "[PB64Basic] Warning: cannot run powershell for icon embedding: {}",
+            e
+        ),
+    }
+}
+
+/// Embed #RESOURCE MANIFEST XML as RT_MANIFEST (type 24) with the given id.
+/// This is what gives the EXE comctl32 v6 visual styles — flat, themed
+/// buttons — exactly like a PBWin build that carries
+/// `#RESOURCE MANIFEST, 1, "XPTheme.xml"`.
+fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
+    use std::os::windows::process::CommandExt;
+    let mut script = String::new();
+    script.push_str("Add-Type -TypeDefinition @'\n");
+    script.push_str("using System;\n");
+    script.push_str("using System.Runtime.InteropServices;\n");
+    script.push_str("public class ResMf {\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr BeginUpdateResource(string p, bool b);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool UpdateResource(IntPtr h, IntPtr t, IntPtr n, ushort l, byte[] d, uint cb);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr h, bool d);\n");
+    script.push_str("}\n'@\n");
+    let exe_q = exe_path.to_string_lossy().replace('\'', "''");
+    script.push_str(&format!("$exe = '{}'\n", exe_q));
+    script.push_str("$h = [ResMf]::BeginUpdateResource($exe, $false)\n");
+    script.push_str("$RT_MANIFEST = [IntPtr]24\n");
+    for (id, path) in manifests {
+        let path_q = path.to_string_lossy().replace('\'', "''");
+        script.push_str(&format!("$xml = [IO.File]::ReadAllText('{}')\n", path_q));
+        /* The PBWin sample manifests (XPTheme.xml) declare
+        processorArchitecture="x86" because PBWin builds 32-bit EXEs.
+        This fork builds x64, and an x64 EXE whose manifest pins the
+        comctl32 dependency to x86 fails to start with 0xc000007b.
+        Neutralise the architecture so the manifest applies on any
+        build. */
+        script.push_str(
+            "$xml = $xml -replace 'processorArchitecture=\"x86\"', 'processorArchitecture=\"*\"'\n",
+        );
+        script.push_str("$bytes = [Text.Encoding]::UTF8.GetBytes($xml)\n");
+        script.push_str(&format!("[void][ResMf]::UpdateResource($h, $RT_MANIFEST, [IntPtr]{}, 0, $bytes, $bytes.Length)\n", id));
+    }
+    script.push_str("[void][ResMf]::EndUpdateResource($h, $false)\n");
+
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        Ok(out) => {
+            if out.status.success() {
+                eprintln!(
+                    "[PB64Basic] Embedded {} manifest resource(s) into {}",
+                    manifests.len(),
+                    exe_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[PB64Basic] Warning: manifest embedding failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "[PB64Basic] Warning: cannot run powershell for manifest embedding: {}",
             e
         ),
     }

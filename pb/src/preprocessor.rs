@@ -57,6 +57,9 @@ pub struct Preprocessor {
     included: HashSet<PathBuf>,
     macros: HashMap<String, MacroDef>,
     pub resources: Vec<(u32, PathBuf)>,
+    /// #RESOURCE MANIFEST, id, "file.xml" — embedded as RT_MANIFEST so the
+    /// EXE gets comctl32 v6 visual styles (flat buttons) like a PBWin build.
+    pub manifests: Vec<(u32, PathBuf)>,
     pub version_info: VersionInfo,
     /// Official PB: `#DIM ALL` == `OPTION EXPLICIT` (every variable must be
     /// declared). Recorded here so main.rs can enforce it at codegen time.
@@ -76,6 +79,7 @@ impl Preprocessor {
             included: HashSet::new(),
             macros: HashMap::new(),
             resources: Vec::new(),
+            manifests: Vec::new(),
             version_info: VersionInfo::default(),
             dim_all: false,
         }
@@ -322,6 +326,29 @@ impl Preprocessor {
                             let resolved = file.parent().unwrap_or(Path::new(".")).join(&icon_path);
                             if resolved.exists() {
                                 self.resources.push((id, resolved));
+                            }
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            // #RESOURCE MANIFEST, id, "file.xml" — visual-styles manifest,
+            // embedded post-link as RT_MANIFEST (same layout as ICON).
+            if upper_full.starts_with("#RESOURCE MANIFEST") {
+                let rest = trimmed_full[18..].trim().trim_start_matches(",").trim();
+                let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
+                if parts.len() >= 2 {
+                    if let Ok(id) = parts[0].parse::<u32>() {
+                        if let Some(mpath) = extract_string(parts[1]) {
+                            let resolved = file.parent().unwrap_or(Path::new(".")).join(&mpath);
+                            if resolved.exists() {
+                                self.manifests.push((id, resolved));
+                            } else {
+                                eprintln!(
+                                    "[PB64Basic] warning: #RESOURCE MANIFEST file not found: {}",
+                                    resolved.display()
+                                );
                             }
                         }
                     }
@@ -672,6 +699,10 @@ impl Preprocessor {
 
     pub fn resources(&self) -> &[(u32, PathBuf)] {
         &self.resources
+    }
+
+    pub fn manifests(&self) -> &[(u32, PathBuf)] {
+        &self.manifests
     }
 
     pub fn dim_all(&self) -> bool {
