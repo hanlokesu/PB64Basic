@@ -7029,7 +7029,9 @@ impl Parser {
                         line,
                     }));
                 }
-                // CONTROL ADD BUTTON, hWnd, id, "text", x, y, w, h TO hCtrl&  (Tier-3 DDT GUI #2)
+                // CONTROL ADD BUTTON, hWnd, id, "text", x, y, w, h
+                //   [, [style&] [, [exstyle&]]] [[,] CALL callback] [, TO hCtrl&]
+                //   (official PBWin.chw syntax; batch 243)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="ADD")
                     && matches!(self.peek_at(2), Some(Token::Identifier(w)) if w.to_uppercase()=="BUTTON")
@@ -7051,6 +7053,36 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    // batch 243: official syntax is
+                    //   [, [style&] [, [exstyle&]]] [[,] CALL callback]
+                    // A CALL may follow with OR WITHOUT a comma, so a plain
+                    // "14 CALL OkButton" (no comma before CALL) must also be
+                    // captured - the old code consumed it with consume_to_eol.
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance(); // consume CALL
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance(); // consume CALL
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -7058,9 +7090,16 @@ impl Parser {
                         Expr::Variable("_ctl_dummy".to_string())
                     };
                     self.consume_to_eol();
+                    // fixed 11-arg layout: [hwnd,id,text,x,y,w,h, style, exstyle, callback, target]
+                    // style/exstyle default 0; callback placeholder "_no_cb" when absent
+                    let mut args = vec![hwnd, id, text, x, y, w, h];
+                    args.push(style.unwrap_or(Expr::IntegerLit(0)));
+                    args.push(exstyle.unwrap_or(Expr::IntegerLit(0)));
+                    args.push(callback.unwrap_or(Expr::Variable("_no_cb".to_string())));
+                    args.push(target);
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_BUTTON".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args,
                         line,
                     }));
                 }

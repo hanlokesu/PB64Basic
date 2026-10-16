@@ -15,6 +15,138 @@ use crate::symbols::{ArrayInfo, SymbolTable};
 /// Options for the compilation pipeline.
 pub const DEFAULT_TARGET: &str = "i686-pc-windows-msvc";
 
+/// Built-in Win32 equates (PBWin's equates.inc equivalents) used as a
+/// fallback when a %CONSTANT is neither #CONST-defined nor %X= defined by
+/// the program.  Values are from the Windows SDK headers.  batch 243:
+/// without this, "%BS_DEFAULT OR %WS_TABSTOP" silently lost WS_TABSTOP
+/// (unknown equates resolved to 0).
+const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
+    ("%WS_BORDER", 0x00800000),
+    ("%WS_CAPTION", 0x00C00000),
+    ("%WS_CHILD", 0x40000000),
+    ("%WS_CHILDWINDOW", 0x40000000),
+    ("%WS_CLIPCHILDREN", 0x02000000),
+    ("%WS_CLIPSIBLINGS", 0x04000000),
+    ("%WS_DISABLED", 0x08000000),
+    ("%WS_DLGFRAME", 0x00400000),
+    ("%WS_GROUP", 0x00020000),
+    ("%WS_HSCROLL", 0x00100000),
+    ("%WS_MAXIMIZE", 0x01000000),
+    ("%WS_MAXIMIZEBOX", 0x00010000),
+    ("%WS_MINIMIZE", 0x20000000),
+    ("%WS_MINIMIZEBOX", 0x00020000),
+    ("%WS_OVERLAPPED", 0x00000000),
+    ("%WS_OVERLAPPEDWINDOW", 0x00CF0000),
+    ("%WS_POPUP", 0x80000000),
+    ("%WS_POPUPWINDOW", 0x80880000),
+    ("%WS_SYSMENU", 0x00080000),
+    ("%WS_TABSTOP", 0x00010000),
+    ("%WS_THICKFRAME", 0x00040000),
+    ("%WS_VISIBLE", 0x10000000),
+    ("%WS_VSCROLL", 0x00200000),
+    ("%WS_EX_ACCEPTFILES", 0x00000010),
+    ("%WS_EX_CLIENTEDGE", 0x00000200),
+    ("%WS_EX_CONTEXTHELP", 0x00000400),
+    ("%WS_EX_DLGMODALFRAME", 0x00000001),
+    ("%WS_EX_LEFT", 0x00000000),
+    ("%WS_EX_LTRREADING", 0x00000000),
+    ("%WS_EX_OVERLAPPEDWINDOW", 0x00000300),
+    ("%WS_EX_RIGHTSCROLLBAR", 0x00000000),
+    ("%WS_EX_STATICEDGE", 0x00020000),
+    ("%WS_EX_TOPMOST", 0x00000008),
+    ("%WS_EX_TRANSPARENT", 0x00000020),
+    ("%WS_EX_WINDOWEDGE", 0x00000100),
+    ("%BS_BOTTOM", 0x00000800),
+    ("%BS_CENTER", 0x00000300),
+    ("%BS_DEFAULT", 0x00000001),
+    ("%BS_DEFPUSHBUTTON", 0x00000001),
+    ("%BS_LEFT", 0x00000100),
+    ("%BS_MULTILINE", 0x00002000),
+    ("%BS_PUSHBUTTON", 0x00000000),
+    ("%BS_RIGHT", 0x00000200),
+    ("%BS_TOP", 0x00000400),
+    ("%BS_VCENTER", 0x00000C00),
+    ("%DS_3DLOOK", 0x00000004),
+    ("%DS_CENTER", 0x00000800),
+    ("%DS_CENTERMOUSE", 0x00001000),
+    ("%DS_MODALFRAME", 0x00000080),
+    ("%DS_NOFAILCREATE", 0x00000800),
+    ("%DS_SETFONT", 0x00000040),
+    ("%DS_SETFOREGROUND", 0x00000200),
+    ("%ES_AUTOHSCROLL", 0x00000080),
+    ("%ES_AUTOVSCROLL", 0x00000040),
+    ("%ES_CENTER", 0x00000001),
+    ("%ES_LEFT", 0x00000000),
+    ("%ES_MULTILINE", 0x00000004),
+    ("%ES_NOHIDESEL", 0x00000100),
+    ("%ES_PASSWORD", 0x00000020),
+    ("%ES_READONLY", 0x00000800),
+    ("%ES_RIGHT", 0x00000002),
+    ("%ES_WANTRETURN", 0x00001000),
+    ("%SS_BLACKFRAME", 0x00000007),
+    ("%SS_BLACKRECT", 0x00000003),
+    ("%SS_CENTER", 0x00000001),
+    ("%SS_GRAYFRAME", 0x00000008),
+    ("%SS_LEFT", 0x00000000),
+    ("%SS_LEFTNOWORDWRAP", 0x0000000C),
+    ("%SS_RIGHT", 0x00000002),
+    ("%SS_SIMPLE", 0x0000000B),
+    ("%WM_COMMAND", 0x00000111),
+    ("%WM_CLOSE", 0x00000010),
+    ("%WM_CREATE", 0x00000001),
+    ("%WM_DESTROY", 0x00000002),
+    ("%WM_GETTEXT", 0x0000000D),
+    ("%WM_GETTEXTLENGTH", 0x0000000E),
+    ("%WM_KEYDOWN", 0x00000100),
+    ("%WM_KEYUP", 0x00000101),
+    ("%WM_LBUTTONDOWN", 0x00000201),
+    ("%WM_LBUTTONUP", 0x00000202),
+    ("%WM_MOUSEMOVE", 0x00000200),
+    ("%WM_PAINT", 0x0000000F),
+    ("%WM_QUIT", 0x00000012),
+    ("%WM_SETTEXT", 0x0000000C),
+    ("%WM_SETFONT", 0x00000030),
+    ("%WM_SIZE", 0x00000005),
+    ("%WM_TIMER", 0x00000113),
+    ("%BN_CLICKED", 0x00000000),
+    ("%CN_CLICKED", 0x00000000),
+    ("%EN_CHANGE", 0x00000300),
+    ("%EN_UPDATE", 0x00000400),
+    ("%LBN_SELCHANGE", 0x00000001),
+    ("%CBN_SELCHANGE", 0x00000001),
+    ("%CB_ADDSTRING", 0x00000143),
+    ("%CB_GETCURSEL", 0x00000147),
+    ("%CB_GETLBTEXT", 0x00000148),
+    ("%CB_SETCURSEL", 0x0000014E),
+    ("%LB_ADDSTRING", 0x00000180),
+    ("%LB_GETCURSEL", 0x00000188),
+    ("%LB_GETTEXT", 0x00000189),
+    ("%LB_GETTEXTLEN", 0x0000018A),
+    ("%LB_SETCURSEL", 0x00000186),
+    ("%MB_OK", 0x00000000),
+    ("%MB_OKCANCEL", 0x00000001),
+    ("%MB_YESNO", 0x00000004),
+    ("%MB_YESNOCANCEL", 0x00000003),
+    ("%MB_ICONERROR", 0x00000010),
+    ("%MB_ICONINFORMATION", 0x00000040),
+    ("%MB_ICONQUESTION", 0x00000020),
+    ("%MB_ICONWARNING", 0x00000030),
+    ("%MB_DEFBUTTON1", 0x00000000),
+    ("%MB_DEFBUTTON2", 0x00000100),
+    ("%MB_DEFBUTTON3", 0x00000200),
+    ("%IDOK", 1),
+    ("%IDCANCEL", 2),
+    ("%IDABORT", 3),
+    ("%IDRETRY", 4),
+    ("%IDIGNORE", 5),
+    ("%IDYES", 6),
+    ("%IDNO", 7),
+    ("%IDCLOSE", 8),
+    ("%IDHELP", 9),
+    ("%TRUE", 1),
+    ("%FALSE", 0),
+];
+
 pub struct CompileOptions {
     pub dll_mode: bool,
     pub exe_mode: bool,
@@ -1792,6 +1924,23 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_add_button_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_add_editbox",
             &IrType::Ptr,
             &[
@@ -2895,7 +3044,13 @@ impl Compiler {
         self.module
             .declare_function("pb_message_loop", &IrType::Void, &[], false);
         self.module
-            .declare_function("pb_show_modal_to", &IrType::I32, &[], false);
+            .declare_function("pb_show_modal_to", &IrType::I32, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_msgbox_impl",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
         self.module.declare_function(
             "pb_control_add_hscrollbar",
             &IrType::Ptr,
@@ -9978,15 +10133,14 @@ impl Compiler {
                     } else {
                         Val::new(self.empty_string_name.clone(), IrType::Ptr)
                     };
-                    let null = Val::new("null".to_string(), IrType::Ptr);
                     if self.module.is_32bit() {
                         fb.call_stdcall(
                             &IrType::I32,
-                            "MessageBoxA",
-                            &[null.clone(), text.clone(), title.clone(), style.clone()],
+                            "pb_msgbox_impl",
+                            &[text.clone(), title.clone(), style.clone()],
                         );
                     } else {
-                        fb.call(&IrType::I32, "MessageBoxA", &[null, text, title, style]);
+                        fb.call(&IrType::I32, "pb_msgbox_impl", &[text, title, style]);
                     }
                 }
                 return Ok(());
@@ -10459,7 +10613,9 @@ impl Compiler {
                     ));
                 }
 
-                // CONTROL ADD BUTTON, hWnd, id, text$, x, y, w, h TO hCtrl&
+                // CONTROL ADD BUTTON, hWnd, id, text$, x, y, w, h
+                //   [, [style&] [, [exstyle&]]] [[,] CALL callback] [, TO hCtrl&]
+                // batch 243: full official syntax - style/exstyle passthrough + CALL
                 if call.args.len() >= 8 {
                     let mut hwnd = self.compile_expr(fb, &call.args[0])?;
                     if hwnd.ty != IrType::Ptr {
@@ -10471,13 +10627,30 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hctrl = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_button",
-                        &[hwnd, id, text, x, y, w, h],
-                    );
-                    if let Some(target) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, target) {
+                    let target = if call.args.len() == 8 {
+                        // legacy IR: args[7] was the TO target, no style/callback
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_button",
+                            &[hwnd, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_button_ex",
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
                             let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
@@ -14405,14 +14578,21 @@ impl Compiler {
             }
             "DIALOG_SHOW_MODAL" => {
                 if call.args.len() >= 2 {
-                    let _hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        fb.inttoptr(&hd)
+                    } else {
+                        hd
+                    };
                     if let Expr::Variable(name) = &call.args[1] {
                         let upper = name.to_uppercase();
                         let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
                         if let Some(fi) = fi {
                             let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
                             fb.call_void("pb_register_dialog_cb", &[fn_ptr]);
-                            fb.call_void("pb_message_loop", &[]);
+                            // batch 243: pass the dialog handle so the modal loop can
+                            // route Enter/Tab via IsDialogMessage (BS_DEFPUSHBUTTON).
+                            fb.call_void("pb_show_modal_to", &[hd_ptr]);
                         } else {
                             eprintln!("warning: DIALOG SHOW MODAL: unknown sub '{}'", upper);
                         }
@@ -14426,8 +14606,13 @@ impl Compiler {
                 // result set by DIALOG END is written back to the target
                 // variable via pb_show_modal_to (returns pb_modal_result).
                 if call.args.len() >= 2 {
-                    let _hd = self.compile_expr(fb, &call.args[0])?;
-                    let res = fb.call(&IrType::I32, "pb_show_modal_to", &[]);
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        fb.inttoptr(&hd)
+                    } else {
+                        hd
+                    };
+                    let res = fb.call(&IrType::I32, "pb_show_modal_to", &[hd_ptr]);
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[1]) {
                         let cv = self.convert_value(fb, &res, &ty, &pty);
                         fb.store(&cv, &ptr);
@@ -19127,12 +19312,21 @@ impl Compiler {
                 }
             }
             Expr::PercentConst(name) => {
-                let val = self
-                    .pp_constants
-                    .get(&name.to_uppercase())
-                    .copied()
-                    .unwrap_or(0);
-                Ok(fb.const_i32(val as i32))
+                // batch 243: PBWin ships equates.inc with all Win32 equates
+                // pre-defined; the fork used to silently resolve any unknown
+                // %CONSTANT to 0, which corrupted styles like
+                // "%BS_DEFAULT OR %WS_TABSTOP" (OK button lost its tab stop).
+                // Look up the program's own #CONST/%X= first, then fall back
+                // to the built-in Win32 equate table below.
+                let upper = name.to_uppercase();
+                let val = self.pp_constants.get(&upper).copied().or_else(|| {
+                    PB_BUILTIN_EQUATES
+                        .iter()
+                        .find(|(k, _)| *k == upper.as_str())
+                        .map(|(_, v)| *v)
+                });
+                let v = val.unwrap_or(0);
+                Ok(fb.const_i32(v as i32))
             }
             Expr::FunctionCall(name, args) => {
                 let name = normalize_name(name);
@@ -20396,6 +20590,36 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    /// Compile a CONTROL ADD ... CALL callback argument into a function pointer.
+    /// "_no_cb" placeholder (parser default) -> null; a known function/sub name ->
+    /// its IR entry pointer; anything else -> compiled expression (must be a ptr).
+    fn compile_control_callback(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        arg: &Expr,
+    ) -> Result<Val, pb::error::PbError> {
+        if let Expr::Variable(name) = arg {
+            if name == "_no_cb" {
+                return Ok(Val::new("null".to_string(), IrType::Ptr));
+            }
+            let upper = name.to_uppercase();
+            let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+            if let Some(fi) = fi {
+                return Ok(Val::new(format!("@{}", fi.ir_name), IrType::Ptr));
+            }
+            eprintln!(
+                "warning: CONTROL ADD ... CALL: unknown callback '{}'",
+                upper
+            );
+            return Ok(Val::new("null".to_string(), IrType::Ptr));
+        }
+        let v = self.compile_expr(fb, arg)?;
+        if v.ty != IrType::Ptr {
+            return Ok(fb.inttoptr(&v));
+        }
+        Ok(v)
     }
 
     /// Returns (writable ptr, IR type, PB type) for a variable or array element.

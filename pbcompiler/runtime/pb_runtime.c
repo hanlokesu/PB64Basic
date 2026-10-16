@@ -24,6 +24,10 @@
 #include <direct.h>  /* _chdrive for CHDRIVE */
 #include <sys/locking.h>  /* _LK_LOCK / _LK_UNLCK */
 #include <sys/stat.h>  /* _stat / _S_IFDIR for ISFOLDER */
+#include <excpt.h>  /* GetExceptionCode for SEH filters */
+#include <malloc.h>  /* _heapchk for heap integrity probes */
+__declspec(dllimport) void* __stdcall GetProcessHeap(void);
+__declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const void*);
 
 #ifdef _WIN32
 /* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
@@ -371,66 +375,20 @@ void pb_debug_log_msg(const char* category, const char* message) {
 }
 
 #ifdef _WIN32
-/* Vectored exception handler � catches crashes and reports the current function */
+/* Vectored exception handler: logs fatal exceptions (0xC0000000 mask) to
+   stderr.  Informational codes (0x4xxxxxxx, 0xE06D7363 C++ throw inside
+   MessageBoxA and friends) are normal runtime noise and are ignored. */
 static long __stdcall pb_crash_handler(void* exception_pointers) {
-    /* EXCEPTION_POINTERS* ep = (EXCEPTION_POINTERS*)exception_pointers; */
-    /* Extract exception record */
-    unsigned long* ep = (unsigned long*)exception_pointers;
-    unsigned long* er = (unsigned long*)ep[0]; /* EXCEPTION_RECORD* */
-    unsigned long code = er[0]; /* ExceptionCode */
-    unsigned long addr = er[3]; /* ExceptionAddress � offset 12 bytes (3 DWORDs) */
-
-    /* Only catch fatal exceptions � ignore informational/debug exceptions */
-    /* High bit 0xC = fatal, 0x4 = informational */
-    if ((code & 0xF0000000) != 0xC0000000) {
-        return 0; /* EXCEPTION_CONTINUE_SEARCH � let system handle it */
-    }
-
-    char msg[1024];
-    sprintf(msg,
-        "CRASH in function: %s\n"
-        "Source line: %d\n"
-        "Exception code: 0x%08lX\n"
-        "Exception address: 0x%08lX\n"
-        "\nCheck pb_debug.log for call trace.",
-        pb_debug_current_func, pb_debug_line, code, addr);
-
-    /* Write call trace to debug log */
-    {
-        FILE* trace_f = fopen("pb_debug.log", "w");
-        if (trace_f) {
-            fprintf(trace_f, "=== Call Trace (last %d entries) ===\n", PB_TRACE_SIZE);
-            int start = (pb_trace_idx > PB_TRACE_SIZE) ? pb_trace_idx - PB_TRACE_SIZE : 0;
-            for (int i = start; i < pb_trace_idx; i++) {
-                const char* fn = pb_trace_buf[i % PB_TRACE_SIZE];
-                if (fn) fprintf(trace_f, "[%d] %s\n", i - start, fn);
-            }
-            fprintf(trace_f, "\n!!! CRASH !!!\n%s\n", msg);
-            fclose(trace_f);
-        }
-    }
-
-    /* Also write to stderr */
-    fprintf(stderr, "\n!!! RUNTIME CRASH !!!\n%s\n", msg);
-    /* Print last 10 call trace entries to stderr */
-    {
-        int start = (pb_trace_idx > 10) ? pb_trace_idx - 10 : 0;
-        fprintf(stderr, "Call trace (last entries):\n");
-        for (int i = start; i < pb_trace_idx; i++) {
-            const char* fn = pb_trace_buf[i % PB_TRACE_SIZE];
-            if (fn) fprintf(stderr, "  [%d] %s\n", i - start, fn);
-        }
-    }
-    fflush(stderr);
-
-    /* Write crash info to a file that Electron/Claude can read */
-    FILE* f = fopen("pb_crash.log", "w");
-    if (f) {
-        fprintf(f, "%s\n", msg);
-        fclose(f);
-    }
-
-    ExitProcess(99);
+    /* VEH: only fatal exceptions log (informational/debug codes are normal
+       runtime noise - e.g. 0xE06D7363 C++ throw inside MessageBoxA). */
+    unsigned long long* pp = (unsigned long long*)exception_pointers;
+    unsigned long long* er = pp ? (unsigned long long*)pp[0] : 0;
+    unsigned long code = er ? (unsigned long)(er[0] & 0xFFFFFFFFu) : 0;
+    if ((code & 0xF0000000) != 0xC0000000) return 0;
+    unsigned long long addr = er ? er[2] : 0;
+    char b[192];
+    int n = sprintf(b, "CRASH code=%08X addr=%llX\n", code, addr);
+    _write(2, b, n);
     return 0; /* EXCEPTION_CONTINUE_SEARCH */
 }
 #endif
@@ -5764,6 +5722,7 @@ __declspec(dllimport) int __stdcall TranslateMessage(const void* lpMsg);
 __declspec(dllimport) unsigned long __stdcall DispatchMessageA(const void* lpMsg);
 __declspec(dllimport) int __stdcall DestroyWindow(void* hWnd);
 __declspec(dllimport) void __stdcall PostQuitMessage(int nExitCode);
+__declspec(dllimport) int __stdcall IsDialogMessageA(void* hDlg, const void* lpMsg);
 
 #define PBM_SETPOS   0x0402
 #define PBM_SETRANGE32 0x0406
@@ -7014,6 +6973,8 @@ static int   pb_ctl_clr_set[PB_CTL_COLOR_SLOTS];
 static void* pb_ctlcolor_brush(void* hCtl, void* hdc);
 static void  pb_ctl_color_forget(void* hWnd);
 static int pb_dlg_bg_lookup(void* hWnd, unsigned long* rgb);
+/* forward decl (full decl later in file at the batch-181 block) */
+__declspec(dllimport) int __stdcall PostMessageA(void* hWnd, unsigned long Msg, pb_wparam_t wParam, pb_lparam_t lParam);
 /* DIALOG DEFAULT FONT installs this into every dialog created afterwards */
 static void* pb_default_font = 0;
 __declspec(dllimport) int __stdcall GetClientRect(void*, void*);
@@ -7023,16 +6984,6 @@ __declspec(dllimport) int __stdcall DeleteObject(void*);
 
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
-        /* PBWin's DIALOG windows are real dialog templates: 3px border each
-           side and a 26px caption (non-client (3,26,3,3), measured against
-           the original HelloDDT: 246x110 outer for a 240x81 client).  A
-           plain Win11 window class computes an 8px frame / 31px caption
-           instead, which is why the fork window was 10px bigger for the
-           same client.  Claiming the dialog non-client rect here makes the
-           outer window match PBWin pixel for pixel.  Both the simple form
-           (wParam=0, lParam = RECT*) and the NCCALCSIZE_PARAMS form
-           (wParam!=0, first member is the RECT) put the window rect at the
-           start of lParam, so one handler covers both. */
         long* r = (long*)lParam;   /* RECT: left, top, right, bottom */
         r[0] += 3;
         r[1] += 26;
@@ -7040,19 +6991,35 @@ static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned lon
         r[3] -= 3;
         return 0;
     }
-    if (Msg == 0x0002) /* WM_DESTROY */ { pb_ctl_color_forget(hWnd); PostQuitMessage(0); return 0; }
-        if (Msg == 0x0111) /* WM_COMMAND */ {
+    if (Msg == 0x0002) /* WM_DESTROY */ {
+        pb_ctl_color_forget(hWnd);
+        PostQuitMessage(0);
+        return 0;
+    }
+    if (Msg == 0x0111) /* WM_COMMAND */ {
         cb_msg = Msg;
         cb_hwnd = hWnd;
         cb_ctl = (unsigned int)(wParam & 0xFFFF);
         cb_ctlmsg = (unsigned int)(wParam >> 16);
         cb_wparam = wParam;
         cb_lparam = lParam;
-        if (pb_dialog_cb) {
-            void (*fn)(void) = (void(*)(void))pb_dialog_cb;
-            fn();
+        /* batch 243: official callbacks.htm semantics - a control callback
+           (registered by `CONTROL ADD ... CALL cb`, lParam is the control
+           handle for control notifications) receives the control's
+           WM_COMMAND; if it returns TRUE the message is consumed.  Otherwise
+           the dialog callback is tried next; TRUE there also consumes it.
+           Previously only pb_dialog_cb was consulted, so a BUTTON's CALL
+           callback never fired. */
+        void* fn = pb_lookup_callback_hwnd((void*)lParam);
+        if (fn) {
+            long (*cf)(void) = (long(*)(void))fn;
+            if (cf()) return 0;
         }
-        return 0;
+        if (pb_dialog_cb) {
+            long (*df)(void) = (long(*)(void))pb_dialog_cb;
+            if (df()) return 0;
+        }
+        return DefWindowProcA(hWnd, Msg, wParam, lParam);
     }
     if (Msg == 0x004E) /* WM_NOTIFY */ {
         /* NMHDR is { HWND hwndFrom; UINT_PTR idFrom; UINT code; } (WinUser.h) */
@@ -7941,17 +7908,25 @@ void pb_message_loop(void) {
     }
 }
 
-int pb_show_modal_to(void) {
+int pb_msgbox_impl(void* text, void* title, unsigned int style) {
+    return MessageBoxA(0, (const char*)text, (const char*)title, style);
+}
+
+int pb_show_modal_to(void* hDlg) {
     /* DIALOG SHOW MODAL hDlg TO result - official PB form (batch 238:
        HelloDDT from C:\PBWin10\samples\DDT).  Runs the same message loop;
        when DIALOG END records pb_modal_result and destroys the dialog
        (WM_DESTROY -> PostQuitMessage), GetMessage returns 0 and the
-       recorded modal result is handed back to the caller. */
+       recorded modal result is handed back to the caller.
+       batch 243: IsDialogMessage routes Enter/Tab to the dialog so a
+       BS_DEFPUSHBUTTON control fires like a native default button. */
     pb_msg_t msg;
     pb_modal_done = 0;
     pb_modal_result = 0;
-    while (GetMessageA(&msg, 0, 0, 0) > 0) {
+    int gm = 0;
+    while ((gm = GetMessageA(&msg, 0, 0, 0)) > 0) {
         if (pb_accel_translate(&msg)) continue;
+        if (hDlg && IsDialogMessageA(hDlg, &msg)) continue;
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
@@ -7966,12 +7941,41 @@ __declspec(dllimport) void* __stdcall CreateWindowExA(
 void* pb_control_add_button(void* parent, long id, const char* text,
                             int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
-    unsigned long style = 0x01 | 0x40000000 | 0x10000000 | 0x10000;
+    /* batch 243: PBWin default button style = %BS_CENTER OR %BS_VCENTER OR
+       %WS_TABSTOP (0x300|0xC00|0x10000 = 0x10F00) + WS_CHILD + WS_VISIBLE.
+       NOTE: BS_VCENTER is 0x0C00, NOT 0x0C (0x0C = BS_SPLITBUTTON, which
+       draws a drop-down arrow).  The old hard-coded BS_DEFPUSHBUTTON (0x01)
+       made every button a default button; PBWin only gives that look to
+       buttons whose style includes %BS_DEFAULT. */
+    unsigned long style = 0x10F00 | 0x40000000 | 0x10000000;
     void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030 /* WM_SETFONT */,
                         (unsigned long long)(size_t)pb_dialog_font(), 1);
+    return hw;
+}
+
+/* CONTROL ADD BUTTON full official syntax (batch 243):
+   style&/exstyle& passthrough + optional CALL callback.
+   style==0 -> PBWin default (see above); otherwise the user value is used
+   directly (PBWin semantics: custom style replaces the default, and the
+   runtime adds the WS_CHILD|WS_VISIBLE a control always needs).
+   exstyle==0 -> 0; else passed straight to CreateWindowExA. */
+void* pb_control_add_button_ex(void* parent, long id, const char* text,
+                               int x, int y, int w, int h,
+                               long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x10F00;
+    s |= 0x40000000u | 0x10000000u; /* WS_CHILD | WS_VISIBLE */
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                            x, y, w, h, parent,
+                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) {
+        SendMessageA(hw, 0x0030 /* WM_SETFONT */,
+                    (unsigned long long)(size_t)pb_dialog_font(), 1);
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
     return hw;
 }
 
