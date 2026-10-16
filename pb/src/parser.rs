@@ -9317,12 +9317,27 @@ impl Parser {
                         line,
                     }));
                 }
-                // DIALOG NEW hParent, "title", x, y, w, h TO hDlg
+                // DIALOG NEW [PIXELS, | UNITS,] hParent, "title", x, y, w, h [, style& [, exstyle&]] [,] TO hDlg
+                // batch 242: official syntax (PBWin.chw) allows an optional
+                // PIXELS / UNITS prefix before hParent.  Units default to
+                // UNITS (dialog units); PIXELS makes all size/position
+                // parameters plain pixels.  The flag travels as arg[9].
                 if name_upper == "DIALOG"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="NEW")
                 {
                     self.advance();
                     self.advance();
+                    let mut units = Expr::IntegerLit(0); // 0 = UNITS (default), 1 = PIXELS
+                    if let Token::Identifier(kw) = self.peek() {
+                        let up = kw.to_uppercase();
+                        if up == "PIXELS" || up == "UNITS" {
+                            if up == "PIXELS" {
+                                units = Expr::IntegerLit(1);
+                            }
+                            self.advance();
+                            self.expect(&Token::Comma)?;
+                        }
+                    }
                     let parent = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let title = self.parse_expression()?;
@@ -9365,7 +9380,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_NEW".to_string(),
-                        args: vec![parent, title, x, y, w, h, style, exstyle, target],
+                        args: vec![parent, title, x, y, w, h, style, exstyle, target, units],
                         line,
                     }));
                 }

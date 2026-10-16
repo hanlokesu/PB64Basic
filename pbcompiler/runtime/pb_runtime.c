@@ -7263,6 +7263,65 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
     return hwnd;
 }
 
+/* batch 242: DIALOG NEW full official syntax (PBWin.chw).
+   DIALOG NEW [PIXELS, | UNITS,] hParent, title$, [x&], [y&], xx&, yy&
+             [, [style&] [, [exstyle&]]] [,] TO hDlg
+   - units: 0 = UNITS (dialog units, default), 1 = PIXELS (plain pixels)
+   - style:  0 -> official default &H084C000D4& (DS_3DLOOK | DS_SETFONT |
+             DS_MODALFRAME | DS_NOFAILCREATE | WS_BORDER | WS_CLIPSIBLINGS |
+             WS_DLGFRAME | WS_POPUP); non-zero -> caller's value used as-is
+             (PBWin semantics: custom style replaces the default).
+   - exstyle: 0 -> 0x101 (WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE);
+             non-zero -> caller's value.
+   - Background: COLOR_BTNFACE (3D dialog grey, what a PBWin dialog shows),
+             via its own window class PBWIN_DLG_CLASS (WINDOW keeps
+             PBWIN_CLASS / COLOR_WINDOW, unchanged).
+   - NOTE: like pb_window_new, the dialog is shown immediately (WS_VISIBLE).
+             PBWin semantics create the dialog hidden and DIALOG SHOW MODAL /
+             MODELESS reveal it; aligning that requires reworking
+             pb_message_loop (TODO, see SKILL). */
+void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
+                        unsigned long style, unsigned long exstyle, int units) {
+    __declspec(dllimport) void __stdcall InitCommonControls(void); InitCommonControls();
+    static int dlg_registered = 0;
+    if (!dlg_registered) {
+        pb_wndclassex_t wc;
+        memset(&wc, 0, sizeof(wc));
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = (void*)pb_wndproc;
+        wc.hInstance = GetModuleHandleA(0);
+        wc.hCursor = LoadCursorA(0, (const char*)32512);
+        wc.hbrBackground = (void*)16;   /* COLOR_BTNFACE + 1 (3D dialog grey) */
+        wc.lpszClassName = "PBWIN_DLG_CLASS";
+        unsigned long rc = RegisterClassExA(&wc);
+        dlg_registered = 1;
+    }
+    int dluX = 6, dluY = 13;
+    pb_dialog_base_units(&dluX, &dluY);
+    int px, py, cw, ch;
+    if (units) {
+        /* PIXELS: x&/y&/xx&/yy& are plain pixels (client size). */
+        px = x; py = y; cw = w; ch = h;
+    } else {
+        /* UNITS (default): dialog units -> pixels, PBWin truncation rules. */
+        px = (x * dluX) / 4;
+        py = (y * dluY) / 8;
+        cw = (w * dluX) / 4;
+        ch = (h * dluY) / 8;
+    }
+    unsigned long dwStyle = style ? style : 0x84C000D4u; /* official default */
+    dwStyle |= 0x10000000u; /* WS_VISIBLE (see NOTE above) */
+    unsigned long dwEx = exstyle ? exstyle : 0x101u;
+    void* hwnd = CreateWindowExA(dwEx, "PBWIN_DLG_CLASS", title, dwStyle,
+        px, py, cw + 6, ch + 29, 0, 0, GetModuleHandleA(0), 0);
+    if (hwnd) {
+        ShowWindow(hwnd, 5);
+        UpdateWindow(hwnd);
+        SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
+                     (unsigned long long)(size_t)pb_dialog_font(), 1);
+    }
+    return hwnd;
+}
 /* ==================================================================
    Batch 180 - the GRAPHIC WINDOW family
    ------------------------------------------------------------------

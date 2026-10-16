@@ -1760,6 +1760,21 @@ impl Compiler {
             ],
             false,
         );
+        self.module.declare_function(
+            "pb_window_new_dlg",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
         self.module
             .declare_function("pb_message_loop", &IrType::Void, &[], false);
         self.module.declare_function(
@@ -14349,7 +14364,7 @@ impl Compiler {
                 return Ok(());
             }
             "DIALOG_NEW" => {
-                // batch 220: the official syntax requires all 9 arguments, so a shorter
+                // batch 220: the official syntax requires 9 arguments, so a shorter
                 // spelling is malformed. Report it instead of silently doing nothing.
                 if call.args.len() < 9 {
                     return Err(pb::error::PbError::parser(
@@ -14366,9 +14381,20 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[3])?;
                     let w = self.compile_expr(fb, &call.args[4])?;
                     let h = self.compile_expr(fb, &call.args[5])?;
-                    let _style = self.compile_expr(fb, &call.args[6])?;
-                    let _exstyle = self.compile_expr(fb, &call.args[7])?;
-                    let hc = fb.call(&IrType::Ptr, "pb_window_new", &[title, x, y, w, h]);
+                    let style = self.compile_expr(fb, &call.args[6])?;
+                    let exstyle = self.compile_expr(fb, &call.args[7])?;
+                    // batch 242: arg[9] = unit flag (0 UNITS/DLU default, 1 PIXELS),
+                    // added by the parser for `[PIXELS, | UNITS,]`; older IR stays 9.
+                    let units = if call.args.len() >= 10 {
+                        self.compile_expr(fb, &call.args[9])?
+                    } else {
+                        fb.const_i64(0)
+                    };
+                    let hc = fb.call(
+                        &IrType::Ptr,
+                        "pb_window_new_dlg",
+                        &[title, x, y, w, h, style, exstyle, units],
+                    );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[8]) {
                         let hc_i = fb.ptrtoint64(&hc);
                         let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
