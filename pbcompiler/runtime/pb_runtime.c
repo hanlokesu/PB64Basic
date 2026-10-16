@@ -6890,18 +6890,33 @@ void* pb_lookup_callback_hwnd(void* hwnd) {
    numbers: a control written at "12, 12" must read back as 12, 12 and SET LOC
    must put it where ADD would have.  They used to disagree - the geometry
    went through GetDialogBaseUnits() (8x16 on this machine), so a button added
-   at 10,10 read back 8,8 (see the batch 175 block further down). */
-#define PB_CTL_DLU_X 7
-#define PB_CTL_DLU_Y 14
+   at 10,10 read back 8,8 (see the batch 175 block further down).
+
+   batch 239: the base is the dialog font MS Shell Dlg 8pt, whose real
+   metrics on this machine are aveCharWidth=6, tmHeight=13 (the comment below
+   already said ~6/~13; the constants were 7x14, which made every control
+   ~17% too wide and ~8% too tall).  Verified against PBWin's HelloDDT: a
+   40x14 DLU button must come out 60x23 px (40*6/4=60, 14*13/8=22.75) and a
+   134x12 DLU textbox 201x19 px. */
+#define PB_CTL_DLU_X 6
+#define PB_CTL_DLU_Y 13
+
+/* DLU <-> px conversion, matching PBWin's rounding.  The +3/+6 offsets are
+   dx/2 and dy/2: a value that does not land on a whole pixel rounds to the
+   nearest one (12 DLU tall = 12*13/8 = 19.5 -> 20 px, which reads back as
+   20*8/13 = 12). */
+#define PB_DLU_X_TO_PX(v) (((v) * PB_CTL_DLU_X + 3) / 4)
+#define PB_DLU_Y_TO_PX(v) (((v) * PB_CTL_DLU_Y + 6) / 8)
+#define PB_PX_X_TO_DLU(v) (((v) * 4 + 3) / PB_CTL_DLU_X)
+#define PB_PX_Y_TO_DLU(v) (((v) * 8 + 6) / PB_CTL_DLU_Y)
 
 /* Convert dialog units to pixels (matching PBWin DDT) */
 static void pb_dlu_to_px(int *x, int *y, int *w, int *h) {
-    /* 8pt MS Shell Dlg: avg char width ~6px, height ~13px */
-    int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
-    *x = (*x * dx) / 4;
-    *y = (*y * dy) / 8;
-    *w = (*w * dx) / 4;
-    *h = (*h * dy) / 8;
+    /* 8pt MS Shell Dlg: avg char width 6px, height 13px (measured) */
+    *x = PB_DLU_X_TO_PX(*x);
+    *y = PB_DLU_Y_TO_PX(*y);
+    *w = PB_DLU_X_TO_PX(*w);
+    *h = PB_DLU_Y_TO_PX(*h);
 }
 
 void* pb_control_add_button(void* parent, long id, const char* text, int x, int y, int w, int h);
@@ -7101,6 +7116,51 @@ typedef struct {
     long pt_y;
 } pb_msg_t;
 
+/* batch 239: pb_window_new needs the non-client geometry.  pb_rect_t and
+   AdjustWindowRectEx are declared later in the file (the batch 181 block);
+   the typedef is moved up here so pb_window_new can use them, and the
+   later typedef is removed (redefinition would be an error). */
+typedef struct { int left; int top; int right; int bottom; } pb_rect_t;
+__declspec(dllimport) int __stdcall AdjustWindowRectEx(pb_rect_t*, unsigned long, int, unsigned long);
+
+/* batch 239: the dialog-unit base.  Official PBWin converts DIALOG NEW and
+   every geometry statement with the dialog template font - the DIALOG
+   DEFAULT FONT if the program set one, else the default dialog font
+   (MS Shell Dlg 8pt, base units 6 x 13 as PBWin measures them on this
+   system).  One DLU x = baseunitX/4 px, one DLU y = baseunitY/8 px.
+   Everything that converts DLU <-> px goes through the same two numbers so
+   ADD and GET round-trip.  (The old code used GetDialogBaseUnits() - the
+   *system* font 8x16 @96dpi - which made dialogs and controls ~33% wider
+   and ~25% taller than PBWin's, and 13/8 is not an integer divisor, so the
+   round-trip now rounds like PBWin does.) */
+static void pb_dialog_base_units(int* dlu_x, int* dlu_y) {
+    int dx = 6, dy = 13;
+    if (pb_default_font) {
+        typedef struct {
+            long tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+            long tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang;
+            long tmDigitizedAspectX, tmDigitizedAspectY;
+            unsigned short tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+            unsigned char tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+        } pb_textmetrica_t;
+        __declspec(dllimport) int __stdcall GetTextMetricsA(void*, void*);
+        void* dc = GetDC(0);
+        if (dc) {
+            void* old = SelectObject(dc, pb_default_font);
+            pb_textmetrica_t tm;
+            memset(&tm, 0, sizeof(tm));
+            if (GetTextMetricsA(dc, &tm)) {
+                if (tm.tmAveCharWidth > 0) dx = tm.tmAveCharWidth;
+                if (tm.tmHeight > 0) dy = tm.tmHeight;
+            }
+            if (old) SelectObject(dc, old);
+            ReleaseDC(0, dc);
+        }
+    }
+    if (dlu_x) *dlu_x = dx;
+    if (dlu_y) *dlu_y = dy;
+}
+
 void* pb_window_new(const char* title, int x, int y, int w, int h) {
     __declspec(dllimport) void __stdcall InitCommonControls(void); InitCommonControls();
     static int registered = 0;
@@ -7116,14 +7176,22 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
         unsigned long rc = RegisterClassExA(&wc);
         registered = 1;
     }
-    __declspec(dllimport) unsigned long __stdcall GetDialogBaseUnits(void);
-    unsigned long _bu = GetDialogBaseUnits();
-    int dluX = _bu & 0xFFFF;
-    int dluY = (_bu >> 16) & 0xFFFF;
-    int px = (x * dluX) / 4;
-    int py = (y * dluY) / 8;
-    int pw = (w * dluX) / 4;
-    int ph = (h * dluY) / 8;
+    /* batch 239: DIALOG NEW dimensions are dialog units (DLU) - resolved
+       through pb_dialog_base_units() above (default dialog font 6x13,
+       or the DIALOG DEFAULT FONT's real metrics when the program set one).
+       The created window is the client rect plus the non-client area. */
+    int dluX = 6, dluY = 13;
+    pb_dialog_base_units(&dluX, &dluY);
+    int px = (x * dluX + 3) / 4;
+    int py = (y * dluY + 6) / 8;
+    int cw = (w * dluX + 3) / 4;
+    int ch = (h * dluY + 6) / 8;
+    /* outer window = client rect + non-client (title bar, borders) */
+    pb_rect_t rc;
+    rc.left = 0; rc.top = 0; rc.right = cw; rc.bottom = ch;
+    AdjustWindowRectEx(&rc, 0x00CF0000 | 0x10000000, 0, 0);
+    int pw = rc.right - rc.left;
+    int ph = rc.bottom - rc.top;
     void* hwnd = CreateWindowExA(0, "PBWIN_CLASS", title,
         0x00CF0000 | 0x10000000,
         px, py, pw, ph, 0, 0, GetModuleHandleA(0), 0);
@@ -7811,7 +7879,7 @@ __declspec(dllimport) void* __stdcall SetFocus(void*);
 void pb_dialog_set_text(void* hDlg, const char* text) {
     SetWindowTextA(hDlg, text);
 }
-typedef struct { int left; int top; int right; int bottom; } pb_rect_t;
+/* pb_rect_t is typedef'd above pb_window_new (batch 239) */
 __declspec(dllimport) int __stdcall GetWindowRect(void* hWnd, pb_rect_t* lpRect);
 /* batch 181 - GRAPHIC REDRAW / SET FOCUS / SET LOC / SET CLIENT.
    Everything these need is declared by this point in the file (pb_rect_t just
@@ -8361,12 +8429,11 @@ void pb_control_set_check(void* hctrl, int state) {
  * by "DIALOG GET SIZE" round-trips to w,h for any w divisible by 4 and any h
  * divisible by 8 (320x200 and 500x360 in the example). */
 static void pb_dlg_units(int* dlu_x, int* dlu_y) {
-    __declspec(dllimport) unsigned long __stdcall GetDialogBaseUnits(void);
-    unsigned long bu = GetDialogBaseUnits();
-    *dlu_x = (int)(bu & 0xFFFF);
-    *dlu_y = (int)((bu >> 16) & 0xFFFF);
-    if (*dlu_x <= 0) *dlu_x = 8;   /* never divide by zero */
-    if (*dlu_y <= 0) *dlu_y = 16;
+    /* batch 239: same base as pb_window_new - the dialog font (6x13 default,
+       or the DIALOG DEFAULT FONT's metrics), NOT GetDialogBaseUnits(). */
+    pb_dialog_base_units(dlu_x, dlu_y);
+    if (*dlu_x <= 0) *dlu_x = 6;   /* never divide by zero */
+    if (*dlu_y <= 0) *dlu_y = 13;
 }
 
 void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
@@ -8375,8 +8442,8 @@ void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetWindowRect(hDlg, &rc);
     pb_dlg_units(&dx, &dy);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4) / dx);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8) / dy);
+    if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
+    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET SIZE - dialog units in, pixels out to SetWindowPos.
@@ -8390,7 +8457,7 @@ void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
 void pb_dialog_set_size(void* hDlg, long long w, long long h) {
     int dx, dy;
     pb_dlg_units(&dx, &dy);
-    SetWindowPos(hDlg, 0, 0, 0, (int)((w * dx) / 4), (int)((h * dy) / 8),
+    SetWindowPos(hDlg, 0, 0, 0, (int)((w * dx + 3) / 4), (int)((h * dy + 6) / 8),
                  0x0002u | 0x0004u /* SWP_NOMOVE | SWP_NOZORDER */);
 }
 
@@ -8663,8 +8730,8 @@ void pb_dialog_get_client(void* hDlg, long long* pw, long long* ph) {
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetClientRect(hDlg, &rc);
     pb_dlg_units(&dx, &dy);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4) / dx);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8) / dy);
+    if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
+    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET CLIENT hDlg, x&, y& - the arguments are a CLIENT size, so the
@@ -8695,8 +8762,8 @@ void pb_dialog_get_loc(void* hDlg, long long* px, long long* py) {
     GetWindowRect(hDlg, &wr);
     pb_dlg_origin(hDlg, &org);
     pb_dlg_units(&dx, &dy);
-    if (px) *px = (long long)(((wr.left - org.x) * 4) / dx);
-    if (py) *py = (long long)(((wr.top - org.y) * 8) / dy);
+    if (px) *px = (long long)(((wr.left - org.x) * 4 + dx / 2) / dx);
+    if (py) *py = (long long)(((wr.top - org.y) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET LOC hDlg, x&, y& */
@@ -8705,7 +8772,7 @@ void pb_dialog_set_loc(void* hDlg, long long x, long long y) {
     int dx, dy;
     pb_dlg_units(&dx, &dy);
     pb_dlg_origin(hDlg, &org);
-    SetWindowPos(hDlg, 0, org.x + (int)((x * dx) / 4), org.y + (int)((y * dy) / 8),
+    SetWindowPos(hDlg, 0, org.x + (int)((x * dx + 3) / 4), org.y + (int)((y * dy + 6) / 8),
                  0, 0, 0x0001u | 0x0004u /* SWP_NOSIZE | SWP_NOZORDER */);
 }
 
@@ -8738,7 +8805,7 @@ void pb_dialog_units(void* hDlg, long long x, long long y, long long* px, long l
    (owner, id) resolution PROGRESSBAR / HEADER use.
 
    Units: every CONTROL in this compiler is laid out by pb_dlu_to_px(), i.e.
-   in the dialog units of PB_CTL_DLU_X x PB_CTL_DLU_Y (7 x 14).  The geometry
+   in the dialog units of PB_CTL_DLU_X x PB_CTL_DLU_Y (6 x 13).  The geometry
    statements convert back with those same two numbers, so CONTROL ADD of
    "12, 12" and CONTROL GET LOC agree, and CONTROL SET LOC puts a control
    exactly where the same numbers in CONTROL ADD would.  (Batch 175 first
@@ -8772,8 +8839,8 @@ void pb_control_get_client(void* hDlg, long long id, long long* pw, long long* p
     if (!h) { if (pw) *pw = 0; if (ph) *ph = 0; return; }
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetClientRect(h, &rc);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4) / PB_CTL_DLU_X);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8) / PB_CTL_DLU_Y);
+    if (pw) *pw = (long long)PB_PX_X_TO_DLU(rc.right - rc.left);
+    if (ph) *ph = (long long)PB_PX_Y_TO_DLU(rc.bottom - rc.top);
 }
 
 /* CONTROL GET SIZE hDlg, id& TO nWide&, nHigh& - overall, borders included */
@@ -8783,8 +8850,8 @@ void pb_control_get_size(void* hDlg, long long id, long long* pw, long long* ph)
     if (!h) { if (pw) *pw = 0; if (ph) *ph = 0; return; }
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetWindowRect(h, &rc);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4) / PB_CTL_DLU_X);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8) / PB_CTL_DLU_Y);
+    if (pw) *pw = (long long)PB_PX_X_TO_DLU(rc.right - rc.left);
+    if (ph) *ph = (long long)PB_PX_Y_TO_DLU(rc.bottom - rc.top);
 }
 
 /* CONTROL GET LOC hDlg, id& TO x&, y& - from the parent's client origin */
@@ -8799,8 +8866,8 @@ void pb_control_get_loc(void* hDlg, long long id, long long* px, long long* py) 
     GetWindowRect(h, &wr);
     org.x = 0; org.y = 0;
     if (hDlg) ClientToScreen(hDlg, &org);
-    if (px) *px = (long long)(((wr.left - org.x) * 4) / PB_CTL_DLU_X);
-    if (py) *py = (long long)(((wr.top - org.y) * 8) / PB_CTL_DLU_Y);
+    if (px) *px = (long long)PB_PX_X_TO_DLU(wr.left - org.x);
+    if (py) *py = (long long)PB_PX_Y_TO_DLU(wr.top - org.y);
 }
 
 /* CONTROL SET LOC hDlg, id&, x&, y& */
@@ -8811,7 +8878,7 @@ void pb_control_set_loc(void* hDlg, long long id, long long x, long long y) {
        ClientToScreen origin must NOT be added here (it belongs in
        DIALOG SET LOC, where the window is top-level and x/y are screen
        coordinates). */
-    SetWindowPos(h, 0, (int)((x * PB_CTL_DLU_X) / 4), (int)((y * PB_CTL_DLU_Y) / 8),
+    SetWindowPos(h, 0, (int)PB_DLU_X_TO_PX(x), (int)PB_DLU_Y_TO_PX(y),
                  0, 0, 0x0001u | 0x0004u /* SWP_NOSIZE | SWP_NOZORDER */);
 }
 
@@ -8820,7 +8887,7 @@ void pb_control_set_size(void* hDlg, long long id, long long w, long long nHigh)
     void* hc = pb_pb_hwnd(hDlg, id);
     if (!hc) return;
     SetWindowPos(hc, 0, 0, 0,
-                 (int)((w * PB_CTL_DLU_X) / 4), (int)((nHigh * PB_CTL_DLU_Y) / 8),
+                 (int)PB_DLU_X_TO_PX(w), (int)PB_DLU_Y_TO_PX(nHigh),
                  0x0002u | 0x0004u /* SWP_NOMOVE | SWP_NOZORDER */);
 }
 
@@ -8834,8 +8901,8 @@ void pb_control_set_client(void* hDlg, long long id, long long w, long long nHig
     unsigned long style, exstyle;
     if (!hc) return;
     rc.left = 0; rc.top = 0;
-    rc.right = (long)((w * PB_CTL_DLU_X) / 4);
-    rc.bottom = (long)((nHigh * PB_CTL_DLU_Y) / 8);
+    rc.right = (long)PB_DLU_X_TO_PX(w);
+    rc.bottom = (long)PB_DLU_Y_TO_PX(nHigh);
     style = (unsigned long)pb_get_winlong(hc, -16 /* GWL_STYLE */);
     exstyle = (unsigned long)pb_get_winlong(hc, -20 /* GWL_EXSTYLE */);
     AdjustWindowRectEx(&rc, style, 0, exstyle);
