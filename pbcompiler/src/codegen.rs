@@ -1947,6 +1947,7 @@ impl Compiler {
                 IrType::Ptr,
                 IrType::I32,
                 IrType::Ptr,
+                IrType::I64,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -15780,7 +15781,25 @@ impl Compiler {
                     hwnd = fb.inttoptr(&hwnd);
                 }
                 let id = self.compile_expr(fb, &call.args[1])?;
-                let items = self.compile_expr(fb, &call.args[2])?;
+                // items slot: full-array reference sArray() → pass base pointer +
+                // element count so the runtime can LB_ADDSTRING each item.
+                // (compile_expr would load only the first element, which is wrong.)
+                let (items, item_count) =
+                    if let Some(Expr::FunctionCall(arr_name, _)) = call.args.get(2) {
+                        let an = normalize_name(arr_name);
+                        if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
+                            (
+                                Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+                                arr_info.total_elements as i64,
+                            )
+                        } else {
+                            let v = self.compile_expr(fb, &call.args[2])?;
+                            (v, 0)
+                        }
+                    } else {
+                        let v = self.compile_expr(fb, &call.args[2])?;
+                        (v, 0)
+                    };
                 let x = self.compile_expr(fb, &call.args[3])?;
                 let y = self.compile_expr(fb, &call.args[4])?;
                 let w = self.compile_expr(fb, &call.args[5])?;
@@ -15791,7 +15810,19 @@ impl Compiler {
                 let hc = fb.call(
                     &IrType::Ptr,
                     "pb_control_add_listbox_ex",
-                    &[hwnd, id, items, x, y, w, h, style, exstyle, cb],
+                    &[
+                        hwnd,
+                        id,
+                        items,
+                        fb.const_i64(item_count),
+                        x,
+                        y,
+                        w,
+                        h,
+                        style,
+                        exstyle,
+                        cb,
+                    ],
                 );
                 if let Some(t) = call.args.get(10) {
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {

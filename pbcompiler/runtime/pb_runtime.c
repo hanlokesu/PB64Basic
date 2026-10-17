@@ -8163,7 +8163,7 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
    style!=0 -> user value used directly, but PBWin always adds LBS_NOTIFY
    (measured original SYNCLIST: user WS_VSCROLL|WS_TABSTOP = 0x210000 became
    0x50210001 with LBS_NOTIFY set).  exstyle is passed straight. */
-void* pb_control_add_listbox_ex(void* parent, long id, void* items,
+void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long count,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
     x = PB_DLU_X_TO_PX(x);
@@ -8188,6 +8188,21 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items,
            last or the listbox undoes WS_VSCROLL again. */
         SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
         pb_set_winlong(hw, -16 /* GWL_STYLE */, (long long)s);
+        /* items$() full-array reference: the array is [count x ptr], each
+           element points to a WSTRING buffer.  Our WSTRING values are BSTRs
+           built with SysAllocStringByteLen, which copies the ANSI bytes
+           verbatim (no UTF-16 conversion); the stored pointer already points
+           at the ANSI data.  Add every item directly with LB_ADDSTRING
+           (0x0180), matching PBWin. */
+        if (count > 0 && items) {
+            long long i;
+            for (i = 0; i < count; i++) {
+                void* p = ((void**)items)[i];
+                if (!p) continue;
+                SendMessageA(hw, 0x0180 /* LB_ADDSTRING */, 0,
+                             (long long)(size_t)p);
+            }
+        }
         if (fn) pb_register_callback_hwnd(hw, fn);
     }
     return hw;
