@@ -8151,6 +8151,48 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
     return hw;
 }
 
+/* CONTROL ADD LISTBOX full official syntax (batch 245):
+   CONTROL ADD LISTBOX, hDlg, id&, [items$() | txt$ | <empty>], x, y, xx, yy
+     [, [style&] [, [exstyle&]]] [[,] CALL callback]
+   items is a pointer (array ref / string / 0); filling WSTRING arrays is
+   deferred (see SKILL batch 245 note).  x/y/w/h are DLU (converted like
+   BUTTON/TEXTBOX).  Height: measured original SYNCLIST 65 DLU -> 95 px
+   (PB_DLU_Y_TO_PX gives 106; the listbox CLIENTEDGE/inset crops ~11 px).
+   style==0 && exstyle==0 -> CHW default style (LBS_NOTIFY|LBS_SORT|
+   WS_TABSTOP|WS_VSCROLL) with default ex WS_EX_CLIENTEDGE(0x200)|LEFT.
+   style!=0 -> user value used directly, but PBWin always adds LBS_NOTIFY
+   (measured original SYNCLIST: user WS_VSCROLL|WS_TABSTOP = 0x210000 became
+   0x50210001 with LBS_NOTIFY set).  exstyle is passed straight. */
+void* pb_control_add_listbox_ex(void* parent, long id, void* items,
+                                int x, int y, int w, int h,
+                                long style, long exstyle, void* fn) {
+    x = PB_DLU_X_TO_PX(x);
+    y = PB_DLU_Y_TO_PX(y);
+    w = PB_DLU_X_TO_PX(w);
+    int hpx = PB_DLU_Y_TO_PX(h) - 11;
+    unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
+                                                    : (unsigned long)exstyle;
+    unsigned long s = style ? ((unsigned long)style | 0x1u)  /* + LBS_NOTIFY */
+                            : (0x1u | 0x2u | 0x200000u | 0x10000u);
+    s |= 0x40000000u | 0x10000000u; /* WS_CHILD | WS_VISIBLE */
+    void* hw = CreateWindowExA(ex, "LISTBOX", "", s,
+                           x, y, w, hpx, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) {
+        SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+        /* CreateWindowExA auto-adds WS_CLIPSIBLINGS, and the listbox (without
+           LBS_NOINTEGRALHEIGHT) snaps height to integral rows and WM_SETFONT
+           even drops WS_VSCROLL; PBWin keeps the requested style and DLU size
+           exactly (measured original SYNCLIST: style 0x50210001 with WS_VSCROLL,
+           225x95).  Restore size first, then style - SetWindowLong must be
+           last or the listbox undoes WS_VSCROLL again. */
+        SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
+        pb_set_winlong(hw, -16 /* GWL_STYLE */, (long long)s);
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
+    return hw;
+}
+
 void* pb_control_add_checkbox(void* parent, long id, const char* text,
                                 int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);

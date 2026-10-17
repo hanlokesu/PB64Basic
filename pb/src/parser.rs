@@ -7779,27 +7779,32 @@ impl Parser {
                         line,
                     }));
                 }
-                // CONTROL ADD LISTBOX, hWnd, id, x, y, w, h TO hCtrl&
+                // CONTROL ADD LISTBOX, hWnd, id&, [items$() | txt$ | <empty>], x, y, w, h
+                //   [, [style&] [, [exstyle&]]] [[,] CALL callback] [, TO hCtrl&]
+                //   (official PBWin.chw syntax; batch 245 - array/text slot + style/exstyle
+                //   passthrough, mirroring the CONTROL ADD BUTTON full syntax)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="ADD")
                     && matches!(self.peek_at(2), Some(Token::Identifier(w)) if w.to_uppercase()=="LISTBOX")
                 {
-                    self.advance();
-                    self.advance();
-                    self.advance();
+                    self.advance(); // CONTROL
+                    self.advance(); // ADD
+                    self.advance(); // LISTBOX
                     self.expect(&Token::Comma)?;
                     let hwnd = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let id = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
-                    // optional text (string literal)
-                    if matches!(self.peek(), Token::StringLiteral(_)) {
-                        self.parse_expression()?;
-                        self.expect(&Token::Comma)?;
-                    } else if self.peek() == &Token::Comma {
-                        // empty text slot: id, , x
-                        self.advance();
-                    }
+                    // items slot: array ref (sArray()), string literal, or empty (id, , x)
+                    // "id, , x" is two commas: the first is the id separator, the
+                    // peeked comma is the items->x separator - leave it for expect
+                    // below so the empty slot does not consume it.
+                    let items = if self.peek() == &Token::Comma {
+                        Expr::IntegerLit(0)
+                    } else {
+                        self.parse_expression()?
+                    };
+                    self.expect(&Token::Comma)?;
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -7807,16 +7812,47 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
-                    let target = if self.peek() == &Token::To {
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance(); // consume CALL
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance(); // consume CALL
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
+                    let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
                     } else {
-                        Expr::IntegerLit(0)
+                        Expr::Variable("_ctl_dummy".to_string())
                     };
                     self.consume_to_eol();
+                    // fixed 11-arg layout: [hwnd,id,items,x,y,w,h, style, exstyle, callback, target]
+                    let mut args = vec![hwnd, id, items, x, y, w, h];
+                    args.push(style.unwrap_or(Expr::IntegerLit(0)));
+                    args.push(exstyle.unwrap_or(Expr::IntegerLit(0)));
+                    args.push(callback.unwrap_or(Expr::Variable("_no_cb".to_string())));
+                    args.push(target);
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LISTBOX".to_string(),
-                        args: vec![hwnd, id, x, y, w, h, target],
+                        args,
                         line,
                     }));
                 }
