@@ -8914,10 +8914,50 @@ void* pb_control_handle(void* hDlg, long long id) {
 /* CONTROL SEND hDlg, id&, Msg&, wParam&, lParam& [TO lResult&] - the
    synchronous form: by the time this returns, the target's callback has
    processed the message, so a result is available. */
+/* PB_SCROLLINFO + scrollbar helpers (types moved up from the scrollbar
+   section so pb_control_send's LB_GETTOPINDEX fallback can read the
+   scrollbar position) */
+#define PB_SIF_RANGE    0x0001
+#define PB_SIF_PAGE     0x0002
+#define PB_SIF_POS      0x0004
+#define PB_SIF_TRACKPOS 0x0010
+#define PB_SB_CTL       2
+
+typedef struct {
+    unsigned int cbSize;
+    unsigned int fMask;
+    int nMin;
+    int nMax;
+    unsigned int nPage;
+    int nPos;
+    int nTrackPos;
+} PB_SCROLLINFO;
+
+__declspec(dllimport) int __stdcall GetScrollInfo(void* hWnd, int nBar, PB_SCROLLINFO* lpsi);
+__declspec(dllimport) int __stdcall SetScrollInfo(void* hWnd, int nBar, const PB_SCROLLINFO* lpsi, int redraw);
+
 long long pb_control_send(void* hDlg, long long id, long long msg, long long wp, long long lp) {
     void* h = pb_pb_hwnd(hDlg, id);
     if (!h) return 0;
-    return (long long)SendMessageA(h, (unsigned int)msg, (pb_wparam_t)wp, (pb_lparam_t)lp);
+    long long rv = (long long)SendMessageA(h, (unsigned int)msg, (pb_wparam_t)wp, (pb_lparam_t)lp);
+    /* batch 245d: on our ListBoxes a WM_MOUSEWHEEL scroll moves the scrollbar
+       position but leaves the internal top index stuck at 0 (the wheel goes
+       through the scrollbar path, the ListBox's own top-index state is never
+       refreshed after we restore WS_VSCROLL via SetWindowLong).  The official
+       SYNCLIST sample syncs with LB_GETTOPINDEX, so a wheel-scrolled box
+       reports 0 and the two lists never sync.  When GETTOPINDEX returns 0,
+       fall back to the scrollbar position, which does track the wheel.
+       Safe: a box truly at the top has pos 0, and the drag-thumb path keeps
+       returning the real top index (non-zero). */
+    if (msg == 0x10E /* LB_GETTOPINDEX */ && rv == 0) {
+        PB_SCROLLINFO si;
+        memset(&si, 0, sizeof(si));
+        si.cbSize = (unsigned int)sizeof(si);
+        si.fMask = PB_SIF_POS | PB_SIF_RANGE | PB_SIF_PAGE;
+        if (GetScrollInfo(h, 1 /* SB_VERT */, &si) && si.nPos > 0 && si.nMax > 0)
+            rv = si.nPos;
+    }
+    return rv;
 }
 
 /* CONTROL POST hDlg, id&, Msg&, wParam&, lParam& - the asynchronous form:
@@ -9785,25 +9825,6 @@ void* pb_control_add_custom(const char* cls, void* parent, long id, const char* 
    control cannot be resolved, which is the documented "no such control"
    result; SET returns 0.
    ================================================================== */
-
-#define PB_SIF_RANGE    0x0001
-#define PB_SIF_PAGE     0x0002
-#define PB_SIF_POS      0x0004
-#define PB_SIF_TRACKPOS 0x0010
-#define PB_SB_CTL       2
-
-typedef struct {
-    unsigned int cbSize;
-    unsigned int fMask;
-    int nMin;
-    int nMax;
-    unsigned int nPage;
-    int nPos;
-    int nTrackPos;
-} PB_SCROLLINFO;
-
-__declspec(dllimport) int __stdcall GetScrollInfo(void* hWnd, int nBar, PB_SCROLLINFO* lpsi);
-__declspec(dllimport) int __stdcall SetScrollInfo(void* hWnd, int nBar, const PB_SCROLLINFO* lpsi, int redraw);
 
 static void* pb_scrollbar_hwnd(void* hDlg, long id) {
     return GetDlgItem(hDlg, (int)id);
