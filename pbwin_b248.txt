@@ -1,7 +1,0 @@
-AI_PBCompile.EXE : RESULT=FAILED
-At line:3 char:6
-+ $r = & "C:\PBWin10\bin\AI_PBCompile.EXE" "C:\Users\HANLO\Doubao\chats ...
-+      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    + CategoryInfo          : NotSpecified: (RESULT=FAILED:String) [], RemoteException
-    + FullyQualifiedErrorId : NativeCommandError
- 
