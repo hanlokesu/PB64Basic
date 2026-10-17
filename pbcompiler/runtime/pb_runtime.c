@@ -6981,6 +6981,11 @@ __declspec(dllimport) int __stdcall GetClientRect(void*, void*);
 __declspec(dllimport) void* __stdcall CreateSolidBrush(unsigned long);
 __declspec(dllimport) int __stdcall FillRect(void*, const void*, void*);
 __declspec(dllimport) int __stdcall DeleteObject(void*);
+__declspec(dllimport) int __stdcall ScreenToClient(void*, void*);
+__declspec(dllimport) void* __stdcall ChildWindowFromPoint(void*, long long);
+typedef struct { long x, y; } pb_point_t;
+#define PB_LOWORD(l)  ((unsigned int)((unsigned long long)(l) & 0xFFFF))
+#define PB_HIWORD(l)  ((unsigned int)(((unsigned long long)(l) >> 16) & 0xFFFF))
 
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
@@ -7048,10 +7053,46 @@ static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned lon
        is the DC it is about to paint with; the brush returned from here is
        what Windows fills that control's background with.  Zero means "no
        colour is registered for that control", and the message then falls
-       through to the default handling below, exactly as before. */
+       through to the default handling below, exactly as before.
+       batch 245c: even with no registered colour, the dialog callback must
+       still see WM_CTLCOLOR* (SYNCLIST.BAS synchronises two ListBoxes
+       inside its WM_CTLCOLORLISTBOX case - the message is Windows' "a
+       ListBox is about to repaint" hook).  Set the CB pseudo-variables and
+       call pb_dialog_cb; a non-zero return from the callback is the brush
+       handle to use, zero means default. */
     if (Msg >= 0x0132 && Msg <= 0x0138) {
         void* br = pb_ctlcolor_brush((void*)lParam, (void*)wParam);
         if (br) return (long long)(size_t)br;
+        if (pb_dialog_cb) {
+            cb_msg = Msg;
+            cb_hwnd = hWnd;
+            cb_ctl = 0;
+            cb_ctlmsg = 0;
+            cb_wparam = wParam;
+            cb_lparam = lParam;
+            long (*df)(void) = (long(*)(void))pb_dialog_cb;
+            long r = df();
+            if (r) return r;
+        }
+    }
+    if (Msg == 0x020A) /* WM_MOUSEWHEEL */ {
+        /* A standard #32770 dialog (DefDlgProc) forwards the mouse wheel
+           to the child control under the cursor; our own dialog class
+           goes through DefWindowProcA, which does not, so the wheel is
+           dropped and a ListBox never scrolls.  Replicate the dialog
+           behaviour: find the child under the wheel position and hand
+           the message to it.  lParam holds the event's screen coords,
+           wParam the wheel delta. */
+        pb_point_t pt;
+        void* child;
+        pt.x = (short)PB_LOWORD(lParam);
+        pt.y = (short)PB_HIWORD(lParam);
+        ScreenToClient(hWnd, &pt);
+        child = ChildWindowFromPoint(hWnd, (long long)pt.x | ((long long)pt.y << 32));
+        if (child && child != hWnd) {
+            SendMessageA(child, Msg, wParam, lParam);
+            return 0;
+        }
     }
     if (Msg == 0x0014) /* WM_ERASEBKGND */ {
         unsigned long rgb;

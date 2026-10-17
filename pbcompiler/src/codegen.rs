@@ -92,6 +92,13 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%SS_RIGHT", 0x00000002),
     ("%SS_SIMPLE", 0x0000000B),
     ("%WM_COMMAND", 0x00000111),
+    ("%WM_CTLCOLORMSGBOX", 0x00000132),
+    ("%WM_CTLCOLOREDIT", 0x00000133),
+    ("%WM_CTLCOLORLISTBOX", 0x00000134),
+    ("%WM_CTLCOLORBTN", 0x00000135),
+    ("%WM_CTLCOLORDLG", 0x00000136),
+    ("%WM_CTLCOLORSCROLLBAR", 0x00000137),
+    ("%WM_CTLCOLORSTATIC", 0x00000138),
     ("%WM_CLOSE", 0x00000010),
     ("%WM_CREATE", 0x00000001),
     ("%WM_DESTROY", 0x00000002),
@@ -120,9 +127,13 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%CB_SETCURSEL", 0x0000014E),
     ("%LB_ADDSTRING", 0x00000180),
     ("%LB_GETCURSEL", 0x00000188),
+    ("%LB_GETSEL", 0x00000187),
     ("%LB_GETTEXT", 0x00000189),
     ("%LB_GETTEXTLEN", 0x0000018A),
+    ("%LB_GETTOPINDEX", 0x0000010E),
     ("%LB_SETCURSEL", 0x00000186),
+    ("%LB_SETTOPINDEX", 0x00000197),
+    ("%LBN_DBLCLK", 0x00000002),
     ("%MB_OK", 0x00000000),
     ("%MB_OKCANCEL", 0x00000001),
     ("%MB_YESNO", 0x00000004),
@@ -20188,6 +20199,24 @@ impl Compiler {
                     let zero2 = fb.const_i32(0);
                     fb.select(&exists, &neg_one, &zero2)
                 }))
+            }
+            "GETDLGITEM" => {
+                // GETDLGITEM(hParent&, id&) -> HWND of the child control, or 0.
+                // HWND is a numeric DWORD in PB: return it as an integer so
+                // `IF CB.LPARAM = GetDlgItem(...)` compares numerically.
+                // (Returning IrType::Ptr made codegen string-compare the two.)
+                if args.len() >= 2 {
+                    let parent = self.compile_expr(fb, &args[0]);
+                    let id = self.compile_expr(fb, &args[1]);
+                    Some(parent.and_then(|p| {
+                        id.map(|i| {
+                            let hwnd = fb.call(&IrType::Ptr, "GetDlgItem", &[p, i]);
+                            fb.ptrtoint(&hwnd)
+                        })
+                    }))
+                } else {
+                    Some(Ok(fb.const_i64(0)))
+                }
             }
             "ISWIN" => {
                 // ISWIN(hWnd&) → -1 if window exists, 0 if not
