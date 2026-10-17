@@ -196,28 +196,33 @@ FUNCTION PBMAIN () AS LONG
     ConPrint "state(3)  -> " & STR$(n)
     IF n <> -1 THEN fail = fail + 1
 #IF %MY_PBVER = 0
+    ' batch 244: LISTBOX default style per CHW includes %LBS_SORT, so the
+    ' control sorts "one","two","three" as one/three/two.  SELECT 3 therefore
+    ' selects "two" and position 2 holds "three" (was: insertion order).
     LISTBOX GET TEXT hDlg, 202 TO t
     ConPrint "text(cur) -> [" & t & "]"
-    IF t <> "three" THEN fail = fail + 1
+    IF t <> "two" THEN fail = fail + 1
     LISTBOX GET TEXT hDlg, 202, 2 TO t
     ConPrint "text(2)   -> [" & t & "]"
-    IF t <> "two" THEN fail = fail + 1
+    IF t <> "three" THEN fail = fail + 1
 #ELSE
     ' PBWin listbox item indices are 0-based (fork is 1-based); print the
     ' fork-expected literals so both sides compare equal, skip PBWin assertions.
-    ConPrint "text(cur) -> [three]"
-    ConPrint "text(2)   -> [two]"
+    ConPrint "text(cur) -> [two]"
+    ConPrint "text(2)   -> [three]"
 #ENDIF
     LISTBOX SET TEXT hDlg, 202, 2, "TWO2"
     LISTBOX GET TEXT hDlg, 202, 2 TO t
     ConPrint "text(2)   -> [" & t & "]"
     IF t <> "TWO2" THEN fail = fail + 1
 #IF %MY_PBVER = 0
+    ' SET TEXT is a delete+insert, so "three" is gone; FIND "THR" now matches
+    ' nothing (was: found "three" at 3 in insertion order).
     LISTBOX FIND hDlg, 202, 1, "THR" TO n
     ConPrint "find thr  -> " & STR$(n)
-    IF n <> 3 THEN fail = fail + 1
+    IF n <> 0 THEN fail = fail + 1
 #ELSE
-    ConPrint "find thr  ->  3"
+    ConPrint "find thr  ->  0"
 #ENDIF
     LISTBOX SET USER hDlg, 202, 1, 777
     LISTBOX GET USER hDlg, 202, 1 TO n

@@ -7941,13 +7941,15 @@ __declspec(dllimport) void* __stdcall CreateWindowExA(
 void* pb_control_add_button(void* parent, long id, const char* text,
                             int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
-    /* batch 243: PBWin default button style = %BS_CENTER OR %BS_VCENTER OR
-       %WS_TABSTOP (0x300|0xC00|0x10000 = 0x10F00) + WS_CHILD + WS_VISIBLE.
-       NOTE: BS_VCENTER is 0x0C00, NOT 0x0C (0x0C = BS_SPLITBUTTON, which
-       draws a drop-down arrow).  The old hard-coded BS_DEFPUSHBUTTON (0x01)
-       made every button a default button; PBWin only gives that look to
-       buttons whose style includes %BS_DEFAULT. */
-    unsigned long style = 0x10F00 | 0x40000000 | 0x10000000;
+    /* batch 243/244: PBWin default button style measured from the original
+       HelloDDT.EXE = %WS_TABSTOP (0x10000) only (Cancel showed 0x50010000 =
+       WS_CHILD|WS_VISIBLE|WS_TABSTOP, no BS_* bits; single-line button text
+       is centred by the control itself, so BS_CENTER/BS_VCENTER are not
+       needed and PBWin does not set them).  NOTE: BS_VCENTER is 0x0C00, NOT
+       0x0C (0x0C = BS_SPLITBUTTON, which draws a drop-down arrow).  The old
+       hard-coded BS_DEFPUSHBUTTON (0x01) made every button a default button;
+       PBWin only gives that look to buttons whose style includes %BS_DEFAULT. */
+    unsigned long style = 0x10000 | 0x40000000 | 0x10000000;
     void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -7966,7 +7968,7 @@ void* pb_control_add_button_ex(void* parent, long id, const char* text,
                                int x, int y, int w, int h,
                                long style, long exstyle, void* fn) {
     pb_dlu_to_px(&x, &y, &w, &h);
-    unsigned long s = style ? (unsigned long)style : 0x10F00;
+    unsigned long s = style ? (unsigned long)style : 0x10000;
     s |= 0x40000000u | 0x10000000u; /* WS_CHILD | WS_VISIBLE */
     void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
                             x, y, w, h, parent,
@@ -8122,10 +8124,14 @@ void pb_control_uncheck(void* hctrl) { SendMessageA(hctrl, BM_SETCHECK, 0, 0); }
 long long pb_control_get_check(void* hctrl) { return (long long)SendMessageA(hctrl, BM_GETCHECK, 0, 0); }
 
 void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h) {
-    /* CBS_DROPDOWNLIST=0x3, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
-       WS_BORDER=0x800000, WS_VSCROLL=0x200000, WS_TABSTOP=0x10000 */
-    unsigned long style = 0x3 | 0x40000000 | 0x10000000 | 0x800000 | 0x200000 | 0x10000;
-    void* hw = CreateWindowExA(0, "COMBOBOX", "", style,
+    /* CHW control_add_combobox.htm: default style = %CBS_DROPDOWN(0x2) OR
+       %CBS_SORT(0x100) OR %WS_TABSTOP(0x10000); default extended style =
+       %WS_EX_LEFT OR %WS_EX_CLIENTEDGE(0x200).  (CBS_DROPDOWN is the editable
+       combo; 0x3 would be CBS_DROPDOWNLIST - read-only - and our old code
+       also added WS_BORDER/WS_VSCROLL which PBWin does not.) */
+    unsigned long style = 0x2 | 0x100 | 0x10000 | 0x40000000 | 0x10000000;
+    unsigned long ex = 0x200;
+    void* hw = CreateWindowExA(ex, "COMBOBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
@@ -8133,10 +8139,12 @@ void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h)
 }
 
 void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) {
-    /* LBS_NOTIFY=0x1, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
-       WS_BORDER=0x800000, WS_VSCROLL=0x200000, WS_TABSTOP=0x10000 */
-    unsigned long style = 0x1 | 0x40000000 | 0x10000000 | 0x800000 | 0x200000 | 0x10000;
-    void* hw = CreateWindowExA(0, "LISTBOX", "", style,
+    /* CHW control_add_listbox.htm: default style = %LBS_SORT(0x2) OR
+       %LBS_NOTIFY(0x1) OR %WS_TABSTOP(0x10000) OR %WS_VSCROLL(0x200000);
+       default extended style = %WS_EX_CLIENTEDGE(0x200) OR %WS_EX_LEFT. */
+    unsigned long style = 0x1 | 0x2 | 0x200000 | 0x10000 | 0x40000000 | 0x10000000;
+    unsigned long ex = 0x200;
+    void* hw = CreateWindowExA(ex, "LISTBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
@@ -8146,9 +8154,10 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
 void* pb_control_add_checkbox(void* parent, long id, const char* text,
                                 int x, int y, int w, int h) {
     pb_dlu_to_px(&x, &y, &w, &h);
-    /* BS_AUTOCHECKBOX=0x3, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000,
-       WS_TABSTOP=0x10000 */
-    unsigned long style = 0x3 | 0x40000000 | 0x10000000 | 0x10000;
+    /* CHW control_add_checkbox.htm: default style = %BS_LEFT(0x100) OR
+       %BS_VCENTER(0xC00) OR %WS_TABSTOP(0x10000), plus the control type
+       BS_AUTOCHECKBOX(0x3).  (BS_VCENTER is 0x0C00, not 0x0C.) */
+    unsigned long style = 0x3 | 0x100 | 0xC00 | 0x40000000 | 0x10000000 | 0x10000;
     void* hw = CreateWindowExA(0, "BUTTON", text, style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -8355,10 +8364,14 @@ int pb_control_set_image(void* parent, long id, const char* name,
     return 1;
 }
 
-/* CONTROL ADD TEXTBOX - a text box, i.e. DDT's bordered edit control.
-   Default style %WS_TABSTOP | %WS_BORDER(0x800000) | %ES_LEFT(0) |
-   %ES_AUTOHSCROLL(0x80); default extended style %WS_EX_CLIENTEDGE(0x200)
-   with %WS_EX_LEFT(0).  txt$ may be empty. */
+/* CONTROL ADD TEXTBOX - a text box, i.e. DDT's edit control.
+   Default style %WS_TABSTOP | %ES_LEFT(0) | %ES_AUTOHSCROLL(0x80);
+   default extended style %WS_EX_CLIENTEDGE(0x200) with %WS_EX_LEFT(0).
+   Measured from the original HelloDDT.EXE (PBWin): Edit style=0x50010080
+   (= WS_CHILD|WS_VISIBLE|WS_TABSTOP|ES_AUTOHSCROLL, NO WS_BORDER) with
+   exstyle=0x200.  The CHW doc lists %WS_BORDER as part of the default, but
+   PBWin's real control has no WS_BORDER bit - trust the measured style.
+   txt$ may be empty. */
 void* pb_control_add_textbox(void* parent, long id, const char* text,
                              int x, int y, int w, int h) {
     /* TEXTBOX is the one control whose height is not the plain rounded
@@ -8369,7 +8382,7 @@ void* pb_control_add_textbox(void* parent, long id, const char* text,
     y = PB_DLU_Y_TO_PX(y);
     w = PB_DLU_X_TO_PX(w);
     int hpx = PB_DLU_Y_TO_PX(h) - 1;
-    unsigned long style = 0x800000 | 0x80 | 0x10000 | 0x40000000 | 0x10000000;
+    unsigned long style = 0x80 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
     void* hw = CreateWindowExA(ex, "EDIT", text, style,
                            x, y, w, hpx, parent,
@@ -8402,9 +8415,13 @@ void pb_control_set_option(void* hDlg, long long id, long long minid, long long 
     CheckRadioButton(hDlg, (int)minid, (int)maxid, (int)id);
 }
 
-/* CONTROL ADD SCROLLBAR */
+/* CONTROL ADD SCROLLBAR - CHW control_add_scrollbar.htm: default style is
+   %SBS_HORZ(0x0); "if the width is less than the height, the control is
+   automatically switched to %SBS_VERT(0x1), regardless of whether %SBS_HORZ
+   is specified or not".  The old code hard-coded SBS_VERT + WS_TABSTOP. */
 void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int ht) {
-    unsigned long style = 1 | 0x40000000 | 0x10000000 | 0x10000;
+    unsigned long sbs = (w < ht) ? 1u : 0u;
+    unsigned long style = sbs | 0x40000000u | 0x10000000u;
     void* hbar = CreateWindowExA(0, "SCROLLBAR", "", style,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
