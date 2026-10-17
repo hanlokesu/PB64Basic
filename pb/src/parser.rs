@@ -8999,7 +8999,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LABEL".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
