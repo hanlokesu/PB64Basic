@@ -9947,6 +9947,25 @@ impl Parser {
                         line,
                     }));
                 }
+                // DIALOG FONT fontname$ [, points& [, style& [, charset&]]]
+                //   (legacy spelling without DEFAULT; dialog_font.htm)
+                if name_upper == "DIALOG"
+                    && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="FONT")
+                {
+                    self.advance();
+                    self.advance();
+                    let mut args = vec![self.parse_expression()?];
+                    while self.peek() == &Token::Comma && args.len() < 4 {
+                        self.advance();
+                        args.push(self.parse_expression()?);
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "DIALOG_DEFAULT_FONT".to_string(),
+                        args,
+                        line,
+                    }));
+                }
                 // DIALOG SET ICON hDlg, newicon$
                 if name_upper == "DIALOG"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="SET")
