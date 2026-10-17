@@ -8772,8 +8772,6 @@ void pb_dialog_set_size(void* hDlg, long long w, long long h) {
    round-trip against DIALOG NEW.
    =================================================================== */
 
-typedef struct { long x; long y; } pb_point_t;
-
 __declspec(dllimport) int __stdcall RedrawWindow(void*, const void*, void*, unsigned long);
 __declspec(dllimport) int __stdcall PostMessageA(void*, unsigned long, pb_wparam_t, pb_lparam_t);
 __declspec(dllimport) int __stdcall AdjustWindowRectEx(pb_rect_t*, unsigned long, int, unsigned long);
