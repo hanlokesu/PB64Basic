@@ -2849,6 +2849,35 @@ impl Parser {
             }
             Token::Open => self.parse_open_statement(),
             Token::Close => self.parse_close_statement(),
+            Token::Callback => {
+                // batch 249: CALLBACK FUNCTION [= expr] / CALLBACK SUB
+                // PBWin callback pseudo-statement (sets/clears the callback return
+                // value).  Compiled to an assignment on synthetic variables so the
+                // AST stays unchanged; codegen stores the value and the callback
+                // dispatcher treats the slot as "return 0".
+                self.advance(); // CALLBACK
+                let is_sub = self.peek() == &Token::Sub;
+                if self.peek() == &Token::Function || self.peek() == &Token::Sub {
+                    self.advance();
+                }
+                let value = if self.peek() == &Token::Eq {
+                    self.advance();
+                    self.parse_expression()?
+                } else {
+                    Expr::IntegerLit(0)
+                };
+                self.consume_to_eol();
+                let cname = if is_sub {
+                    "__CALLBACK_SUB".to_string()
+                } else {
+                    "__CALLBACK_FUNCTION".to_string()
+                };
+                Ok(Statement::Assign(AssignStmt {
+                    target: Expr::Variable(cname),
+                    value,
+                    line,
+                }))
+            }
             Token::Call => {
                 self.advance();
                 // CALL DWORD TargetPtr [USING proto(args)] [TO result]
@@ -7127,6 +7156,32 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -7136,7 +7191,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_EDITBOX".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -7687,6 +7754,32 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -7696,7 +7789,18 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_SCROLLBAR".to_string(),
-                        args: vec![parent, id, x, y, w, h, target],
+                        args: vec![
+                            parent,
+                            id,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -7950,6 +8054,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -7959,7 +8088,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_OPTION".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -7992,6 +8133,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8001,7 +8167,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_CHECK3STATE".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8034,6 +8212,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8043,7 +8246,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_FRAME".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8355,6 +8570,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8364,7 +8604,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TEXTBOX".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8397,6 +8649,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8406,7 +8683,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LINE".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8458,6 +8747,33 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // batch 249: official syntax
+                    //   [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO hCtrl&]
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8467,7 +8783,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_CHECKBOX".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8493,6 +8821,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -8502,7 +8855,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_RADIOBUTTON".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8528,6 +8893,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -8537,7 +8927,19 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_GROUPBOX".to_string(),
-                        args: vec![hwnd, id, text, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            text,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -8563,6 +8965,31 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -8893,6 +9320,32 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    let mut callback: Option<Expr> = None;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            if self.peek() == &Token::Call {
+                                self.advance();
+                                callback = Some(self.parse_expression()?);
+                                break;
+                            } else if style.is_none() {
+                                style = Some(self.parse_expression()?);
+                            } else if exstyle.is_none() {
+                                exstyle = Some(self.parse_expression()?);
+                            } else {
+                                break;
+                            }
+                        } else if self.peek() == &Token::Call && callback.is_none() {
+                            self.advance();
+                            callback = Some(self.parse_expression()?);
+                            break;
+                        } else {
+                            break;
+                        }
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -8902,7 +9355,18 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TAB".to_string(),
-                        args: vec![hwnd, id, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            callback.unwrap_or(Expr::Variable("_no_cb".to_string())),
+                            target,
+                        ],
                         line,
                     }));
                 }

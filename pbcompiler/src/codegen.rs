@@ -1973,6 +1973,208 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_add_checkbox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_radiobutton_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_groupbox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_option_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_check3state_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_frame_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_textbox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_line_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_label_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_editbox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_scrollbar_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_tab_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_add_listbox_ex",
             &IrType::Ptr,
             &[
@@ -7044,6 +7246,12 @@ impl Compiler {
         match &assign.target {
             Expr::Variable(orig_name) => {
                 let name = normalize_name(orig_name);
+                // batch 249: CALLBACK FUNCTION/SUB synthetic slots — evaluate
+                // and discard (the callback dispatcher returns 0).  Bypasses
+                // symbol lookup so #DIM ALL never rejects the pseudo-name.
+                if name == "__CALLBACK_FUNCTION" || name == "__CALLBACK_SUB" {
+                    return Ok(());
+                }
                 if let Some(info) = self.symbols.lookup(&name) {
                     let ptr_name = info.ptr_name.clone();
                     let target_ir = info.ir_type.clone();
@@ -10760,14 +10968,31 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_editbox",
-                        &[hwnd, id, text, x, y, w, h],
-                    );
-                    if let Some(t) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
+                    // batch 249: full official syntax (mirrors BUTTON)
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_editbox",
+                            &[hwnd, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_editbox_ex",
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
                     }
@@ -12709,15 +12934,35 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[3])?;
                     let w = self.compile_expr(fb, &call.args[4])?;
                     let h = self.compile_expr(fb, &call.args[5])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_scrollbar",
-                        &[parent, id, x, y, w, h],
-                    );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[6]) {
-                        let hc_i = fb.ptrtoint64(&hc);
-                        let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
-                        fb.store(&hc_i_v, &ptr);
+                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
+                    // (no text slot; layout = parent,id,x,y,w,h,style,exstyle,cb,target)
+                    let target = if call.args.len() == 7 {
+                        Some(call.args[6].clone())
+                    } else {
+                        call.args.get(9).cloned()
+                    };
+                    let hctrl = if call.args.len() == 7 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_scrollbar",
+                            &[parent, id, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[6])?;
+                        let exstyle = self.compile_expr(fb, &call.args[7])?;
+                        let cb = self.compile_control_callback(fb, &call.args[8])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_scrollbar_ex",
+                            &[parent, id, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let hc_i = fb.ptrtoint64(&hctrl);
+                            let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
+                            fb.store(&hc_i_v, &ptr);
+                        }
                     }
                 }
                 return Ok(());
@@ -12741,15 +12986,34 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_label",
-                        &[parent, id, text, x, y, w, h],
-                    );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[7]) {
-                        let hc_i = fb.ptrtoint64(&hc);
-                        let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
-                        fb.store(&hc_i_v, &ptr);
+                    // batch 249: full official syntax (mirrors BUTTON)
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_label",
+                            &[parent, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_label_ex",
+                            &[parent, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let hc_i = fb.ptrtoint64(&hctrl);
+                            let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
+                            fb.store(&hc_i_v, &ptr);
+                        }
                     }
                 }
                 return Ok(());
@@ -13044,15 +13308,35 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[3])?;
                     let w = self.compile_expr(fb, &call.args[4])?;
                     let h = self.compile_expr(fb, &call.args[5])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_tab",
-                        &[parent, id, x, y, w, h],
-                    );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[6]) {
-                        let hc_i = fb.ptrtoint64(&hc);
-                        let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
-                        fb.store(&hc_i_v, &ptr);
+                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
+                    // (no text slot; layout = parent,id,x,y,w,h,style,exstyle,cb,target)
+                    let target = if call.args.len() == 7 {
+                        Some(call.args[6].clone())
+                    } else {
+                        call.args.get(9).cloned()
+                    };
+                    let hctrl = if call.args.len() == 7 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_tab",
+                            &[parent, id, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[6])?;
+                        let exstyle = self.compile_expr(fb, &call.args[7])?;
+                        let cb = self.compile_control_callback(fb, &call.args[8])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_tab_ex",
+                            &[parent, id, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let hc_i = fb.ptrtoint64(&hctrl);
+                            let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
+                            fb.store(&hc_i_v, &ptr);
+                        }
                     }
                 }
                 return Ok(());
@@ -15945,14 +16229,31 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_checkbox",
-                        &[hwnd, id, text, x, y, w, h],
-                    );
-                    if let Some(t) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
+                    // batch 249: full official syntax (mirrors BUTTON)
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_checkbox",
+                            &[hwnd, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_checkbox_ex",
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
                     }
@@ -15981,14 +16282,31 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_radiobutton",
-                        &[hwnd, id, text, x, y, w, h],
-                    );
-                    if let Some(t) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
+                    // batch 249: full official syntax (mirrors BUTTON)
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_radiobutton",
+                            &[hwnd, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_radiobutton_ex",
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
                     }
@@ -16003,6 +16321,8 @@ impl Compiler {
                 // batch 177: the plain and static CONTROL family.  Same
                 // argument shape as every other typed CONTROL ADD arm:
                 // (hDlg, id, txt$, x, y, w, h, TO-target).
+                // batch 249: full official syntax - style/exstyle passthrough
+                // + CALL callback (mirrors CONTROL ADD BUTTON).
                 if call.args.len() >= 8 {
                     let mut hwnd = self.compile_expr(fb, &call.args[0])?;
                     if hwnd.ty != IrType::Ptr {
@@ -16014,21 +16334,40 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let fname = if call.name == "CONTROL_ADD_OPTION" {
-                        "pb_control_add_option"
+                    let (fname, fname_ex) = if call.name == "CONTROL_ADD_OPTION" {
+                        ("pb_control_add_option", "pb_control_add_option_ex")
                     } else if call.name == "CONTROL_ADD_CHECK3STATE" {
-                        "pb_control_add_check3state"
+                        (
+                            "pb_control_add_check3state",
+                            "pb_control_add_check3state_ex",
+                        )
                     } else if call.name == "CONTROL_ADD_FRAME" {
-                        "pb_control_add_frame"
+                        ("pb_control_add_frame", "pb_control_add_frame_ex")
                     } else if call.name == "CONTROL_ADD_TEXTBOX" {
-                        "pb_control_add_textbox"
+                        ("pb_control_add_textbox", "pb_control_add_textbox_ex")
                     } else {
-                        "pb_control_add_line"
+                        ("pb_control_add_line", "pb_control_add_line_ex")
                     };
-                    let hc = fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h]);
-                    if let Some(t) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h])
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            fname_ex,
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
                     }
@@ -16171,14 +16510,31 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_groupbox",
-                        &[hwnd, id, text, x, y, w, h],
-                    );
-                    if let Some(t) = call.args.get(7) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
+                    // batch 249: full official syntax (mirrors BUTTON)
+                    let target = if call.args.len() == 8 {
+                        Some(call.args[7].clone())
+                    } else {
+                        call.args.get(10).cloned()
+                    };
+                    let hctrl = if call.args.len() == 8 {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_groupbox",
+                            &[hwnd, id, text, x, y, w, h],
+                        )
+                    } else {
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_groupbox_ex",
+                            &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
+                        )
+                    };
+                    if let Some(tgt) = target {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &tgt) {
+                            let cv = self.convert_value(fb, &hctrl, &ty, &pty);
                             fb.store(&cv, &ptr);
                         }
                     }
@@ -20766,6 +21122,20 @@ impl Compiler {
             if name == "_no_cb" {
                 return Ok(Val::new("null".to_string(), IrType::Ptr));
             }
+            let upper = name.to_uppercase();
+            let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+            if let Some(fi) = fi {
+                return Ok(Val::new(format!("@{}", fi.ir_name), IrType::Ptr));
+            }
+            eprintln!(
+                "warning: CONTROL ADD ... CALL: unknown callback '{}'",
+                upper
+            );
+            return Ok(Val::new("null".to_string(), IrType::Ptr));
+        }
+        // batch 249: official samples write "CALL ButtonCallback()" with parens,
+        // which parses as a FunctionCall, not a Variable.
+        if let Expr::FunctionCall(name, _) = arg {
             let upper = name.to_uppercase();
             let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
             if let Some(fi) = fi {

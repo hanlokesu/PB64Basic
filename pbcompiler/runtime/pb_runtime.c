@@ -11355,3 +11355,172 @@ void pb_treeview_set_imagelist(void* hDlg, long id, void* hLst) {
     if (!h) return;
     SendMessageA(h, PB_TVM_SETIMAGELIST, PB_TVSIL_NORMAL, (pb_lparam_t)hLst);
 }
+
+/* ---------------- batch 249: _ex variants (style/exstyle/CALL) ------------
+   Mirrors pb_control_add_button_ex: style==0 -> documented PBWin default;
+   exstyle==0 -> 0; fn -> pb_register_callback_hwnd. */
+void* pb_control_add_checkbox_ex(void* parent, long id, const char* text,
+                                 int x, int y, int w, int h,
+                                 long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x3u | 0x100u | 0xC00u | 0x10000u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_radiobutton_ex(void* parent, long id, const char* text,
+                                    int x, int y, int w, int h,
+                                    long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x9u | 0x10000u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_groupbox_ex(void* parent, long id, const char* text,
+                                int x, int y, int w, int h,
+                                long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x7u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_option_ex(void* parent, long id, const char* text,
+                               int x, int y, int w, int h,
+                               long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x9u | 0x100u | 0xC00u | 0x10000u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_check3state_ex(void* parent, long id, const char* text,
+                                    int x, int y, int w, int h,
+                                    long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x6u | 0x100u | 0xC00u | 0x10000u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_frame_ex(void* parent, long id, const char* text,
+                              int x, int y, int w, int h,
+                              long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x7u | 0x100u | 0x400u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_textbox_ex(void* parent, long id, const char* text,
+                                int x, int y, int w, int h,
+                                long style, long exstyle, void* fn) {
+    x = PB_DLU_X_TO_PX(x);
+    y = PB_DLU_Y_TO_PX(y);
+    w = PB_DLU_X_TO_PX(w);
+    int hpx = PB_DLU_Y_TO_PX(h);
+    unsigned long s = style ? (unsigned long)style : 0x80u | 0x10000u | 0x800000u;
+    s |= 0x40000000u | 0x10000000u;
+    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
+    void* hw = CreateWindowExA(ex, "EDIT", text, s,
+                           x, y, w, hpx, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_line_ex(void* parent, long id, const char* text,
+                             int x, int y, int w, int h,
+                             long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x12u;
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA((unsigned long)exstyle, "STATIC", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
+void* pb_control_add_label_ex(void* parent, long id, const char* text,
+                              int x, int y, int w, int ht,
+                              long style, long exstyle, void* fn) {
+    unsigned long s = style ? (unsigned long)style : 0u;
+    s |= 0x40000000u | 0x10000000u;
+    pb_dlu_to_px(&x, &y, &w, &ht);
+    ht = 16;
+    void* h = CreateWindowExA((unsigned long)exstyle, "STATIC", text, s,
+                           x, y, w, ht, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) { SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+             if (fn) pb_register_callback_hwnd(h, fn); }
+    return h;
+}
+void* pb_control_add_scrollbar_ex(void* parent, long id, int x, int y, int w, int ht,
+                                  long style, long exstyle, void* fn) {
+    unsigned long sbs = (w < ht) ? 1u : 0u;
+    unsigned long s = style ? (unsigned long)style : sbs;
+    s |= 0x40000000u | 0x10000000u;
+    void* hbar = CreateWindowExA((unsigned long)exstyle, "SCROLLBAR", "", s,
+                            x, y, w, ht, parent,
+                            (void*)(long long)id, GetModuleHandleA(0), 0);
+    SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
+    if (hbar) { SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+                if (fn) pb_register_callback_hwnd(hbar, fn); }
+    return hbar;
+}
+void* pb_control_add_tab_ex(void* parent, long id, int x, int y, int w, int ht,
+                            long style, long exstyle, void* fn) {
+    unsigned long s = style ? (unsigned long)style
+                            : PB_TCS_TABS | PB_TCS_HOTTRACK | 0x04000000u | 0x00010000u;
+    s |= 0x40000000u | 0x10000000u;
+    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x00000200u;
+    pb_icc(PB_ICC_TAB_CLASSES);
+    pb_dlu_to_px(&x, &y, &w, &ht);
+    void* h = CreateWindowExA(ex, "SysTabControl32", "",
+                           s, x, y, w, ht, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (h) { SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+             if (fn) pb_register_callback_hwnd(h, fn); }
+    return h;
+}
+
+void* pb_control_add_editbox_ex(void* parent, long id, const char* text,
+                                int x, int y, int w, int h,
+                                long style, long exstyle, void* fn) {
+    pb_dlu_to_px(&x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x80u | 0x800000u | 0x10000u;
+    s |= 0x40000000u | 0x10000000u;
+    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
+    void* hw = CreateWindowExA(ex, "EDIT", text, s,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+              if (fn) pb_register_callback_hwnd(hw, fn); }
+    return hw;
+}
