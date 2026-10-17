@@ -145,6 +145,25 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%MB_DEFBUTTON1", 0x00000000),
     ("%MB_DEFBUTTON2", 0x00000100),
     ("%MB_DEFBUTTON3", 0x00000200),
+    ("%MB_DEFBUTTON4", 0x00000300),
+    ("%MB_ABORTRETRYIGNORE", 0x00000002),
+    ("%MB_RETRYCANCEL", 0x00000005),
+    ("%MB_CANCELTRYCONTINUE", 0x00000006),
+    ("%MB_ICONHAND", 0x00000010),
+    ("%MB_ICONSTOP", 0x00000010),
+    ("%MB_ICONEXCLAMATION", 0x00000030),
+    ("%MB_ICONASTERISK", 0x00000040),
+    ("%MB_APPLMODAL", 0x00000000),
+    ("%MB_SYSTEMMODAL", 0x00001000),
+    ("%MB_TASKMODAL", 0x00002000),
+    ("%MB_HELP", 0x00004000),
+    ("%MB_NOFOCUS", 0x00008000),
+    ("%MB_SETFOREGROUND", 0x00010000),
+    ("%MB_DEFAULT_DESKTOP_ONLY", 0x00020000),
+    ("%MB_TOPMOST", 0x00040000),
+    ("%MB_RIGHT", 0x00080000),
+    ("%MB_RTLREADING", 0x00100000),
+    ("%MB_SERVICE_NOTIFICATION", 0x00200000),
     ("%IDOK", 1),
     ("%IDCANCEL", 2),
     ("%IDABORT", 3),
@@ -154,6 +173,8 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%IDNO", 7),
     ("%IDCLOSE", 8),
     ("%IDHELP", 9),
+    ("%IDTRYAGAIN", 10),
+    ("%IDCONTINUE", 11),
     ("%TRUE", 1),
     ("%FALSE", 0),
 ];
@@ -20120,6 +20141,7 @@ impl Compiler {
             "UBOUND" => Some(Ok(fb.const_i32(0))), /* TODO: track array dimensions */
             "JOIN$" => Some(self.builtin_join(fb, args)),
             "INPUTBOX$" => Some(self.builtin_inputbox(fb, args)),
+            "MSGBOX" => Some(self.builtin_msgbox(fb, args)),
             "RND" => Some(self.builtin_rnd(fb, args)),
             "ROUND" => Some(self.builtin_round(fb, args)),
             // String builtins
@@ -21383,6 +21405,37 @@ impl Compiler {
             "pb_input_console",
             &[prompt_ptr, fb.const_i32(1), fb.const_i32(0)],
         ))
+    }
+
+    fn builtin_msgbox(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        /* MSGBOX(txt$, [style&], [title$]) - function form, returns the
+        button id (%IDOK/%IDYES/%IDNO/...) that the user pressed.  The
+        statement form lives in compile_stmt; this is the expression
+        form used by e.g. `n = MSGBOX("Go?", %MB_YESNO, "Ask")`. */
+        if args.is_empty() {
+            return Err(PbError::runtime("MSGBOX: expected txt$"));
+        }
+        let text = self.compile_expr(fb, &args[0])?;
+        let style = if args.len() > 1 {
+            let sv = self.compile_expr(fb, &args[1])?;
+            self.to_i32(fb, &sv)
+        } else {
+            fb.const_i32(0)
+        };
+        let title = if args.len() > 2 {
+            self.compile_expr(fb, &args[2])?
+        } else {
+            Val::new(self.empty_string_name.clone(), IrType::Ptr)
+        };
+        if self.module.is_32bit() {
+            Ok(fb.call_stdcall(
+                &IrType::I32,
+                "pb_msgbox_impl",
+                &[text.clone(), title.clone(), style.clone()],
+            ))
+        } else {
+            Ok(fb.call(&IrType::I32, "pb_msgbox_impl", &[text, title, style]))
+        }
     }
 
     fn builtin_threadid(&mut self, fb: &mut FunctionBuilder) -> PbResult<Val> {
