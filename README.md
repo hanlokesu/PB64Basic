@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 238 (v0.2.077). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 249 (v0.2.078). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 249 (v0.2.078) - all 12 CONTROL ADD controls aligned to the CHW official 11-argument syntax (style&/exstyle&/CALL callback passthrough; CONTROL ADD has no TO clause - CONTROL HANDLE fetches the handle; CALLBACK FUNCTION ... AS LONG with FUNCTION=0 bodies); TEXTBOX default style missing WS_BORDER + DLU height -1 fixed (batch177 DIFF->MATCH); LABEL 11-arg layout clippy fix; dual-run baseline MATCH 115 / DIFF 2 (batch174 env, batch205 tcp) / EMPTY 0 / ONLY-FORK 1.
 > batch 238 (v0.2.077) - DIALOG SHOW MODAL hDlg TO Result official syntax (HelloDDT x64); DIALOG END optional result; 421/519 error-code alignment with PBWin10 (#DIM ALL/OPTION EXPLICIT); numeric IP network-order unified &H0100007F (UDP SEND/TCP OPEN raw, UDP RECV network order); repository detached+renamed hanlokesu/PB64Basic, compiler binary PB64Basic.exe, full rebrand of examples/docs/demo/IDE; Apache-2.0 4(b) notices; dual-run baseline MATCH 116 / DIFF 1 / EMPTY 0 / ONLY-FORK 1.
 > batch 237 (v0.2.076) - 27 dual-run DIFFs closed to MATCH (XPRINT env 7 / handle-value 10 / GUI controls 7 / misc 4; only batch205 stays a documented environment DIFF); XPRINT GET->STRING 0xC0000005 crash fixed in pb_runtime.c (char** BSTR write); batch190/191 CONTROL ADD / LISTVIEW-TREEVIEW-SCROLLBAR MATCH; batch236 TCP ACCEPT fix included; full baseline MATCH 114 / DIFF 1 / EMPTY 1 / ONLY-FORK 2.
 > batch 235 (v0.2.075) - batch224 WriteFile/ReadFile BYVAL fix; pb_runtime.c measured fixes (ERROR$ table, OPEN binary modes, LOC per mode, CLIPBOARD TRUE/FALSE, ARRAY DELETE collapse); codegen REDIM-zero / GLOBALMEM LOCK width / HEX$ sign-extend / PARSE$ comma default; full dual-run baseline MATCH 72 / DIFF 40.
@@ -728,6 +729,16 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.078 (2026-10-18) - batch 249: all CONTROL ADD controls on official CHW syntax
+
+- **All 12 CONTROL ADD control types** (BUTTON, CHECKBOX, CHECK3STATE, OPTION, FRAME, LABEL, LINE, TEXTBOX, EDITBOX, SCROLLBAR, LISTBOX, COMBOBOX, TAB) now accept the full CHW official signature: `CONTROL ADD <CTL>, hDlg&, id&, txt$|items$(), x, y, xx, yy [, [style&] [, [exstyle&]]] [[,] CALL callback]`.
+  - `style&` / `exstyle&` / `CALL callback` are passed through to the created control (new `pb_control_add_*_ex` runtime functions, 12 new IR declares).
+  - **`CONTROL ADD ... TO hCtrl&` is NOT official** (PBWin rejects it: Error 411/477) - the handle is fetched with `CONTROL HANDLE hDlg, id TO hCtrl&`.
+  - Callback bodies use `CALLBACK FUNCTION xxx() AS LONG` + `FUNCTION = 0`; call sites write `CALL xxx()`.
+- **TEXTBOX visual parity**: default style now includes `WS_BORDER` (0x800000) and the DLU height no longer loses a pixel - batch177 went DIFF -> MATCH (120x16, border present).
+- **LABEL**: parser now emits the full 11-argument layout (style/exstyle/callback) - fixes a clippy unused-assignment warning and enables `pb_control_add_label_ex`.
+- **New example** `examples/batch249_control_add_full.bas` compiles and runs identically on PBWin10 and PB64Basic (`batch249 control add full ok`).
+- **Dual-run baseline**: headless 118 = MATCH 115 / DIFF 2 (batch174 menu client-height env, batch205 tcp timing) / EMPTY 0 / ONLY-FORK 1 (batch029).
 ### v0.2.077 (2026-10-16) - batch 238: DIALOG SHOW MODAL TO + error-code alignment + PB64Basic rebrand
 
 - **batch238**: `DIALOG SHOW MODAL hDlg TO Result` official PBWin syntax now parses (HelloDDT from C:\PBWin10\samples\DDT compiles as x64); `DIALOG END hDlg` without the optional result argument is accepted (official form `DIALOG END hDlg& [, lResult&]`). New example `examples/batch238_test.bas` compiles on both PBWin10 and PB64Basic.
