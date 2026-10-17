@@ -1991,6 +1991,24 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_add_combobox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_add_editbox",
             &IrType::Ptr,
             &[
@@ -7550,14 +7568,22 @@ impl Compiler {
             // REDIM without an explicit type (parser marks it Variant): inherit
             // the type declared earlier, e.g. `LOCAL sarr() AS STRING` followed
             // by `REDIM sarr(1 TO 4)`. Falls back to LONG when undeclared.
-            let arr_pb_type = if matches!(dim.pb_type, PbType::Variant) {
-                if let Some(info) = self.symbols.lookup(&name) {
-                    info.pb_type.clone()
-                } else {
-                    PbType::Long
-                }
-            } else {
-                dim.pb_type.clone()
+            // batch 248: plain `DIM arr(1 TO 3)` (no AS clause) must ALSO inherit
+            // a declared STRING type - before this, `LOCAL items() AS STRING` +
+            // `DIM items(1 TO 3)` built a [N x i32] array (element = 32-bit
+            // truncated pointer), which made CONTROL ADD LISTBOX/COMBOBOX
+            // items$() fills read garbage.  With STRING inherited the array is
+            // [N x Ptr] and store/load follow elem_ir_type automatically.
+            let declared = self.symbols.lookup(&name).map(|i| i.pb_type.clone());
+            let arr_pb_type = match &dim.pb_type {
+                PbType::Variant => declared.clone().unwrap_or(PbType::Long),
+                PbType::Long => match &declared {
+                    Some(PbType::String) | Some(PbType::FixedString(_)) => {
+                        declared.clone().unwrap()
+                    }
+                    _ => PbType::Long,
+                },
+                other => other.clone(),
             };
             let elem_ir = Self::ir_type_for(&arr_pb_type);
             let mut dims = Vec::new();
@@ -10749,36 +10775,69 @@ impl Compiler {
                 return Ok(());
             }
             "CONTROL_ADD_COMBOBOX" => {
-                // batch 220: the official syntax requires all 7 arguments, so a shorter
-                // spelling is malformed. Report it instead of silently doing nothing.
-                if call.args.len() < 7 {
+                // batch 248: full official syntax, fixed 11-arg layout
+                // [hwnd, id, items, x, y, w, h, style, exstyle, callback, target]
+                // (CONTROL ADD COMBOBOX, hDlg, id&, [items$()], x, y, xx, yy
+                //   [, [style&] [, [exstyle&]]] [[,] CALL callback] [, TO hCtrl&])
+                if call.args.len() < 11 {
                     return Err(pb::error::PbError::parser(
-                        "CONTROL_ADD_COMBOBOX requires its arguments: CONTROL ADD COMBOBOX hDlg , id& , x , y , xx , yy TO hCtrl&".to_string(),
+                        "CONTROL_ADD_COMBOBOX requires its arguments: CONTROL ADD COMBOBOX hDlg , id& , items$() , x , y , xx , yy [, [style&] [, [exstyle&]]] [[,] CALL callback] [, TO hCtrl&]".to_string(),
                         None,
                         call.line,
                     ));
                 }
 
-                if call.args.len() >= 7 {
-                    let mut hwnd = self.compile_expr(fb, &call.args[0])?;
-                    if hwnd.ty != IrType::Ptr {
-                        hwnd = fb.inttoptr(&hwnd);
-                    }
-                    let id = self.compile_expr(fb, &call.args[1])?;
-                    let x = self.compile_expr(fb, &call.args[2])?;
-                    let y = self.compile_expr(fb, &call.args[3])?;
-                    let w = self.compile_expr(fb, &call.args[4])?;
-                    let h = self.compile_expr(fb, &call.args[5])?;
-                    let hc = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_add_combobox",
-                        &[hwnd, id, x, y, w, h],
-                    );
-                    if let Some(t) = call.args.get(6) {
-                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
-                            let cv = self.convert_value(fb, &hc, &ty, &pty);
-                            fb.store(&cv, &ptr);
+                let mut hwnd = self.compile_expr(fb, &call.args[0])?;
+                if hwnd.ty != IrType::Ptr {
+                    hwnd = fb.inttoptr(&hwnd);
+                }
+                let id = self.compile_expr(fb, &call.args[1])?;
+                // items slot: full-array reference sArray() → pass base pointer +
+                // element count so the runtime can CB_ADDSTRING each item.
+                let (items, item_count) =
+                    if let Some(Expr::FunctionCall(arr_name, _)) = call.args.get(2) {
+                        let an = normalize_name(arr_name);
+                        if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
+                            (
+                                Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+                                arr_info.total_elements as i64,
+                            )
+                        } else {
+                            let v = self.compile_expr(fb, &call.args[2])?;
+                            (v, 0)
                         }
+                    } else {
+                        let v = self.compile_expr(fb, &call.args[2])?;
+                        (v, 0)
+                    };
+                let x = self.compile_expr(fb, &call.args[3])?;
+                let y = self.compile_expr(fb, &call.args[4])?;
+                let w = self.compile_expr(fb, &call.args[5])?;
+                let h = self.compile_expr(fb, &call.args[6])?;
+                let style = self.compile_expr(fb, &call.args[7])?;
+                let exstyle = self.compile_expr(fb, &call.args[8])?;
+                let cb = self.compile_control_callback(fb, &call.args[9])?;
+                let hc = fb.call(
+                    &IrType::Ptr,
+                    "pb_control_add_combobox_ex",
+                    &[
+                        hwnd,
+                        id,
+                        items,
+                        fb.const_i64(item_count),
+                        x,
+                        y,
+                        w,
+                        h,
+                        style,
+                        exstyle,
+                        cb,
+                    ],
+                );
+                if let Some(t) = call.args.get(10) {
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, t) {
+                        let cv = self.convert_value(fb, &hc, &ty, &pty);
+                        fb.store(&cv, &ptr);
                     }
                 }
                 return Ok(());

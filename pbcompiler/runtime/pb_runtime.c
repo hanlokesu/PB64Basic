@@ -8229,12 +8229,9 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
            last or the listbox undoes WS_VSCROLL again. */
         SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
         pb_set_winlong(hw, -16 /* GWL_STYLE */, (long long)s);
-        /* items$() full-array reference: the array is [count x ptr], each
-           element points to a WSTRING buffer.  Our WSTRING values are BSTRs
-           built with SysAllocStringByteLen, which copies the ANSI bytes
-           verbatim (no UTF-16 conversion); the stored pointer already points
-           at the ANSI data.  Add every item directly with LB_ADDSTRING
-           (0x0180), matching PBWin. */
+        /* items$() full-array reference: with batch 248's DIM type-inheritance
+           fix the array is [N x Ptr], each element a full 8-byte WSTRING
+           pointer.  Add every item with LB_ADDSTRING (0x0180). */
         if (count > 0 && items) {
             long long i;
             for (i = 0; i < count; i++) {
@@ -8248,6 +8245,56 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
     }
     return hw;
 }
+
+/* CONTROL ADD COMBOBOX full official syntax (batch 248):
+   CONTROL ADD COMBOBOX, hDlg, id&, [items$()], x, y, xx, yy
+     [, [style&] [, [exstyle&]]] [[,] CALL callback]
+   Mirrors pb_control_add_listbox_ex: DLU conversion, items$() array fill
+   (CB_ADDSTRING), style/exstyle passthrough, callback registration.
+   CHW control_add_combobox.htm default style = %CBS_DROPDOWN(0x2) OR
+   %CBS_SORT(0x100) OR %WS_TABSTOP(0x10000), default ex = %WS_EX_LEFT OR
+   %WS_EX_CLIENTEDGE(0x200).  style!=0: user style used directly; a CBS type
+   bit (0x3 mask) is forced to DROPDOWN when absent so the combo stays
+   editable (listbox batch 245 forces LBS_NOTIFY analogously). */
+void* pb_control_add_combobox_ex(void* parent, long id, void* items, long long count,
+                                 int x, int y, int w, int h,
+                                 long style, long exstyle, void* fn) {
+    x = PB_DLU_X_TO_PX(x);
+    y = PB_DLU_Y_TO_PX(y);
+    w = PB_DLU_X_TO_PX(w);
+    int hpx = PB_DLU_Y_TO_PX(h);
+    unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
+                                                    : (unsigned long)exstyle;
+    unsigned long s;
+    if (style) {
+        s = (unsigned long)style;
+        if ((s & 0x3u) == 0) s |= 0x2u; /* CBS_DROPDOWN if no CBS type bit */
+    } else {
+        s = 0x2u | 0x100u | 0x10000u;    /* CBS_DROPDOWN|CBS_SORT|WS_TABSTOP */
+    }
+    s |= 0x40000000u | 0x10000000u; /* WS_CHILD | WS_VISIBLE */
+    void* hw = CreateWindowExA(ex, "COMBOBOX", "", s,
+                           x, y, w, hpx, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) {
+        SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
+        /* items$() full-array reference: with batch 248's DIM type-inheritance
+           fix the array is [N x Ptr], each element a full 8-byte WSTRING
+           pointer.  Add every item with CB_ADDSTRING (0x0143). */
+        if (count > 0 && items) {
+            long long i;
+            for (i = 0; i < count; i++) {
+                void* p = ((void**)items)[i];
+                if (!p) continue;
+                SendMessageA(hw, 0x0143 /* CB_ADDSTRING */, 0,
+                             (long long)(size_t)p);
+            }
+        }
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
+    return hw;
+}
+
 
 void* pb_control_add_checkbox(void* parent, long id, const char* text,
                                 int x, int y, int w, int h) {
