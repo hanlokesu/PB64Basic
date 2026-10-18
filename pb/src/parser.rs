@@ -13275,15 +13275,24 @@ impl Parser {
                         line,
                     }));
                 }
-                // TCP OPEN [SERVER] {PORT expr | srvc_expr} [AT addr_expr] AS #f [TIMEOUT t]
+                // TCP OPEN [SERVER] [ADDR bind_expr] {PORT expr | srvc_expr} [AT addr_expr] AS #f [TIMEOUT t]
                 let mut mode = Expr::IntegerLit(0);
                 let mut port: Option<Expr> = None;
                 let mut addr = Expr::StringLit("".to_string());
+                let mut bind_addr = Expr::IntegerLit(0);
                 let mut timeout = Expr::IntegerLit(-1);
                 if let Token::Identifier(w) = self.peek() {
                     if w.eq_ignore_ascii_case("SERVER") {
                         self.advance();
                         mode = Expr::IntegerLit(1);
+                        // optional ADDR ip& after SERVER: numeric bind address in
+                        // PBWin network order (CHW TCP OPEN server syntax)
+                        if let Token::Identifier(w2) = self.peek() {
+                            if w2.eq_ignore_ascii_case("ADDR") {
+                                self.advance();
+                                bind_addr = self.parse_expression()?;
+                            }
+                        }
                     }
                 }
                 if let Token::Identifier(w) = self.peek() {
@@ -13325,7 +13334,7 @@ impl Parser {
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: "TCP OPEN".to_string(),
-                    args: vec![mode, port_v, addr, filenum, timeout],
+                    args: vec![mode, port_v, addr, filenum, timeout, bind_addr],
                     line,
                 }))
             }

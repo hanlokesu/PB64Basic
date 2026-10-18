@@ -1,12 +1,16 @@
 
 
 ' --- Dual-compiler self-check: this sample runs on BOTH compilers. ---
-'     Measured 2026-10-14: on this machine PBWin10's TCP OPEN SERVER does
-'     not actually listen (external connect gets WinError 10061, main-thread
-'     TCP ACCEPT blocks forever), so the PBWin side reports FAILURES 3.
-'     That is a PBWin10 environment behaviour, not a fork defect - the fork
-'     side passes with FAILURES 0 (TCP ACCEPT output-file-number fix,
-'     batch 205).  The expected output below is the fork's verified output.
+'     Root cause found 2026-10-18: PBWin10's TCP OPEN SERVER binds the
+'     machine's PRIMARY IP (e.g. 172.23.192.1), NOT 127.0.0.1, so a client
+'     connecting AT "127.0.0.1" got WinError 10061 and the PBWin side
+'     reported FAILURES 3.  Fix: specify ADDR &H0100007F (127.0.0.1 in
+'     network order) on the server open - PBWin then listens on loopback and
+'     both sides MATCH with FAILURES 0.  The fork gained the missing
+'     ADDR server-bind parameter in the same batch (parser/codegen/runtime).
+'     Expected output (both sides verified identical):
+'       client got: pong / server read: ping / accepted flag: 1
+'       === FAILURES: 0
 
 
 
@@ -57,7 +61,7 @@ END SUB
 '   protocol must be written.
 '
 ' THE CONVERSATION
-'   main   : TCP OPEN SERVER PORT 46219 AS #1
+'   main   : TCP OPEN SERVER ADDR &H0100007F PORT 46219 AS #1
 '   thread : TCP ACCEPT #1 AS #2  ->  TCP LINE INPUT #2, s  ->  TCP PRINT #2, "pong"
 '   main   : TCP OPEN PORT 46219 AT "127.0.0.1" AS #3
 '            TCP PRINT #3, "ping"  ->  TCP LINE INPUT #3, s
@@ -90,7 +94,7 @@ FUNCTION PBMAIN () AS LONG
     LOCAL fails AS LONG
     LOCAL th AS LONG
     fails = 0
-    TCP OPEN SERVER PORT 46219 AS #1
+    TCP OPEN SERVER ADDR &H0100007F PORT 46219 AS #1
     THREAD CREATE Acceptor(0) TO th
     SLEEP 400
     TCP OPEN PORT 46219 AT "127.0.0.1" AS #3

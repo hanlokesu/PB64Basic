@@ -5443,6 +5443,7 @@ impl Compiler {
                 IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
+                IrType::I32,
             ],
             false,
         );
@@ -17639,7 +17640,7 @@ impl Compiler {
                 return Ok(());
             }
             "TCP OPEN" => {
-                // TCP OPEN [SERVER] {PORT p | srvc} [AT addr$] AS #f [TIMEOUT t]
+                // TCP OPEN [SERVER] [ADDR ip&] {PORT p | srvc} [AT addr$] AS #f [TIMEOUT t]
                 let _e0 = self.compile_expr(fb, &call.args[0])?;
                 let mode = self.to_i32(fb, &_e0);
                 let _e1 = self.compile_expr(fb, &call.args[1])?;
@@ -17649,7 +17650,13 @@ impl Compiler {
                 let fnum = self.to_i32(fb, &_e3);
                 let _e4 = self.compile_expr(fb, &call.args[4])?;
                 let timeout = self.to_i32(fb, &_e4);
-                fb.call_void("pb_tcp_open", &[mode, port, addr, fnum, timeout]);
+                let bind_addr = if call.args.len() >= 6 {
+                    let _e5 = self.compile_expr(fb, &call.args[5])?;
+                    self.to_i32(fb, &_e5)
+                } else {
+                    fb.const_i32(0)
+                };
+                fb.call_void("pb_tcp_open", &[mode, port, addr, fnum, timeout, bind_addr]);
                 return Ok(());
             }
             "TCP ACCEPT" => {

@@ -3437,7 +3437,7 @@ static void pb_net_fill_addr(struct pb_sockaddr_in* a, unsigned long ip, int por
     a->sin_addr = ip;
 }
 
-int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout) {
+int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout, unsigned long bind_addr) {
     if (pb_winsock_init() != 0) { pb_err = 57; return -1; }
     if (filenum < 1 || filenum >= PB_MAX_SOCK) { pb_err = 52; return -1; }
     if (pb_sock_state[filenum] != 0) { pb_err = 52; return -1; }
@@ -3445,8 +3445,9 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout)
     if (s == PB_SOCK_INVALID) { pb_err = 57; return -1; }
     struct pb_sockaddr_in a;
     if (mode == 1) {
-        /* server: bind + listen */
-        pb_net_fill_addr(&a, 0, port);
+        /* server: bind + listen.  bind_addr is the numeric network-order address
+           (PBWin ADDR semantics: &H0100007F = 127.0.0.1); 0 = INADDR_ANY. */
+        pb_net_fill_addr(&a, bind_addr, port);
         if (bind(s, &a, sizeof(a)) != 0 || listen(s, 8) != 0) { closesocket(s); pb_err = 57; return -1; }
         pb_sock[filenum] = s;
         pb_sock_state[filenum] = 3;
