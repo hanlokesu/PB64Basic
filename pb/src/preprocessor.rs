@@ -469,7 +469,7 @@ impl Preprocessor {
                     let indent_len = emitted_text.len() - t.len();
                     let indent = &emitted_text[..indent_len];
                     let rest = t.strip_prefix('?').unwrap().trim_start();
-                    emitted_text = format!("{}{}", indent, format!("MSGBOX {}", rest));
+                    emitted_text = format!("{}{}{}", indent, "MSGBOX ", rest);
                 }
             }
             if let Some(p) = &prefix {
