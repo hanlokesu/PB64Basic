@@ -11146,6 +11146,28 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "CONTROL_SET_TEXT_ID" => {
+                // CHW official: CONTROL SET TEXT hDlg, id&, txt$ (batch 251)
+                if call.args.len() < 3 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_SET_TEXT_ID requires its arguments: CONTROL SET TEXT hDlg , id& , txt$"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                let cstr = self.compile_str_payload(fb, &call.args[2])?;
+                fb.call_void("pb_control_set_text", &[hctl, cstr]);
+                return Ok(());
+            }
             "CONTROL_SHOW" => {
                 if let Some(hc) = call.args.first() {
                     let v = self.compile_expr(fb, hc)?;
@@ -11172,6 +11194,109 @@ impl Compiler {
                     let v = self.compile_expr(fb, hc)?;
                     fb.call_void("pb_control_disable", &[v]);
                 }
+                return Ok(());
+            }
+            // --- batch 251: CHW official by-id forms (CONTROL <VERB> hDlg, id&) ---
+            // Each resolves the control HWND via pb_control_handle (GetDlgItem),
+            // then reuses the by-hwnd runtime verb.
+            "CONTROL_SHOW_ID" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_SHOW_ID requires its arguments: CONTROL SHOW hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_show", &[hctl]);
+                return Ok(());
+            }
+            "CONTROL_HIDE_ID" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_HIDE_ID requires its arguments: CONTROL HIDE hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_hide", &[hctl]);
+                return Ok(());
+            }
+            "CONTROL_ENABLE_ID" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_ENABLE_ID requires its arguments: CONTROL ENABLE hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_enable", &[hctl]);
+                return Ok(());
+            }
+            "CONTROL_DISABLE_ID" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_DISABLE_ID requires its arguments: CONTROL DISABLE hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_disable", &[hctl]);
+                return Ok(());
+            }
+            "CONTROL_FOCUS_ID" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_FOCUS_ID requires its arguments: CONTROL FOCUS hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_focus", &[hctl]);
                 return Ok(());
             }
             "CONTROL_FOCUS" => {
@@ -12905,6 +13030,31 @@ impl Compiler {
                         let vv = self.convert_value(fb, &val, &ty, &pty);
                         fb.store(&vv, &ptr);
                     }
+                }
+                return Ok(());
+            }
+            "CONTROL_GET_CHECK_ID" => {
+                // CHW official: CONTROL GET CHECK hDlg, id& TO lResult& (batch 251)
+                if call.args.len() < 3 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_GET_CHECK_ID requires its arguments: CONTROL GET CHECK hDlg , id& TO lResult&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                let val = fb.call(&IrType::I64, "pb_control_get_check", &[hctl]);
+                if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
+                    let vv = self.convert_value(fb, &val, &ty, &pty);
+                    fb.store(&vv, &ptr);
                 }
                 return Ok(());
             }
@@ -15569,6 +15719,27 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "CONTROL_KILL_ID" => {
+                // CHW official: CONTROL KILL hDlg, id& (batch 251)
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_KILL_ID requires its arguments: CONTROL KILL hDlg , id&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                fb.call_void("pb_control_kill", &[hctl]);
+                return Ok(());
+            }
             "CONTROL_SET_CHECK" => {
                 // batch 219: the official syntax requires all 2 arguments, so a shorter
                 // spelling is malformed. Report it instead of silently doing nothing.
@@ -15586,6 +15757,28 @@ impl Compiler {
                     let hc64 = fb.inttoptr(&hc);
                     fb.call_void("pb_control_set_check", &[hc64, st]);
                 }
+                return Ok(());
+            }
+            "CONTROL_SET_CHECK_ID" => {
+                // CHW official: CONTROL SET CHECK hDlg, id&, checkstate& (batch 251)
+                if call.args.len() < 3 {
+                    return Err(pb::error::PbError::parser(
+                        "CONTROL_SET_CHECK_ID requires its arguments: CONTROL SET CHECK hDlg , id& , checkstate&"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let hdlg64 = match hd.ty {
+                    IrType::Ptr => hd,
+                    _ => fb.inttoptr(&hd),
+                };
+                let id = self.compile_expr(fb, &call.args[1])?;
+                let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
+                let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                let st = self.compile_expr(fb, &call.args[2])?;
+                fb.call_void("pb_control_set_check", &[hctl, st]);
                 return Ok(());
             }
             "DIALOG_CENTER" => {

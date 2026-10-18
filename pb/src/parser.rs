@@ -7271,6 +7271,7 @@ impl Parser {
                     }
                 }
                 // CONTROL SET TEXT hCtrl, "text"  (Tier-3 DDT GUI)
+                // CHW official by-id: CONTROL SET TEXT hDlg, id&, txt$ (batch 251)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="SET")
                     && matches!(self.peek_at(2), Some(Token::Identifier(w)) if w.to_uppercase()=="TEXT")
@@ -7278,13 +7279,24 @@ impl Parser {
                     self.advance();
                     self.advance();
                     self.advance();
-                    let hctrl = self.parse_expression()?;
+                    let first = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
-                    let text = self.parse_expression()?;
+                    let second = self.parse_expression()?;
+                    if matches!(self.peek(), Token::Comma) {
+                        // CHW official: CONTROL SET TEXT hDlg, id&, txt$
+                        self.advance();
+                        let text = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CONTROL_SET_TEXT_ID".to_string(),
+                            args: vec![first, second, text],
+                            line,
+                        }));
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_SET_TEXT".to_string(),
-                        args: vec![hctrl, text],
+                        args: vec![first, second],
                         line,
                     }));
                 }
@@ -7628,6 +7640,7 @@ impl Parser {
                     }));
                 }
                 // CONTROL SHOW/HIDE/ENABLE/DISABLE/FOCUS hCtrl&  (Tier-3 DDT GUI)
+                // CHW official by-id form: CONTROL <VERB> hDlg, id& (batch 251)
                 if name_upper == "CONTROL" {
                     if let Some(Token::Identifier(w)) = self.peek_at(1) {
                         let op = w.to_uppercase();
@@ -7642,11 +7655,22 @@ impl Parser {
                             if op == kw {
                                 self.advance();
                                 self.advance();
-                                let hctrl = self.parse_expression()?;
+                                let first = self.parse_expression()?;
+                                if matches!(self.peek(), Token::Comma) {
+                                    // CHW official: CONTROL <VERB> hDlg, id&
+                                    self.advance();
+                                    let id = self.parse_expression()?;
+                                    self.consume_to_eol();
+                                    return Ok(Statement::Call(CallStmt {
+                                        name: format!("{}_ID", arm),
+                                        args: vec![first, id],
+                                        line,
+                                    }));
+                                }
                                 self.consume_to_eol();
                                 return Ok(Statement::Call(CallStmt {
                                     name: arm.to_string(),
-                                    args: vec![hctrl],
+                                    args: vec![first],
                                     line,
                                 }));
                             }
@@ -7674,20 +7698,33 @@ impl Parser {
                                 }));
                             }
                         }
-                        // CONTROL GET CHECK hCtrl& TO var&
+                        // CONTROL GET CHECK hCtrl& TO var&  (Tier-3 DDT GUI)
+                        // CHW official by-id: CONTROL GET CHECK hDlg, id& TO lResult& (batch 251)
                         if op == "GET"
                             && matches!(self.peek_at(2), Some(Token::Identifier(w2)) if w2.to_uppercase()=="CHECK")
                         {
                             self.advance(); // CONTROL
                             self.advance(); // GET
                             self.advance(); // CHECK
-                            let hctrl = self.parse_expression()?;
+                            let first = self.parse_expression()?;
+                            if matches!(self.peek(), Token::Comma) {
+                                self.advance(); // comma
+                                let id = self.parse_expression()?;
+                                self.expect(&Token::To)?;
+                                let target = self.parse_expression()?;
+                                self.consume_to_eol();
+                                return Ok(Statement::Call(CallStmt {
+                                    name: "CONTROL_GET_CHECK_ID".to_string(),
+                                    args: vec![first, id, target],
+                                    line,
+                                }));
+                            }
                             self.expect(&Token::To)?;
                             let target = self.parse_expression()?;
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "CONTROL_GET_CHECK".to_string(),
-                                args: vec![hctrl, target],
+                                args: vec![first, target],
                                 line,
                             }));
                         }
@@ -10213,21 +10250,33 @@ impl Parser {
                         line,
                     }));
                 }
-                // CONTROL KILL hCtrl
+                // CONTROL KILL hCtrl  (Tier-3 DDT GUI)
+                // CHW official by-id: CONTROL KILL hDlg, id& (batch 251)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="KILL")
                 {
                     self.advance();
                     self.advance();
-                    let hc = self.parse_expression()?;
+                    let first = self.parse_expression()?;
+                    if matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                        let id = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CONTROL_KILL_ID".to_string(),
+                            args: vec![first, id],
+                            line,
+                        }));
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_KILL".to_string(),
-                        args: vec![hc],
+                        args: vec![first],
                         line,
                     }));
                 }
-                // CONTROL SET CHECK hCtrl, state
+                // CONTROL SET CHECK hCtrl, state  (Tier-3 DDT GUI)
+                // CHW official by-id: CONTROL SET CHECK hDlg, id&, checkstate& (batch 251)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="SET")
                     && matches!(self.peek_at(2), Some(Token::Identifier(w)) if w.to_uppercase()=="CHECK")
@@ -10235,13 +10284,23 @@ impl Parser {
                     self.advance();
                     self.advance();
                     self.advance();
-                    let hc = self.parse_expression()?;
+                    let first = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
-                    let st = self.parse_expression()?;
+                    let second = self.parse_expression()?;
+                    if matches!(self.peek(), Token::Comma) {
+                        self.advance();
+                        let st = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CONTROL_SET_CHECK_ID".to_string(),
+                            args: vec![first, second, st],
+                            line,
+                        }));
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_SET_CHECK".to_string(),
-                        args: vec![hc, st],
+                        args: vec![first, second],
                         line,
                     }));
                 } // DIALOG MENU hDlg, hMenu

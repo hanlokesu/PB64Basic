@@ -114,7 +114,6 @@ impl Preprocessor {
         let mut i = 0;
         let mut if_stack: Vec<bool> = Vec::new(); // stack of "are we in an active block?"
         let mut prefix: Option<String> = None; // active PREFIX "source code" (batch 26)
-        let mut console_off = false; // #CONSOLE OFF -> ? becomes MSGBOX (batch 129)
 
         while i < raw_lines.len() {
             let line_num = i + 1;
@@ -222,23 +221,20 @@ impl Preprocessor {
 
             let upper_full = trimmed_full.to_uppercase();
 
-            // Batch 129: #CONSOLE OFF detection
+            // #CONSOLE OFF / #CONSOLE ON are legal PB directives; accept and skip
+            // them.  The old console_off flag (batch 129) was removed in
+            // batch 250: `?` always lowers to MSGBOX regardless of console mode.
             if upper_full.starts_with("#CONSOLE OFF") {
-                console_off = true;
                 i += 1;
                 continue;
             }
             if upper_full.starts_with("#CONSOLE ON") {
-                console_off = false;
                 i += 1;
                 continue;
             }
-            // #INCLUDE "win32api.inc" / "windows.inc" implies PBWin GUI
-            if upper_full.starts_with("#INCLUDE")
-                && (upper_full.contains("WIN32API") || upper_full.contains("WINDOWS"))
-            {
-                console_off = true;
-            }
+            // (batch 129 note: #INCLUDE win32api.inc / windows.inc used to set
+            //  console_off = true; that flag is gone, the directive itself is
+            //  still handled normally below.)
 
             // Batch 129 revisited (batch 250): `?` at line start is the PB
             // official MSGBOX statement abbreviation (CHW msgbox_s.htm:
