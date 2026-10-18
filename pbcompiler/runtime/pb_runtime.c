@@ -188,6 +188,10 @@ __declspec(dllimport) int __stdcall DeleteMenu(void* hMenu, unsigned int uPositi
 __declspec(dllimport) int __stdcall DestroyMenu(void* hMenu);
 __declspec(dllimport) int __stdcall SetMenu(void* hWnd, void* hMenu);
 __declspec(dllimport) int __stdcall DrawMenuBar(void* hWnd);
+__declspec(dllimport) int __stdcall SetWindowPos(void* hWnd, void* hWndInsertAfter,
+                                                 int x, int y, int cx, int cy, unsigned int uFlags);
+__declspec(dllimport) void* __stdcall GetMenu(void* hWnd);
+__declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
 __declspec(dllimport) int __stdcall TrackPopupMenu(void* hMenu, unsigned int uFlags, int x, int y, int nReserved, void* hWnd, const void* prcRect);
 __declspec(dllimport) void* __stdcall GetActiveWindow(void);
 __declspec(dllimport) int __stdcall InvalidateRect(void* hWnd, const void* lpRect, int bErase);
@@ -6371,6 +6375,14 @@ int pb_menu_delete(long long h, int pos) {
 }
 int pb_dialog_menu(void* hDlg, void* hMenu) {
     SetMenu(hDlg, hMenu);
+    /* SetMenu alone does not reliably resize the non-client area; the menu bar
+       must be accounted for in GetClientRect right away (batch 174 probe: the
+       PBWin client height shrank by the menu bar, the fork's did not).  A
+       SWP_FRAMECHANGED pass forces Windows to recompute the window frame and
+       client area, which is what makes DIALOG GET CLIENT report the smaller
+       height with the bar attached. */
+    SetWindowPos(hDlg, 0, 0, 0, 0, 0,
+                 0x0001 | 0x0002 | 0x0004 | 0x0020); /* SWP_NOSIZE|SWP_NOMOVE|SWP_NOZORDER|SWP_FRAMECHANGED */
     DrawMenuBar(hDlg);
     InvalidateRect(hDlg, 0, 1);
     UpdateWindow(hDlg);
@@ -6990,8 +7002,16 @@ typedef struct { long x, y; } pb_point_t;
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
         long* r = (long*)lParam;   /* RECT: left, top, right, bottom */
+        /* A dialog with a menu bar attached (MENU ATTACH / DIALOG SET MENU)
+           must reserve the menu height on top, or GetClientRect keeps
+           reporting the menu-less client height (batch 174 probe: PBWin
+           client shrank by the bar, the fork's did not).  The frame here is
+           hand-computed (3px borders + 26px caption), so the menu bar has
+           to be added explicitly. */
+        int menuh = 0;
+        if (GetMenu(hWnd)) menuh = GetSystemMetrics(15 /* SM_CYMENU */);
         r[0] += 3;
-        r[1] += 26;
+        r[1] += 26 + menuh;
         r[2] -= 3;
         r[3] -= 3;
         return 0;
