@@ -7806,13 +7806,16 @@ impl Parser {
 
                     // optional text$ slot (official CONTROL ADD): may be
                     // a string literal, an empty '', ,' slot, or absent
-                    // (legacy fork form id, x, y, w, h).
+                    // (legacy fork form id, x, y, w, h).  batch 253: keep the
+                    // text and pass it through (CHW has a real text$ slot).
+                    let mut text: Option<Expr> = None;
                     if matches!(self.peek(), Token::StringLiteral(_)) {
-                        self.parse_expression()?;
+                        text = Some(self.parse_expression()?);
                         self.expect(&Token::Comma)?;
                     } else if self.peek() == &Token::Comma {
                         // empty text slot: id, , x
                         self.advance();
+                        text = Some(Expr::StringLit(String::new()));
                     }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
@@ -7859,6 +7862,7 @@ impl Parser {
                         args: vec![
                             parent,
                             id,
+                            text.unwrap_or(Expr::StringLit(String::new())),
                             x,
                             y,
                             w,
@@ -9384,13 +9388,16 @@ impl Parser {
 
                     // optional text$ slot (official CONTROL ADD): may be
                     // a string literal, an empty '', ,' slot, or absent
-                    // (legacy fork form id, x, y, w, h).
+                    // (legacy fork form id, x, y, w, h).  batch 253: keep the
+                    // text and pass it through (CHW has a real text$ slot).
+                    let mut text: Option<Expr> = None;
                     if matches!(self.peek(), Token::StringLiteral(_)) {
-                        self.parse_expression()?;
+                        text = Some(self.parse_expression()?);
                         self.expect(&Token::Comma)?;
                     } else if self.peek() == &Token::Comma {
                         // empty text slot: id, , x
                         self.advance();
+                        text = Some(Expr::StringLit(String::new()));
                     }
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
@@ -9437,6 +9444,7 @@ impl Parser {
                         args: vec![
                             hwnd,
                             id,
+                            text.unwrap_or(Expr::StringLit(String::new())),
                             x,
                             y,
                             w,

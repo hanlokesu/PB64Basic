@@ -11481,12 +11481,13 @@ void* pb_control_add_label_ex(void* parent, long id, const char* text,
              if (fn) pb_register_callback_hwnd(h, fn); }
     return h;
 }
-void* pb_control_add_scrollbar_ex(void* parent, long id, int x, int y, int w, int ht,
+void* pb_control_add_scrollbar_ex(void* parent, long id, const char* text,
+                                  int x, int y, int w, int ht,
                                   long style, long exstyle, void* fn) {
     unsigned long sbs = (w < ht) ? 1u : 0u;
     unsigned long s = style ? (unsigned long)style : sbs;
     s |= 0x40000000u | 0x10000000u;
-    void* hbar = CreateWindowExA((unsigned long)exstyle, "SCROLLBAR", "", s,
+    void* hbar = CreateWindowExA((unsigned long)exstyle, "SCROLLBAR", text, s,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
@@ -11494,7 +11495,8 @@ void* pb_control_add_scrollbar_ex(void* parent, long id, int x, int y, int w, in
                 if (fn) pb_register_callback_hwnd(hbar, fn); }
     return hbar;
 }
-void* pb_control_add_tab_ex(void* parent, long id, int x, int y, int w, int ht,
+void* pb_control_add_tab_ex(void* parent, long id, const char* text,
+                            int x, int y, int w, int ht,
                             long style, long exstyle, void* fn) {
     unsigned long s = style ? (unsigned long)style
                             : PB_TCS_TABS | PB_TCS_HOTTRACK | 0x04000000u | 0x00010000u;
@@ -11502,7 +11504,7 @@ void* pb_control_add_tab_ex(void* parent, long id, int x, int y, int w, int ht,
     unsigned long ex = exstyle ? (unsigned long)exstyle : 0x00000200u;
     pb_icc(PB_ICC_TAB_CLASSES);
     pb_dlu_to_px(&x, &y, &w, &ht);
-    void* h = CreateWindowExA(ex, "SysTabControl32", "",
+    void* h = CreateWindowExA(ex, "SysTabControl32", text,
                            s, x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (h) { SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);

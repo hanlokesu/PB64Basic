@@ -2153,6 +2153,7 @@ impl Compiler {
             &[
                 IrType::Ptr,
                 IrType::I32,
+                IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -2169,6 +2170,7 @@ impl Compiler {
             &[
                 IrType::Ptr,
                 IrType::I32,
+                IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -13103,14 +13105,19 @@ impl Compiler {
                 if call.args.len() >= 7 {
                     let parent = self.compile_expr(fb, &call.args[0])?;
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let x = self.compile_expr(fb, &call.args[2])?;
-                    let y = self.compile_expr(fb, &call.args[3])?;
-                    let w = self.compile_expr(fb, &call.args[4])?;
-                    let h = self.compile_expr(fb, &call.args[5])?;
-                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
-                    // (no text slot; layout = parent,id,x,y,w,h,style,exstyle,cb,target)
+                    // batch 253: official CONTROL ADD SCROLLBAR (CHW
+                    // control_add_scrollbar.htm) has a text$ slot right after
+                    // id&: parent,id,text,x,y,w,h,style,exstyle,cb,target (11).
+                    // The 7/10-arg legacy forms carry no text (x starts at 2).
+                    let has_text = call.args.len() >= 11;
+                    let x = self.compile_expr(fb, &call.args[if has_text { 3 } else { 2 }])?;
+                    let y = self.compile_expr(fb, &call.args[if has_text { 4 } else { 3 }])?;
+                    let w = self.compile_expr(fb, &call.args[if has_text { 5 } else { 4 }])?;
+                    let h = self.compile_expr(fb, &call.args[if has_text { 6 } else { 5 }])?;
                     let target = if call.args.len() == 7 {
                         Some(call.args[6].clone())
+                    } else if has_text {
+                        call.args.get(10).cloned()
                     } else {
                         call.args.get(9).cloned()
                     };
@@ -13120,14 +13127,26 @@ impl Compiler {
                             "pb_control_add_scrollbar",
                             &[parent, id, x, y, w, h],
                         )
+                    } else if has_text {
+                        let text = self.compile_str_payload(fb, &call.args[2])?;
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_scrollbar_ex",
+                            &[parent, id, text, x, y, w, h, style, exstyle, cb],
+                        )
                     } else {
+                        // legacy 10-arg (no text slot): pass NULL window text
+                        let text = fb.inttoptr(&fb.const_i64(0));
                         let style = self.compile_expr(fb, &call.args[6])?;
                         let exstyle = self.compile_expr(fb, &call.args[7])?;
                         let cb = self.compile_control_callback(fb, &call.args[8])?;
                         fb.call(
                             &IrType::Ptr,
                             "pb_control_add_scrollbar_ex",
-                            &[parent, id, x, y, w, h, style, exstyle, cb],
+                            &[parent, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
                     if let Some(tgt) = target {
@@ -13477,14 +13496,19 @@ impl Compiler {
                         parent = fb.inttoptr(&parent);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let x = self.compile_expr(fb, &call.args[2])?;
-                    let y = self.compile_expr(fb, &call.args[3])?;
-                    let w = self.compile_expr(fb, &call.args[4])?;
-                    let h = self.compile_expr(fb, &call.args[5])?;
-                    // batch 249: [, [style&] [, [exstyle&]]] [[,] CALL callback] [TO]
-                    // (no text slot; layout = parent,id,x,y,w,h,style,exstyle,cb,target)
+                    // batch 253: official CONTROL ADD TAB (CHW
+                    // CONTROL_ADD_TAB_statement.htm) has a text$ slot right
+                    // after id&: parent,id,text,x,y,w,h,style,exstyle,cb,target (11).
+                    // The 7/10-arg legacy forms carry no text (x starts at 2).
+                    let has_text = call.args.len() >= 11;
+                    let x = self.compile_expr(fb, &call.args[if has_text { 3 } else { 2 }])?;
+                    let y = self.compile_expr(fb, &call.args[if has_text { 4 } else { 3 }])?;
+                    let w = self.compile_expr(fb, &call.args[if has_text { 5 } else { 4 }])?;
+                    let h = self.compile_expr(fb, &call.args[if has_text { 6 } else { 5 }])?;
                     let target = if call.args.len() == 7 {
                         Some(call.args[6].clone())
+                    } else if has_text {
+                        call.args.get(10).cloned()
                     } else {
                         call.args.get(9).cloned()
                     };
@@ -13494,14 +13518,26 @@ impl Compiler {
                             "pb_control_add_tab",
                             &[parent, id, x, y, w, h],
                         )
+                    } else if has_text {
+                        let text = self.compile_str_payload(fb, &call.args[2])?;
+                        let style = self.compile_expr(fb, &call.args[7])?;
+                        let exstyle = self.compile_expr(fb, &call.args[8])?;
+                        let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_control_add_tab_ex",
+                            &[parent, id, text, x, y, w, h, style, exstyle, cb],
+                        )
                     } else {
+                        // legacy 10-arg (no text slot): pass NULL window text
+                        let text = fb.inttoptr(&fb.const_i64(0));
                         let style = self.compile_expr(fb, &call.args[6])?;
                         let exstyle = self.compile_expr(fb, &call.args[7])?;
                         let cb = self.compile_control_callback(fb, &call.args[8])?;
                         fb.call(
                             &IrType::Ptr,
                             "pb_control_add_tab_ex",
-                            &[parent, id, x, y, w, h, style, exstyle, cb],
+                            &[parent, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
                     if let Some(tgt) = target {
