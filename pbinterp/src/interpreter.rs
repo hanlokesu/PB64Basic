@@ -1022,6 +1022,9 @@ impl Interpreter {
                 // BYVAL override at call site — just evaluate the inner expression
                 self.eval_expr(inner)
             }
+            Expr::Omitted => Err(PbError::runtime(
+                "Omitted argument slot is not valid inside an expression",
+            )),
         }
     }
 

@@ -240,14 +240,18 @@ impl Preprocessor {
                 console_off = true;
             }
 
-            // Batch 129: ? at line start -> PRINT (console) or MSGBOX (#CONSOLE OFF)
+            // Batch 129 revisited (batch 250): `?` at line start is the PB
+            // official MSGBOX statement abbreviation (CHW msgbox_s.htm:
+            // `? txt$ [, [style&], title$]`).  PBWin compiles it to a real
+            // message box even without #CONSOLE OFF / #INCLUDE WIN32API
+            // (batch 250 probe p4/p5: PBWin exe stayed running on a message
+            // box).  The old console_off split (PRINT when console) is wrong
+            // for PBWin compatibility, so `?` always lowers to MSGBOX; the
+            // lexer/parser Question token path is a second safety net for
+            // statement positions the preprocessor does not rewrite.
             let replaced: Option<String> = if trimmed_full.starts_with('?') {
                 let rest = trimmed_full.strip_prefix('?').unwrap().trim_start();
-                if console_off {
-                    Some(format!("MSGBOX {}", rest))
-                } else {
-                    Some(format!("PRINT {}", rest))
-                }
+                Some(format!("MSGBOX {}", rest))
             } else {
                 None
             };
@@ -459,19 +463,17 @@ impl Preprocessor {
             // Regular line — emit it (prepend active PREFIX source code, batch 26)
             let expanded = self.expand_macros(trimmed_full, &full_line);
             let mut emitted_text = expanded;
-            // Batch 129: ? at line start -> PRINT (console) or MSGBOX (#CONSOLE OFF)
+            // Second rewrite site (batch 129 legacy): `expand_macros` seeds
+            // from the ORIGINAL line (`full`), so a `?`-leading line can come
+            // back out of it as `? ...` again.  Same rule as the first site:
+            // `?` -> MSGBOX unconditionally (batch 250, PBWin probe-verified).
             {
                 let t = emitted_text.trim_start();
                 if t.starts_with('?') {
                     let indent_len = emitted_text.len() - t.len();
                     let indent = &emitted_text[..indent_len];
                     let rest = t.strip_prefix('?').unwrap().trim_start();
-                    let replacement = if console_off {
-                        format!("MSGBOX {}", rest)
-                    } else {
-                        format!("PRINT {}", rest)
-                    };
-                    emitted_text = format!("{}{}", indent, replacement);
+                    emitted_text = format!("{}{}", indent, format!("MSGBOX {}", rest));
                 }
             }
             if let Some(p) = &prefix {

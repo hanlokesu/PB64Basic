@@ -3406,6 +3406,36 @@ impl Parser {
                 self.advance(); // consume the number
                 Ok(Statement::Label(label))
             }
+            Token::Question => {
+                // PB official: `? txt$ [, [style&], title$]` is the MSGBOX
+                // statement abbreviation (CHW msgbox_s.htm; PBWin compiles it
+                // to a real message box — batch 250 probe p4/p5).  Lower it to
+                // the same CallStmt the MSGBOX keyword produces so codegen's
+                // existing "MSGBOX" arm handles text/style/title.
+                self.advance(); // consume ?
+                let mut args = Vec::new();
+                if !self.at_eol_or_eof() {
+                    args.push(self.parse_expression()?);
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        // PB official optional-arg empty slot: `? "t", , "cap"`
+                        if matches!(
+                            self.peek(),
+                            Token::Comma | Token::Eol | Token::Eof | Token::Colon
+                        ) {
+                            args.push(Expr::Omitted);
+                            continue;
+                        }
+                        args.push(self.parse_expression()?);
+                    }
+                }
+                self.consume_to_eol();
+                Ok(Statement::Call(CallStmt {
+                    name: "MSGBOX".to_string(),
+                    args,
+                    line,
+                }))
+            }
             Token::Identifier(ref name) => {
                 let name_upper = name.to_uppercase();
 
@@ -11897,6 +11927,17 @@ impl Parser {
                     });
                     while self.peek() == &Token::Comma {
                         self.advance();
+                        // PB official optional-arg empty slot: `MSGBOX "t", , "cap"`
+                        // (CHW syntax `[, [style&], title$]`; PBWin accepts —
+                        // batch 250 probe p3). Represented as Expr::Omitted;
+                        // the statement's codegen arm decides the default.
+                        if matches!(
+                            self.peek(),
+                            Token::Comma | Token::Eol | Token::Eof | Token::Colon
+                        ) {
+                            args.push(Expr::Omitted);
+                            continue;
+                        }
                         // Each subsequent arg may also carry BYVAL/BYCOPY
                         let mut hb = matches!(self.peek(), Token::Byval);
                         if hb {

@@ -545,6 +545,10 @@ pub enum Expr {
     Negate(Box<Expr>),
     Varptr(Box<Expr>),        // VARPTR(variable) or VARPTR(array(idx))
     ByvalOverride(Box<Expr>), // BYVAL expr at call site — pass value, not address
+    /// An empty argument slot (PB official optional-arg comma placeholder):
+    /// `MSGBOX "text", , "title"` leaves style as Omitted.  Only ever
+    /// produced in call argument lists; never valid inside an expression.
+    Omitted,
 }
 
 #[derive(Debug, Clone)]

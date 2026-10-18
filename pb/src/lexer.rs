@@ -266,6 +266,19 @@ impl Lexer {
                     self.advance();
                     tokens.push(self.make_located(Token::Semicolon, start_line, start_col));
                 }
+                '?' => {
+                    // PB official: `? txt$ [, style&, title$]` is the MSGBOX
+                    // statement abbreviation (CHW msgbox_s.htm; PBWin compiles
+                    // it to a real message box — batch 250 probe).  A run of
+                    // ?'s is collapsed into one Question token; the old
+                    // "Win32API equates use ??? suffix" comment was dead code
+                    // (no real usage anywhere in the repo).
+                    self.advance();
+                    while self.peek() == Some('?') {
+                        self.advance();
+                    }
+                    tokens.push(self.make_located(Token::Question, start_line, start_col));
+                }
                 '[' => {
                     self.advance();
                     tokens.push(self.make_located(Token::LBracket, start_line, start_col));

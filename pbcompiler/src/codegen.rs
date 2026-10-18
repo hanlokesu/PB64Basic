@@ -1097,6 +1097,10 @@ struct Compiler {
     // Name of the global empty string constant (e.g., "@.str.empty")
     empty_string_name: String,
 
+    // Name of the global "PowerBASIC" constant used as the default MSGBOX
+    // title when title$ is omitted (CHW msgbox.htm / msgbox_s.htm; batch 250).
+    msgbox_title_name: String,
+
     // User-defined TYPE layouts
     type_layouts: HashMap<String, TypeLayout>,
 
@@ -1267,6 +1271,7 @@ impl Compiler {
             threaded_declared: std::collections::HashSet::new(),
             asmdata_blocks: std::collections::HashMap::new(),
             empty_string_name: String::new(),
+            msgbox_title_name: String::new(),
             type_layouts: HashMap::new(),
             gosub_context: None,
             onerror_handler: None,
@@ -5858,6 +5863,13 @@ impl Compiler {
         let (empty_name, _) = self.module.add_string_constant("");
         self.empty_string_name = empty_name;
 
+        // Default MSGBOX title when title$ is omitted — official PB uses
+        // "PowerBASIC" (CHW msgbox.htm / msgbox_s.htm; batch 250).  User
+        // brand decision 2026-10-18: our compiler defaults to "PB64Basic"
+        // instead (deliberate divergence from the CHW default, user-picked).
+        let (title_name, _) = self.module.add_string_constant("PB64Basic");
+        self.msgbox_title_name = title_name;
+
         // First pass: collect TYPE declarations, function/sub signatures, and globals
 
         // Pre-scan: find all names that will be DIMmed as arrays, so we don't
@@ -10404,18 +10416,29 @@ impl Compiler {
             }
             "MSGBOX" => {
                 // MSGBOX text$ [, style& [, title$]] -> MessageBoxA(NULL, text, title, style)
+                // CHW official: omitted style = %MB_OK (0); omitted title =
+                // "PowerBASIC"; empty comma slots (`, ,`) are Expr::Omitted
+                // (batch 250, PBWin-accepted).
                 if !call.args.is_empty() {
                     let text = self.compile_expr(fb, &call.args[0])?;
                     let style = if call.args.len() > 1 {
-                        let sv = self.compile_expr(fb, &call.args[1])?;
-                        self.to_i32(fb, &sv)
+                        match &call.args[1] {
+                            Expr::Omitted => fb.const_i32(0),
+                            _ => {
+                                let sv = self.compile_expr(fb, &call.args[1])?;
+                                self.to_i32(fb, &sv)
+                            }
+                        }
                     } else {
                         fb.const_i32(0)
                     };
                     let title = if call.args.len() > 2 {
-                        self.compile_expr(fb, &call.args[2])?
+                        match &call.args[2] {
+                            Expr::Omitted => Val::new(self.msgbox_title_name.clone(), IrType::Ptr),
+                            _ => self.compile_expr(fb, &call.args[2])?,
+                        }
                     } else {
-                        Val::new(self.empty_string_name.clone(), IrType::Ptr)
+                        Val::new(self.msgbox_title_name.clone(), IrType::Ptr)
                     };
                     if self.module.is_32bit() {
                         fb.call_stdcall(
@@ -19963,6 +19986,9 @@ impl Compiler {
                 // BYVAL override outside of call args context → just compile inner expr
                 self.compile_expr(fb, inner)
             }
+            Expr::Omitted => Err(PbError::runtime(
+                "Omitted argument slot is not valid inside an expression",
+            )),
             Expr::BinaryOp(op, left, right) => {
                 let lhs = self.compile_expr(fb, left)?;
                 let rhs = self.compile_expr(fb, right)?;
@@ -21846,15 +21872,23 @@ impl Compiler {
         }
         let text = self.compile_expr(fb, &args[0])?;
         let style = if args.len() > 1 {
-            let sv = self.compile_expr(fb, &args[1])?;
-            self.to_i32(fb, &sv)
+            match &args[1] {
+                Expr::Omitted => fb.const_i32(0),
+                _ => {
+                    let sv = self.compile_expr(fb, &args[1])?;
+                    self.to_i32(fb, &sv)
+                }
+            }
         } else {
             fb.const_i32(0)
         };
         let title = if args.len() > 2 {
-            self.compile_expr(fb, &args[2])?
+            match &args[2] {
+                Expr::Omitted => Val::new(self.msgbox_title_name.clone(), IrType::Ptr),
+                _ => self.compile_expr(fb, &args[2])?,
+            }
         } else {
-            Val::new(self.empty_string_name.clone(), IrType::Ptr)
+            Val::new(self.msgbox_title_name.clone(), IrType::Ptr)
         };
         if self.module.is_32bit() {
             Ok(fb.call_stdcall(

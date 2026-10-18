@@ -119,6 +119,7 @@ pub enum Token {
     DotDot,   // .. (range in SELECT CASE)
     LBracket, // [ (inline-ASM indirect addressing)
     RBracket, // ]
+    Question, // ? — MSGBOX statement abbreviation (PB official, CHW msgbox_s.htm)
 
     // Raw text of an inline-ASM line captured by the lexer (! prefix)
     AsmText(String),
