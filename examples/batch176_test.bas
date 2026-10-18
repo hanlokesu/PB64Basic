@@ -389,11 +389,14 @@ FUNCTION PBMAIN () AS LONG
     prev = -1
     CONTROL SHOW STATE hDlg, 101, 5 TO prev
 #IF %MY_PBVER = 0
-    IF prev <> 0 THEN
-        fail = fail + 1
-        ConPrint "FAIL SHOW STATE SW_SHOW reported previous =" & STR$(prev) & " (it was hidden)"
-    ELSE
+    ' batch 255 user decision: fork TO = -3 (PBWin-aligned; PBWin measured -3 in
+    ' 6/6 cases even though the CHW doc says 0 = previously hidden). Same ok-text
+    ' as the PBWin branch so the dual-run comparison stays byte-identical.
+    IF prev = -3 THEN
         ConPrint "ok   SHOW STATE SW_SHOW -> previous state was hidden"
+    ELSE
+        fail = fail + 1
+        ConPrint "FAIL SHOW STATE SW_SHOW TO =" & STR$(prev) & " (expected -3)"
     END IF
 #ELSE
         ConPrint "ok   SHOW STATE SW_SHOW -> previous state was hidden"

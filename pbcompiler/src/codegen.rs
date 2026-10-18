@@ -16314,7 +16314,14 @@ impl Compiler {
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
                     let st = self.compile_expr(fb, &call.args[2])?;
                     let st64 = self.convert_value(fb, &st, &IrType::I64, &PbType::Quad);
-                    let res = fb.call(&IrType::I64, "pb_control_show_state", &[hdlg64, id64, st64]);
+                    // Change the visible state, then hand the TO clause a constant.
+                    // User decision 2026-10-18 (batch 255 probe): PBWin's CONTROL SHOW
+                    // STATE TO result is ALWAYS -3 (measured 6/6 cases; batch 176 also
+                    // skips the assert on the PBWin side for this reason) even though
+                    // the CHW doc says 0 = previously hidden / nonzero = visible. To
+                    // stay 100% dual-run compatible, the fork mirrors the PBWin behavior.
+                    fb.call_void("pb_control_show_state", &[hdlg64, id64, st64]);
+                    let res = fb.const_i64(-3);
                     if let Some(tgt) = call.args.get(3) {
                         if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, tgt) {
                             let cv = self.convert_value(fb, &res, &ty, &pty);
