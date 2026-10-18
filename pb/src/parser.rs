@@ -14438,6 +14438,34 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Ok(Expr::Varptr(Box::new(inner)))
             }
+            Token::Identifier(name)
+                if (name.eq_ignore_ascii_case("TAB") || name.eq_ignore_ascii_case("TAB$"))
+                    && matches!(self.peek_at(1), Some(Token::LParen))
+                    && (matches!(
+                        self.peek_at(2),
+                        Some(Token::Identifier(ref w))
+                            if matches!(w.to_uppercase().as_str(),
+                                        "COUNT" | "DIALOG" | "IMAGE" | "PAGE" | "TEXT")
+                    ) || matches!(self.peek_at(2), Some(Token::Select))) =>
+            {
+                // Official TAB Function Form (CHW TAB_statement.htm):
+                //   TAB(COUNT|DIALOG|IMAGE|PAGE|SELECT, ...) / TAB$(TEXT, ...).
+                // Director word is the first arg; COUNT/DIALOG/IMAGE/PAGE/TEXT
+                // are Identifier tokens, SELECT is a reserved token.  Non-director
+                // TAB(x) (a user function/array) falls through to the general
+                // Identifier arm below.
+                self.advance(); // TAB
+                self.advance(); // (
+                let mut args = Vec::new();
+                args.push(Expr::StringLit(self.peek_word_upper()));
+                self.advance(); // director word
+                while self.peek() == &Token::Comma {
+                    self.advance();
+                    args.push(self.parse_expression()?);
+                }
+                self.expect(&Token::RParen)?;
+                Ok(Expr::FunctionCall("TAB".to_string(), args))
+            }
             Token::Identifier(name) => {
                 // DEF fn inline expansion: name(params) -> subst body
                 let def_key = name.to_uppercase();

@@ -10454,6 +10454,22 @@ long long pb_tab_get_text(void* hDlg, long id, int page, char* out, int outlen) 
     return 1;
 }
 
+/* ---- TAB$(TEXT, hDlg, ID&, PageNum&) — official function form ---------- */
+void* pb_tab_get_text_str(void* hDlg, long id, int page) {
+    void* h = pb_tab_hwnd(hDlg, id);
+    char buf[512];
+    pb_tcitema_t it;
+    if (!h || page < 1) return pb_bstr_alloc("", 0);
+    memset(&it, 0, sizeof(it));
+    it.mask = PB_TCIF_TEXT;
+    it.pszText = buf;
+    it.cchTextMax = 512;
+    buf[0] = 0;
+    SendMessageA(h, PB_TCM_GETITEMA, (unsigned int)(page - 1),
+                 (pb_lparam_t)(size_t)&it);
+    return pb_bstr_alloc(buf, (unsigned int)strlen(buf));
+}
+
 /* ---------------- TAB INSERT PAGE hDlg, ID&, PageNum&, Image&, Text$
                     [CALL cb] TO PageDlgVar& --------------------------- */
 long long pb_tab_insert_page(void* hDlg, long id, int page, int image,

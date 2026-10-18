@@ -3144,6 +3144,13 @@ impl Compiler {
         );
 
         self.module.declare_function(
+            "pb_tab_get_text_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32],
+            false,
+        );
+
+        self.module.declare_function(
             "pb_tab_insert_page",
             &IrType::I64,
             &[
@@ -20812,6 +20819,7 @@ impl Compiler {
             "JOIN$" => Some(self.builtin_join(fb, args)),
             "INPUTBOX$" => Some(self.builtin_inputbox(fb, args)),
             "MSGBOX" => Some(self.builtin_msgbox(fb, args)),
+            "TAB" => Some(self.builtin_tab(fb, args)),
             "RND" => Some(self.builtin_rnd(fb, args)),
             "ROUND" => Some(self.builtin_round(fb, args)),
             // String builtins
@@ -22591,6 +22599,71 @@ impl Compiler {
         let offset = fb.sub(&len, &n_i32);
         let src = fb.gep_byte(&s, &offset);
         Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[src, n_i32]))
+    }
+
+    /// TAB(COUNT|DIALOG|IMAGE|PAGE|SELECT, ...) / TAB$(TEXT, ...) — the
+    /// official Function Form of the TAB statement (CHW TAB_statement.htm).
+    /// The parser stores the director word as a StringLit in args[0].
+    fn builtin_tab(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() < 2 {
+            return Err(PbError::runtime(
+                "TAB: function form requires at least 2 arguments",
+            ));
+        }
+        let noun = match &args[0] {
+            Expr::StringLit(s) => s.to_uppercase(),
+            _ => {
+                return Err(PbError::runtime(
+                    "TAB: expected a director word as the first argument",
+                ))
+            }
+        };
+        let hd_val = self.compile_expr(fb, &args[1])?;
+        let mut hd = hd_val;
+        if hd.ty != IrType::Ptr {
+            hd = fb.inttoptr(&hd);
+        }
+        match noun.as_str() {
+            "COUNT" | "SELECT" => {
+                if args.len() < 3 {
+                    return Err(PbError::runtime(format!(
+                        "TAB: {} requires hDlg, ID&",
+                        noun
+                    )));
+                }
+                let id = self.compile_expr(fb, &args[2])?;
+                let rt = if noun == "COUNT" {
+                    "pb_tab_get_count"
+                } else {
+                    "pb_tab_get_select"
+                };
+                Ok(fb.call(&IrType::I64, rt, &[hd, id]))
+            }
+            "PAGE" => {
+                // TAB(PAGE, PageDlg&)
+                Ok(fb.call(&IrType::I64, "pb_tab_get_page", &[hd]))
+            }
+            "DIALOG" | "IMAGE" | "TEXT" => {
+                if args.len() < 4 {
+                    return Err(PbError::runtime(format!(
+                        "TAB: {} requires hDlg, ID&, PageNum&",
+                        noun
+                    )));
+                }
+                let id = self.compile_expr(fb, &args[2])?;
+                let page = self.compile_expr(fb, &args[3])?;
+                let p32 = self.to_i32(fb, &page);
+                match noun.as_str() {
+                    "DIALOG" => Ok(fb.call(&IrType::I64, "pb_tab_get_dialog", &[hd, id, p32])),
+                    "IMAGE" => Ok(fb.call(&IrType::I64, "pb_tab_get_image", &[hd, id, p32])),
+                    _ => Ok(fb.call(&IrType::Ptr, "pb_tab_get_text_str", &[hd, id, p32])),
+                }
+            }
+            _ => Err(PbError::runtime(format!(
+                "TAB: unsupported director `{}`",
+                noun
+            ))),
+        }
     }
 
     /// UCODE$ / ACODE$ - the legacy ANSI <-> UNICODE byte-string pair.
