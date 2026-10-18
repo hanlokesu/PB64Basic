@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 249 (v0.2.078). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 254 (v0.2.079). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 254 (v0.2.079) - MSGBOX 官方全语法（语句/函数/? 缩写，省略 title 默认 "PB64Basic"）；CONTROL 动词族 CHW 官方 by-id 全语法；CONTROL ADD SCROLLBAR/TAB txt$ 槽透传；TAB()/TAB$() 官方函数形式；batch174 MENU 后 DIALOG GET CLIENT 高度修复；batch205 TCP OPEN SERVER ADDR 绑定 + 源文件 CRLF 行尾修复。双跑基线 MATCH 115 / DIFF 7（环境/资源类）/ EMPTY 1 / ONLY-FORK 1（batch029 Inline ASM 扩展）。
 > batch 249 (v0.2.078) - all 12 CONTROL ADD controls aligned to the CHW official 11-argument syntax (style&/exstyle&/CALL callback passthrough; CONTROL ADD has no TO clause - CONTROL HANDLE fetches the handle; CALLBACK FUNCTION ... AS LONG with FUNCTION=0 bodies); TEXTBOX default style missing WS_BORDER + DLU height -1 fixed (batch177 DIFF->MATCH); LABEL 11-arg layout clippy fix; dual-run baseline MATCH 115 / DIFF 2 (batch174 env, batch205 tcp) / EMPTY 0 / ONLY-FORK 1.
 > batch 238 (v0.2.077) - DIALOG SHOW MODAL hDlg TO Result official syntax (HelloDDT x64); DIALOG END optional result; 421/519 error-code alignment with PBWin10 (#DIM ALL/OPTION EXPLICIT); numeric IP network-order unified &H0100007F (UDP SEND/TCP OPEN raw, UDP RECV network order); repository detached+renamed hanlokesu/PB64Basic, compiler binary PB64Basic.exe, full rebrand of examples/docs/demo/IDE; Apache-2.0 4(b) notices; dual-run baseline MATCH 116 / DIFF 1 / EMPTY 0 / ONLY-FORK 1.
 > batch 237 (v0.2.076) - 27 dual-run DIFFs closed to MATCH (XPRINT env 7 / handle-value 10 / GUI controls 7 / misc 4; only batch205 stays a documented environment DIFF); XPRINT GET->STRING 0xC0000005 crash fixed in pb_runtime.c (char** BSTR write); batch190/191 CONTROL ADD / LISTVIEW-TREEVIEW-SCROLLBAR MATCH; batch236 TCP ACCEPT fix included; full baseline MATCH 114 / DIFF 1 / EMPTY 1 / ONLY-FORK 2.
@@ -729,6 +730,17 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.079 (2026-10-18) - batch 250-254 + 174/205: MSGBOX 全语法 + CONTROL 动词族 by-id + TAB() 函数 + DIALOG/TCP 修复
+
+- **MSGBOX** 官方全语法（语句 / 函数 / `?` 缩写；省略 title 默认显示 "PB64Basic"）
+- **CONTROL 动词族** CHW 官方 by-id 全语法（SHOW STATE/ENABLE/DISABLE/FOCUS/SET TEXT/GET CHECK/SET CHECK/KILL 等；注意 CHW 无 CONTROL SHOW）
+- **CONTROL ADD SCROLLBAR/TAB** `txt$` 槽透传（官方 11 参语法）
+- **TAB()/TAB$()** 官方函数形式（COUNT/DIALOG/IMAGE/PAGE/SELECT/TEXT）
+- **batch174 修复**：MENU ATTACH 后 DIALOG GET CLIENT 高度收缩（GetSystemMetrics(SM_CYMENU)=15 + SWP_FRAMECHANGED）
+- **batch205 修复**：TCP OPEN SERVER ADDR 绑定（network-order 数字 IP）+ 源文件 CRLF 行尾（PBWin Error 407）
+- 双跑基线：**MATCH 115 / DIFF 7（环境/资源类）/ EMPTY 1 / ONLY-FORK 1（batch029 Inline ASM 扩展）**
+- 测试文件：examples/batch254_test.bas（headless，双侧 "batch254 test ok"）
+
 ### v0.2.078 (2026-10-18) - batch 249: all CONTROL ADD controls on official CHW syntax
 
 - **All 12 CONTROL ADD control types** (BUTTON, CHECKBOX, CHECK3STATE, OPTION, FRAME, LABEL, LINE, TEXTBOX, EDITBOX, SCROLLBAR, LISTBOX, COMBOBOX, TAB) now accept the full CHW official signature: `CONTROL ADD <CTL>, hDlg&, id&, txt$|items$(), x, y, xx, yy [, [style&] [, [exstyle&]]] [[,] CALL callback]`.
