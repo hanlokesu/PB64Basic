@@ -14743,6 +14743,11 @@ impl Parser {
             });
             if self.peek() == &Token::Comma {
                 self.advance();
+            } else if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("USING"))
+            {
+                // CSET$(s$, len& USING pad$) / LSET$/RSET$ — USING acts as a
+                // parameter separator (CHW syntax), producing the next argument.
+                self.advance();
             } else {
                 break;
             }

@@ -33,6 +33,7 @@ __declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const voi
 /* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
 __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, unsigned int len);
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
+__declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
 __declspec(dllimport) int __stdcall CharToOemA(const char* lpszSrc, char* lpszDst);
 __declspec(dllimport) int __stdcall OemToCharA(const char* lpszSrc, char* lpszDst);
@@ -705,6 +706,32 @@ char* pb_dec(long long v) {
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 
+/* STR$(double) — PBWin10 measured formatting:
+   - leading space for positive values, '-' (no space) for negative
+   - no leading zero for |v| < 1: " .5", "-.125"
+   - full double precision (15 significant digits) with trailing zeros removed.
+   Implemented as %.15g, then: trailing-zero strip, "-0.x" -> "-.x", " 0.x" -> " .x". */
+char* pb_str_dbl(double v) {
+    char buf[64];
+    int n = snprintf(buf, sizeof(buf), "% .15g", v);
+    /* strip trailing zeros in the fraction (never strip the final zero of "0") */
+    char* dot = strchr(buf, '.');
+    if (dot != NULL) {
+        char* p = buf + n - 1;
+        while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
+        if (p == dot) { *p = '\0'; n--; }   /* "12." -> "12" */
+    }
+    /* PBWin: no leading zero on the fraction: "-0.5" -> "-.5", " 0.5" -> " .5" */
+    if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
+        memmove(buf + 1, buf + 2, (size_t)(n - 1));
+        n--;
+    } else if (buf[0] == ' ' && buf[1] == '0' && buf[2] == '.') {
+        memmove(buf + 1, buf + 2, (size_t)(n - 1));
+        n--;
+    }
+    return pb_bstr_alloc(buf, (unsigned int)n);
+}
+
 /* BIN$/OCT$/DEC$(IntVal[, Digits, LeadSpaces, TrailSpaces]) (CHW, batch 256B).
    base 2/8/10; Digits > 0 = leading zeros to that width, < 0 = leading spaces
    to |Digits|, 0 or absent = none; LeadSpaces/TrailSpaces add extra spaces.
@@ -874,6 +901,8 @@ long long pb_cv_int(char* s, long long off, long long n, long long mode) {
     if (off < 1) off = 1;
     for (i = 0; i < n; i++) v |= ((unsigned long long)p[off - 1 + i]) << (8 * i);
     if (mode == 1) {
+        if (n == 1) return (long long)(signed char)v;
+        if (n == 2) return (long long)(short)v;   /* CVI: sign-extend 16-bit */
         if (n == 4) return (long long)(long)(int)v;
         return (long long)v;
     }
@@ -1825,14 +1854,21 @@ char* pb_exe_name(void) {
 
 /* ===== Null-safe string concatenation ===== */
 
-/* pb_str_concat � concatenates two strings, treating null as empty */
+/* pb_str_concat � concatenates two strings, treating null as empty.
+   Strings are real BSTRs (SysAllocStringByteLen) on Windows, so strlen would
+   truncate embedded NULs (CHR$(0)): use SysStringByteLen for the true length. */
 char* pb_str_concat(const char* a, const char* b) {
     static const char empty[] = "";
     if (!a) a = empty;
     if (!b) b = empty;
-    int len_a = (int)strlen(a);
-    int len_b = (int)strlen(b);
-    int total = len_a + len_b;
+#ifdef _WIN32
+    unsigned int len_a = (unsigned int)SysStringByteLen(a);
+    unsigned int len_b = (unsigned int)SysStringByteLen(b);
+#else
+    unsigned int len_a = (unsigned int)strlen(a);
+    unsigned int len_b = (unsigned int)strlen(b);
+#endif
+    int total = (int)(len_a + len_b);
     char* tmp = (char*)malloc(total + 1);
     memcpy(tmp, a, len_a);
     memcpy(tmp + len_a, b, len_b);
@@ -2966,6 +3002,27 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
 /* CLIPBOARD SET TEXT / GET TEXT / RESET (Win32) */
 #define CF_TEXT 1
 #define GMEM_MOVEABLE 0x0042
+
+/* CCUR / CCUX — round to fixed decimals (currency semantics, PBWin10). */
+double pb_ccur(double x) { return round(x * 10000.0) / 10000.0; }
+double pb_ccux(double x) { return round(x * 100.0) / 100.0; }
+
+/* CSET$(s$, len& [, pad]) — center s$ into len bytes, pad with first char
+   of pad or space.  Left padding = (len - slen)/2 (PBWin behavior). */
+char* pb_cset_str(const char* s, long long len, const char* pad) {
+    unsigned long slen = (unsigned long)strlen(s);
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    if (len < 0) len = 0;
+    unsigned long n = (unsigned long)len;
+    char* r = pb_bstr_alloc(NULL, n);
+    if (n == 0) return r;
+    unsigned long left = (slen >= n) ? 0 : (unsigned long)((n - slen) / 2);
+    unsigned long take = (slen < n) ? slen : n;
+    for (unsigned long i = 0; i < n; i++) r[i] = padc;
+    memcpy(r + left, s, take);
+    return r;
+}
+
 int pb_clipboard_set_text(const char* text) {
     if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
