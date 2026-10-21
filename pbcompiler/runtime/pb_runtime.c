@@ -2620,12 +2620,21 @@ int pb_mat_inv(char* dst, const char* src, int es, int is_float, int n) {
 
 /* x$ = expr for FIELD dyn$-bound strings � copy into a fresh mutable buffer
    (string constants live in read-only memory and must never be written through) */
+/* Copy a string into a FRESH buffer and rebind slot.  The buffer carries the
+   runtime's BSTR layout (4-byte little-endian byte length immediately before
+   the data pointer), so the result is a valid BSTR: SysStringByteLen-style
+   readers (-4 header) and strlen/NUL consumers both work, and STRPTR is the
+   data pointer.  Allocating without the header broke downstream BSTR readers
+   (batch 259: MID$ statement crashed 0xC0000005 in the very next string
+   concatenation after pb_mid_assign replaced the slot). */
 void pb_str_assign_copy(char** slot, const char* src, unsigned len) {
     if (!slot) return;
-    char* buf = (char*)malloc(len + 1);
-    if (src && len) memcpy(buf, src, len);
-    buf[len] = 0;
-    *slot = buf;
+    char* buf = (char*)malloc(len + 5);   /* 4-byte length header + data + NUL */
+    *(unsigned*)buf = len;
+    char* data = buf + 4;
+    if (src && len) memcpy(data, src, len);
+    data[len] = 0;
+    *slot = data;
 }
 
 /* ASC(s$, pos&) = code&  (CHW ASC_statement.htm, batch 256A)
@@ -2654,6 +2663,37 @@ void pb_asc_stmt_fixed(char* buf, long long buflen, long long pos, long long cod
     if (idx < 0 || idx >= buflen) return;
     if (code < 0 || code > 255) return;
     buf[idx] = (char)code;
+}
+
+/* MID$(svar$, start& [, length&]) = repl$  (CHW MID$ statement, batch 259)
+   Overwrite characters of svar$ in place, starting at 1-based start&.
+   Replaces min(length(repl$), length& (if given)) characters; svar$ never
+   grows or shrinks.  start&==0, negative start, or out-of-range: ignored. */
+/* BSTR byte length: 4-byte little-endian length prefix immediately before the
+   data pointer (same layout SysStringByteLen reads).  Read it directly instead
+   of calling the oleaut32 dllimport: that import crashed (0xC0000005) on the
+   compiler's static string constants under -O2, and the layout is fixed here. */
+static __inline long long pb_bstr_byte_len(const char* p) {
+    if (!p) return 0;
+    const unsigned char* h = (const unsigned char*)p - 4;
+    unsigned l = (unsigned)h[0] | ((unsigned)h[1] << 8) |
+                 ((unsigned)h[2] << 16) | ((unsigned)h[3] << 24);
+    return (long long)l;
+}
+void pb_mid_assign(char** slot, long long start, long long length, char* repl) {
+    if (!slot) return;
+    char* s = *slot;
+    if (!s || !repl) return;
+    long long slen = pb_bstr_byte_len(s);
+    long long rlen = pb_bstr_byte_len(repl);
+    if (start <= 0 || start > slen) return;          /* 0 / negative / past end: ignored */
+    long long idx = start - 1;
+    long long n = rlen;
+    if (length > 0 && length < n) n = length;       /* explicit length cap */
+    if (n > slen - idx) n = slen - idx;             /* never write past the end */
+    if (n <= 0) return;
+    pb_str_assign_copy(slot, s, (unsigned)slen);    /* buffer may be read-only: copy first */
+    memcpy((*slot) + idx, repl, (size_t)n);
 }
 
 /* FIELD RESET var � unbind, becomes empty */
@@ -3451,6 +3491,40 @@ static int arr_cmp_e(const void* a, const void* b, int type) {
     }
 }
 
+/* CHW collate weight table: position i (ASCII code i) holds the sort weight.
+   UCASE == weight table with a-z mapped onto A-Z (CHW statement).  A custom
+   COLLATE string is a 256-byte table built by the program.  NULL = ASCII. */
+static unsigned char ucase_w[256];
+static int ucase_w_init = 0;
+static void ucase_w_build(void) {
+    int i;
+    for (i = 0; i < 256; i++) ucase_w[i] = (unsigned char)i;
+    for (i = 97; i <= 122; i++) ucase_w[i] = (unsigned char)(i - 32);
+    ucase_w_init = 1;
+}
+
+/* String compare for ARRAY SORT: both elements use the same 1-based char
+   window [from..to] (0/absent = whole string, out-of-range = CHR$(0)).
+   Optional 256-byte collate weight table.  Returns -1/0/1. */
+static int str_cmp_sort(const char* x, const char* y, long long from, long long to,
+                        const unsigned char* tbl) {
+    if (!x) x = "";
+    if (!y) y = "";
+    long long xl = (long long)SysStringByteLen(x);
+    long long yl = (long long)SysStringByteLen(y);
+    long long lo = (from > 0) ? from : 1;
+    long long hi = (to > 0) ? to : (xl > yl ? xl : yl);
+    long long n = (hi >= lo) ? (hi - lo + 1) : 0;
+    long long k;
+    for (k = 0; k < n; k++) {
+        unsigned char a = (lo - 1 + k < xl) ? (unsigned char)x[lo - 1 + k] : 0;
+        unsigned char b = (lo - 1 + k < yl) ? (unsigned char)y[lo - 1 + k] : 0;
+        if (tbl) { a = tbl[a]; b = tbl[b]; }
+        if (a != b) return (a > b) ? 1 : -1;
+    }
+    return 0;
+}
+
 static void swap_elem(char* a, char* b, int es) {
     char tmp[16];
     memcpy(tmp, a, (size_t)es);
@@ -3463,7 +3537,8 @@ static void swap_elem(char* a, char* b, int es) {
    = index .. end.  Tag array swaps in lockstep with the data array. */
 void pb_array_sort2(char* base, int elem_size, long long total, long long index,
                     long long count, int type, int descend,
-                    char* tag_base, int tag_elem_size) {
+                    char* tag_base, int tag_elem_size,
+                    long long from, long long to, int collate_mode, char* collate) {
     if (!base || total <= 1) return;
     if (index < 1) index = 1;
     if (count <= 0) count = total - index + 1;
@@ -3471,12 +3546,26 @@ void pb_array_sort2(char* base, int elem_size, long long total, long long index,
     if (end > total) end = total;
     long long n = end - index + 1;
     if (n <= 1) return;
+    const unsigned char* tbl = NULL;
+    if (collate_mode == 1) {
+        if (!ucase_w_init) ucase_w_build();
+        tbl = ucase_w;
+    } else if (collate_mode == 2 && collate) {
+        tbl = (const unsigned char*)collate;
+    }
     long long i, j;
     for (i = 0; i < n - 1; i++) {
         long long best = i;
         for (j = i + 1; j < n; j++) {
-            int c = arr_cmp_e(base + (index - 1 + best) * elem_size,
+            int c;
+            if (type == 3) {
+                const char* x = *(char* const*)(base + (index - 1 + best) * elem_size);
+                const char* y = *(char* const*)(base + (index - 1 + j) * elem_size);
+                c = str_cmp_sort(x, y, from, to, tbl);
+            } else {
+                c = arr_cmp_e(base + (index - 1 + best) * elem_size,
                               base + (index - 1 + j) * elem_size, type);
+            }
             if (descend) c = -c;
             if (c > 0) best = j;
         }
@@ -3510,18 +3599,24 @@ static int apply_op(int c, int op) {
    scan.  Returns 1..count for the first matching element (relative to the
    scan start), 0 = no match.  Numeric arrays compare i64-widened values;
    string arrays compare BSTR contents with optional 1-based FROM..TO window
-   (0 = whole string) and COLLATE UCASE (case-insensitive).  A custom
-   COLLATE string is not yet supported (collate ignored; UCASE only). */
+   (0 = whole string), COLLATE UCASE (case-insensitive) and a custom 256-byte
+   COLLATE weight string. */
 long long pb_array_scan(char* base, int elem_size, long long total, long long index,
                         long long count, int op, long long val, int is_string,
                         long long from, long long to, int collate_ucase,
                         char* collate) {
-    (void)collate;
     if (!base || total <= 0) return 0;
     if (index < 1) index = 1;
     if (count <= 0) count = total - index + 1;
     long long end = index + count - 1;
     if (end > total) end = total;
+    const unsigned char* tbl = NULL;
+    if (collate) {
+        tbl = (const unsigned char*)collate;
+    } else if (collate_ucase) {
+        if (!ucase_w_init) ucase_w_build();
+        tbl = ucase_w;
+    }
     long long i;
     for (i = index; i <= end; i++) {
         char* p = base + (i - 1) * elem_size;
@@ -3531,8 +3626,8 @@ long long pb_array_scan(char* base, int elem_size, long long total, long long in
             if (!s) s = "";
             const char* t = (const char*)val;
             if (!t) t = "";
-            long long sl = (long long)strlen(s);
-            long long tl = (long long)strlen(t);
+            long long sl = (long long)SysStringByteLen(s);
+            long long tl = (long long)SysStringByteLen(t);
             long long lo = (from > 0) ? from : 1;
             long long hi = (to > 0) ? to : sl;
             if (lo < 1) lo = 1;
@@ -3542,12 +3637,9 @@ long long pb_array_scan(char* base, int elem_size, long long total, long long in
             long long n = (wl < tl) ? wl : tl;
             long long k;
             for (k = 0; k < n; k++) {
-                char a = s[lo - 1 + k];
-                char b = t[k];
-                if (collate_ucase) {
-                    if (a >= 'a' && a <= 'z') a -= 32;
-                    if (b >= 'a' && b <= 'z') b -= 32;
-                }
+                unsigned char a = (unsigned char)s[lo - 1 + k];
+                unsigned char b = (unsigned char)t[k];
+                if (tbl) { a = tbl[a]; b = tbl[b]; }
                 if (a != b) { c = (a > b) ? 1 : -1; break; }
             }
             if (c == 0) {

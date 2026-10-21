@@ -11136,8 +11136,11 @@ impl Parser {
                         line,
                     }));
                 }
-                // ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()]
-                //   [,ASCEND|DESCEND]  (CHW; custom CALL sorts not yet)
+                // ARRAY SORT arr([index]) [FOR count]
+                //   [,TAGARRAY t()] [,{ASCEND|DESCEND}] [,FROM s TO e]
+                //   [,COLLATE {UCASE|cstr}] [,CALL custfunc() | USING custfunc()]
+                // Args: [arr, count, tag, descend, from, to, collate_mode,
+                //        collate_expr, call_expr]
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "SORT")
                 {
@@ -11151,6 +11154,11 @@ impl Parser {
                     }
                     let mut tag = Expr::IntegerLit(0);
                     let mut descend = 0i64;
+                    let mut from = Expr::IntegerLit(0);
+                    let mut to = Expr::IntegerLit(0);
+                    let mut collate_mode = 0i64;
+                    let mut collate_expr = Expr::IntegerLit(0);
+                    let mut call_expr = Expr::IntegerLit(0);
                     loop {
                         if self.peek() == &Token::Comma {
                             self.advance();
@@ -11165,6 +11173,37 @@ impl Parser {
                                 descend = if wu == "DESCEND" { 1 } else { 0 };
                                 self.advance();
                                 continue;
+                            } else if wu == "FROM" {
+                                self.advance();
+                                from = self.parse_expression()?;
+                                if self.peek() == &Token::To {
+                                    self.advance();
+                                    to = self.parse_expression()?;
+                                }
+                                continue;
+                            } else if wu == "COLLATE" {
+                                self.advance();
+                                if let Token::Identifier(w2) = self.peek() {
+                                    if w2.to_uppercase() == "UCASE" {
+                                        self.advance();
+                                        collate_mode = 1;
+                                    } else {
+                                        collate_mode = 2;
+                                        collate_expr = self.parse_expression()?;
+                                    }
+                                } else {
+                                    collate_mode = 2;
+                                    collate_expr = self.parse_expression()?;
+                                }
+                                continue;
+                            } else if wu == "CALL" {
+                                self.advance();
+                                call_expr = self.parse_expression()?;
+                                continue;
+                            } else if wu == "USING" {
+                                self.advance();
+                                call_expr = self.parse_expression()?;
+                                continue;
                             }
                         }
                         break;
@@ -11172,7 +11211,17 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "ARRAY SORT".to_string(),
-                        args: vec![arr_expr, count, tag, Expr::IntegerLit(descend)],
+                        args: vec![
+                            arr_expr,
+                            count,
+                            tag,
+                            Expr::IntegerLit(descend),
+                            from,
+                            to,
+                            Expr::IntegerLit(collate_mode),
+                            collate_expr,
+                            call_expr,
+                        ],
                         line,
                     }));
                 }

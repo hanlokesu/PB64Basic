@@ -1430,6 +1430,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_mid_assign",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I64, IrType::I64, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_mat_fill",
             &IrType::Void,
             &[
@@ -5400,6 +5406,10 @@ impl Compiler {
                 IrType::I32,
                 IrType::Ptr,
                 IrType::I32,
+                IrType::I64, // from
+                IrType::I64, // to
+                IrType::I32, // collate_mode 0=none 1=UCASE 2=custom
+                IrType::Ptr, // collate string
             ],
             false,
         );
@@ -7468,6 +7478,48 @@ impl Compiler {
             }
             Expr::ArrayAccess(arr_name, indices) | Expr::FunctionCall(arr_name, indices) => {
                 let name = normalize_name(arr_name);
+                // MID$(svar$, start& [, length&]) = repl$  (CHW MID$ statement,
+                // batch 259): overwrite chars in place, never grow/shrink.
+                // NOTE: this must live inside the ArrayAccess|FunctionCall arm —
+                // a bare FunctionCall target arm after this arm is unreachable.
+                if name == "MID" && !indices.is_empty() {
+                    let s_expr = &indices[0];
+                    if let Ok((sptr, spb)) = self.compile_lvalue_ptr(fb, s_expr) {
+                        if matches!(spb, PbType::String | PbType::FixedString(_)) {
+                            let start = if indices.len() > 1 {
+                                let sv = self.compile_expr(fb, &indices[1])?;
+                                self.to_i64(fb, &sv)
+                            } else {
+                                fb.const_i64(1)
+                            };
+                            let length = if indices.len() > 2 {
+                                let lv = self.compile_expr(fb, &indices[2])?;
+                                self.to_i64(fb, &lv)
+                            } else {
+                                fb.const_i64(0)
+                            };
+                            let repl = self.compile_expr(fb, &assign.value)?;
+                            let replp = if repl.ty == IrType::Ptr {
+                                repl
+                            } else {
+                                fb.const_null_ptr()
+                            };
+                            if matches!(spb, PbType::String) {
+                                fb.call_void(
+                                    "pb_mid_assign",
+                                    &[sptr.clone(), start, length, replp],
+                                );
+                            } else {
+                                // FixedString: inline [N x i8] buffer; not bridged
+                                // yet — fail loudly, never silently no-op.
+                                return Err(PbError::runtime(
+                                    "MID$ statement on fixed-length strings not implemented yet",
+                                ));
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
                 // ASC statement: ASC(stringvar, position&) = CharCode&  (CHW
                 // ASC_statement.htm).  Replaces one character in a string
                 // variable; position 1-based, negative counts from the end,
@@ -7519,9 +7571,8 @@ impl Compiler {
                 }
             }
             Expr::TypeMember(_, _) => {
-                let (field_ptr, field_pb) = self.compile_lvalue_ptr(fb, &assign.target)?;
-                // FixedString TYPE fields: buffer is inline [N x i8] 鈫?use strncpy,
-                // never store a pointer into the buffer.
+                let (field_ptr, field_pb) = self.compile_lvalue_ptr(fb, &assign.target)?; // FixedString TYPE fields: buffer is inline [N x i8] 鈫?use strncpy,
+                                                                                          // never store a pointer into the buffer.
                 if let PbType::FixedString(n) = &field_pb {
                     let src = self.compile_expr(fb, &assign.value)?;
                     let size = fb.const_i32((*n as i32) - 1);
@@ -17065,7 +17116,11 @@ impl Compiler {
             }
             "ARRAY SORT" => {
                 // ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()]
-                //   [,ASCEND|DESCEND] — pb_array_sort2 (CHW range + tag sort)
+                //   [,{ASCEND|DESCEND}] [,FROM s TO e] [,COLLATE {UCASE|cstr}]
+                //   — pb_array_sort2.  PBWin-measured: FROM..TO on a DYNAMIC
+                //   STRING array is a silent no-op (order unchanged); fixed
+                //   strings / numerics use the window.  Custom CALL sorts are
+                //   rejected at parse level by PBWin for dynamic strings.
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let name = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
@@ -17117,6 +17172,61 @@ impl Compiler {
                             } else {
                                 (fb.const_null_ptr(), 0)
                             };
+                        // FROM/TO/COLLATE (args 4..8)
+                        let from = if call.args.len() > 4 {
+                            let fv = self.compile_expr(fb, &call.args[4])?;
+                            self.to_i64(fb, &fv)
+                        } else {
+                            fb.const_i64(0)
+                        };
+                        let to = if call.args.len() > 5 {
+                            let tv = self.compile_expr(fb, &call.args[5])?;
+                            self.to_i64(fb, &tv)
+                        } else {
+                            fb.const_i64(0)
+                        };
+                        let collate_mode = if let Some(Expr::IntegerLit(m)) = call.args.get(6) {
+                            *m
+                        } else {
+                            0
+                        };
+                        let collate_str = if call.args.len() > 7 && collate_mode == 2 {
+                            let cv = self.compile_expr(fb, &call.args[7])?;
+                            if cv.ty == IrType::Ptr {
+                                cv
+                            } else {
+                                return Err(PbError::runtime(
+                                    "ARRAY SORT: COLLATE argument must be a string",
+                                ));
+                            }
+                        } else {
+                            fb.const_null_ptr()
+                        };
+                        // PBWin-measured: FROM..TO on dynamic STRING arrays is a
+                        // silent no-op (array stays in original order).
+                        let is_dynamic_str = matches!(arr_info.pb_type, PbType::String);
+                        let has_from =
+                            !matches!(call.args.get(4), None | Some(Expr::IntegerLit(0)));
+                        // Custom CALL/USING sort (args[8]): PBWin rejects dynamic
+                        // STRING arrays at compile time (Error 482); fixed-string
+                        // /UDT arrays are valid but the codegen bridge is not
+                        // implemented yet — fail loudly, never silently no-op.
+                        if let Some(Expr::FunctionCall(cfn, _)) = call.args.get(8) {
+                            let cfname = normalize_name(cfn);
+                            if is_dynamic_str {
+                                return Err(PbError::runtime(format!(
+                                    "ARRAY SORT: custom CALL {}() not allowed on dynamic STRING arrays (PBWin Error 482)",
+                                    cfname
+                                )));
+                            }
+                            return Err(PbError::runtime(format!(
+                                "ARRAY SORT: custom CALL {}() bridge not implemented yet",
+                                cfname
+                            )));
+                        }
+                        if is_dynamic_str && has_from {
+                            return Ok(());
+                        }
                         fb.call_void(
                             "pb_array_sort2",
                             &[
@@ -17129,6 +17239,10 @@ impl Compiler {
                                 descend,
                                 tag_ptr,
                                 fb.const_i32(tag_es),
+                                from,
+                                to,
+                                fb.const_i32(collate_mode as i32),
+                                collate_str,
                             ],
                         );
                     }
@@ -23042,11 +23156,21 @@ impl Compiler {
                         if *m == 1 {
                             (1i32, fb.const_null_ptr())
                         } else if *m == 2 {
-                            // Custom COLLATE string not implemented yet: fail loudly,
-                            // never silently no-op (was the old behavior).
-                            return Err(PbError::runtime(
-                                "ARRAY SCAN: custom COLLATE string not implemented (UCASE is)",
-                            ));
+                            // Custom COLLATE string: compile the 256-byte weight
+                            // string and pass it to the runtime.
+                            let cv = if let Some(ce) = call.args.get(8) {
+                                self.compile_expr(fb, ce)?
+                            } else {
+                                fb.const_null_ptr()
+                            };
+                            let cs = if cv.ty == IrType::Ptr {
+                                cv
+                            } else {
+                                return Err(PbError::runtime(
+                                    "ARRAY SCAN: COLLATE argument must be a string",
+                                ));
+                            };
+                            (0i32, cs)
                         } else {
                             (0i32, fb.const_null_ptr())
                         }
