@@ -3534,6 +3534,20 @@ impl Compiler {
         self.module
             .declare_function("pb_dec", &IrType::Ptr, &[IrType::I64], false);
         self.module.declare_function(
+            "pb_radix_fmt",
+            &IrType::Ptr,
+            &[
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+            ],
+            false,
+        );
+        self.module
+            .declare_function("pb_beep", &IrType::Void, &[], false);
+        self.module.declare_function(
             "pb_verify",
             &IrType::I64,
             &[IrType::Ptr, IrType::Ptr, IrType::I64],
@@ -10571,10 +10585,9 @@ impl Compiler {
                 return Ok(());
             }
             "BEEP" => {
-                // BEEP -> Beep(800, 300) — default beep tone
-                let freq = fb.const_i32(800);
-                let dur = fb.const_i32(300);
-                fb.call_void("Beep", &[freq, dur]);
+                // BEEP (CHW BEEP_statement.htm) — default Windows waveform
+                // sound via MessageBeep (not the PC-speaker Beep(800,300)).
+                fb.call_void("pb_beep", &[]);
                 return Ok(());
             }
             "BIT SET" | "BIT RESET" | "BIT TOGGLE" | "BIT CALC" => {
@@ -22247,7 +22260,9 @@ impl Compiler {
         Ok(r)
     }
 
-    // Batch 39: radix strings, VERIFY, MOD, file-system
+    // BIN$/OCT$/DEC$ — radix strings with optional CHW formatting:
+    // (IntVal[, Digits, LeadSpaces, TrailSpaces]).  Digits > 0 leading zeros,
+    // < 0 leading spaces to |Digits|, 0 none; extra lead/trail spaces.
     fn builtin_radix(
         &mut self,
         fb: &mut FunctionBuilder,
@@ -22259,12 +22274,34 @@ impl Compiler {
         }
         let v = self.compile_expr(fb, &args[0])?;
         let vi = self.to_i64(fb, &v);
-        let fname = match which {
-            "BIN" => "pb_bin",
-            "OCT" => "pb_oct",
-            _ => "pb_dec",
+        let base = match which {
+            "BIN" => 2,
+            "OCT" => 8,
+            _ => 10,
         };
-        Ok(fb.call(&IrType::Ptr, fname, std::slice::from_ref(&vi)))
+        let digits = if args.len() > 1 {
+            let d = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &d)
+        } else {
+            fb.const_i64(0)
+        };
+        let lead = if args.len() > 2 {
+            let l = self.compile_expr(fb, &args[2])?;
+            self.to_i64(fb, &l)
+        } else {
+            fb.const_i64(0)
+        };
+        let trail = if args.len() > 3 {
+            let t = self.compile_expr(fb, &args[3])?;
+            self.to_i64(fb, &t)
+        } else {
+            fb.const_i64(0)
+        };
+        Ok(fb.call(
+            &IrType::Ptr,
+            "pb_radix_fmt",
+            &[vi, fb.const_i64(base), digits, lead, trail],
+        ))
     }
     fn builtin_verify(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         // VERIFY([start&,] MainString, MatchString)

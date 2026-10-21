@@ -704,6 +704,51 @@ char* pb_dec(long long v) {
     int n = snprintf(buf, sizeof(buf), "%lld", v);
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
+
+/* BIN$/OCT$/DEC$(IntVal[, Digits, LeadSpaces, TrailSpaces]) (CHW, batch 256B).
+   base 2/8/10; Digits > 0 = leading zeros to that width, < 0 = leading spaces
+   to |Digits|, 0 or absent = none; LeadSpaces/TrailSpaces add extra spaces.
+   base 10 is signed (DEC$(-5)="-5"); bases 2/8 use the unsigned bit pattern
+   (BIN$(-1) = 64 ones, PBWin-measured). */
+char* pb_radix_fmt(long long v, long long base, long long digits,
+                   long long lead, long long trail) {
+    char tmp[66];
+    int numlen;
+    if (base == 10) {
+        numlen = snprintf(tmp, sizeof(tmp), "%lld", v);
+    } else {
+        unsigned long long u = (unsigned long long)v;
+        int t = 0;
+        if (u == 0) { tmp[t++] = '0'; }
+        else {
+            while (u) {
+                int d = (int)(u % (unsigned long long)base);
+                tmp[t++] = (char)('0' + d);
+                u /= (unsigned long long)base;
+            }
+        }
+        for (int i = 0; i < t / 2; i++) {
+            char c = tmp[i]; tmp[i] = tmp[t - 1 - i]; tmp[t - 1 - i] = c;
+        }
+        numlen = t;
+    }
+    long long total = numlen;
+    if (digits > 0 && digits > numlen) total = digits;
+    else if (digits < 0 && -digits > numlen) total = -digits;
+    if (lead > 0) total += lead;
+    if (trail > 0) total += trail;
+    if (total > 4096) total = 4096;
+    char* buf = (char*)malloc((size_t)total + 1);
+    int i = 0;
+    if (lead > 0) { long long k; for (k = 0; k < lead; k++) buf[i++] = ' '; }
+    if (digits < 0) { long long k; for (k = 0; k < (-digits - numlen); k++) buf[i++] = ' '; }
+    if (digits > 0) { long long k; for (k = 0; k < (digits - numlen); k++) buf[i++] = '0'; }
+    memcpy(buf + i, tmp, (size_t)numlen);
+    i += numlen;
+    if (trail > 0) { long long k; for (k = 0; k < trail; k++) buf[i++] = ' '; }
+    buf[i] = 0;
+    return pb_bstr_alloc(buf, (unsigned int)i);
+}
 long long pb_verify(char* s, char* m, long long start) {
     long long sl = (long long)strlen(s);
     long long i;
@@ -2690,6 +2735,7 @@ long long pb_rotate_right(long long v, int n) {
 
 #ifdef _WIN32
 __declspec(dllimport) int __stdcall Beep(unsigned long dwFreq, unsigned long dwDuration);
+__declspec(dllimport) int __stdcall MessageBeep(unsigned long uType);
 #endif
 
 /* PLAY SOUND freq&, duration& � speaker beep via Beep() */
@@ -2698,6 +2744,16 @@ int pb_play_sound(long freq, long dur) {
     return Beep((unsigned long)freq, (unsigned long)dur) ? 0 : -1;
 #else
     pb_err = 68; return -1;
+#endif
+}
+
+/* BEEP (CHW BEEP_statement.htm): play the default Windows waveform sound,
+   i.e. the configurable "Default Beep" (Control Panel -> Sounds). */
+void pb_beep(void) {
+#ifdef _WIN32
+    MessageBeep(0xFFFFFFFF);
+#else
+    pb_err = 68;
 #endif
 }
 
