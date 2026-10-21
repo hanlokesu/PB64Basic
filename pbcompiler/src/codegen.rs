@@ -23204,12 +23204,16 @@ impl Compiler {
 
     fn builtin_len(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
-        // FixedString variables are raw buffers (no BSTR prefix): keep strlen
+        // FixedString variables are raw buffers (no BSTR prefix): LEN must
+        // return the FIXED BUFFER LENGTH (CHW LEN function: "If target is a
+        // fixed-length string, the length of the fixed buffer is returned"),
+        // not strlen of the contents (a NUL inside the buffer must not shrink
+        // the reported length).
         if let Expr::Variable(name) = &args[0] {
             let nn = normalize_name(name);
             if let Some(info) = self.symbols.lookup(&nn) {
-                if matches!(info.pb_type, PbType::FixedString(_)) {
-                    return Ok(fb.call(&IrType::I32, "strlen", &[s]));
+                if let PbType::FixedString(n) = info.pb_type {
+                    return Ok(fb.const_i32(n as i32));
                 }
             }
         }

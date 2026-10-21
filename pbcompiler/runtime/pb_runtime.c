@@ -1921,9 +1921,13 @@ char* pb_time(void) {
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
 
-/* WAITKEY$ � waits for one key press (console), returns the key as a 1-char string.
+/* WAITKEY$ — waits for one key press (console), returns the key as a 1-char string.
    Interactive console: _getch (immediate, no Enter needed).
-   Redirected stdin (pipes / CI): getchar so automated tests can feed a key. */
+   Redirected stdin (pipes / CI): getchar so automated tests can feed a key.
+   GUI app that got a console via AllocConsole (double-clicked EXE): CRT stdin is
+   not a tty after AllocConsole, so the Win32 console input handle is used to
+   wait for a key - otherwise the program exits instantly and the console
+   window disappears before the user can read the output. */
 char* pb_waitkey(void) {
     int c;
     if (_isatty(_fileno(stdin))) {
@@ -1934,6 +1938,22 @@ char* pb_waitkey(void) {
             return pb_bstr_alloc("", 0);
         }
     } else {
+#ifdef _WIN32
+        void* hIn = GetStdHandle((unsigned int)-10); /* STD_INPUT_HANDLE */
+        if (hIn != NULL && hIn != PB_INVALID_HANDLE) {
+            char ch = 0;
+            unsigned long n = 0;
+            if (ReadFile(hIn, &ch, 1, &n, NULL)) {
+                if (n == 1) {
+                    char buf[2];
+                    buf[0] = ch;
+                    buf[1] = '\0';
+                    return pb_bstr_alloc(buf, 1);
+                }
+                return pb_bstr_alloc("", 0); /* EOF (DEVNULL) - return at once */
+            }
+        }
+#endif
         c = getchar();
         if (c == EOF) c = ' ';
     }

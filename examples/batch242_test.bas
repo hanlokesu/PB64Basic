@@ -1,0 +1,37 @@
+' batch242_test.bas - DIALOG NEW full syntax (batch 242: style/exstyle/PIXELS)
+' (rebuilt from the batch's real optimization topic; see SKILL.md)
+#COMPILE EXE
+DECLARE FUNCTION AllocConsole LIB "KERNEL32.DLL" ALIAS "AllocConsole" () AS LONG
+DECLARE FUNCTION AttachConsole LIB "KERNEL32.DLL" ALIAS "AttachConsole" (BYVAL dwProcessId AS DWORD) AS LONG
+DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
+DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
+SUB ConPrint(BYVAL s AS STRING)
+    LOCAL h AS LONG
+    LOCAL n AS DWORD
+    h = GetStdHandle(-11)
+    IF h = 0 THEN
+        IF AttachConsole(-1) = 0 THEN AllocConsole
+        h = GetStdHandle(-11)
+    END IF
+    IF h <> 0 THEN
+        WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
+    END IF
+END SUB
+FUNCTION PBMAIN() AS LONG
+    LOCAL hDlg1 AS LONG
+    LOCAL hDlg2 AS LONG
+    LOCAL fail AS LONG
+    DIALOG NEW 0, "batch242 a", 0, 0, 200, 160 TO hDlg1
+    DIALOG NEW PIXELS, 0, "batch242 b", 0, 0, 200, 160, %WS_POPUP, 0 TO hDlg2
+    IF hDlg1 = 0 THEN fail = fail + 1
+    IF hDlg2 = 0 THEN fail = fail + 1
+    IF fail = 0 THEN
+        ConPrint "batch242 test ok"
+    ELSE
+        ConPrint "batch242 FAILURES: " & STR$(fail)
+    END IF
+    DIALOG END hDlg1
+    DIALOG END hDlg2
+    FUNCTION = 0
+END FUNCTION
+

@@ -1,0 +1,46 @@
+' batch232_test.bas - STR$ formatting + FixedString NUL safety (batch 232)
+' (rebuilt from the batch's real optimization topic; see SKILL.md)
+#COMPILE EXE
+DECLARE FUNCTION AllocConsole LIB "KERNEL32.DLL" ALIAS "AllocConsole" () AS LONG
+DECLARE FUNCTION AttachConsole LIB "KERNEL32.DLL" ALIAS "AttachConsole" (BYVAL dwProcessId AS DWORD) AS LONG
+DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
+DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
+DECLARE FUNCTION ReadFile LIB "KERNEL32.DLL" ALIAS "ReadFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToRead AS DWORD, lpBytesRead AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
+SUB ConPrint(BYVAL s AS STRING)
+    LOCAL h AS LONG
+    LOCAL n AS DWORD
+    h = GetStdHandle(-11)
+    IF h = 0 THEN
+        IF AttachConsole(-1) = 0 THEN AllocConsole
+        h = GetStdHandle(-11)
+    END IF
+    IF h <> 0 THEN
+        WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
+    END IF
+END SUB
+SUB ConWaitKey()
+    LOCAL h AS LONG
+    LOCAL c AS STRING * 1
+    LOCAL n AS DWORD
+    h = GetStdHandle(-10)
+    IF h <> 0 THEN
+        ReadFile h, c, 1, n, 0
+    END IF
+END SUB
+FUNCTION PBMAIN() AS LONG
+    LOCAL d AS DOUBLE
+    LOCAL f AS STRING * 4
+    LOCAL ok AS LONG
+    ok = 0
+    d = 1234.5678
+    IF STR$(d) = " 1234.5678" THEN ok = ok OR 1
+    f = "AB" & CHR$(0) & "C"
+    IF LEN(f) = 4 THEN ok = ok OR 2
+    IF ok = 3 THEN
+        ConPrint "batch232 test ok"
+    ELSE
+        ConPrint "batch232 FAILURES: " & STR$(ok)
+    END IF
+    FUNCTION = 0
+END FUNCTION
+
