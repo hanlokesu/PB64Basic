@@ -58,6 +58,7 @@ pub enum TopLevel {
     DeclareStmt(DeclareStmt), // DECLARE SUB/FUNCTION — skip at runtime
     Statement(Statement),     // top-level statements (before PBMAIN)
     AsmData(AsmDataDecl),     // ASMDATA ... END ASMDATA read-only data block
+    LinkFile(String),         // #LINK "filespec" — extra object/library for the linker
 }
 
 #[derive(Debug, Clone)]

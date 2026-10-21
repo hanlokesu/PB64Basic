@@ -92,6 +92,7 @@ pub enum Token {
     HashEndIf,
     HashRegister,
     HashDebug,
+    HashLink,
 
     // Operators
     Plus,

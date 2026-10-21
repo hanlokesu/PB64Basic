@@ -295,14 +295,14 @@ pub fn compile(
     // Link if requested
     if opts.dll_mode {
         let dll_path = output_path.with_extension("dll");
-        link_dll(&obj_paths[0], &dll_path, opts)?;
+        link_dll(&obj_paths[0], &dll_path, opts, &compiler.link_files)?;
         eprintln!("[PB64Basic] Linked DLL: {}", dll_path.display());
     }
 
     if opts.exe_mode {
         let exe_path = output_path.with_extension("exe");
         let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
-        link_exe(&obj_refs, &exe_path, opts)?;
+        link_exe(&obj_refs, &exe_path, opts, &compiler.link_files)?;
         eprintln!("[PB64Basic] Linked EXE: {}", exe_path.display());
     }
 
@@ -609,12 +609,23 @@ fn detect_legacy_stdio_lib(target: &str) -> Option<String> {
     best.map(|(_, p)| p)
 }
 
-fn link_dll(obj_path: &Path, dll_path: &Path, opts: &CompileOptions) -> PbResult<()> {
+fn link_dll(
+    obj_path: &Path,
+    dll_path: &Path,
+    opts: &CompileOptions,
+    link_files: &[String],
+) -> PbResult<()> {
     let mut args: Vec<String> = vec![
         "-shared".to_string(),
         format!("--target={}", opts.target),
         obj_path.to_string_lossy().to_string(),
     ];
+
+    // #LINK "filespec" extra inputs (batch 260) — CHW: #LINK may also target
+    // a DLL host module.
+    for lf in link_files {
+        args.push(lf.clone());
+    }
 
     // Runtime library (pb_debug_enter, pb_bstr_alloc, pb_str_concat, ...)
     if let Some(ref runtime) = opts.runtime_lib {
@@ -663,12 +674,24 @@ fn link_dll(obj_path: &Path, dll_path: &Path, opts: &CompileOptions) -> PbResult
 }
 
 /// Link object files into an executable.
-fn link_exe(obj_paths: &[&Path], exe_path: &Path, opts: &CompileOptions) -> PbResult<()> {
+fn link_exe(
+    obj_paths: &[&Path],
+    exe_path: &Path,
+    opts: &CompileOptions,
+    link_files: &[String],
+) -> PbResult<()> {
     let mut args: Vec<String> = vec![format!("--target={}", opts.target)];
 
     // Add all object files
     for obj in obj_paths {
         args.push(obj.to_string_lossy().to_string());
+    }
+
+    // #LINK "filespec" extra inputs (batch 260): external .obj/.lib modules
+    // handed straight to the linker, exactly like PBWin's #LINK hands SLL
+    // units to its linker.
+    for lf in link_files {
+        args.push(lf.clone());
     }
 
     // Add runtime library if specified
@@ -1140,6 +1163,11 @@ struct Compiler {
     // into a fresh mutable buffer (a plain store would point at a read-only
     // string constant and pb_field_set would crash writing through it).
     field_bound_strings: std::collections::HashSet<String>,
+
+    // #LINK "filespec" extra linker inputs collected from the source
+    // (batch 260; CHW #LINK metastatement — the fork additionally accepts
+    // .obj/.lib so external object modules can be linked, Erol request).
+    link_files: Vec<String>,
 }
 
 /// Tracks a global variable or array that will become a session struct field.
@@ -1286,6 +1314,7 @@ impl Compiler {
             event_sources: std::collections::HashMap::new(),
             event_method_ids: std::collections::HashMap::new(),
             field_bound_strings: std::collections::HashSet::new(),
+            link_files: Vec::new(),
         }
     }
 
@@ -6025,6 +6054,11 @@ impl Compiler {
                 TopLevel::DeclareStmt(ds) => {
                     self.register_declare(ds);
                 }
+                TopLevel::LinkFile(path) => {
+                    if !path.is_empty() {
+                        self.link_files.push(path.clone());
+                    }
+                }
                 TopLevel::GlobalDecl(vd) => {
                     if vd.is_array {
                         // GLOBAL arr() AS TYPE → remember for later DIM with bounds
@@ -6309,14 +6343,77 @@ impl Compiler {
     fn register_declare(&mut self, ds: &DeclareStmt) {
         let name = normalize_name(&ds.name);
 
+        // The external symbol name and params are shared by both branches.
+        let ir_name = ds.alias.clone().unwrap_or_else(|| name.clone());
+        let params: Vec<ParamInfo> = ds
+            .params
+            .iter()
+            .map(|p| {
+                let ir_type = if p.is_byval {
+                    Self::ir_type_for(&p.pb_type)
+                } else {
+                    IrType::Ptr
+                };
+                ParamInfo {
+                    name: normalize_name(&p.name),
+                    pb_type: p.pb_type.clone(),
+                    ir_type,
+                    is_byval: p.is_byval,
+                    is_optional: p.is_optional,
+                }
+            })
+            .collect();
+
         if ds.lib.is_none() {
-            // Forward declaration within same compilation unit → skip.
-            // The actual definition will be registered from FunctionDecl/SubDecl.
+            // DECLARE without LIB: an external symbol resolved by the LINKER
+            // (from a #LINK object/library, or another compilation unit).
+            // CHW declare_function.htm: a DECLARE without LIB is linked from
+            // external object modules.  This is what makes
+            // `DECLARE FUNCTION sum(...)` + `#LINK "sum.obj"` work (batch 260,
+            // Erol Ojalvo request).  A forward DECLARE of a function defined
+            // later in this unit is harmless: register_function/sub re-inserts
+            // the same name and overwrites this entry.
+            //
+            // Symbol name keeps the SOURCE spelling (case-sensitive in the
+            // linker): Erol's Poasm `sum PROC` links to `DECLARE FUNCTION sum`,
+            // and COFF symbol matching is case-sensitive — `@SUM` would be
+            // an unresolved `SUM` against an obj that exports `sum`.
+            let ir_name = ds.alias.clone().unwrap_or_else(|| ds.name.clone());
+            let ir_param_types: Vec<IrType> = params.iter().map(|p| p.ir_type.clone()).collect();
+            if ds.is_function {
+                let ret_type = Self::ir_type_for(&ds.return_type);
+                self.module
+                    .declare_function(&ir_name, &ret_type, &ir_param_types, false);
+                self.functions.insert(
+                    name,
+                    FuncInfo {
+                        ir_name,
+                        ret_type,
+                        params,
+                        export: false,
+                        is_external: true,
+                        is_stdcall: false,
+                    },
+                );
+            } else {
+                self.module
+                    .declare_function(&ir_name, &IrType::Void, &ir_param_types, false);
+                self.subs.insert(
+                    name,
+                    FuncInfo {
+                        ir_name,
+                        ret_type: IrType::Void,
+                        params,
+                        export: false,
+                        is_external: true,
+                        is_stdcall: false,
+                    },
+                );
+            }
             return;
         }
 
         // External DLL import: emit dllimport declaration
-        let ir_name = ds.alias.clone().unwrap_or_else(|| name.clone());
         let params: Vec<ParamInfo> = ds
             .params
             .iter()

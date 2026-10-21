@@ -250,6 +250,23 @@ impl Parser {
                 self.consume_to_eol();
                 Ok(None)
             }
+            Token::HashLink => {
+                // #LINK "filespec" — extra object/library handed to the linker
+                // (CHW _LINK metastatement; batch 260, Erol request).  The fork
+                // accepts .obj/.lib (clang/lld inputs) in addition to the
+                // official .SLL/.PBLIB spellings.
+                self.advance(); // consume #LINK
+                let path = match self.peek() {
+                    Token::StringLiteral(s) => s.clone(),
+                    _ => String::new(),
+                };
+                self.consume_to_eol();
+                if path.is_empty() {
+                    eprintln!("Error: #LINK requires a quoted file spec on line {}", line);
+                    self.error_count += 1;
+                }
+                Ok(Some(TopLevel::LinkFile(path)))
+            }
             Token::Macro => {
                 // MACRO name = body : END MACRO — skip to END MACRO
                 self.advance();

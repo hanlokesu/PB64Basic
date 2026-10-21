@@ -127,6 +127,7 @@ impl Lexer {
                                 "ENDIF" => Some(Token::HashEndIf),
                                 "REGISTER" => Some(Token::HashRegister),
                                 "DEBUG" => Some(Token::HashDebug),
+                                "LINK" => Some(Token::HashLink),
                                 _ => None,
                             };
                             if let Some(tok) = tok {
