@@ -2547,6 +2547,34 @@ void pb_str_assign_copy(char** slot, const char* src, unsigned len) {
     *slot = buf;
 }
 
+/* ASC(s$, pos&) = code&  (CHW ASC_statement.htm, batch 256A)
+   Replace one character in a dynamic string by its character code.
+   pos& is 1-based; negative counts from the end (-1 = last char).
+   Null string, pos==0 or out of range: the operation is ignored.
+   ANSI strings: char code must be in 0..255 (outside is ignored). */
+void pb_asc_stmt(char** slot, long long pos, long long code) {
+    if (!slot) return;
+    char* s = *slot;
+    if (!s || !s[0]) return;                 /* null (zero-length): ignored */
+    long long len = (long long)strlen(s);
+    if (pos == 0 || pos > len) return;       /* zero or beyond length: ignored */
+    long long idx = (pos > 0) ? (pos - 1) : (len + pos);
+    if (idx < 0 || idx >= len) return;       /* negative out of range: ignored */
+    if (code < 0 || code > 255) return;      /* ANSI range guard */
+    /* the buffer may be a read-only string constant: copy before writing */
+    pb_str_assign_copy(slot, s, (unsigned)len);
+    (*slot)[idx] = (char)code;
+}
+
+/* ASC statement on a fixed-length string (inline [N x i8] buffer). */
+void pb_asc_stmt_fixed(char* buf, long long buflen, long long pos, long long code) {
+    if (!buf || buflen <= 0 || pos == 0) return;
+    long long idx = (pos > 0) ? (pos - 1) : (buflen + pos);
+    if (idx < 0 || idx >= buflen) return;
+    if (code < 0 || code > 255) return;
+    buf[idx] = (char)code;
+}
+
 /* FIELD RESET var � unbind, becomes empty */
 void pb_field_reset(pb_field_t* fv) {
     if (!fv) return;

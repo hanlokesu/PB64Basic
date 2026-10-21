@@ -1418,6 +1418,18 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_asc_stmt",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I64, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_asc_stmt_fixed",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I64, IrType::I64, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
             "pb_mat_fill",
             &IrType::Void,
             &[
@@ -7380,6 +7392,43 @@ impl Compiler {
             }
             Expr::ArrayAccess(arr_name, indices) | Expr::FunctionCall(arr_name, indices) => {
                 let name = normalize_name(arr_name);
+                // ASC statement: ASC(stringvar, position&) = CharCode&  (CHW
+                // ASC_statement.htm).  Replaces one character in a string
+                // variable; position 1-based, negative counts from the end,
+                // null/zero/out-of-range ignored.  Before this the call fell
+                // through the array lookup and was silently dropped.
+                if name == "ASC" && indices.len() >= 2 {
+                    let (sptr, _s_ir, s_pb) =
+                        self.lvalue_ptr(fb, &indices[0]).ok_or_else(|| {
+                            PbError::parser(
+                                "ASC: string variable expected on the left",
+                                None,
+                                self.current_line,
+                            )
+                        })?;
+                    let pos = self.compile_expr(fb, &indices[1])?;
+                    let pos64 = self.to_i64(fb, &pos);
+                    let code = self.compile_expr(fb, &assign.value)?;
+                    let code64 = self.to_i64(fb, &code);
+                    match &s_pb {
+                        PbType::String => {
+                            // dynamic string: slot is char**; runtime copies the
+                            // (possibly read-only) buffer before writing
+                            fb.call_void("pb_asc_stmt", &[sptr.clone(), pos64, code64]);
+                        }
+                        PbType::FixedString(n) => {
+                            let buflen = fb.const_i64(*n as i64);
+                            fb.call_void(
+                                "pb_asc_stmt_fixed",
+                                &[sptr.clone(), buflen, pos64, code64],
+                            );
+                        }
+                        _ => {
+                            // FIELD / WString / other: not implemented yet - ignore
+                        }
+                    }
+                    return Ok(());
+                }
                 if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                     let mut compiled_indices = Vec::new();
                     for idx in indices {
@@ -10530,16 +10579,34 @@ impl Compiler {
             }
             "BIT SET" | "BIT RESET" | "BIT TOGGLE" | "BIT CALC" => {
                 // BIT {SET|RESET|TOGGLE} intvar, bitnumber / BIT CALC intvar, bitnumber, expr
+                // (CHW BIT_statement.htm / BIT_CALC_statement.htm).  intvar may
+                // be an array element; bitnumber is zero-based and indexes an
+                // *implied bit-array* starting at intvar's memory position, so
+                // it selects the target element (bit / bits_per_elem) and the
+                // in-element bit (bit % bits_per_elem).
                 if call.args.len() < 2 {
                     return Ok(());
                 }
                 if let Some((ptr, ir_ty, pb_ty)) = self.lvalue_ptr(fb, &call.args[0]) {
-                    let cur = fb.load(&ir_ty, &ptr);
-                    let vi = self.to_i64(fb, &cur);
                     let bitv = self.compile_expr(fb, &call.args[1])?;
                     let bi = self.to_i64(fb, &bitv);
+                    let elem_size = match &ir_ty {
+                        IrType::I8 | IrType::I1 => 1,
+                        IrType::I16 => 2,
+                        IrType::I32 | IrType::Float => 4,
+                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
+                        _ => 4,
+                    };
+                    let elem_bits = elem_size * 8;
+                    let word_off = fb.sdiv(&bi, &fb.const_i64(elem_bits));
+                    let bit_in = fb.srem(&bi, &fb.const_i64(elem_bits));
+                    let byte_off = fb.mul(&word_off, &fb.const_i64(elem_size));
+                    let byte32 = fb.trunc(&byte_off, &IrType::I32);
+                    let tgt = fb.gep_byte(&ptr, &byte32);
+                    let cur = fb.load(&ir_ty, &tgt);
+                    let vi = self.to_i64(fb, &cur);
                     let one = fb.const_i64(1);
-                    let mask = fb.shl(&one, &bi);
+                    let mask = fb.shl(&one, &bit_in);
                     let newv = match name.as_str() {
                         "BIT SET" => fb.or(&vi, &mask),
                         "BIT RESET" => {
@@ -10549,12 +10616,15 @@ impl Compiler {
                         }
                         "BIT TOGGLE" => fb.xor(&vi, &mask),
                         _ => {
-                            // BIT CALC: expr != 0 -> set, else reset
+                            // BIT CALC: the value derived from bit zero of
+                            // calcexpr (calcexpr AND 1) determines set/reset
+                            // (CHW BIT_CALC_statement.htm) - not "nonzero".
                             if let Some(expr) = call.args.get(2) {
                                 let ev = self.compile_expr(fb, expr)?;
                                 let ei = self.to_i64(fb, &ev);
+                                let bit0 = fb.and(&ei, &one);
                                 let z = fb.const_i64(0);
-                                let is_nonzero = fb.icmp("ne", &ei, &z);
+                                let is_nonzero = fb.icmp("ne", &bit0, &z);
                                 let m = fb.select(&is_nonzero, &mask, &z);
                                 fb.or(&vi, &m)
                             } else {
@@ -10563,7 +10633,7 @@ impl Compiler {
                         }
                     };
                     let conv = self.convert_value(fb, &newv, &ir_ty, &pb_ty);
-                    fb.store(&conv, &ptr);
+                    fb.store(&conv, &tgt);
                 }
                 return Ok(());
             }
@@ -10856,29 +10926,64 @@ impl Compiler {
                 return Ok(());
             }
             "ARRAY ASSIGN" => {
-                // ARRAY ASSIGN target() = source() 鈥?copy source elements into target
-                if let (Some(Expr::FunctionCall(tn, _)), Some(Expr::FunctionCall(sn, _))) =
-                    (call.args.first(), call.args.get(1))
-                {
+                // CHW: ARRAY ASSIGN array() = param1 [,param2] [,...]  - assigns
+                // successive values to successive elements, starting at the first
+                // array element.  Values may be literals, variables or expressions.
+                // A lone array reference as the single source keeps the fork
+                // extension whole-array copy (batch023: ARRAY ASSIGN b() = a()).
+                if let Some(Expr::FunctionCall(tn, _)) = call.args.first() {
                     let tname = normalize_name(tn);
-                    let sname = normalize_name(sn);
                     let t_info = self.symbols.lookup_array(&tname).cloned();
-                    let s_info = self.symbols.lookup_array(&sname).cloned();
-                    if let (Some(ti), Some(si)) = (t_info, s_info) {
-                        let tbase = Val::new(ti.ptr_name.clone(), IrType::Ptr);
-                        let sbase = Val::new(si.ptr_name.clone(), IrType::Ptr);
-                        let elem_size = match &ti.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
-                        let total = ti.total_elements.min(si.total_elements) as i64;
-                        fb.call_void(
-                            "pb_array_copy",
-                            &[tbase, sbase, fb.const_i32(elem_size), fb.const_i64(total)],
-                        );
+                    if let Some(ti) = t_info {
+                        // Fork extension: single source that is itself an array
+                        // reference -> pb_array_copy of the common prefix.
+                        if call.args.len() == 2 {
+                            if let Some(Expr::FunctionCall(sn, _)) = call.args.get(1) {
+                                let sname = normalize_name(sn);
+                                if let Some(si) = self.symbols.lookup_array(&sname).cloned() {
+                                    let tbase = Val::new(ti.ptr_name.clone(), IrType::Ptr);
+                                    let sbase = Val::new(si.ptr_name.clone(), IrType::Ptr);
+                                    let elem_size = match &ti.elem_ir_type {
+                                        IrType::I8 | IrType::I1 => 1,
+                                        IrType::I16 => 2,
+                                        IrType::I32 | IrType::Float => 4,
+                                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
+                                        _ => 4,
+                                    };
+                                    let total = ti.total_elements.min(si.total_elements) as i64;
+                                    fb.call_void(
+                                        "pb_array_copy",
+                                        &[
+                                            tbase,
+                                            sbase,
+                                            fb.const_i32(elem_size),
+                                            fb.const_i64(total),
+                                        ],
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        // CHW spread form: store each value into the element slot
+                        // at flat index 0, 1, 2, ... (data area is zero-based and
+                        // the assignment starts at the first array element).  More
+                        // values than elements are ignored; fewer leave the rest
+                        // untouched.
+                        let base = Val::new(ti.ptr_name.clone(), IrType::Ptr);
+                        let total = ti.total_elements as i64;
+                        let mut v_idx: i64 = 0;
+                        for val_expr in call.args.iter().skip(1) {
+                            if v_idx >= total {
+                                break;
+                            }
+                            let v = self.compile_expr(fb, val_expr)?;
+                            let converted =
+                                self.convert_value(fb, &v, &ti.elem_ir_type, &ti.pb_type);
+                            let flat = fb.const_i32(v_idx as i32);
+                            let elem_ptr = fb.gep_array(&ti.array_ir_type, &base, &flat);
+                            fb.store(&converted, &elem_ptr);
+                            v_idx += 1;
+                        }
                     }
                 }
                 return Ok(());
@@ -20101,9 +20206,28 @@ impl Compiler {
                 Ok(fb.const_i32(v as i32))
             }
             Expr::FunctionCall(name, args) => {
+                let raw_upper = name.to_uppercase();
                 let name = normalize_name(name);
-                // Check if it's actually an array access (parser can't distinguish)
-                if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
+                // BITS$(STRING, s$) copies string contents without conversion
+                // (CHW BITS$_function.htm).  normalize_name strips the trailing
+                // $, so the original spelling is checked here to keep BITS and
+                // BITS$ from colliding (they have completely different types).
+                if raw_upper == "BITS$" {
+                    // args = [director-code, s$]: the string is args[1]
+                    if let Some(s) = args.get(1) {
+                        let sv = self.compile_expr(fb, s)?;
+                        // runtime pb_bits_str ignores its ANSI director; pass a
+                        // null pointer (args[0] is a type code, not a string,
+                        // so it must never be handed to the char* slot).
+                        Ok(fb.call(&IrType::Ptr, "pb_bits_str", &[fb.const_null_ptr(), sv]))
+                    } else {
+                        Err(PbError::parser(
+                            "BITS$ requires a string argument",
+                            None,
+                            self.current_line,
+                        ))
+                    }
+                } else if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                     let mut compiled_indices = Vec::new();
                     for idx in args {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
@@ -20783,7 +20907,7 @@ impl Compiler {
             "SHRINK" => Some(self.builtin_shrink(fb, args)),
             "BUILD" => Some(self.builtin_build(fb, args)),
             "DAYNAME" => Some(self.builtin_name1(fb, args, "pb_dayname")),
-            "BITS" => Some(self.builtin_str2(fb, args, "pb_bits_str")),
+            "BITS" => Some(self.builtin_bits(fb, args)),
             "PATHNAME" => Some(self.builtin_str2(fb, args, "pb_pathname")),
             "PRINTERCOUNT" => Some(self.builtin_count0(fb, "pb_printer_count")),
             "THREADID" => Some(self.builtin_threadid(fb)),
@@ -20828,8 +20952,9 @@ impl Compiler {
             "MONTHNAME" => Some(self.builtin_name1(fb, args, "pb_monthname")),
             "DATACOUNT" => Some(self.builtin_count0(fb, "pb_data_count")),
             "THREADCOUNT" => Some(self.builtin_count0(fb, "pb_thread_count")),
-            "LBOUND" => Some(Ok(fb.const_i32(1))), /* PB default lower bound = 1 */
-            "UBOUND" => Some(Ok(fb.const_i32(0))), /* TODO: track array dimensions */
+            "LBOUND" => Some(self.builtin_bound(fb, args, false)),
+            "UBOUND" => Some(self.builtin_bound(fb, args, true)),
+            "ARRAYATTR" => Some(self.builtin_arrayattr(fb, args)),
             "JOIN$" => Some(self.builtin_join(fb, args)),
             "INPUTBOX$" => Some(self.builtin_inputbox(fb, args)),
             "MSGBOX" => Some(self.builtin_msgbox(fb, args)),
@@ -21261,53 +21386,85 @@ impl Compiler {
                 }))
             }
             "BIT" => {
-                // BIT(intvar, bitnumber) — 0 or 1
+                // BIT(intvar, bitnumber) — 0 or 1 (CHW BIT_function.htm).
+                // intvar is a variable / array element; bitnumber indexes an
+                // implied bit-array starting at intvar's memory position, so
+                // the target element is (bit / bits_per_elem).
                 if args.len() < 2 {
                     return Some(Err(PbError::runtime("BIT requires 2 arguments")));
                 }
-                let v = self.compile_expr(fb, &args[0]);
                 let bit = self.compile_expr(fb, &args[1]);
-                Some(match (v, bit) {
-                    (Ok(vv), Ok(bb)) => {
-                        let vi = self.to_i64(fb, &vv);
+                match (self.lvalue_ptr(fb, &args[0]), bit) {
+                    (Some((ptr, ir_ty, _)), Ok(bb)) => {
                         let bi = self.to_i64(fb, &bb);
-                        let shifted = fb.lshr(&vi, &bi);
+                        let elem_size = match &ir_ty {
+                            IrType::I8 | IrType::I1 => 1,
+                            IrType::I16 => 2,
+                            IrType::I32 | IrType::Float => 4,
+                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
+                            _ => 4,
+                        };
+                        let elem_bits = elem_size * 8;
+                        let word_off = fb.sdiv(&bi, &fb.const_i64(elem_bits));
+                        let bit_in = fb.srem(&bi, &fb.const_i64(elem_bits));
+                        let byte_off = fb.mul(&word_off, &fb.const_i64(elem_size));
+                        let byte32 = fb.trunc(&byte_off, &IrType::I32);
+                        let tgt = fb.gep_byte(&ptr, &byte32);
+                        let cur = fb.load(&ir_ty, &tgt);
+                        let vi = self.to_i64(fb, &cur);
+                        let shifted = fb.lshr(&vi, &bit_in);
                         let one = fb.const_i64(1);
                         let r = fb.and(&shifted, &one);
-                        Ok(self.to_i32(fb, &r))
+                        Some(Ok(self.to_i32(fb, &r)))
+                    }
+                    (_, Err(e)) => Some(Err(e)),
+                    (None, Ok(_)) => {
+                        // not a variable (e.g. an expression) — value semantics
+                        let v = self.compile_expr(fb, &args[0]);
+                        let bit = self.compile_expr(fb, &args[1]);
+                        match (v, bit) {
+                            (Ok(vv), Ok(bb)) => {
+                                let vi = self.to_i64(fb, &vv);
+                                let bi = self.to_i64(fb, &bb);
+                                let shifted = fb.lshr(&vi, &bi);
+                                let one = fb.const_i64(1);
+                                let r = fb.and(&shifted, &one);
+                                Some(Ok(self.to_i32(fb, &r)))
+                            }
+                            (Err(e), _) | (_, Err(e)) => Some(Err(e)),
+                        }
+                    }
+                }
+            }
+            "BITSE" => {
+                // BITSE(nexp, nexp, bitsize) — compare the lowest bitsize
+                // (8/16/32) bits of two integral values regardless of sign;
+                // returns TRUE (-1) if the bit patterns are equal, FALSE (0)
+                // otherwise (CHW BITSE_function.htm, batch 256B).
+                if args.len() < 3 {
+                    return Some(Err(PbError::runtime("BITSE requires 3 arguments")));
+                }
+                let a = self.compile_expr(fb, &args[0]);
+                let b = self.compile_expr(fb, &args[1]);
+                let bits = Self::eval_const_expr(&args[2]).unwrap_or(32);
+                let mask = if bits >= 32 {
+                    0xFFFFFFFFi64
+                } else {
+                    (1i64 << bits) - 1
+                };
+                Some(match (a, b) {
+                    (Ok(av), Ok(bv)) => {
+                        let ai = self.to_i64(fb, &av);
+                        let bi = self.to_i64(fb, &bv);
+                        let am = fb.and(&ai, &fb.const_i64(mask));
+                        let bm = fb.and(&bi, &fb.const_i64(mask));
+                        let eq = fb.icmp("eq", &am, &bm);
+                        let t = fb.const_i64(-1);
+                        let f = fb.const_i64(0);
+                        Ok(fb.select(&eq, &t, &f))
                     }
                     (Err(e), _) | (_, Err(e)) => Err(e),
                 })
-            }
-            "BITSE" => {
-                // BITSE(intvar, bitnumber) — test bit and set it, return original bit value (0 or 1)
-                if args.len() < 2 {
-                    return Some(Err(PbError::runtime("BITSE requires 2 arguments")));
-                }
-                if let Some((ptr, ir_ty, pb_ty)) = self.lvalue_ptr(fb, &args[0]) {
-                    let cur = fb.load(&ir_ty, &ptr);
-                    let vi = self.to_i64(fb, &cur);
-                    let bitv = match self.compile_expr(fb, &args[1]) {
-                        Ok(b) => b,
-                        Err(e) => return Some(Err(e)),
-                    };
-                    let bi = self.to_i64(fb, &bitv);
-                    let one = fb.const_i64(1);
-                    // Test original bit
-                    let shifted = fb.lshr(&vi, &bi);
-                    let orig = fb.and(&shifted, &one);
-                    // Set the bit
-                    let mask = fb.shl(&one, &bi);
-                    let newv = fb.or(&vi, &mask);
-                    let conv = self.convert_value(fb, &newv, &ir_ty, &pb_ty);
-                    fb.store(&conv, &ptr);
-                    // Return original bit value
-                    Some(Ok(self.to_i32(fb, &orig)))
-                } else {
-                    Some(Err(PbError::runtime(
-                        "BITSE first argument must be a variable",
-                    )))
-                }
             }
             "PEEK" => {
                 // PEEK([datatype,] address) — default BYTE
@@ -21465,6 +21622,185 @@ impl Compiler {
             }
             _ => None,
         }
+    }
+
+    /// Extract the array name from a reference expression (the `name()` form
+    /// used by LBOUND/UBOUND/ARRAYATTR/ARRAY ASSIGN).
+    fn array_ref_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::FunctionCall(n, idxs) | Expr::ArrayAccess(n, idxs) if idxs.is_empty() => {
+                Some(normalize_name(n))
+            }
+            _ => None,
+        }
+    }
+
+    /// VARCLASS equate for ARRAYATTR AttrNum=1 (CHW ARRAYATTR_function.htm).
+    fn varclass_of(t: &PbType) -> i64 {
+        match t {
+            PbType::Byte => 0,            // %VARCLASS_BYT
+            PbType::Word => 1,            // %VARCLASS_WRD
+            PbType::Dword => 2,           // %VARCLASS_DWD
+            PbType::Integer => 4,         // %VARCLASS_INT
+            PbType::Long => 5,            // %VARCLASS_LNG
+            PbType::Quad => 8,            // %VARCLASS_QUD
+            PbType::Single => 10,         // %VARCLASS_SNG
+            PbType::Double => 11,         // %VARCLASS_DBL
+            PbType::Ext => 12,            // %VARCLASS_EXT
+            PbType::Cur => 13,            // %VARCLASS_CUR
+            PbType::UserDefined(_) => 20, // %VARCLASS_TYPE
+            PbType::Variant => 17,        // %VARCLASS_VRNT
+            PbType::String => 23,         // %VARCLASS_STR
+            PbType::FixedString(_) => 22, // %VARCLASS_FIX
+            PbType::Field => 24,          // %VARCLASS_FLD
+        }
+    }
+
+    /// Element byte size for ARRAYATTR AttrNum=5.
+    fn elem_size_of(t: &IrType) -> i64 {
+        match t {
+            IrType::I8 | IrType::I1 => 1,
+            IrType::I16 => 2,
+            IrType::I32 | IrType::Float => 4,
+            IrType::I64 | IrType::Double | IrType::Ptr => 8,
+            _ => 4,
+        }
+    }
+
+    /// LBOUND / UBOUND: y = LBOUND(arr() [, dim&]) - lower (LBOUND) or upper
+    /// (UBOUND) boundary of a dimension, default dimension 1.  Replaces the
+    /// previous hard-coded constants (1 / 0) that made both functions wrong
+    /// for every non-default array (CHW LBOUND/UBOUND, batch 256A).
+    fn builtin_bound(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        upper: bool,
+    ) -> PbResult<Val> {
+        let fname = if upper { "UBOUND" } else { "LBOUND" };
+        let first = args.first().ok_or_else(|| {
+            PbError::parser(
+                format!("{} requires an array argument", fname),
+                None,
+                self.current_line,
+            )
+        })?;
+        let arr_name = self.array_ref_name(first).ok_or_else(|| {
+            PbError::parser(
+                format!("{}: array reference expected", fname),
+                None,
+                self.current_line,
+            )
+        })?;
+        let info = self
+            .symbols
+            .lookup_array(&arr_name)
+            .cloned()
+            .ok_or_else(|| {
+                PbError::parser(
+                    format!("{}: array `{}` is not declared", fname, arr_name),
+                    None,
+                    self.current_line,
+                )
+            })?;
+        let dim = if args.len() >= 2 {
+            Self::eval_const_expr(&args[1]).unwrap_or(1) as usize
+        } else {
+            1
+        };
+        if dim < 1 || dim > info.dims.len() {
+            return Err(PbError::parser(
+                format!("{}: dimension {} out of range", fname, dim),
+                None,
+                self.current_line,
+            ));
+        }
+        let (lower, count) = info.dims[dim - 1];
+        let v = if upper { lower + count - 1 } else { lower };
+        Ok(fb.const_i64(v))
+    }
+
+    /// ARRAYATTR(arr(), AttrNum) - CHW ARRAYATTR_function.htm (batch 256A).
+    /// AttrNum 0=dimensioned(-1), 1=data type equate, 2=pointer array(0),
+    /// 3=dimension count, 4=total elements, 5=element size in bytes.
+    fn builtin_arrayattr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        let first = args.first().ok_or_else(|| {
+            PbError::parser(
+                "ARRAYATTR requires an array argument",
+                None,
+                self.current_line,
+            )
+        })?;
+        let arr_name = self.array_ref_name(first).ok_or_else(|| {
+            PbError::parser(
+                "ARRAYATTR: array reference expected",
+                None,
+                self.current_line,
+            )
+        })?;
+        let info = self
+            .symbols
+            .lookup_array(&arr_name)
+            .cloned()
+            .ok_or_else(|| {
+                PbError::parser(
+                    format!("ARRAYATTR: array `{}` is not declared", arr_name),
+                    None,
+                    self.current_line,
+                )
+            })?;
+        let attr = if args.len() >= 2 {
+            Self::eval_const_expr(&args[1]).unwrap_or(0)
+        } else {
+            0
+        };
+        let v: i64 = match attr {
+            0 => -1, // always dimensioned (static arrays)
+            1 => Self::varclass_of(&info.pb_type),
+            2 => 0, // not a pointer array
+            3 => info.dims.len() as i64,
+            4 => info.total_elements as i64,
+            5 => Self::elem_size_of(&info.elem_ir_type),
+            _ => 0,
+        };
+        Ok(fb.const_i64(v))
+    }
+
+    /// BITS(datatype, expression) — reinterprets the bit pattern of an
+    /// integral value as another data type (CHW BITS_function.htm, batch
+    /// 256B).  datatype is the compile-time director mapped by the parser:
+    /// BYTE=0, WORD=1, DWORD=2, INTEGER=3, LONG=4.  Unsigned directors mask;
+    /// signed directors sign-extend the masked width.
+    fn builtin_bits(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() < 2 {
+            return Err(PbError::parser(
+                "BITS requires 2 arguments",
+                None,
+                self.current_line,
+            ));
+        }
+        let dt = Self::eval_const_expr(&args[0]).unwrap_or(0);
+        let v = self.compile_expr(fb, &args[1])?;
+        let vi = self.to_i64(fb, &v);
+        let res = match dt {
+            0 => fb.and(&vi, &fb.const_i64(0xFF)),       // BYTE
+            1 => fb.and(&vi, &fb.const_i64(0xFFFF)),     // WORD
+            2 => fb.and(&vi, &fb.const_i64(0xFFFFFFFF)), // DWORD
+            3 => {
+                // INTEGER (signed 16)
+                let m = fb.and(&vi, &fb.const_i64(0xFFFF));
+                let x = fb.xor(&m, &fb.const_i64(0x8000));
+                fb.sub(&x, &fb.const_i64(0x8000))
+            }
+            4 => {
+                // LONG (signed 32)
+                let m = fb.and(&vi, &fb.const_i64(0xFFFFFFFF));
+                let x = fb.xor(&m, &fb.const_i64(0x80000000));
+                fb.sub(&x, &fb.const_i64(0x80000000))
+            }
+            _ => vi,
+        };
+        Ok(res)
     }
 
     fn builtin_abs(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

@@ -10746,7 +10746,11 @@ impl Parser {
                         line,
                     }));
                 }
-                // ARRAY ASSIGN target() = source()
+                // ARRAY ASSIGN target() = expr1 [, expr2, ...]  (CHW spread form:
+                // assign successive values to successive array elements).  The
+                // single-source form target() = source() (fork extension, used
+                // by batch023) is parsed the same way; codegen distinguishes a
+                // lone array reference from scalar values.
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "ASSIGN")
                 {
@@ -10754,11 +10758,18 @@ impl Parser {
                     self.advance(); // consume ASSIGN
                     let target = self.parse_primary()?;
                     self.expect(&Token::Eq)?;
-                    let src = self.parse_primary()?;
+                    let mut values = vec![self.parse_expression()?];
+                    while self.peek() == &Token::Comma {
+                        self.advance(); // consume comma
+                        values.push(self.parse_expression()?);
+                    }
                     self.consume_to_eol();
+                    let mut args = Vec::with_capacity(values.len() + 1);
+                    args.push(target);
+                    args.extend(values);
                     return Ok(Statement::Call(CallStmt {
                         name: "ARRAY ASSIGN".to_string(),
-                        args: vec![target, src],
+                        args,
                         line,
                     }));
                 }
@@ -14262,33 +14273,50 @@ impl Parser {
             Token::Identifier(name)
                 if name.eq_ignore_ascii_case("BITS") || name.eq_ignore_ascii_case("BITS$") =>
             {
-                // BITS$(STRING, s$) / BITS$(WSTRING, s$) — director STRING is the String_ keyword,
-                // WSTRING is an Identifier token; map both to string modes.
+                // BITS(datatype, expr) / BITS$(director, s$): the datatype /
+                // director word is a compile-time keyword (STRING/WSTRING are
+                // keyword/Identifier tokens, BYTE/WORD are Identifiers,
+                // DWORD/INTEGER/LONG/QUAD are keyword tokens).  It is mapped to
+                // an internal type code consumed by codegen, and the function
+                // name keeps its original spelling so BITS and BITS$ never
+                // collide.  (batch 256B: the old branch only matched
+                // STRING/WSTRING/Identifiers, so BITS(DWORD,...) failed
+                // "Expected RParen, got Dword", and every call was mislabeled
+                // "BITS$".)
+                let is_bits_str = name.eq_ignore_ascii_case("BITS$");
                 self.advance();
                 self.expect(&Token::LParen)?;
                 let mut args = Vec::new();
-                if self.peek() == &Token::String_ {
+                let dir_code = match self.peek().clone() {
+                    Token::String_ => Some(23), // STRING
+                    Token::Long => Some(4),
+                    Token::Integer => Some(3),
+                    Token::Dword => Some(2),
+                    Token::Quad => Some(5),
+                    Token::Identifier(w) => {
+                        let u = w.to_uppercase();
+                        match u.as_str() {
+                            "WSTRING" => Some(27),
+                            "BYTE" => Some(0),
+                            "WORD" => Some(1),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(code) = dir_code {
                     self.advance();
-                    args.push(Expr::StringLit("STRING".to_string()));
+                    args.push(Expr::IntegerLit(code));
                     if self.peek() == &Token::Comma {
                         self.advance();
                     }
                     args.extend(self.parse_arg_list()?);
-                } else if let Token::Identifier(ref w) = self.peek().clone() {
-                    let u = w.to_uppercase();
-                    if u == "WSTRING" {
-                        self.advance();
-                        args.push(Expr::StringLit(u));
-                        if self.peek() == &Token::Comma {
-                            self.advance();
-                        }
-                        args.extend(self.parse_arg_list()?);
-                    } else if self.peek() != &Token::RParen {
-                        args = self.parse_arg_list()?;
-                    }
+                } else if self.peek() != &Token::RParen {
+                    args = self.parse_arg_list()?;
                 }
                 self.expect(&Token::RParen)?;
-                Ok(Expr::FunctionCall("BITS$".to_string(), args))
+                let fname = if is_bits_str { "BITS$" } else { "BITS" };
+                Ok(Expr::FunctionCall(fname.to_string(), args))
             }
             Token::Identifier(name)
                 if name.eq_ignore_ascii_case("EXTRACT")
