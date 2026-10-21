@@ -1124,6 +1124,12 @@ struct Compiler {
     // Function/sub declarations collected during first pass
     functions: HashMap<String, FuncInfo>,
     subs: HashMap<String, FuncInfo>,
+    /// IR symbol names that have a real `define` body in this module
+    /// (batch 260: a no-LIB DECLARE is registered as an external symbol but
+    /// NOT declared up front, because clang rejects `declare` + `define` of
+    /// the same function; symbols that turn out to be defined in this unit
+    /// never need the declare, the rest are declared just before emit).
+    defined_ir: std::collections::HashSet<String>,
 
     // Current function context
     current_fn_name: Option<String>,
@@ -1319,6 +1325,7 @@ impl Compiler {
             current_line: 0,
             functions: HashMap::new(),
             subs: HashMap::new(),
+            defined_ir: std::collections::HashSet::new(),
             current_fn_name: None,
             current_fn_return_type: None,
             current_fn_retval_ptr: None,
@@ -6259,6 +6266,25 @@ impl Compiler {
             self.emit_get_session();
         }
 
+        // Declare external symbols (no-LIB DECLARE) that this unit did NOT
+        // define.  Delayed to here so forward-declared unit functions keep
+        // their define and never get a conflicting declare (clang rejects
+        // `declare` + `define` of the same function, batch 260).
+        for fi in self.functions.values() {
+            if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
+                let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
+                self.module
+                    .declare_function(&fi.ir_name, &fi.ret_type, &params, false);
+            }
+        }
+        for fi in self.subs.values() {
+            if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
+                let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
+                self.module
+                    .declare_function(&fi.ir_name, &IrType::Void, &params, false);
+            }
+        }
+
         Ok(())
     }
 
@@ -6400,18 +6426,22 @@ impl Compiler {
             // `DECLARE FUNCTION sum(...)` + `#LINK "sum.obj"` work (batch 260,
             // Erol Ojalvo request).  A forward DECLARE of a function defined
             // later in this unit is harmless: register_function/sub re-inserts
-            // the same name and overwrites this entry.
+            // the same name and overwrites this entry, and compile_function/
+            // compile_sub marks the symbol as defined so it is never declared.
+            //
+            // The IR declaration is DELAYED: emitted once, right before the
+            // module is written, only for external symbols that this unit does
+            // NOT define (see declare_pending_externals).  Declaring here
+            // would produce `declare` + `define` for forward-declared unit
+            // functions, which clang rejects as an invalid redefinition.
             //
             // Symbol name keeps the SOURCE spelling (case-sensitive in the
             // linker): Erol's Poasm `sum PROC` links to `DECLARE FUNCTION sum`,
             // and COFF symbol matching is case-sensitive — `@SUM` would be
             // an unresolved `SUM` against an obj that exports `sum`.
             let ir_name = ds.alias.clone().unwrap_or_else(|| ds.name.clone());
-            let ir_param_types: Vec<IrType> = params.iter().map(|p| p.ir_type.clone()).collect();
             if ds.is_function {
                 let ret_type = Self::ir_type_for(&ds.return_type);
-                self.module
-                    .declare_function(&ir_name, &ret_type, &ir_param_types, false);
                 self.functions.insert(
                     name,
                     FuncInfo {
@@ -6424,8 +6454,6 @@ impl Compiler {
                     },
                 );
             } else {
-                self.module
-                    .declare_function(&ir_name, &IrType::Void, &ir_param_types, false);
                 self.subs.insert(
                     name,
                     FuncInfo {
@@ -6604,6 +6632,7 @@ impl Compiler {
             &ir_params,
             info.export,
         );
+        self.defined_ir.insert(info.ir_name.clone());
 
         // Debug: record current function name
         let (fn_name_str, _) = self.module.add_string_constant(&fd.name);
@@ -6700,6 +6729,7 @@ impl Compiler {
             &ir_params,
             info.export,
         );
+        self.defined_ir.insert(info.ir_name.clone());
 
         // Debug: record current function name
         let (fn_name_str, _) = self.module.add_string_constant(&sd.name);
