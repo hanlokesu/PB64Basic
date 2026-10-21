@@ -622,9 +622,22 @@ fn link_dll(
     ];
 
     // #LINK "filespec" extra inputs (batch 260) — CHW: #LINK may also target
-    // a DLL host module.
+    // a DLL host module.  Same relative-path fallback as link_exe: try cwd,
+    // then the output DLL's directory (the source file's folder).
     for lf in link_files {
-        args.push(lf.clone());
+        let p = std::path::Path::new(lf);
+        if p.is_absolute() || p.exists() {
+            args.push(lf.clone());
+        } else if let Some(parent) = dll_path.parent() {
+            let cand = parent.join(lf);
+            if cand.exists() {
+                args.push(cand.to_string_lossy().to_string());
+            } else {
+                args.push(lf.clone());
+            }
+        } else {
+            args.push(lf.clone());
+        }
     }
 
     // Runtime library (pb_debug_enter, pb_bstr_alloc, pb_str_concat, ...)
@@ -689,9 +702,24 @@ fn link_exe(
 
     // #LINK "filespec" extra inputs (batch 260): external .obj/.lib modules
     // handed straight to the linker, exactly like PBWin's #LINK hands SLL
-    // units to its linker.
+    // units to its linker.  A relative spec is first tried against the current
+    // directory and then against the directory of the output EXE (i.e. the
+    // source file's folder when -o is omitted), so `#LINK "sum.obj"` inside
+    // examples/ works when the compiler is invoked from the repo root.
     for lf in link_files {
-        args.push(lf.clone());
+        let p = std::path::Path::new(lf);
+        if p.is_absolute() || p.exists() {
+            args.push(lf.clone());
+        } else if let Some(parent) = exe_path.parent() {
+            let cand = parent.join(lf);
+            if cand.exists() {
+                args.push(cand.to_string_lossy().to_string());
+            } else {
+                args.push(lf.clone()); // let the linker report the missing file
+            }
+        } else {
+            args.push(lf.clone());
+        }
     }
 
     // Add runtime library if specified

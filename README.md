@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (864 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 254 (v0.2.079). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 260 (v0.2.080). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 260 (v0.2.080) - #LINK metastatement links external MS COFF object modules (.obj/.lib) into EXE/DLL hosts (extension over .SLL/.PBLIB; PBWin 10 rejects .obj with Error 630); DECLARE without LIB now generates a real external symbol (ALIAS keeps case, else upper-case ProcName per CHW) - undefined external calls fail at link instead of silently returning 0; #LINK relative paths resolve against cwd then the source file's folder. New examples batch260_make_obj.txt (how to build an object module with clang), sum.c/sum.obj/build_sum_obj.bat, batch260_link_test.bas (prints 50). Dual-run baseline headless 134 / MATCH 131 / DIFF 0 / EMPTY 1 / ONLY-FORK 2 (batch029 Inline ASM extension + batch260 #LINK .obj).
 > batch 254 (v0.2.079) - MSGBOX full syntax (statement/function/? shorthand, default title "PB64Basic"); CONTROL by-id verbs per CHW; CONTROL ADD SCROLLBAR/TAB txt$ slot; TAB()/TAB$() function forms; batch174 DIALOG GET CLIENT height after MENU ATTACH; batch205 TCP OPEN SERVER ADDR bind + CRLF line endings. Dual-run baseline MATCH 115 / DIFF 7 (env/resource) / EMPTY 1 / ONLY-FORK 1 (batch029 Inline ASM extension).
 > batch 249 (v0.2.078) - all 12 CONTROL ADD controls aligned to the CHW official 11-argument syntax (style&/exstyle&/CALL callback passthrough; CONTROL ADD has no TO clause - CONTROL HANDLE fetches the handle; CALLBACK FUNCTION ... AS LONG with FUNCTION=0 bodies); TEXTBOX default style missing WS_BORDER + DLU height -1 fixed (batch177 DIFF->MATCH); LABEL 11-arg layout clippy fix; dual-run baseline MATCH 115 / DIFF 2 (batch174 env, batch205 tcp) / EMPTY 0 / ONLY-FORK 1.
 > batch 238 (v0.2.077) - DIALOG SHOW MODAL hDlg TO Result official syntax (HelloDDT x64); DIALOG END optional result; 421/519 error-code alignment with PBWin10 (#DIM ALL/OPTION EXPLICIT); numeric IP network-order unified &H0100007F (UDP SEND/TCP OPEN raw, UDP RECV network order); repository detached+renamed hanlokesu/PB64Basic, compiler binary PB64Basic.exe, full rebrand of examples/docs/demo/IDE; Apache-2.0 4(b) notices; dual-run baseline MATCH 116 / DIFF 1 / EMPTY 0 / ONLY-FORK 1.
@@ -730,6 +731,12 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.080 (2026-10-21)
+
+- **`#LINK` metastatement + DECLARE without LIB as external symbol** (batch 260): `#LINK "file.obj"` / `"file.lib"` links an external MS COFF object module into the EXE/DLL (clang/lld driver) - an extension over PowerBASIC's .SLL/.PBLIB units (PBWin 10 itself rejects .obj with Error 630, measured). A `DECLARE` without `LIB` is now a real external symbol: ALIAS preserves case, otherwise the normalized upper-case name (CHW DECLARE rule); calls generate real `call` instructions and fail at link time on an undefined symbol instead of silently returning 0.
+- New examples: `batch260_make_obj.txt` (how to build an object module from C with clang), `sum.c`, `sum.obj`, `build_sum_obj.bat` (one-click rebuild) and `batch260_link_test.bas` (prints 50 via `#LINK "sum.obj"` + `DECLARE FUNCTION sum ALIAS "sum"`).
+- Dual-run baseline: headless 134 / MATCH 131 / DIFF 0 / EMPTY 1 / ONLY-FORK 2 (batch029 Inline ASM extension + batch260 #LINK .obj).
+
 ### v0.2.079 (2026-10-18) - batch 250-254 + 174/205: MSGBOX full syntax + CONTROL by-id verbs + TAB() functions + DIALOG/TCP fixes
 
 - **MSGBOX** full official syntax (statement / function / `?` shorthand; default title "PB64Basic" when omitted)

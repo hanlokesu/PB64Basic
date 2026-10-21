@@ -1,0 +1,45 @@
+BATCH 260 DEMO - HOW TO BUILD sum.obj (an external object module)
+================================================================
+
+PB64Basic's #LINK metastatement links external object modules (.obj) or
+static libraries (.lib) into your EXE/DLL - the same role #LINK plays for
+.SLL/.PBLIB units in PowerBASIC, extended to plain COFF inputs
+(PowerBASIC 10 itself rejects .obj with Error 630; this is a PB64Basic
+extension).
+
+THE DEMO PAIR
+-------------
+  sum.c       - the C source below (the .obj we build from)
+  sum.obj     - the MS COFF x64 object produced by clang
+  batch260_link_test.bas - the PowerBASIC host that calls sum() via
+             `#LINK "sum.obj"` + `DECLARE FUNCTION sum ALIAS "sum"`.
+
+STEP 1 - save this file as sum.c
+--------------------------------
+  // sum.c - external add function (Win64 ABI: arg1=rcx, arg2=rdx)
+  __int64 sum(__int64 a, __int64 b) { return a + b; }
+
+STEP 2 - compile it to sum.obj with clang (LLVM)
+------------------------------------------------
+  clang -c -O2 --target=x86_64-pc-windows-msvc sum.c -o sum.obj
+
+  That produces a 647-byte MS COFF 64-bit object exporting the symbol
+  `sum`.  You can equally produce it from any tool that emits COFF x64:
+  ml64.exe, MASM/Poasm (`sum PROC` ... `sum ENDP`), or another compiler.
+
+STEP 3 - build the host program with PB64Basic
+----------------------------------------------
+  PB64Basic.exe build batch260_link_test.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj
+
+  Run batch260_link_test.exe: it prints 50 (20 + 30).
+
+SYMBOL NAME RULE (CHW DECLARE, important)
+-----------------------------------------
+COFF linking is CASE-SENSITIVE. The external symbol is:
+  - the ALIAS string, exactly as written (case preserved), or
+  - the normalized upper-case DECLARE name when there is no ALIAS.
+
+So pair `DECLARE FUNCTION sum ALIAS "sum" (...)` with a `sum` symbol in the
+.obj.  Without ALIAS the compiler looks for `SUM`, which will not match a
+lowercase `sum` and the link fails with `undefined symbol: SUM` - exactly
+PowerBASIC's semantics.
