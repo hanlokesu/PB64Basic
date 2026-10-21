@@ -731,7 +731,7 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
-### v0.2.080 (2026-10-21)
+### v0.2.080 (2026-10-22)
 
 - **`#LINK` metastatement + DECLARE without LIB as external symbol** (batch 260): `#LINK "file.obj"` / `"file.lib"` links an external MS COFF object module into the EXE/DLL (clang/lld driver) - an extension over PowerBASIC's .SLL/.PBLIB units (PBWin 10 itself rejects .obj with Error 630, measured). A `DECLARE` without `LIB` is now a real external symbol: ALIAS preserves case, otherwise the normalized upper-case name (CHW DECLARE rule); calls generate real `call` instructions and fail at link time on an undefined symbol instead of silently returning 0.
 - New examples: `batch260_make_obj.txt` (how to build an object module from C with clang), `sum.c`, `sum.obj`, `build_sum_obj.bat` (one-click rebuild) and `batch260_link_test.bas` (prints 50 via `#LINK "sum.obj"` + `DECLARE FUNCTION sum ALIAS "sum"`).
