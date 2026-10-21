@@ -5356,13 +5356,20 @@ impl Compiler {
                 IrType::I64,
                 IrType::I64,
                 IrType::I64,
+                IrType::I64,
             ],
             false,
         );
         self.module.declare_function(
             "pb_array_insert_str",
             &IrType::Void,
-            &[IrType::Ptr, IrType::I64, IrType::I64, IrType::Ptr],
+            &[
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::Ptr,
+            ],
             false,
         );
         self.module.declare_function(
@@ -5375,7 +5382,50 @@ impl Compiler {
                 IrType::I64,
                 IrType::I64,
                 IrType::I32,
+                IrType::I64,
+                IrType::Ptr,
             ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_array_sort2",
+            &IrType::Void,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_array_scan",
+            &IrType::I64,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I32,
+                IrType::I64,
+                IrType::I32,
+                IrType::I64,
+                IrType::I64,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_asc_get",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64],
             false,
         );
         self.module.declare_function(
@@ -17002,8 +17052,9 @@ impl Compiler {
                 return Ok(());
             }
             "ARRAY SORT" => {
-                // ARRAY SORT arr() [FOR n] [, DESCEND|ASCEND]
-                if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
+                // ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()]
+                //   [,ASCEND|DESCEND] — pb_array_sort2 (CHW range + tag sort)
+                if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let name = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                         let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
@@ -17017,13 +17068,55 @@ impl Compiler {
                             IrType::Ptr => (8, 3),
                             _ => (4, 0),
                         };
+                        let idx = if let Some(ix) = indices.first() {
+                            let iv = self.compile_expr(fb, ix)?;
+                            self.to_i64(fb, &iv)
+                        } else {
+                            fb.const_i64(1)
+                        };
+                        let count = if call.args.len() > 1 {
+                            let cv = self.compile_expr(fb, &call.args[1])?;
+                            self.to_i64(fb, &cv)
+                        } else {
+                            fb.const_i64(0)
+                        };
+                        let descend = if call.args.len() > 3 {
+                            let dv = self.compile_expr(fb, &call.args[3])?;
+                            self.to_i64(fb, &dv)
+                        } else {
+                            fb.const_i64(0)
+                        };
+                        let (tag_ptr, tag_es) =
+                            if let Some(Expr::FunctionCall(tn, _)) = call.args.get(2) {
+                                let tname = normalize_name(tn);
+                                if let Some(ti) = self.symbols.lookup_array(&tname).cloned() {
+                                    let tp = Val::new(ti.ptr_name.clone(), IrType::Ptr);
+                                    let tes = match &ti.elem_ir_type {
+                                        IrType::I8 | IrType::I1 => 1,
+                                        IrType::I16 => 2,
+                                        IrType::I32 | IrType::Float => 4,
+                                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
+                                        _ => 4,
+                                    };
+                                    (tp, tes)
+                                } else {
+                                    (fb.const_null_ptr(), 0)
+                                }
+                            } else {
+                                (fb.const_null_ptr(), 0)
+                            };
                         fb.call_void(
-                            "pb_array_sort",
+                            "pb_array_sort2",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i32(arr_info.total_elements as i32),
+                                fb.const_i64(arr_info.total_elements as i64),
+                                idx,
+                                count,
                                 fb.const_i32(sort_type),
+                                descend,
+                                tag_ptr,
+                                fb.const_i32(tag_es),
                             ],
                         );
                     }
@@ -17583,64 +17676,12 @@ impl Compiler {
             }
             "ARRAY SCAN =" | "ARRAY SCAN <>" | "ARRAY SCAN <" | "ARRAY SCAN >"
             | "ARRAY SCAN <=" | "ARRAY SCAN >=" => {
-                // ARRAY SCAN arr(), OP expr, TO var&
-                let op = match name.as_str() {
-                    "ARRAY SCAN <>" => 1,
-                    "ARRAY SCAN <" => 2,
-                    "ARRAY SCAN >" => 3,
-                    "ARRAY SCAN <=" => 4,
-                    "ARRAY SCAN >=" => 5,
-                    _ => 0,
-                };
-                if call.args.len() >= 3 {
-                    if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
-                        let an = normalize_name(arr_name);
-                        if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                            let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
-                            let elem_size = match &arr_info.elem_ir_type {
-                                IrType::I8 | IrType::I1 => 1,
-                                IrType::I16 => 2,
-                                IrType::I32 | IrType::Float => 4,
-                                IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                                _ => 4,
-                            };
-                            let value = self.compile_expr(fb, &call.args[1])?;
-                            let total = fb.const_i64(arr_info.total_elements as i64);
-                            let result = if arr_info.elem_ir_type == IrType::Ptr {
-                                fb.call(
-                                    &IrType::I64,
-                                    "pb_array_scan_str",
-                                    &[base, total, fb.const_i64(1), fb.const_i64(0), value],
-                                )
-                            } else {
-                                let v64 = self.to_i64(fb, &value);
-                                fb.call(
-                                    &IrType::I64,
-                                    "pb_array_scan_num",
-                                    &[
-                                        base,
-                                        fb.const_i32(elem_size),
-                                        total,
-                                        fb.const_i64(1),
-                                        fb.const_i64(0),
-                                        v64,
-                                        fb.const_i32(op),
-                                    ],
-                                )
-                            };
-                            if let Some(tgt) = call.args.get(2) {
-                                if let Some((ptr, ir_ty, pb_ty)) = self.lvalue_ptr(fb, tgt) {
-                                    let conv = self.convert_value(fb, &result, &ir_ty, &pb_ty);
-                                    fb.store(&conv, &ptr);
-                                }
-                            }
-                        }
-                    }
-                }
-                return Ok(());
+                // CHW scan: arr([index]) [FOR count] [,FROM..TO] [,COLLATE UCASE]
+                // , op expr, TO lvar — relative index (gen_array_scan)
+                return self.gen_array_scan(fb, &call);
             }
             "ARRAY INSERT" => {
-                // ARRAY INSERT arr(index), value
+                // ARRAY INSERT arr([index]) [FOR count] [,] value
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
@@ -17662,19 +17703,26 @@ impl Compiler {
                         } else {
                             idx
                         };
+                        let count = if call.args.len() > 1 {
+                            let cv = self.compile_expr(fb, &call.args[1])?;
+                            self.to_i64(fb, &cv)
+                        } else {
+                            fb.const_i64(0)
+                        };
                         if arr_info.elem_ir_type == IrType::Ptr {
-                            let val = self.compile_expr(fb, &call.args[1])?;
+                            let val = self.compile_expr(fb, &call.args[2])?;
                             fb.call_void(
                                 "pb_array_insert_str",
                                 &[
                                     base,
                                     fb.const_i64(arr_info.total_elements as i64),
                                     idx64,
+                                    count,
                                     val,
                                 ],
                             );
                         } else {
-                            let val = self.compile_expr(fb, &call.args[1])?;
+                            let val = self.compile_expr(fb, &call.args[2])?;
                             let v64 = self.to_i64(fb, &val);
                             fb.call_void(
                                 "pb_array_insert_num",
@@ -17683,6 +17731,7 @@ impl Compiler {
                                     fb.const_i32(elem_size),
                                     fb.const_i64(arr_info.total_elements as i64),
                                     idx64,
+                                    count,
                                     v64,
                                 ],
                             );
@@ -17884,7 +17933,7 @@ impl Compiler {
                 return Ok(());
             }
             "ARRAY DELETE" => {
-                // ARRAY DELETE arr(index) [FOR count]
+                // ARRAY DELETE arr([index]) [FOR count] [, expression]
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
@@ -17911,11 +17960,21 @@ impl Compiler {
                         } else {
                             idx
                         };
-                        let count = if let Some(cexpr) = call.args.get(1) {
-                            let cv = self.compile_expr(fb, cexpr)?;
+                        let count = if call.args.len() > 1 {
+                            let cv = self.compile_expr(fb, &call.args[1])?;
                             self.to_i64(fb, &cv)
                         } else {
                             fb.const_i64(1)
+                        };
+                        let (fill_num, fill_str) = if call.args.len() > 2 {
+                            let fv = self.compile_expr(fb, &call.args[2])?;
+                            if arr_info.elem_ir_type == IrType::Ptr {
+                                (fb.const_i64(0), fv)
+                            } else {
+                                (self.to_i64(fb, &fv), fb.const_null_ptr())
+                            }
+                        } else {
+                            (fb.const_i64(0), fb.const_null_ptr())
                         };
                         fb.call_void(
                             "pb_array_delete",
@@ -17926,6 +17985,8 @@ impl Compiler {
                                 idx64,
                                 count,
                                 fb.const_i32(is_string),
+                                fill_num,
+                                fill_str,
                             ],
                         );
                     }
@@ -22831,9 +22892,114 @@ impl Compiler {
     }
 
     fn builtin_asc(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // ASC(s$ [, pos]) — pos 1-based, negative counts from the end; null /
+        // 0 / out-of-range returns -1 (CHW + PBWin10).  pb_asc_get handles all.
         let s = self.compile_expr(fb, &args[0])?;
-        let byte = fb.load(&IrType::I8, &s);
-        Ok(fb.zext(&byte, &IrType::I32))
+        let pos = if args.len() > 1 {
+            let p = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &p)
+        } else {
+            fb.const_i64(1)
+        };
+        Ok(fb.call(&IrType::I64, "pb_asc_get", &[s, pos]))
+    }
+
+    /// ARRAY SCAN arr([index]) [FOR count], op expr, TO lvar& (CHW).
+    /// Relative index of first match stored in the TO target; 0 = no match.
+    fn gen_array_scan(&mut self, fb: &mut FunctionBuilder, call: &CallStmt) -> PbResult<()> {
+        if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
+            let an = normalize_name(arr_name);
+            if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
+                let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                let elem_size = match &arr_info.elem_ir_type {
+                    IrType::I8 | IrType::I1 => 1,
+                    IrType::I16 => 2,
+                    IrType::I32 | IrType::Float => 4,
+                    IrType::I64 | IrType::Double | IrType::Ptr => 8,
+                    _ => 4,
+                };
+                let is_string = if arr_info.elem_ir_type == IrType::Ptr {
+                    1
+                } else {
+                    0
+                };
+                let idx = if let Some(ix) = indices.first() {
+                    let iv = self.compile_expr(fb, ix)?;
+                    self.to_i64(fb, &iv)
+                } else {
+                    fb.const_i64(1)
+                };
+                let count = if let Some(ce) = call.args.get(1) {
+                    let cv = self.compile_expr(fb, ce)?;
+                    self.to_i64(fb, &cv)
+                } else {
+                    fb.const_i64(0)
+                };
+                let op = if let Some(Expr::IntegerLit(o)) = call.args.get(2) {
+                    *o as i32
+                } else {
+                    0
+                };
+                let (value, from, to) = if let (Some(ve), Some(fe), Some(te)) =
+                    (call.args.get(3), call.args.get(5), call.args.get(6))
+                {
+                    let vv = self.compile_expr(fb, ve)?;
+                    let v = if arr_info.elem_ir_type == IrType::Ptr {
+                        vv
+                    } else {
+                        self.to_i64(fb, &vv)
+                    };
+                    let fv = self.compile_expr(fb, fe)?;
+                    let f = self.to_i64(fb, &fv);
+                    let tv = self.compile_expr(fb, te)?;
+                    let t = self.to_i64(fb, &tv);
+                    (v, f, t)
+                } else {
+                    (fb.const_i64(0), fb.const_i64(0), fb.const_i64(0))
+                };
+                let (collate_ucase, collate_str) =
+                    if let Some(Expr::IntegerLit(m)) = call.args.get(7) {
+                        if *m == 1 {
+                            (1i32, fb.const_null_ptr())
+                        } else if *m == 2 {
+                            // Custom COLLATE string not implemented yet: fail loudly,
+                            // never silently no-op (was the old behavior).
+                            return Err(PbError::runtime(
+                                "ARRAY SCAN: custom COLLATE string not implemented (UCASE is)",
+                            ));
+                        } else {
+                            (0i32, fb.const_null_ptr())
+                        }
+                    } else {
+                        (0i32, fb.const_null_ptr())
+                    };
+                let res = fb.call(
+                    &IrType::I64,
+                    "pb_array_scan",
+                    &[
+                        base,
+                        fb.const_i32(elem_size),
+                        fb.const_i64(arr_info.total_elements as i64),
+                        idx,
+                        count,
+                        fb.const_i32(op),
+                        value,
+                        fb.const_i32(is_string),
+                        from,
+                        to,
+                        fb.const_i32(collate_ucase),
+                        collate_str,
+                    ],
+                );
+                if let Some(target) = call.args.get(4) {
+                    if let Some((ptr, ir, pb)) = self.lvalue_ptr(fb, target) {
+                        let converted = self.convert_value(fb, &res, &ir, &pb);
+                        fb.store(&converted, &ptr);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn builtin_str(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

@@ -2874,54 +2874,60 @@ long long pb_array_scan_str(char* base, long long total, long long index, long l
     return 0;
 }
 
-/* ARRAY INSERT arr(index), value � insert element, shift down (fixed array: last element lost) */
+/* ARRAY INSERT arr(index) [FOR count] [, value] — insert element; with count,
+   only count elements shift up to make room (PBWin-measured; count 0/absent =
+   shift to the end). */
 void pb_array_insert_num(char* base, int elem_size, long long total, long long index,
-                         long long value) {
+                         long long count, long long value) {
     if (index < 1) index = 1;
     if (index > total) return;
-    memmove(base + index * elem_size, base + (index - 1) * elem_size,
-            (size_t)((total - index) * elem_size));
+    if (count <= 0) count = total - index + 1;
+    long long shift = count;
+    if (index - 1 + shift > total) shift = total - index + 1;
+    memmove(base + (index - 1 + 1) * elem_size, base + (index - 1) * elem_size,
+            (size_t)((shift - 1) * elem_size));
     memcpy(base + (index - 1) * elem_size, &value, (size_t)elem_size);
 }
 
-void pb_array_insert_str(char* base, long long total, long long index, char* bstr) {
+void pb_array_insert_str(char* base, long long total, long long index,
+                         long long count, char* bstr) {
     if (index < 1) index = 1;
     if (index > total) return;
-    memmove(base + index * 8, base + (index - 1) * 8, (size_t)((total - index) * 8));
+    if (count <= 0) count = total - index + 1;
+    long long shift = count;
+    if (index - 1 + shift > total) shift = total - index + 1;
+    memmove(base + index * 8, base + (index - 1) * 8, (size_t)((shift - 1) * 8));
     memcpy(base + (index - 1) * 8, &bstr, 8);
 }
 
-/* ARRAY DELETE arr(index) [FOR count] � remove element(s), shift up */
+/* ARRAY DELETE arr(index) [FOR count] [, fill] — remove element(s), shift up;
+   the vacated tail slot is filled with `fill` (0 / empty string when absent). */
 void pb_array_delete(char* base, int elem_size, long long total, long long index,
-                     long long count, int is_string) {
+                     long long count, int is_string, long long fill_num, char* fill_str) {
     if (index < 1) index = 1;
     if (count <= 0) count = 1;
     if (index > total) return;
     if (index + count > total) count = total - index + 1;
     long long from = index - 1;  /* 0-based */
     if (count == 1) {
-        /* No FOR (or FOR 1): delete one element and shift everything left,
-           zeroing the vacated tail slot (PB measured case4). */
         memmove(base + from * elem_size, base + (from + 1) * elem_size,
                 (size_t)((total - from - 1) * elem_size));
         if (is_string) {
             char** sp = (char**)(base + (total - 1) * elem_size);
             if (*sp) { SysFreeString(*sp); *sp = NULL; }
+            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)strlen(fill_str));
         } else {
-            memset(base + (total - 1) * elem_size, 0, (size_t)elem_size);
+            memcpy(base + (total - 1) * elem_size, &fill_num, (size_t)elem_size);
         }
     } else {
-        /* FOR N (N>1): PBWin10 measured behavior - the deleted span
-           [index .. index+N-1] collapses only within itself: the N-1
-           following slots shift up by one, the last span slot is zeroed,
-           and slots after the span are left untouched (PB case1/2/3). */
         memmove(base + from * elem_size, base + (from + 1) * elem_size,
                 (size_t)((count - 1) * elem_size));
         if (is_string) {
             char** sp = (char**)(base + (from + count - 1) * elem_size);
             if (*sp) { SysFreeString(*sp); *sp = NULL; }
+            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)strlen(fill_str));
         } else {
-            memset(base + (from + count - 1) * elem_size, 0, (size_t)elem_size);
+            memcpy(base + (from + count - 1) * elem_size, &fill_num, (size_t)elem_size);
         }
     }
 }
@@ -3375,6 +3381,145 @@ void pb_array_sort(char* base, int elem_size, int count, int type) {
         case 3: qsort(base, (size_t)count, (size_t)elem_size, cmp_str); break;
         case 4: qsort(base, (size_t)count, (size_t)elem_size, cmp_f32); break;
     }
+}
+
+static int arr_cmp_e(const void* a, const void* b, int type) {
+    switch (type) {
+        case 0: return cmp_i32(a, b);
+        case 1: return cmp_i64(a, b);
+        case 2: return cmp_dbl(a, b);
+        case 3: return cmp_str(a, b);
+        case 4: return cmp_f32(a, b);
+        default: return 0;
+    }
+}
+
+static void swap_elem(char* a, char* b, int es) {
+    char tmp[16];
+    memcpy(tmp, a, (size_t)es);
+    memcpy(a, b, (size_t)es);
+    memcpy(b, tmp, (size_t)es);
+}
+
+/* ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()] [,DESCEND] — CHW range
+   sort with optional tag-along array.  index/count are 1-based; count 0/absent
+   = index .. end.  Tag array swaps in lockstep with the data array. */
+void pb_array_sort2(char* base, int elem_size, long long total, long long index,
+                    long long count, int type, int descend,
+                    char* tag_base, int tag_elem_size) {
+    if (!base || total <= 1) return;
+    if (index < 1) index = 1;
+    if (count <= 0) count = total - index + 1;
+    long long end = index + count - 1;
+    if (end > total) end = total;
+    long long n = end - index + 1;
+    if (n <= 1) return;
+    long long i, j;
+    for (i = 0; i < n - 1; i++) {
+        long long best = i;
+        for (j = i + 1; j < n; j++) {
+            int c = arr_cmp_e(base + (index - 1 + best) * elem_size,
+                              base + (index - 1 + j) * elem_size, type);
+            if (descend) c = -c;
+            if (c > 0) best = j;
+        }
+        if (best != i) {
+            swap_elem(base + (index - 1 + i) * elem_size,
+                      base + (index - 1 + best) * elem_size, elem_size);
+            if (tag_base && tag_elem_size > 0) {
+                swap_elem(tag_base + (index - 1 + i) * tag_elem_size,
+                          tag_base + (index - 1 + best) * tag_elem_size, tag_elem_size);
+            }
+        }
+    }
+}
+
+/* compare helper: returns -1/0/1 */
+static int cmp_longlong(long long a, long long b) { return (a > b) - (a < b); }
+
+/* apply relational op (0 =, 1 <>, 2 <, 3 >, 4 <=, 5 >=) to compare result c */
+static int apply_op(int c, int op) {
+    switch (op) {
+        case 0: return c == 0;
+        case 1: return c != 0;
+        case 2: return c < 0;
+        case 3: return c > 0;
+        case 4: return c <= 0;
+        default: return c >= 0;
+    }
+}
+
+/* ARRAY SCAN arr([index]) [FOR count], op expr, TO lvar — CHW relative-index
+   scan.  Returns 1..count for the first matching element (relative to the
+   scan start), 0 = no match.  Numeric arrays compare i64-widened values;
+   string arrays compare BSTR contents with optional 1-based FROM..TO window
+   (0 = whole string) and COLLATE UCASE (case-insensitive).  A custom
+   COLLATE string is not yet supported (collate ignored; UCASE only). */
+long long pb_array_scan(char* base, int elem_size, long long total, long long index,
+                        long long count, int op, long long val, int is_string,
+                        long long from, long long to, int collate_ucase,
+                        char* collate) {
+    (void)collate;
+    if (!base || total <= 0) return 0;
+    if (index < 1) index = 1;
+    if (count <= 0) count = total - index + 1;
+    long long end = index + count - 1;
+    if (end > total) end = total;
+    long long i;
+    for (i = index; i <= end; i++) {
+        char* p = base + (i - 1) * elem_size;
+        int match;
+        if (is_string) {
+            char* s = *(char**)p;
+            if (!s) s = "";
+            const char* t = (const char*)val;
+            if (!t) t = "";
+            long long sl = (long long)strlen(s);
+            long long tl = (long long)strlen(t);
+            long long lo = (from > 0) ? from : 1;
+            long long hi = (to > 0) ? to : sl;
+            if (lo < 1) lo = 1;
+            if (hi > sl) hi = sl;
+            long long wl = (hi >= lo) ? (hi - lo + 1) : 0;
+            int c = 0;
+            long long n = (wl < tl) ? wl : tl;
+            long long k;
+            for (k = 0; k < n; k++) {
+                char a = s[lo - 1 + k];
+                char b = t[k];
+                if (collate_ucase) {
+                    if (a >= 'a' && a <= 'z') a -= 32;
+                    if (b >= 'a' && b <= 'z') b -= 32;
+                }
+                if (a != b) { c = (a > b) ? 1 : -1; break; }
+            }
+            if (c == 0) {
+                if (wl > tl) c = 1;
+                else if (wl < tl) c = -1;
+            }
+            match = apply_op(c, op);
+        } else {
+            long long e;
+            if (elem_size == 1) e = *(signed char*)p;
+            else if (elem_size == 2) e = *(short*)p;
+            else if (elem_size == 4) e = *(int*)p;
+            else e = *(long long*)p;
+            match = apply_op(cmp_longlong(e, val), op);
+        }
+        if (match) return i - index + 1;
+    }
+    return 0;
+}
+
+/* ASC(s$ [, pos]) — character code at 1-based pos; negative pos counts from
+   the end; null string / pos 0 / out-of-range returns -1 (CHW + PBWin10). */
+long long pb_asc_get(char* s, long long pos) {
+    if (!s) return -1;
+    long long len = (long long)strlen(s);
+    if (len == 0) return -1;
+    if (pos < 0) pos = len + 1 + pos;
+    if (pos < 1 || pos > len) return -1;
+    return (long long)(unsigned char)s[pos - 1];
 }
 
 /* ARRAY ADD: add elements of src array into dst array (in-place), batch 67 */

@@ -10792,26 +10792,70 @@ impl Parser {
                         line,
                     }));
                 }
-                // ARRAY SCAN arr(), OP expr, TO var& (op: = <> < > <= >=)
+                // ARRAY SCAN arr([index]) [FOR count] [, FROM s TO e]
+                //   [, COLLATE {UCASE|cstr}] [,] op expr [,] TO target
+                // op: = <> < > <= >=.  Args:
+                //   [arr, count(0=rest), op_code, value, target, from(0), to(0),
+                //    collate_mode(0=none 1=UCASE 2=custom string), collate_expr]
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "SCAN")
                 {
                     self.advance(); // consume ARRAY
                     self.advance(); // consume SCAN
                     let arr_expr = self.parse_primary()?;
-                    let mut args = vec![arr_expr];
+                    let mut count = Expr::IntegerLit(0);
                     if self.peek() == &Token::For {
-                        self.advance(); // consume FOR (count currently not applied)
-                        let _count = self.parse_expression()?;
+                        self.advance(); // consume FOR
+                        count = self.parse_expression()?;
                     }
-                    self.expect(&Token::Comma)?;
-                    let op_sym = match self.peek() {
-                        Token::Eq => "=",
-                        Token::Neq => "<>",
-                        Token::Lt => "<",
-                        Token::Gt => ">",
-                        Token::Lte => "<=",
-                        Token::Gte => ">=",
+                    let mut from = Expr::IntegerLit(0);
+                    let mut to = Expr::IntegerLit(0);
+                    let mut collate_mode = 0i64;
+                    let mut collate_expr = Expr::IntegerLit(0);
+                    // optional leading commas before FROM / COLLATE options
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        if let Token::Identifier(w) = self.peek() {
+                            let wu = w.to_uppercase();
+                            if wu == "FROM" {
+                                self.advance();
+                                from = self.parse_expression()?;
+                                if self.peek() == &Token::To {
+                                    self.advance();
+                                    to = self.parse_expression()?;
+                                }
+                                continue;
+                            } else if wu == "COLLATE" {
+                                self.advance();
+                                if let Token::Identifier(w2) = self.peek() {
+                                    if w2.to_uppercase() == "UCASE" {
+                                        self.advance();
+                                        collate_mode = 1;
+                                    } else {
+                                        collate_mode = 2;
+                                        collate_expr = self.parse_expression()?;
+                                    }
+                                } else {
+                                    collate_mode = 2;
+                                    collate_expr = self.parse_expression()?;
+                                }
+                                continue;
+                            }
+                        }
+                        break;
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance(); // optional comma before op
+                    }
+                    let op_code = match self.peek() {
+                        Token::Eq => 0,
+                        Token::Neq => 1,
+                        Token::Lt => 2,
+                        Token::Gt => 3,
+                        Token::Lte => 4,
+                        Token::Gte => 5,
                         _ => {
                             return Err(PbError::parser(
                                 format!(
@@ -10823,23 +10867,42 @@ impl Parser {
                             ));
                         }
                     };
+                    let op_sym = match self.peek() {
+                        Token::Eq => "=",
+                        Token::Neq => "<>",
+                        Token::Lt => "<",
+                        Token::Gt => ">",
+                        Token::Lte => "<=",
+                        Token::Gte => ">=",
+                        _ => "?",
+                    };
                     self.advance(); // consume operator
-                    args.push(self.parse_expression()?); // value
+                    let value = self.parse_expression()?;
                     if self.peek() == &Token::Comma {
                         self.advance(); // optional comma before TO
                     }
                     if self.peek() == &Token::To {
                         self.advance(); // consume TO
                     }
-                    args.push(self.parse_expression()?); // target var
+                    let target = self.parse_expression()?;
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: format!("ARRAY SCAN {}", op_sym),
-                        args,
+                        args: vec![
+                            arr_expr,
+                            count,
+                            Expr::IntegerLit(op_code),
+                            value,
+                            target,
+                            from,
+                            to,
+                            Expr::IntegerLit(collate_mode),
+                            collate_expr,
+                        ],
                         line,
                     }));
                 }
-                // ARRAY INSERT arr(index), value
+                // ARRAY INSERT arr([index]) [FOR count] [,] value
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "INSERT")
                 {
@@ -10847,7 +10910,15 @@ impl Parser {
                     self.advance(); // consume INSERT
                     let arr_expr = self.parse_primary()?;
                     let mut args = vec![arr_expr];
-                    self.expect(&Token::Comma)?;
+                    if self.peek() == &Token::For {
+                        self.advance(); // consume FOR
+                        args.push(self.parse_expression()?);
+                    } else {
+                        args.push(Expr::IntegerLit(0));
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
                     args.push(self.parse_expression()?);
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
@@ -10856,7 +10927,7 @@ impl Parser {
                         line,
                     }));
                 }
-                // ARRAY DELETE arr(index) [FOR count]
+                // ARRAY DELETE arr([index]) [FOR count] [, expression]
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "DELETE")
                 {
@@ -10866,6 +10937,12 @@ impl Parser {
                     let mut args = vec![arr_expr];
                     if self.peek() == &Token::For {
                         self.advance(); // consume FOR
+                        args.push(self.parse_expression()?);
+                    } else {
+                        args.push(Expr::IntegerLit(1));
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
                         args.push(self.parse_expression()?);
                     }
                     self.consume_to_eol();
@@ -11059,21 +11136,43 @@ impl Parser {
                         line,
                     }));
                 }
-                // ARRAY SORT arr() [FOR n] [, DESCEND|ASCEND]
+                // ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()]
+                //   [,ASCEND|DESCEND]  (CHW; custom CALL sorts not yet)
                 if name_upper == "ARRAY"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "SORT")
                 {
                     self.advance(); // consume ARRAY
                     self.advance(); // consume SORT
-                    let mut args = vec![self.parse_expression()?];
-                    while self.peek() == &Token::Comma {
-                        self.advance();
-                        args.push(self.parse_expression()?);
+                    let arr_expr = self.parse_expression()?;
+                    let mut count = Expr::IntegerLit(0);
+                    if self.peek() == &Token::For {
+                        self.advance(); // consume FOR
+                        count = self.parse_expression()?;
+                    }
+                    let mut tag = Expr::IntegerLit(0);
+                    let mut descend = 0i64;
+                    loop {
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                        }
+                        if let Token::Identifier(w) = self.peek() {
+                            let wu = w.to_uppercase();
+                            if wu == "TAGARRAY" {
+                                self.advance();
+                                tag = self.parse_expression()?;
+                                continue;
+                            } else if wu == "ASCEND" || wu == "DESCEND" {
+                                descend = if wu == "DESCEND" { 1 } else { 0 };
+                                self.advance();
+                                continue;
+                            }
+                        }
+                        break;
                     }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "ARRAY SORT".to_string(),
-                        args,
+                        args: vec![arr_expr, count, tag, Expr::IntegerLit(descend)],
                         line,
                     }));
                 }
