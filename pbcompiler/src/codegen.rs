@@ -11222,9 +11222,8 @@ impl Compiler {
                         // untouched.
                         let base = Val::new(ti.ptr_name.clone(), IrType::Ptr);
                         let total = ti.total_elements as i64;
-                        let mut v_idx: i64 = 0;
-                        for val_expr in call.args.iter().skip(1) {
-                            if v_idx >= total {
+                        for (v_idx, val_expr) in call.args.iter().skip(1).enumerate() {
+                            if v_idx as i64 >= total {
                                 break;
                             }
                             let v = self.compile_expr(fb, val_expr)?;
@@ -11233,7 +11232,6 @@ impl Compiler {
                             let flat = fb.const_i32(v_idx as i32);
                             let elem_ptr = fb.gep_array(&ti.array_ir_type, &base, &flat);
                             fb.store(&converted, &elem_ptr);
-                            v_idx += 1;
                         }
                     }
                 }
@@ -17929,7 +17927,7 @@ impl Compiler {
             | "ARRAY SCAN <=" | "ARRAY SCAN >=" => {
                 // CHW scan: arr([index]) [FOR count] [,FROM..TO] [,COLLATE UCASE]
                 // , op expr, TO lvar — relative index (gen_array_scan)
-                return self.gen_array_scan(fb, &call);
+                return self.gen_array_scan(fb, call);
             }
             "ARRAY INSERT" => {
                 // ARRAY INSERT arr([index]) [FOR count] [,] value

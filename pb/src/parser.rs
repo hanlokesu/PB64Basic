@@ -11213,11 +11213,7 @@ impl Parser {
                                     collate_expr = self.parse_expression()?;
                                 }
                                 continue;
-                            } else if wu == "CALL" {
-                                self.advance();
-                                call_expr = self.parse_expression()?;
-                                continue;
-                            } else if wu == "USING" {
+                            } else if wu == "CALL" || wu == "USING" {
                                 self.advance();
                                 call_expr = self.parse_expression()?;
                                 continue;
