@@ -1607,6 +1607,10 @@ impl Compiler {
         self.module
             .declare_function("pb_callstk_dump", &IrType::Void, &[IrType::Ptr], false);
         self.module
+            .declare_function("pb_callstk_setargs", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_callstk_quote", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module
             .declare_function("pb_profile_enable", &IrType::Void, &[], false);
         self.module
             .declare_function("pb_profile_dump", &IrType::Void, &[IrType::Ptr], false);
@@ -6642,10 +6646,10 @@ impl Compiler {
             "pb_debug_enter",
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
-        // CALLSTK tracing (batch 33): push this procedure's name
-        // PBWin10's CALLSTK$(n) returns the frame name WITH trailing "()"
-        // (measured 2026-10-14: innermost=TESTA(), frame2=PBMAIN()); match it.
-        let (callstk_name, _) = self.module.add_string_constant(&format!("{}()", fd.name));
+        // CALLSTK tracing (batch 33): push this procedure's name.
+        // The "()" suffix is added by pb_callstk_get/dump, which also splice
+        // in the parameter snapshot (batch258d).  Name stored WITHOUT parens.
+        let (callstk_name, _) = self.module.add_string_constant(&fd.name);
         fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
 
         // Noop EZLIB/EZGUI functions → old Win32 UI, replaced by Electron
@@ -6682,6 +6686,8 @@ impl Compiler {
 
         // Bind parameters
         self.bind_params(&mut fb, &info.params);
+        // batch258d: CALLSTK$/CALLSTK parameter snapshot (entry block)
+        self.emit_callstk_args(&mut fb, &info.params);
 
         // Set up GOSUB context (must happen before compile_body)
         self.setup_gosub_context(&mut fb, &fd.body);
@@ -6739,9 +6745,9 @@ impl Compiler {
             "pb_debug_enter",
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
-        // CALLSTK tracing (batch 33): push this procedure's name
-        // PBWin10's CALLSTK$(n) returns the frame name WITH trailing "()".
-        let (callstk_name, _) = self.module.add_string_constant(&format!("{}()", sd.name));
+        // CALLSTK tracing (batch 33): push this procedure's name (no parens;
+        // get/dump add "()" plus the parameter snapshot, batch258d).
+        let (callstk_name, _) = self.module.add_string_constant(&sd.name);
         fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
 
         // Noop EZLIB/EZGUI subs → old Win32 UI, replaced by Electron
@@ -6758,6 +6764,8 @@ impl Compiler {
 
         // Bind parameters
         self.bind_params(&mut fb, &info.params);
+        // batch258d: CALLSTK$/CALLSTK parameter snapshot (entry block)
+        self.emit_callstk_args(&mut fb, &info.params);
 
         // Set up GOSUB context
         self.setup_gosub_context(&mut fb, &sd.body);
@@ -6807,6 +6815,75 @@ impl Compiler {
                 );
             }
         }
+    }
+
+    /// batch258d: parameter snapshot for CALLSTK$/CALLSTK, generated right
+    /// after bind_params (still the entry block).  PBWin format (measured):
+    /// numeric scalars → decimal value (BYVAL or BYREF — PBWin shows the
+    /// *target* value), STRING → "..." with double quotes, pointer / array /
+    /// UDT → decimal representation of the target (address here; CHW says
+    /// "offset of the target value" — addresses are the 64-bit equivalent,
+    /// pending PBWin verification).
+    fn emit_callstk_args(&mut self, fb: &mut FunctionBuilder, params: &[ParamInfo]) {
+        if params.is_empty() {
+            return;
+        }
+        let (comma, _) = self.module.add_string_constant(",");
+        let mut joined: Option<Val> = None;
+        for p in params {
+            let pv = Val::new(format!("%{}", p.name), p.ir_type.clone());
+            let f = match &p.pb_type {
+                PbType::String | PbType::FixedString(_) => {
+                    // string content: byval → pv is the BSTR ptr; byref → load it
+                    let sp = if p.is_byval {
+                        pv
+                    } else {
+                        fb.load(&IrType::Ptr, &pv)
+                    };
+                    fb.call(&IrType::Ptr, "pb_callstk_quote", &[sp])
+                }
+                PbType::Single | PbType::Double | PbType::Ext => {
+                    let val = if p.is_byval {
+                        pv
+                    } else {
+                        fb.load(&Self::ir_type_for(&p.pb_type), &pv)
+                    };
+                    let f64 = self.to_f64(fb, &val);
+                    fb.call(&IrType::Ptr, "pb_str_dbl", &[f64])
+                }
+                PbType::UserDefined(_) | PbType::Variant | PbType::Field => {
+                    let addr = if pv.ty == IrType::Ptr {
+                        fb.ptrtoint(&pv)
+                    } else {
+                        self.to_i64(fb, &pv)
+                    };
+                    fb.call(&IrType::Ptr, "pb_dec", &[addr])
+                }
+                _ => {
+                    // numeric scalar (Long/Integer/Word/Byte/Dword/Quad/Cur)
+                    let val = if p.is_byval {
+                        pv
+                    } else {
+                        fb.load(&Self::ir_type_for(&p.pb_type), &pv)
+                    };
+                    let i64 = self.to_i64(fb, &val);
+                    fb.call(&IrType::Ptr, "pb_dec", &[i64])
+                }
+            };
+            joined = Some(match joined {
+                None => f,
+                Some(j) => {
+                    let s1 = fb.call(
+                        &IrType::Ptr,
+                        "pb_str_concat",
+                        &[j, Val::new(comma.clone(), IrType::Ptr)],
+                    );
+                    fb.call(&IrType::Ptr, "pb_str_concat", &[s1, f])
+                }
+            });
+        }
+        let j = joined.unwrap();
+        fb.call_void("pb_callstk_setargs", &[j]);
     }
 
     // ========== GOSUB/RETURN setup ==========
@@ -18988,6 +19065,16 @@ impl Compiler {
                 };
                 if param.is_byval || is_byval_override {
                     let val = self.compile_expr(fb, inner_arg)?;
+                    // BOOLEAN (i1) values must be widened to a real 4-byte
+                    // value before being passed.  A bare i1 leaves 3 garbage
+                    // bytes in the register/stack slot and the callee reads
+                    // them as part of its LONG (batch 38 "choose out of
+                    // range" flapped between PASS/FAIL on stack garbage).
+                    let val = if val.ty == IrType::I1 {
+                        self.to_i32(fb, &val)
+                    } else {
+                        val
+                    };
                     // x64 ABI: every 4-byte BYVAL arg must occupy the full 8-byte
                     // register/stack slot.  A bare i32 leaves garbage in the upper
                     // 32 bits of a stack slot (WriteFile's lpOverlapped was the
@@ -19010,6 +19097,14 @@ impl Compiler {
                         _ => {
                             // Expression to BYREF: allocate temp
                             let val = self.compile_expr(fb, inner_arg)?;
+                            // Same BOOLEAN widening as the BYVAL path: store a
+                            // 4-byte slot, not a bare i1 that a LONG BYREF
+                            // parameter would over-read.
+                            let val = if val.ty == IrType::I1 {
+                                self.to_i32(fb, &val)
+                            } else {
+                                val
+                            };
                             let tmp = fb.alloca(&val.ty);
                             fb.store(&val, &tmp);
                             compiled.push(tmp);

@@ -2227,6 +2227,7 @@ char* pb_field_get(pb_field_t* fv) {
 #define PB_CALLSTK_MAX 256
 typedef struct {
     const char* name;
+    char* args; /* parameter snapshot: "7,\"hello\"" (NULL = none captured) */
     long long enter_tick; /* 0 when profiling is off */
 } pb_callstk_frame_t;
 static pb_callstk_frame_t pb_callstk_frames[PB_CALLSTK_MAX];
@@ -2264,6 +2265,7 @@ void pb_profile_enable(void) {
 void pb_callstk_push(const char* name) {
     if (pb_callstk_depth < PB_CALLSTK_MAX) {
         pb_callstk_frames[pb_callstk_depth].name = name;
+        pb_callstk_frames[pb_callstk_depth].args = NULL;
         if (pb_profile_enabled) {
             int idx = pb_profile_find_or_add(name);
             pb_callstk_frames[pb_callstk_depth].enter_tick = pb_now_ms();
@@ -2278,6 +2280,8 @@ void pb_callstk_push(const char* name) {
 void pb_callstk_pop(void) {
     if (pb_callstk_depth > 0) {
         pb_callstk_depth--;
+        free(pb_callstk_frames[pb_callstk_depth].args);
+        pb_callstk_frames[pb_callstk_depth].args = NULL;
         if (pb_profile_enabled && pb_callstk_frames[pb_callstk_depth].enter_tick != 0) {
             long long el = pb_now_ms() - pb_callstk_frames[pb_callstk_depth].enter_tick;
             int idx = pb_profile_find_or_add(pb_callstk_frames[pb_callstk_depth].name);
@@ -2290,23 +2294,69 @@ long long pb_callstk_count(void) {
     return (long long)pb_callstk_depth;
 }
 
-/* CALLSTK$(n): 1-based from the innermost frame; empty string when out of range */
+/* CALLSTK$(n): 1-based from the innermost frame; empty string when out of range.
+   PBWin format: NAME(arg1,arg2,...) with trailing "()" added here (the pushed
+   name is stored WITHOUT parentheses; see codegen). */
 char* pb_callstk_get(long long n) {
     if (n < 1 || n > pb_callstk_depth) return pb_bstr_alloc("", 0);
-    const char* nm = pb_callstk_frames[pb_callstk_depth - (int)n].name;
+    int idx = pb_callstk_depth - (int)n;
+    const char* nm = pb_callstk_frames[idx].name;
     if (!nm) nm = "?";
-    return pb_bstr_alloc(nm, (int)strlen(nm));
+    const char* ar = pb_callstk_frames[idx].args;
+    size_t nl = strlen(nm), al = ar ? strlen(ar) : 0;
+    char* b = (char*)malloc(nl + al + 3);
+    memcpy(b, nm, nl);
+    b[nl] = '(';
+    if (al) memcpy(b + nl + 1, ar, al);
+    b[nl + 1 + al] = ')';
+    b[nl + al + 2] = 0;
+    char* out = pb_bstr_alloc(b, (unsigned int)(nl + al + 2));
+    free(b);
+    return out;
 }
 
-/* CALLSTK filename$: write every frame, innermost first, one per line */
+/* codegen: capture this procedure's parameter snapshot ("7,\"hello\"") right
+   after push; replaces the innermost frame's args. */
+void pb_callstk_setargs(const char* s) {
+    if (pb_callstk_depth <= 0) return;
+    pb_callstk_frame_t* f = &pb_callstk_frames[pb_callstk_depth - 1];
+    free(f->args);
+    if (s && s[0]) {
+        size_t n = strlen(s);
+        char* c = (char*)malloc(n + 1);
+        memcpy(c, s, n);
+        c[n] = 0;
+        f->args = c;
+    } else {
+        f->args = NULL;
+    }
+}
+
+/* String parameter -> "..." (double quotes, PBWin CALLSTK$ format) */
+char* pb_callstk_quote(const char* s) {
+    if (!s) s = "";
+    size_t n = strlen(s);
+    char* b = (char*)malloc(n + 3);
+    b[0] = '"';
+    memcpy(b + 1, s, n);
+    b[n + 1] = '"';
+    b[n + 2] = 0;
+    char* out = pb_bstr_alloc(b, (unsigned int)(n + 2));
+    free(b);
+    return out;
+}
+
+/* CALLSTK filename$: write every frame, OUTERMOST first (PBWin order), one per
+   line: NAME(args) — see CHW CALLSTK_statement.htm example (PBMAIN() first). */
 void pb_callstk_dump(const char* filename) {
     if (!filename || !filename[0]) return;
     FILE* f = fopen(filename, "w");
     if (!f) return;
-    for (int i = pb_callstk_depth - 1; i >= 0; i--) {
+    for (int i = 0; i < pb_callstk_depth; i++) {
         const char* nm = pb_callstk_frames[i].name;
         if (!nm) nm = "?";
-        fprintf(f, "%s\n", nm);
+        const char* ar = pb_callstk_frames[i].args;
+        fprintf(f, "%s(%s)\n", nm, ar ? ar : "");
     }
     fclose(f);
 }
