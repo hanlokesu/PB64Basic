@@ -109,6 +109,15 @@ pub enum DimScope {
     Dim,      // plain DIM inside a sub/function
 }
 
+/* CHW CLIPBOARD data formats (9 statement forms; 4 formats x SET/GET + RESET). */
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardFormat {
+    Text,
+    OemText,
+    Unicode,
+    Bitmap,
+}
+
 #[derive(Debug, Clone)]
 pub struct DimBound {
     pub lower: Expr,
@@ -181,6 +190,21 @@ pub struct DeclareStmt {
 // Statements
 #[derive(Debug, Clone)]
 pub enum Statement {
+    /* CHW CLIPBOARD forms: SET/GET <format>; format drives the Win32 clipboard
+    data format and any character-set conversion (TEXT/OEMTEXT/UNICODE/BITMAP). */
+    ClipboardSet {
+        format: ClipboardFormat,
+        value: Expr,
+        result: Option<Expr>,
+    },
+    ClipboardGet {
+        format: ClipboardFormat,
+        target: Expr,
+        result: Option<Expr>,
+    },
+    ClipboardReset {
+        result: Option<Expr>,
+    },
     Assign(AssignStmt),
     Call(CallStmt),
     If(IfStmt),
@@ -219,17 +243,6 @@ pub enum Statement {
     OnCall {
         expr: Box<Expr>,
         targets: Vec<OnCallTarget>,
-    },
-    ClipboardSetText {
-        text: Expr,
-        result: Option<Expr>,
-    },
-    ClipboardGetText {
-        target: Expr,
-        result: Option<Expr>,
-    },
-    ClipboardReset {
-        result: Option<Expr>,
     },
     InputFlush,
     OnErrorGoto(String),

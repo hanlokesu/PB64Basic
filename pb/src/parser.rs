@@ -13250,24 +13250,48 @@ impl Parser {
         }))
     }
 
+    fn parse_clipboard_format(&mut self) -> Option<ClipboardFormat> {
+        if let Token::Identifier(s) = self.peek() {
+            if s.eq_ignore_ascii_case("TEXT") {
+                self.advance();
+                return Some(ClipboardFormat::Text);
+            }
+            if s.eq_ignore_ascii_case("OEMTEXT") {
+                self.advance();
+                return Some(ClipboardFormat::OemText);
+            }
+            if s.eq_ignore_ascii_case("UNICODE") {
+                self.advance();
+                return Some(ClipboardFormat::Unicode);
+            }
+            if s.eq_ignore_ascii_case("BITMAP") {
+                self.advance();
+                return Some(ClipboardFormat::Bitmap);
+            }
+        }
+        None
+    }
+
     fn parse_clipboard_statement(&mut self, line: usize) -> PbResult<Statement> {
         self.advance(); // consume CLIPBOARD
         match self.peek() {
             Token::Identifier(s) if s.eq_ignore_ascii_case("SET") => {
                 self.advance();
-                if let Token::Identifier(s2) = self.peek() {
-                    if s2.eq_ignore_ascii_case("TEXT") {
+                let fmt = self.parse_clipboard_format();
+                if let Some(format) = fmt {
+                    let value = self.parse_expression()?;
+                    let result = if self.peek() == &Token::Comma {
                         self.advance();
-                        let text = self.parse_expression()?;
-                        let result = if self.peek() == &Token::Comma {
-                            self.advance();
-                            Some(self.parse_expression()?)
-                        } else {
-                            None
-                        };
-                        self.consume_to_eol();
-                        return Ok(Statement::ClipboardSetText { text, result });
-                    }
+                        Some(self.parse_expression()?)
+                    } else {
+                        None
+                    };
+                    self.consume_to_eol();
+                    return Ok(Statement::ClipboardSet {
+                        format,
+                        value,
+                        result,
+                    });
                 }
                 self.consume_to_eol();
                 eprintln!("Error: CLIPBOARD SET: unsupported form on line {}", line);
@@ -13276,30 +13300,29 @@ impl Parser {
             }
             Token::Identifier(s) if s.eq_ignore_ascii_case("GET") => {
                 self.advance();
-                if let Token::Identifier(s2) = self.peek() {
-                    if s2.eq_ignore_ascii_case("TEXT") {
+                let fmt = self.parse_clipboard_format();
+                if let Some(format) = fmt {
+                    if self.peek() == &Token::To {
                         self.advance();
-                        if self.peek() == &Token::To {
+                        let target = self.parse_expression()?;
+                        let result = if self.peek() == &Token::Comma {
                             self.advance();
-                            let target = self.parse_expression()?;
-                            let result = if self.peek() == &Token::Comma {
-                                self.advance();
-                                Some(self.parse_expression()?)
-                            } else {
-                                None
-                            };
-                            self.consume_to_eol();
-                            return Ok(Statement::ClipboardGetText { target, result });
-                        }
+                            Some(self.parse_expression()?)
+                        } else {
+                            None
+                        };
+                        self.consume_to_eol();
+                        return Ok(Statement::ClipboardGet {
+                            format,
+                            target,
+                            result,
+                        });
                     }
                 }
                 self.consume_to_eol();
-                eprintln!(
-                    "Error: CLIPBOARD GET TEXT: unsupported form on line {}",
-                    line
-                );
+                eprintln!("Error: CLIPBOARD GET: unsupported form on line {}", line);
                 self.error_count += 1;
-                Ok(Statement::Noop("CLIPBOARD GET TEXT".to_string(), line))
+                Ok(Statement::Noop("CLIPBOARD GET".to_string(), line))
             }
             Token::Identifier(s) if s.eq_ignore_ascii_case("RESET") => {
                 self.advance();

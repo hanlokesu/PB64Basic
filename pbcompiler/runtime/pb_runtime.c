@@ -263,6 +263,8 @@ __declspec(dllimport) int __stdcall CloseClipboard(void);
 __declspec(dllimport) int __stdcall EmptyClipboard(void);
 __declspec(dllimport) void* __stdcall SetClipboardData(unsigned int uFormat, void* hMem);
 __declspec(dllimport) void* __stdcall GetClipboardData(unsigned int uFormat);
+__declspec(dllimport) int __stdcall CharToOemA(const char* src, char* dst);
+__declspec(dllimport) int __stdcall OemToCharA(const char* src, char* dst);
 __declspec(dllimport) void* __stdcall GlobalAlloc(unsigned int uFlags, unsigned long dwBytes);
 __declspec(dllimport) void* __stdcall GlobalLock(void* hMem);
 __declspec(dllimport) int __stdcall GlobalUnlock(void* hMem);
@@ -3164,6 +3166,9 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
 
 /* CLIPBOARD SET TEXT / GET TEXT / RESET (Win32) */
 #define CF_TEXT 1
+#define CF_BITMAP 2
+#define CF_OEMTEXT 7
+#define CF_UNICODETEXT 13
 #define GMEM_MOVEABLE 0x0042
 
 /* CCUR / CCUX — round to fixed decimals (currency semantics, PBWin10). */
@@ -3224,6 +3229,101 @@ int pb_clipboard_reset(void) {
     EmptyClipboard();
     CloseClipboard();
     return -1;                          /* TRUE on success (PBWin10) */
+}
+
+/* CLIPBOARD SET/GET OEMTEXT / UNICODE / BITMAP — CHW 9 forms (batch 258e).
+   OEMTEXT converts ANSI<->OEM (console charset).  UNICODE (legacy PB form)
+   stores/reads UTF-16LE bytes inside an ANSI-typed string; the byte count
+   comes from SysStringByteLen because embedded NULs break strlen.  BITMAP
+   moves a GRAPHIC BITMAP (HBITMAP) handle in/out of the clipboard. */
+int pb_clipboard_set_oemtext(const char* text) {
+    if (!OpenClipboard(0)) return 0;
+    EmptyClipboard();
+    unsigned long len = (unsigned long)strlen(text);
+    void* h = GlobalAlloc(GMEM_MOVEABLE, len + 1);
+    int ok = 0;
+    if (h) {
+        char* p = (char*)GlobalLock(h);
+        if (p) {
+            CharToOemA(text, p);
+            p[len] = 0;
+            GlobalUnlock(h);
+        }
+        if (SetClipboardData(CF_OEMTEXT, h)) ok = -1;
+    }
+    CloseClipboard();
+    return ok;
+}
+
+char* pb_clipboard_get_oemtext(void) {
+    char* empty = pb_bstr_alloc("", 0);
+    if (!OpenClipboard(0)) return empty;
+    void* h = GetClipboardData(CF_OEMTEXT);
+    if (!h) { CloseClipboard(); return empty; }
+    char* p = (char*)GlobalLock(h);
+    if (!p) { CloseClipboard(); return empty; }
+    unsigned long len = (unsigned long)strlen(p);
+    char* tmp = (char*)malloc(len + 1);
+    if (!tmp) { GlobalUnlock(h); CloseClipboard(); return empty; }
+    OemToCharA(p, tmp);
+    tmp[len] = 0;
+    char* r = pb_bstr_alloc(tmp, (int)strlen(tmp));
+    free(tmp);
+    GlobalUnlock(h);
+    CloseClipboard();
+    return r;
+}
+
+int pb_clipboard_set_unicode(const char* bytes) {
+    if (!OpenClipboard(0)) return 0;
+    EmptyClipboard();
+    unsigned long len = (unsigned long)SysStringByteLen(bytes); /* UTF-16LE byte count */
+    void* h = GlobalAlloc(GMEM_MOVEABLE, len + 2);
+    int ok = 0;
+    if (h) {
+        char* p = (char*)GlobalLock(h);
+        if (p) {
+            memcpy(p, bytes, len);
+            p[len] = 0; p[len + 1] = 0;   /* wide nul */
+            GlobalUnlock(h);
+        }
+        if (SetClipboardData(CF_UNICODETEXT, h)) ok = -1;
+    }
+    CloseClipboard();
+    return ok;
+}
+
+char* pb_clipboard_get_unicode(void) {
+    char* empty = pb_bstr_alloc("", 0);
+    if (!OpenClipboard(0)) return empty;
+    void* h = GetClipboardData(CF_UNICODETEXT);
+    if (!h) { CloseClipboard(); return empty; }
+    char* p = (char*)GlobalLock(h);
+    if (!p) { CloseClipboard(); return empty; }
+    unsigned long chars = 0;
+    while (((const unsigned short*)p)[chars] != 0) chars++;   /* wide strlen */
+    unsigned long len = chars * 2;
+    char* r = pb_bstr_alloc(NULL, len);
+    if (len) memcpy(r, p, len);
+    GlobalUnlock(h);
+    CloseClipboard();
+    return r;
+}
+
+int pb_clipboard_set_bitmap(long long hbitmap) {
+    if (!OpenClipboard(0)) return 0;
+    EmptyClipboard();
+    int ok = SetClipboardData(CF_BITMAP, (void*)(intptr_t)hbitmap) ? -1 : 0;
+    CloseClipboard();
+    return ok;
+}
+
+long long pb_clipboard_get_bitmap(void) {
+    if (!OpenClipboard(0)) return 0;
+    void* h = GetClipboardData(CF_BITMAP);
+    long long r = h ? (long long)(intptr_t)h : 0;
+    CloseClipboard();
+    return r;
 }
 static int pb_winsock_inited = 0;
 static int pb_winsock_init(void) {

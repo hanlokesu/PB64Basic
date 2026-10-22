@@ -5524,6 +5524,30 @@ impl Compiler {
             .declare_function("pb_clipboard_set_text", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_clipboard_get_text", &IrType::Ptr, &[], false);
+        self.module.declare_function(
+            "pb_clipboard_set_oemtext",
+            &IrType::I32,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_clipboard_get_oemtext", &IrType::Ptr, &[], false);
+        self.module.declare_function(
+            "pb_clipboard_set_unicode",
+            &IrType::I32,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_clipboard_get_unicode", &IrType::Ptr, &[], false);
+        self.module.declare_function(
+            "pb_clipboard_set_bitmap",
+            &IrType::I32,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_clipboard_get_bitmap", &IrType::I64, &[], false);
         self.module
             .declare_function("pb_clipboard_reset", &IrType::I32, &[], false);
         self.module
@@ -7145,12 +7169,16 @@ impl Compiler {
             Statement::OnGoTo { expr, labels } => self.compile_on_goto(fb, expr, labels),
             Statement::OnGoSub { expr, labels } => self.compile_on_gosub(fb, expr, labels),
             Statement::OnCall { expr, targets } => self.compile_on_call(fb, expr, targets),
-            Statement::ClipboardSetText { text, result } => {
-                self.compile_clipboard_set(fb, text, result.as_ref())
-            }
-            Statement::ClipboardGetText { target, result } => {
-                self.compile_clipboard_get(fb, target, result.as_ref())
-            }
+            Statement::ClipboardSet {
+                format,
+                value,
+                result,
+            } => self.compile_clipboard_set(fb, format, value, result.as_ref()),
+            Statement::ClipboardGet {
+                format,
+                target,
+                result,
+            } => self.compile_clipboard_get(fb, format, target, result.as_ref()),
             Statement::ClipboardReset { result } => {
                 let rc = fb.call(&IrType::I32, "pb_clipboard_reset", &[]);
                 if let Some(res) = result {
@@ -20450,11 +20478,31 @@ impl Compiler {
     fn compile_clipboard_set(
         &mut self,
         fb: &mut FunctionBuilder,
-        text: &Expr,
+        format: &ClipboardFormat,
+        value: &Expr,
         result: Option<&Expr>,
     ) -> PbResult<()> {
-        let v = self.compile_expr(fb, text)?;
-        let rc = fb.call(&IrType::I32, "pb_clipboard_set_text", &[v]);
+        let rc = match format {
+            ClipboardFormat::Bitmap => {
+                let v = self.compile_expr(fb, value)?;
+                let p = if v.ty == IrType::I32 {
+                    fb.inttoptr(&v)
+                } else {
+                    v
+                };
+                fb.call(&IrType::I32, "pb_clipboard_set_bitmap", &[p])
+            }
+            _ => {
+                let v = self.compile_expr(fb, value)?;
+                let name = match format {
+                    ClipboardFormat::Text => "pb_clipboard_set_text",
+                    ClipboardFormat::OemText => "pb_clipboard_set_oemtext",
+                    ClipboardFormat::Unicode => "pb_clipboard_set_unicode",
+                    _ => unreachable!(),
+                };
+                fb.call(&IrType::I32, name, &[v])
+            }
+        };
         if let Some(res) = result {
             if let Some((ptr, _, _)) = self.lvalue_ptr(fb, res) {
                 fb.store(&rc, &ptr);
@@ -20466,23 +20514,55 @@ impl Compiler {
     fn compile_clipboard_get(
         &mut self,
         fb: &mut FunctionBuilder,
+        format: &ClipboardFormat,
         target: &Expr,
         result: Option<&Expr>,
     ) -> PbResult<()> {
-        let val = fb.call(&IrType::Ptr, "pb_clipboard_get_text", &[]);
-        if let Expr::Variable(orig) = target {
-            let name = normalize_name(orig);
-            if let Some(info) = self.symbols.lookup(&name) {
-                let ptr = Val::new(info.ptr_name.clone(), IrType::Ptr);
-                let converted =
-                    self.convert_value(fb, &val, &info.ir_type.clone(), &info.pb_type.clone());
-                fb.store(&converted, &ptr);
+        let ok = match format {
+            ClipboardFormat::Bitmap => {
+                let v = fb.call(&IrType::I64, "pb_clipboard_get_bitmap", &[]);
+                if let Expr::Variable(orig) = target {
+                    let name = normalize_name(orig);
+                    if let Some(info) = self.symbols.lookup(&name) {
+                        let ptr = Val::new(info.ptr_name.clone(), IrType::Ptr);
+                        let converted = self.convert_value(
+                            fb,
+                            &v,
+                            &info.ir_type.clone(),
+                            &info.pb_type.clone(),
+                        );
+                        fb.store(&converted, &ptr);
+                    }
+                }
+                fb.const_i32(1)
             }
-        }
+            _ => {
+                let name = match format {
+                    ClipboardFormat::Text => "pb_clipboard_get_text",
+                    ClipboardFormat::OemText => "pb_clipboard_get_oemtext",
+                    ClipboardFormat::Unicode => "pb_clipboard_get_unicode",
+                    _ => unreachable!(),
+                };
+                let val = fb.call(&IrType::Ptr, name, &[]);
+                if let Expr::Variable(orig) = target {
+                    let name = normalize_name(orig);
+                    if let Some(info) = self.symbols.lookup(&name) {
+                        let ptr = Val::new(info.ptr_name.clone(), IrType::Ptr);
+                        let converted = self.convert_value(
+                            fb,
+                            &val,
+                            &info.ir_type.clone(),
+                            &info.pb_type.clone(),
+                        );
+                        fb.store(&converted, &ptr);
+                    }
+                }
+                fb.const_i32(1)
+            }
+        };
         if let Some(res) = result {
             if let Some((ptr, _, _)) = self.lvalue_ptr(fb, res) {
-                let one = fb.const_i32(1);
-                fb.store(&one, &ptr);
+                fb.store(&ok, &ptr);
             }
         }
         Ok(())
