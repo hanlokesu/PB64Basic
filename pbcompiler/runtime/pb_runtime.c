@@ -422,6 +422,59 @@ char* pb_bstr_alloc(const char* src, unsigned int len) {
 #endif
 }
 
+/* COMMAND$(ArgNum) - batch258 C batch, CHW COMMAND$ function:
+   n<=0 -> full trailer (program name excluded, quotes kept verbatim);
+   n>0  -> nth parsed argument (blank-space delimited, double quotes
+           stripped, zero-length quoted strings ("") ignored entirely);
+   n out of range -> zero-length string. */
+__declspec(dllimport) char* __stdcall GetCommandLineA(void);
+char* pb_command_arg(long long n) {
+    char* cmd = GetCommandLineA();
+    if (!cmd) return pb_bstr_alloc("", 0);
+    const char* p = cmd;
+    /* skip the program name (may itself be quoted) */
+    if (*p == '"') {
+        p++;
+        while (*p && *p != '"') p++;
+        if (*p == '"') p++;
+    } else {
+        while (*p && *p != ' ') p++;
+    }
+    while (*p == ' ') p++;
+    if (n <= 0) {
+        /* full trailer, kept verbatim (leading blanks already skipped) */
+        return pb_bstr_alloc(p, (unsigned int)strlen(p));
+    }
+    /* parse the nth argument */
+    long long count = 0;
+    int in_quote = 0;
+    int cur_len = 0;
+    char buf[4096];
+    while (*p) {
+        char c = *p;
+        if (in_quote) {
+            if (c == '"') in_quote = 0;
+            else if (cur_len < 4095) buf[cur_len++] = c;
+        } else if (c == '"') {
+            in_quote = 1;
+        } else if (c == ' ') {
+            if (cur_len > 0) {
+                count++;
+                if (count == n) return pb_bstr_alloc(buf, (unsigned int)cur_len);
+                cur_len = 0;
+            }
+        } else if (cur_len < 4095) {
+            buf[cur_len++] = c;
+        }
+        p++;
+    }
+    if (cur_len > 0) {
+        count++;
+        if (count == n) return pb_bstr_alloc(buf, (unsigned int)cur_len);
+    }
+    return pb_bstr_alloc("", 0);
+}
+
 
 /* MKx family: numeric -> binary ANSI string (pb_mkbyt already exists) */
 char* pb_mkint(int v) {

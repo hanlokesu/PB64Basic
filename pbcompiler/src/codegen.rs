@@ -1777,6 +1777,8 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr],
             false,
         );
+        self.module
+            .declare_function("pb_command_arg", &IrType::Ptr, &[IrType::I64], false);
 
         // Debug/crash facilities (declared unconditionally — every function
         // body calls pb_debug_enter, including library/DLL sources without
@@ -21251,7 +21253,8 @@ impl Compiler {
             "ISFOLDER" => Some(self.builtin_isfolder(fb, args)),
             "EXP2" | "EXP10" | "LOG2" | "LOG10" => Some(self.builtin_math1(fb, args, name)),
             "IIF" => Some(self.builtin_iif(fb, args)),
-            "CHOOSE" => Some(self.builtin_choose(fb, args)),
+            "CHOOSE" | "CHOOSE:BIT" | "CHOOSE:BITS" | "CHOOSE:ELSE" | "CHOOSE:BIT:ELSE"
+            | "CHOOSE:BITS:ELSE" => Some(self.builtin_choose(fb, args, name)),
             "BIN" => Some(self.builtin_radix(fb, args, "BIN")),
             "OCT" => Some(self.builtin_radix(fb, args, "OCT")),
             "DEC" => Some(self.builtin_radix(fb, args, "DEC")),
@@ -21369,13 +21372,20 @@ impl Compiler {
                 Some(Ok(fb.call(&IrType::I32, "time", &[null])))
             }
             "COMMAND" => {
-                let cmd = if self.module.is_32bit() {
-                    fb.call_stdcall(&IrType::Ptr, "GetCommandLineA", &[])
+                // COMMAND$( [ArgNum] ) — CHW: ArgNum 0/absent = the full
+                // trailer (program name excluded, quotes kept); ArgNum > 0 =
+                // nth parsed argument (space-delimited, quotes stripped,
+                // zero-length quoted strings ignored); out of range = "".
+                let n = if let Some(a) = args.first() {
+                    let v = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.to_i64(fb, &v)
                 } else {
-                    fb.call(&IrType::Ptr, "GetCommandLineA", &[])
+                    fb.const_i64(0)
                 };
-                let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&cmd));
-                Some(Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[cmd, len])))
+                Some(Ok(fb.call(&IrType::Ptr, "pb_command_arg", &[n])))
             }
             "EXIST" => {
                 let path = self.compile_expr(fb, &args[0]);
@@ -21878,6 +21888,16 @@ impl Compiler {
                     let up = normalize_name(n);
                     if let Some(sym) = self.asmdata_blocks.get(&up) {
                         let gv = Val::new(sym.clone(), IrType::Ptr);
+                        return Some(Ok(fb.ptrtoint64(&gv)));
+                    }
+                    // CODEPTR(ProcName) — address of a local Sub / Function /
+                    // FastProc (CHW: CODEPTR of a METHOD/PROPERTY is illegal).
+                    if let Some(info) = self.functions.get(&up) {
+                        let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
+                        return Some(Ok(fb.ptrtoint64(&gv)));
+                    }
+                    if let Some(info) = self.subs.get(&up) {
+                        let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
                         return Some(Ok(fb.ptrtoint64(&gv)));
                     }
                 }
@@ -22588,44 +22608,130 @@ impl Compiler {
             }
         }
     }
-    fn builtin_choose(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_choose(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        name: &str,
+    ) -> PbResult<Val> {
         if args.len() < 2 {
             return Err(PbError::runtime(
                 "CHOOSE requires an index and at least 1 choice",
             ));
         }
+        let mode_bit = name.contains(":BIT");
+        let mode_bits = name.contains(":BITS");
+        let has_default = name.contains(":ELSE");
+        let n_choices = if has_default {
+            args.len() - 2
+        } else {
+            args.len() - 1
+        };
+        if n_choices < 1 {
+            return Err(PbError::runtime("CHOOSE requires at least 1 choice"));
+        }
         let idx = self.compile_expr(fb, &args[0])?;
         let idx_i = self.to_i64(fb, &idx);
-        // PBWin10: out-of-range index returns the type's default value
-        // (0 for numerics, "" for strings) - probe: CHOOSE(9,10,20,30)=0.
-        let first = self.compile_expr(fb, &args[1])?;
-        let mut r = match first.ty {
-            IrType::Ptr => {
-                let (s, _) = self.module.add_string_constant("");
-                Val::new(s, IrType::Ptr)
+
+        // BITS mode: concatenate every choice whose bit is set (low to high).
+        // PBWin probe: CHOOSE$(BITS 5, "a","b","c") -> "ac" (5 = bit0 + bit2).
+        // Lazily: each choice is evaluated only inside its set-bit branch.
+        if mode_bits {
+            let (empty, _) = self.module.add_string_constant("");
+            let r_ptr = fb.alloca(&IrType::Ptr);
+            fb.store(&Val::new(empty, IrType::Ptr), &r_ptr);
+            for (i, c) in args[1..].iter().enumerate() {
+                let bit = 1i64 << i;
+                let mask = fb.and(&idx_i, &fb.const_i64(bit));
+                let set = fb.icmp("ne", &mask, &fb.const_i64(0));
+                let then_l = fb.next_label("cb_bits_then");
+                let cont_l = fb.next_label("cb_bits_cont");
+                fb.condbr(&set, &then_l, &cont_l);
+                fb.label(&then_l);
+                let cv = self.compile_expr(fb, c)?;
+                let cur = fb.load(&IrType::Ptr, &r_ptr);
+                let joined = fb.call(&IrType::Ptr, "pb_str_concat", &[cur, cv]);
+                fb.store(&joined, &r_ptr);
+                fb.br(&cont_l);
+                fb.label(&cont_l);
             }
-            IrType::Double | IrType::Float => fb.const_f64(0.0),
-            _ => fb.const_i64(0),
-        };
-        for (i, c) in args[1..].iter().enumerate() {
-            let cv = self.compile_expr(fb, c)?;
-            let n_i = fb.const_i64(i as i64 + 1);
-            let eq = fb.icmp("eq", &idx_i, &n_i);
-            r = match r.ty {
-                IrType::Ptr => fb.select(&eq, &cv, &r),
-                IrType::Double | IrType::Float => {
-                    let rd = self.to_f64(fb, &r);
-                    let cd = self.to_f64(fb, &cv);
-                    fb.select(&eq, &cd, &rd)
-                }
-                _ => {
-                    let ri = self.to_i64(fb, &r);
-                    let ci = self.to_i64(fb, &cv);
-                    fb.select(&eq, &ci, &ri)
-                }
-            };
+            return Ok(fb.load(&IrType::Ptr, &r_ptr));
         }
-        Ok(r)
+
+        // Standard / BIT: lazy switch — only the selected choice is evaluated.
+        let first = self.compile_expr(fb, &args[1])?; // type probe; also the case-1 value
+        let rty = first.ty.clone();
+        let r_ptr = fb.alloca(&rty);
+        // key: standard = index; BIT = idx & -idx (lowest set bit, case 1<<k)
+        // LLVM switch operates on i32, so truncate the i64 key.
+        let key = if mode_bit {
+            let neg = fb.neg(&idx_i);
+            fb.and(&idx_i, &neg)
+        } else {
+            idx_i.clone()
+        };
+        let key32 = fb.trunc(&key, &IrType::I32);
+        // default: ELSE expression or the type's default value
+        let default_val = if has_default {
+            self.compile_expr(fb, args.last().unwrap())?
+        } else {
+            match &rty {
+                IrType::Ptr => {
+                    let (s, _) = self.module.add_string_constant("");
+                    Val::new(s, IrType::Ptr)
+                }
+                IrType::Double | IrType::Float => fb.const_f64(0.0),
+                _ => fb.const_i64(0),
+            }
+        };
+        let merge = fb.next_label("cb_merge");
+        let l_def = fb.next_label("cb_def");
+        let mut cases = Vec::new();
+        let mut case_labels = Vec::new();
+        for i in 0..n_choices {
+            let l = fb.next_label("cb_c");
+            let case_val = if mode_bit { 1i32 << i } else { i as i32 + 1 };
+            cases.push((case_val, l.clone()));
+            case_labels.push(l);
+        }
+        fb.switch(&key32, &l_def, &cases);
+        // case 1 reuses `first` (its type IS rty)
+        fb.label(&case_labels[0]);
+        fb.store(&first, &r_ptr);
+        fb.br(&merge);
+        // case 2..N — coerce each choice to the result type rty
+        let coerce = |fb: &mut FunctionBuilder, self_: &mut Self, v: Val, rty: &IrType| -> Val {
+            match rty {
+                IrType::Ptr => v,
+                IrType::Double | IrType::Float => self_.to_f64(fb, &v),
+                IrType::I64 => self_.to_i64(fb, &v),
+                _ => {
+                    if v.ty == IrType::I32 {
+                        v
+                    } else {
+                        let tmp = self_.to_i64(fb, &v);
+                        fb.trunc(&tmp, &IrType::I32)
+                    }
+                }
+            }
+        };
+        let choices_tail = &args[2..(args.len() - (has_default as usize))];
+        for (i, c) in choices_tail.iter().enumerate() {
+            let lbl = &case_labels[i + 1];
+            fb.label(lbl);
+            let cv = self.compile_expr(fb, c)?;
+            let cs = coerce(fb, self, cv, &rty);
+            fb.store(&cs, &r_ptr);
+            fb.br(&merge);
+        }
+        // default block
+        fb.label(&l_def);
+        let ds = coerce(fb, self, default_val, &rty);
+        fb.store(&ds, &r_ptr);
+        fb.br(&merge);
+        // merge
+        fb.label(&merge);
+        Ok(fb.load(&rty, &r_ptr))
     }
 
     // BIN$/OCT$/DEC$ — radix strings with optional CHW formatting:

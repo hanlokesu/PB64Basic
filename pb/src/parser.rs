@@ -14664,6 +14664,43 @@ impl Parser {
                 self.expect(&Token::RParen)?;
                 Ok(Expr::FunctionCall("TAB".to_string(), args))
             }
+            Token::Identifier(name)
+                if {
+                    let n = name.trim_end_matches(['&', '$']).to_uppercase();
+                    n == "CHOOSE"
+                } =>
+            {
+                // CHOOSE[/&/$]([BIT|BITS] index, choice1[, choice2]... [ELSE default])
+                // batch258: encode mode/default into the callee name so codegen
+                // can emit a lazy switch (only the selected choice is evaluated).
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let mut mode = String::new();
+                if let Token::Identifier(w) = self.peek().clone() {
+                    if w.eq_ignore_ascii_case("BIT") {
+                        mode.push_str(":BIT");
+                        self.advance();
+                    } else if w.eq_ignore_ascii_case("BITS") {
+                        mode.push_str(":BITS");
+                        self.advance();
+                    }
+                }
+                let mut args = Vec::new();
+                if self.peek() != &Token::RParen {
+                    args.push(self.parse_expression()?);
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        args.push(self.parse_expression()?);
+                    }
+                }
+                if matches!(self.peek(), Token::Else) {
+                    mode.push_str(":ELSE");
+                    self.advance();
+                    args.push(self.parse_expression()?);
+                }
+                self.expect(&Token::RParen)?;
+                Ok(Expr::FunctionCall(format!("CHOOSE{}", mode), args))
+            }
             Token::Identifier(name) => {
                 // DEF fn inline expansion: name(params) -> subst body
                 let def_key = name.to_uppercase();
@@ -14704,6 +14741,8 @@ impl Parser {
                 } else if name.eq_ignore_ascii_case("DATACOUNT")
                     || name.eq_ignore_ascii_case("THREADCOUNT")
                     || name.eq_ignore_ascii_case("PRINTERCOUNT")
+                    || name.eq_ignore_ascii_case("COMMAND")
+                    || name.eq_ignore_ascii_case("COMMAND$")
                     || name.eq_ignore_ascii_case("ERL")
                     || name.eq_ignore_ascii_case("ERL$")
                     || name.eq_ignore_ascii_case("ERROR")
