@@ -1,4 +1,4 @@
-# Last updated from batch 265 (v0.2.083) - 2026-10-24,,,,
+# Last updated from batch 266 (v0.2.084) - 2026-10-24,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
