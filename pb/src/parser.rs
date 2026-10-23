@@ -13361,7 +13361,10 @@ impl Parser {
                 let fmt = self.parse_clipboard_format();
                 if let Some(format) = fmt {
                     let value = self.parse_expression()?;
-                    let result = if self.peek() == &Token::Comma {
+                    /* batch 262: PBWin10 accepts BOTH `, ClipResult` (CHW
+                    syntax) and `TO ClipResult` for the optional result
+                    (probe: CLIPBOARD SET TEXT "abc" TO r -> r = -1). */
+                    let result = if self.peek() == &Token::Comma || self.peek() == &Token::To {
                         self.advance();
                         Some(self.parse_expression()?)
                     } else {

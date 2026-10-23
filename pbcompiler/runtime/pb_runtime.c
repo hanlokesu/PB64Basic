@@ -1612,7 +1612,12 @@ void pb_filescan(int filenum, long long* records, long long* width) {
 
 void pb_print_file(int filenum, const char* text) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        fputs(text, file_handles[filenum]);
+        /* batch 262: PRINT # must write the FULL string bytes, not strlen --
+           embedded NULs (e.g. CLIPBOARD GET UNICODE UTF-16LE) would be
+           truncated by fputs.  text is a BSTR data pointer (SysStringByteLen
+           reads the real byte count). */
+        unsigned long n = SysStringByteLen(text);
+        fwrite(text, 1, n, file_handles[filenum]);
     }
 }
 
@@ -3222,8 +3227,16 @@ int pb_clipboard_set_text(const char* text) {
 }
 
 
+/* batch 262: GET ClipResult must reflect real success/failure (PBWin10 writes
+   -1=TRUE on success, 0 on failure).  GET helpers return the string, so the
+   result code is reported through this global + getter. */
+static int pb_clip_ok = 0;
+int pb_clip_last_ok(void) { return pb_clip_ok; }
+
+
 char* pb_clipboard_get_text(void) {
     char* empty = pb_bstr_alloc("", 0);
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return empty;
     void* h = GetClipboardData(CF_TEXT);
     if (!h) { CloseClipboard(); return empty; }
@@ -3233,6 +3246,7 @@ char* pb_clipboard_get_text(void) {
     char* r = pb_bstr_alloc(p, len);
     GlobalUnlock(h);
     CloseClipboard();
+    pb_clip_ok = -1;
     return r;
 }
 
@@ -3269,8 +3283,16 @@ int pb_clipboard_set_oemtext(const char* text) {
 
 char* pb_clipboard_get_oemtext(void) {
     char* empty = pb_bstr_alloc("", 0);
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return empty;
     void* h = GetClipboardData(CF_OEMTEXT);
+    if (!h) {
+        /* batch 262: fall back to CF_TEXT (ANSI) - CHW CLIPBOARD_statement.htm
+           "Windows automatically converts string data between TEXT, OEMTEXT,
+           and UNICODE"; PBWin10 GET OEMTEXT on a TEXT-only clipboard returns
+           the text (probe: SET TEXT "abc" -> GET OEMTEXT = "abc", ClipResult -1). */
+        h = GetClipboardData(CF_TEXT);
+    }
     if (!h) { CloseClipboard(); return empty; }
     char* p = (char*)GlobalLock(h);
     if (!p) { CloseClipboard(); return empty; }
@@ -3283,6 +3305,7 @@ char* pb_clipboard_get_oemtext(void) {
     free(tmp);
     GlobalUnlock(h);
     CloseClipboard();
+    pb_clip_ok = -1;
     return r;
 }
 
@@ -3307,18 +3330,40 @@ int pb_clipboard_set_unicode(const char* bytes) {
 
 char* pb_clipboard_get_unicode(void) {
     char* empty = pb_bstr_alloc("", 0);
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return empty;
+    int is_wide = 1;
     void* h = GetClipboardData(CF_UNICODETEXT);
+    if (!h) {
+        /* batch 262: fall back to CF_TEXT (ANSI) then widen to UTF-16LE -
+           CHW: Windows automatically converts string data between TEXT,
+           OEMTEXT, and UNICODE.  PBWin10 GET UNICODE on TEXT-only clipboard
+           returns the text (probe: SET TEXT "abc" -> GET UNICODE = "abc",
+           LEN 6 = UTF-16LE bytes, ClipResult -1). */
+        is_wide = 0;
+        h = GetClipboardData(CF_TEXT);
+    }
     if (!h) { CloseClipboard(); return empty; }
     char* p = (char*)GlobalLock(h);
     if (!p) { CloseClipboard(); return empty; }
-    unsigned long chars = 0;
-    while (((const unsigned short*)p)[chars] != 0) chars++;   /* wide strlen */
-    unsigned long len = chars * 2;
-    char* r = pb_bstr_alloc(NULL, len);
-    if (len) memcpy(r, p, len);
+    char* r;
+    if (is_wide) {
+        unsigned long chars = 0;
+        while (((const unsigned short*)p)[chars] != 0) chars++;   /* wide strlen */
+        unsigned long len = chars * 2;
+        r = pb_bstr_alloc(NULL, len);
+        if (len) memcpy(r, p, len);
+    } else {
+        unsigned long n = (unsigned long)strlen(p);
+        r = pb_bstr_alloc(NULL, n * 2);
+        for (unsigned long i = 0; i < n; i++) {
+            r[i * 2] = p[i];
+            r[i * 2 + 1] = 0;
+        }
+    }
     GlobalUnlock(h);
     CloseClipboard();
+    pb_clip_ok = -1;
     return r;
 }
 

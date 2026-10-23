@@ -5536,6 +5536,8 @@ impl Compiler {
             .declare_function("pb_clipboard_set_text", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_clipboard_get_text", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_clip_last_ok", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_clipboard_set_oemtext",
             &IrType::I32,
@@ -20664,7 +20666,9 @@ impl Compiler {
                         fb.store(&converted, &ptr);
                     }
                 }
-                fb.const_i32(1)
+                /* batch 262: ClipResult reflects real success/failure (PBWin10
+                writes -1=TRUE on success, 0 on failure), not a constant. */
+                fb.call(&IrType::I32, "pb_clip_last_ok", &[])
             }
             _ => {
                 let name = match format {
@@ -20687,7 +20691,9 @@ impl Compiler {
                         fb.store(&converted, &ptr);
                     }
                 }
-                fb.const_i32(1)
+                /* batch 262: ClipResult reflects real success/failure (PBWin10
+                writes -1=TRUE on success, 0 on failure), not a constant. */
+                fb.call(&IrType::I32, "pb_clip_last_ok", &[])
             }
         };
         if let Some(res) = result {
