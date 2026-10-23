@@ -3373,6 +3373,16 @@ impl Compiler {
             .declare_function("pb_get_cb_wparam", &IrType::I64, &[], false);
         self.module
             .declare_function("pb_get_cb_lparam", &IrType::I64, &[], false);
+        self.module
+            .declare_function("pb_get_cb_nmcode", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_get_cb_nmhdr", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_get_cb_nmhdr_str", &IrType::Ptr, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_get_cb_nmhwnd", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_get_cb_nmid", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_register_dialog_cb",
             &IrType::Void,
@@ -21653,6 +21663,21 @@ impl Compiler {
             "PB_GET_CB_CTLMSG" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_ctlmsg", &[]))),
             "PB_GET_CB_WPARAM" => Some(Ok(fb.call(&IrType::I64, "pb_get_cb_wparam", &[]))),
             "PB_GET_CB_LPARAM" => Some(Ok(fb.call(&IrType::I64, "pb_get_cb_lparam", &[]))),
+            "PB_GET_CB_NMCODE" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_nmcode", &[]))),
+            "PB_GET_CB_NMHDR" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_nmhdr", &[]))),
+            "PB_GET_CB_NMHDR_STR" => {
+                let size = if let Some(a) = args.first() {
+                    match self.compile_expr(fb, a) {
+                        Ok(v) => self.to_i32(fb, &v),
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    Val::new("0".to_string(), IrType::I32)
+                };
+                Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_nmhdr_str", &[size])))
+            }
+            "PB_GET_CB_NMHWND" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_nmhwnd", &[]))),
+            "PB_GET_CB_NMID" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_nmid", &[]))),
             "FRE" => Some(Ok(fb.call(&IrType::I64, "pb_fre", &[]))),
             "EOF" => {
                 let filenum = self.compile_expr(fb, &args[0]);

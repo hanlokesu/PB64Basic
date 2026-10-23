@@ -227,6 +227,30 @@ impl Parser {
                 let fd = self.parse_function_decl()?;
                 Ok(Some(TopLevel::FunctionDecl(fd)))
             }
+            Token::Callback => {
+                // batch 261: CALLBACK FUNCTION / CALLBACK SUB top-level declaration
+                // (CHW callbacks.htm — DDT callback functions are declared with
+                // the CALLBACK keyword, e.g. `CALLBACK FUNCTION DlgProc() AS LONG`).
+                match self.peek_at(1).clone() {
+                    Some(Token::Function) => {
+                        self.advance(); // CALLBACK
+                        let fd = self.parse_function_decl()?;
+                        Ok(Some(TopLevel::FunctionDecl(fd)))
+                    }
+                    Some(Token::Sub) => {
+                        self.advance(); // CALLBACK
+                        let sd = self.parse_sub_decl()?;
+                        Ok(Some(TopLevel::SubDecl(sd)))
+                    }
+                    _ => {
+                        self.consume_to_eol();
+                        Ok(Some(TopLevel::Statement(Statement::Noop(
+                            "CALLBACK".to_string(),
+                            line,
+                        ))))
+                    }
+                }
+            }
             Token::Identifier(w)
                 if w.eq_ignore_ascii_case("THREAD")
                     && self.peek_at(1) == Some(&Token::Function) =>
@@ -14403,13 +14427,31 @@ impl Parser {
                         "CTLMSG" => "PB_GET_CB_CTLMSG",
                         "WPARAM" => "PB_GET_CB_WPARAM",
                         "LPARAM" => "PB_GET_CB_LPARAM",
+                        "NMCODE" => "PB_GET_CB_NMCODE",
+                        "NMHDR" => "PB_GET_CB_NMHDR",
+                        "NMHDR$" => "PB_GET_CB_NMHDR_STR",
+                        "NMHWND" => "PB_GET_CB_NMHWND",
+                        "NMID" => "PB_GET_CB_NMID",
                         _ => "",
                     };
                     if !fn_name.is_empty() {
                         self.advance();
                         self.advance();
                         self.advance();
-                        return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
+                        // optional parenthesised args, e.g. CB.NMHDR$(size)
+                        let mut args = Vec::new();
+                        if self.peek() == &Token::LParen {
+                            self.advance();
+                            if self.peek() != &Token::RParen {
+                                args.push(self.parse_expression()?);
+                                while self.peek() == &Token::Comma {
+                                    self.advance();
+                                    args.push(self.parse_expression()?);
+                                }
+                            }
+                            self.expect(&Token::RParen)?;
+                        }
+                        return Ok(Expr::FunctionCall(fn_name.to_string(), args));
                     }
                 }
             }

@@ -7770,6 +7770,36 @@ unsigned int pb_get_cb_ctlmsg(void) { return cb_ctlmsg; }
 unsigned long long pb_get_cb_wparam(void) { return cb_wparam; }
 unsigned long long pb_get_cb_lparam(void) { return cb_lparam; }
 
+/* CB.NM* (CHW CB_Callback_functions.htm).  On WM_NOTIFY the lParam points at
+   the Win64 NMHDR (hwndFrom UINT_PTR, idFrom UINT_PTR, code LONG -> 20 bytes
+   padded to 24).  We snapshot it as a 12-byte PB-layout block (hwndFrom DWord,
+   idFrom DWord, code Long) so CB.NMHDR$, CB.NMCODE, CB.NMHWND and CB.NMID
+   return PBWin-equivalent values on both 32-bit PBWin and 64-bit fork. */
+static unsigned char cb_nm_buf[12] = {0,0,0,0, 0,0,0,0, 0,0,0,0};
+static int cb_nm_valid = 0;
+
+void* pb_get_cb_nmhdr(void) { return cb_nm_valid ? (void*)cb_nm_buf : 0; }
+char* pb_get_cb_nmhdr_str(int size) {
+    int n = (size > 0) ? size : 12;
+    return pb_bstr_alloc((const char*)cb_nm_buf, n);
+}
+unsigned int pb_get_cb_nmcode(void) {
+    if (!cb_nm_valid) return 0;
+    unsigned char* p = cb_nm_buf + 8;
+    return (unsigned int)(p[0] | (p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24));
+}
+void* pb_get_cb_nmhwnd(void) {
+    if (!cb_nm_valid) return 0;
+    unsigned char* p = cb_nm_buf;
+    unsigned long lo = (unsigned long)(p[0] | (p[1] << 8) | ((unsigned long)p[2] << 16) | ((unsigned long)p[3] << 24));
+    return (void*)(size_t)lo;
+}
+unsigned int pb_get_cb_nmid(void) {
+    if (!cb_nm_valid) return 0;
+    unsigned char* p = cb_nm_buf + 4;
+    return (unsigned int)(p[0] | (p[1] << 8) | ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24));
+}
+
 void pb_register_dialog_cb(void* fn) { pb_dialog_cb = fn; }
 void pb_dialog_end(void* hWnd, int result) {
     pb_modal_result = result;
@@ -7908,6 +7938,25 @@ static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned lon
             void* from = nh[0];
             unsigned int idfrom = (unsigned int)(size_t)nh[1];
             unsigned int code = (unsigned int)(size_t)nh[2];
+            {
+                /* snapshot PB-layout NMHDR (12 bytes) for CB.NM* */
+                unsigned long hwlo = (unsigned long)(size_t)from;
+                unsigned long idlo = idfrom;
+                long codel = (long)(int)code;
+                cb_nm_buf[0] = (unsigned char)hwlo;
+                cb_nm_buf[1] = (unsigned char)(hwlo >> 8);
+                cb_nm_buf[2] = (unsigned char)(hwlo >> 16);
+                cb_nm_buf[3] = (unsigned char)(hwlo >> 24);
+                cb_nm_buf[4] = (unsigned char)idlo;
+                cb_nm_buf[5] = (unsigned char)(idlo >> 8);
+                cb_nm_buf[6] = (unsigned char)(idlo >> 16);
+                cb_nm_buf[7] = (unsigned char)(idlo >> 24);
+                cb_nm_buf[8] = (unsigned char)codel;
+                cb_nm_buf[9] = (unsigned char)(codel >> 8);
+                cb_nm_buf[10] = (unsigned char)(codel >> 16);
+                cb_nm_buf[11] = (unsigned char)(codel >> 24);
+                cb_nm_valid = 1;
+            }
             if (code == PB_TCN_SELCHANGE) pb_tab_apply_selection(from);
             cb_msg = Msg;
             cb_hwnd = hWnd;
