@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 260 (v0.2.080)** — 2026-10-22. All statements through batch 260 are reflected in this matrix.
+> **Last updated from batch 263 (v0.2.081)** — 2026-10-23. All statements through batch 263 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **864** (10 BLOCK, 253 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
-- **861** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **869** (10 BLOCK, 258 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
+- **866** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 713 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 148 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **861** | Implemented + Established |
+| ✅ Implemented (this project) | 729 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 137 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ **Total available** | **866** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (864 rows)
+## All keywords (869 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -95,7 +95,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CLASS/END CLASS | BLOCK | PB/Win + PB/CC | Established |
 | CLIP | FUNCTION | codegen builtin | Implemented |
 | CLIP$ | FUNCTION | Win32 | Implemented |
-| CLIPBOARD | STATEMENT | PB/Win + PB/CC | Established |
+| CLIPBOARD | STATEMENT | PB/Win + PB/CC | Implemented |
 | CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | CLS | STATEMENT | PB/CC only | Established |
 | CODEPTR | FUNCTION | codegen builtin | Implemented |
@@ -116,16 +116,16 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | COMBOBOX SET TEXT | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX SET USER | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX UNSELECT | STATEMENT | PB/Win only | Implemented |
-| COMM CLOSE | STATEMENT | PB/Win + PB/CC | Established |
-| COMM LINE | STATEMENT | PB/Win + PB/CC | Established |
+| COMM CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM LINE | STATEMENT | PB/Win + PB/CC | Implemented |
 | COMM LINE INPUT | STATEMENT | PB/Win | Implemented |
-| COMM OPEN | STATEMENT | PB/Win + PB/CC | Established |
-| COMM PRINT | STATEMENT | PB/Win + PB/CC | Established |
-| COMM RECV | STATEMENT | PB/Win + PB/CC | Established |
-| COMM RESET | STATEMENT | PB/Win + PB/CC | Established |
-| COMM SEND | STATEMENT | PB/Win + PB/CC | Established |
-| COMM SET | STATEMENT | PB/Win + PB/CC | Established |
-| COMM TIMEOUT | STATEMENT | PB/Win + PB/CC | Established |
+| COMM OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM PRINT | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM RECV | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM RESET | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM SEND | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM SET | STATEMENT | PB/Win + PB/CC | Implemented |
+| COMM TIMEOUT | STATEMENT | PB/Win + PB/CC | Implemented |
 | COMMAND | FUNCTION | codegen builtin | Implemented |
 | COMMAND$ | FUNCTION | Win32 | Implemented |
 | CONTROL ADD | STATEMENT | PB/Win only | Implemented |
@@ -558,7 +558,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MENU NEW POPUP | STATEMENT | PB/Win only | Implemented |
 | MENU SET STATE | STATEMENT | PB/Win only | Implemented |
 | MENU SET TEXT | STATEMENT | PB/Win only | Implemented |
-| METHOD / END METHOD | STATEMENT | PB/Win + PB/CC | Established |
+| METHOD / END METHOD | STATEMENT | PB/Win + PB/CC | Implemented |
 | METRICS | FUNCTION | Win32 | Implemented |
 | MID | FUNCTION | codegen builtin | Implemented |
 | MID$ | STATEMENT | PB/Win + PB/CC | Established |

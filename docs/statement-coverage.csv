@@ -1,4 +1,4 @@
-# Last updated from batch 260 (v0.2.080) - 2026-10-22,,,,
+# Last updated from batch 263 (v0.2.081) - 2026-10-23,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
@@ -51,6 +51,11 @@ CALLSTKCOUNT,FUNCTION,codegen builtin,Implemented
 CBOOL,FUNCTION,codegen builtin,Implemented
 CBRT,FUNCTION,C runtime (MSVCRT),Implemented
 CBYTE,FUNCTION,codegen builtin,Implemented
+CB.NMCODE,FUNCTION,codegen builtin,Implemented
+CB.NMHDR,FUNCTION,codegen builtin,Implemented
+CB.NMHDR$,FUNCTION,codegen builtin,Implemented
+CB.NMHWND,FUNCTION,codegen builtin,Implemented
+CB.NMID,FUNCTION,codegen builtin,Implemented
 CDBL,FUNCTION,codegen builtin,Implemented
 CDWORD,FUNCTION,codegen builtin,Implemented
 CEIL,FUNCTION,LLVM intrinsic,Implemented
@@ -68,7 +73,7 @@ CHRTOUTF8$,FUNCTION,Win32,Implemented
 CLASS/END CLASS,BLOCK,PB/Win + PB/CC,Established
 CLIP,FUNCTION,codegen builtin,Implemented
 CLIP$,FUNCTION,Win32,Implemented
-CLIPBOARD,STATEMENT,PB/Win + PB/CC,Established
+CLIPBOARD,STATEMENT,PB/Win + PB/CC,Implemented
 CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
 CLS,STATEMENT,PB/CC only,Established
 CODEPTR,FUNCTION,codegen builtin,Implemented
@@ -89,15 +94,15 @@ COMBOBOX SELECT,STATEMENT,PB/Win only,Implemented
 COMBOBOX SET TEXT,STATEMENT,PB/Win only,Implemented
 COMBOBOX SET USER,STATEMENT,PB/Win only,Implemented
 COMBOBOX UNSELECT,STATEMENT,PB/Win only,Implemented
-COMM CLOSE,STATEMENT,PB/Win + PB/CC,Established
-COMM LINE,STATEMENT,PB/Win + PB/CC,Established
-COMM OPEN,STATEMENT,PB/Win + PB/CC,Established
-COMM PRINT,STATEMENT,PB/Win + PB/CC,Established
-COMM RECV,STATEMENT,PB/Win + PB/CC,Established
-COMM RESET,STATEMENT,PB/Win + PB/CC,Established
-COMM SEND,STATEMENT,PB/Win + PB/CC,Established
-COMM SET,STATEMENT,PB/Win + PB/CC,Established
-COMM TIMEOUT,STATEMENT,PB/Win + PB/CC,Established
+COMM CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
+COMM LINE,STATEMENT,PB/Win + PB/CC,Implemented
+COMM OPEN,STATEMENT,PB/Win + PB/CC,Implemented
+COMM PRINT,STATEMENT,PB/Win + PB/CC,Implemented
+COMM RECV,STATEMENT,PB/Win + PB/CC,Implemented
+COMM RESET,STATEMENT,PB/Win + PB/CC,Implemented
+COMM SEND,STATEMENT,PB/Win + PB/CC,Implemented
+COMM SET,STATEMENT,PB/Win + PB/CC,Implemented
+COMM TIMEOUT,STATEMENT,PB/Win + PB/CC,Implemented
 COMMAND,FUNCTION,codegen builtin,Implemented
 COMMAND$,FUNCTION,Win32,Implemented
 CONTROL ADD,STATEMENT,PB/Win only,Implemented
@@ -526,7 +531,7 @@ MENU NEW BAR,STATEMENT,PB/Win only,Implemented
 MENU NEW POPUP,STATEMENT,PB/Win only,Implemented
 MENU SET STATE,STATEMENT,PB/Win only,Implemented
 MENU SET TEXT,STATEMENT,PB/Win only,Implemented
-METHOD / END METHOD,STATEMENT,PB/Win + PB/CC,Established
+METHOD / END METHOD,STATEMENT,PB/Win + PB/CC,Implemented
 METRICS,FUNCTION,Win32,Implemented
 MID,FUNCTION,codegen builtin,Implemented
 MID$,STATEMENT,PB/Win + PB/CC,Established
