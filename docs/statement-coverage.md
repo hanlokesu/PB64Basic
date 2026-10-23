@@ -78,6 +78,11 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CBOOL | FUNCTION | codegen builtin | Implemented |
 | CBRT | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CBYTE | FUNCTION | codegen builtin | Implemented |
+| CB.NMCODE | FUNCTION | codegen builtin | Implemented |
+| CB.NMHDR | FUNCTION | codegen builtin | Implemented |
+| CB.NMHDR$ | FUNCTION | codegen builtin | Implemented |
+| CB.NMHWND | FUNCTION | codegen builtin | Implemented |
+| CB.NMID | FUNCTION | codegen builtin | Implemented |
 | CDBL | FUNCTION | codegen builtin | Implemented |
 | CDWORD | FUNCTION | codegen builtin | Implemented |
 | CEIL | FUNCTION | LLVM intrinsic | Implemented |
