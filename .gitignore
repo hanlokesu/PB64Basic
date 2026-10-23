@@ -35,3 +35,9 @@ _bak*/
 
 # UTF-8 view copies of GBK+CRLF .bas sources (read-only, never compiled)
 *_source_view.txt
+/b265_bin.dat
+/b265_ran.dat
+/b265_seq_a.txt
+/b265_seq_b.dat
+/b265_seq_c.txt
+/b265_seq_d.dat
