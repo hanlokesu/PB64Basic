@@ -5955,6 +5955,8 @@ impl Compiler {
             .declare_dllimport("Beep", &IrType::Void, &[IrType::I32, IrType::I32]);
         // PB-compatible ERR system variable (provided by pb_runtime.c)
         self.module.declare_external_global("pb_err", &IrType::I32);
+        self.module
+            .declare_external_global("pb_err_var", &IrType::I32);
         // ON ERROR GOTO runtime state (provided by pb_runtime.c)
         self.module
             .declare_external_global("pb_err_stmt_id", &IrType::I32);
@@ -7129,6 +7131,12 @@ impl Compiler {
         match stmt {
             Statement::Assign(a) => self.compile_assign(fb, a),
             Statement::Call(c) => {
+                // ON ERROR GOTO: per-statement trap arming. Clear the previous
+                // @pb_err before the statement runs (unless we are already inside
+                // a handler), so the post-statement check only fires on an error
+                // THIS statement produced. The ERR variable value survives because
+                // RESUME no longer clears @pb_err.
+                self.emit_stmt_enter(fb)?;
                 self.compile_call_stmt(fb, c)?;
                 // ON ERROR GOTO: test for a run-time error after the statement
                 self.emit_error_check(fb)?;
@@ -7396,10 +7404,14 @@ impl Compiler {
                 fb.label(&enoent_lbl);
                 let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                 fb.store(&fb.const_i32(53), &g);
+                let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                fb.store(&fb.const_i32(53), &gv);
                 fb.br(&merge_lbl);
                 fb.label(&other_lbl);
                 let g2 = Val::new("@pb_err".to_string(), IrType::Ptr);
                 fb.store(&fb.const_i32(75), &g2);
+                let gv2 = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                fb.store(&fb.const_i32(75), &gv2);
                 fb.br(&merge_lbl);
                 fb.label(&merge_lbl);
                 Ok(())
@@ -8518,6 +8530,8 @@ impl Compiler {
                     let n = self.to_i32(fb, &v);
                     let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                     fb.store(&n, &g);
+                    let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                    fb.store(&n, &gv);
                 }
                 return Ok(());
             }
@@ -10893,10 +10907,14 @@ impl Compiler {
                     fb.label(&eexist_lbl);
                     let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                     fb.store(&fb.const_i32(75), &g);
+                    let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                    fb.store(&fb.const_i32(75), &gv);
                     fb.br(&merge_lbl);
                     fb.label(&other_lbl);
                     let g2 = Val::new("@pb_err".to_string(), IrType::Ptr);
                     fb.store(&fb.const_i32(76), &g2);
+                    let gv2 = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                    fb.store(&fb.const_i32(76), &gv2);
                     fb.br(&merge_lbl);
                     fb.label(&merge_lbl);
                 }
@@ -10915,6 +10933,8 @@ impl Compiler {
                     fb.label(&err_lbl);
                     let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                     fb.store(&fb.const_i32(75), &g);
+                    let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                    fb.store(&fb.const_i32(75), &gv);
                     fb.br(&merge_lbl);
                     fb.label(&merge_lbl);
                 }
@@ -10933,6 +10953,8 @@ impl Compiler {
                     fb.label(&err_lbl);
                     let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                     fb.store(&fb.const_i32(76), &g);
+                    let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                    fb.store(&fb.const_i32(76), &gv);
                     fb.br(&merge_lbl);
                     fb.label(&merge_lbl);
                 }
@@ -11033,6 +11055,8 @@ impl Compiler {
                 // ERRCLEAR — reset the ERR system variable to 0
                 let g = Val::new("@pb_err".to_string(), IrType::Ptr);
                 fb.store(&fb.const_i32(0), &g);
+                let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+                fb.store(&fb.const_i32(0), &gv);
                 return Ok(());
             }
             "BEEP" => {
@@ -20305,6 +20329,33 @@ impl Compiler {
     // ========== GOSUB / RETURN / GOTO / LABEL codegen ==========
 
     /// After a call statement, if error trapping is enabled, test the runtime
+    /// Re-arm the per-statement error trap: clear @pb_err before the statement
+    /// runs, but only when no handler is currently active. This gives each
+    /// checked statement a fresh "did this statement error?" probe (PBWin
+    /// semantics: the trap fires once per erroring statement; RESUME restores
+    /// normal flow with the ERR variable still holding the last error code).
+    fn emit_stmt_enter(&mut self, fb: &mut FunctionBuilder) -> PbResult<()> {
+        if self.onerror_handler.is_none() || fb.is_terminated() {
+            return Ok(());
+        }
+        let act = fb.load(
+            &IrType::I32,
+            &Val::new("@pb_err_active".to_string(), IrType::Ptr),
+        );
+        let actz = fb.icmp("eq", &act, &fb.const_i32(0));
+        let do_clear = fb.next_label("err.clearbefore");
+        let done = fb.next_label("err.enter.done");
+        fb.condbr(&actz, &do_clear, &done);
+        fb.label(&do_clear);
+        fb.store(
+            &fb.const_i32(0),
+            &Val::new("@pb_err".to_string(), IrType::Ptr),
+        );
+        fb.br(&done);
+        fb.label(&done);
+        Ok(())
+    }
+
     /// error flag and branch to the ON ERROR handler when an error occurred.
     fn emit_error_check(&mut self, fb: &mut FunctionBuilder) -> PbResult<()> {
         let handler = match &self.onerror_handler {
@@ -20334,6 +20385,11 @@ impl Compiler {
         fb.label(&err_setup);
         fb.store(&fb.const_i32(id), &id_ptr);
         fb.store(&fb.const_i32(1), &act_ptr);
+        // The ERR system variable captures the error code at trap time; it must
+        // survive RESUME and later successful statements (PBWin semantics).
+        let ev_ptr = Val::new("@pb_err_var".to_string(), IrType::Ptr);
+        let ev = fb.load(&IrType::I32, &err_ptr);
+        fb.store(&ev, &ev_ptr);
         fb.br(&handler);
         fb.label(&cont);
         self.onerror_checkpoints.push((stmt_start, cont));
@@ -20342,24 +20398,36 @@ impl Compiler {
 
     /// Compile a RESUME statement: clear the "in handler" flag and jump back
     /// to the statement that errored (Retry) or the one after it (Next).
+    ///
+    /// CHW RESUME_statement.htm: RESUME continues execution AFTER an error has
+    /// been trapped by an ON ERROR handler. A RESUME executed in normal flow
+    /// (no error trap active) must be a no-op that falls through to the next
+    /// statement - PBWin probe (p54mini) showed normal execution reaching the
+    /// handler tail continues into END FUNCTION instead of re-running code.
+    /// The old code switched unconditionally, so a handler reached by
+    /// fall-through jumped back to the error checkpoint and looped forever.
     fn compile_resume(&mut self, fb: &mut FunctionBuilder, mode: ResumeMode) -> PbResult<()> {
         if fb.is_terminated() {
             return Ok(());
         }
-        // Clear the runtime error flag so the resumed statements don't re-trigger
-        fb.store(
-            &fb.const_i32(0),
-            &Val::new("@pb_err".to_string(), IrType::Ptr),
-        );
-        fb.store(
-            &fb.const_i32(0),
-            &Val::new("@pb_err_active".to_string(), IrType::Ptr),
-        );
+        let act_ptr = Val::new("@pb_err_active".to_string(), IrType::Ptr);
+        let act = fb.load(&IrType::I32, &act_ptr);
+        let actz = fb.icmp("eq", &act, &fb.const_i32(0));
+        let plain = fb.next_label("resume.plain");
+        let trap = fb.next_label("resume.trap");
+        // No active error -> RESUME is a no-op: continue with the next statement.
+        fb.condbr(&actz, &plain, &trap);
+        fb.label(&trap);
+        // In-handler path: leave @pb_err untouched (the ERR system variable must
+        // keep the error code after RESUME - PBWin probe g1=54) and only clear
+        // the "inside handler" flag, then jump to the recorded checkpoint.
+        // The per-statement arming in emit_stmt_enter clears @pb_err before the
+        // next checked statement, so the residual value cannot re-trigger.
+        fb.store(&fb.const_i32(0), &act_ptr);
         let id = fb.load(
             &IrType::I32,
             &Val::new("@pb_err_stmt_id".to_string(), IrType::Ptr),
         );
-        let default = fb.next_label("resume.default");
         let cases: Vec<(i32, String)> = self
             .onerror_checkpoints
             .iter()
@@ -20369,8 +20437,9 @@ impl Compiler {
                 ResumeMode::Next => (i as i32, next.clone()),
             })
             .collect();
-        fb.switch(&id, &default, &cases);
-        fb.label(&default);
+        fb.switch(&id, &plain, &cases);
+        // Fall-through target for the no-op path (and unmatched statement ids).
+        fb.label(&plain);
         Ok(())
     }
 
@@ -20875,8 +20944,11 @@ impl Compiler {
                         return Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, str_len]));
                     }
                     "ERR" => {
-                        // PB-compatible ERR system variable: load @pb_err (i32)
-                        let g = Val::new("@pb_err".to_string(), IrType::Ptr);
+                        // PB-compatible ERR system variable: load @pb_err_var.
+                        // @pb_err is a per-statement trap flag cleared before each
+                        // checked statement; @pb_err_var keeps the LAST error code
+                        // (PBWin: ERR survives RESUME and successful statements).
+                        let g = Val::new("@pb_err_var".to_string(), IrType::Ptr);
                         return Ok(fb.load(&IrType::I32, &g));
                     }
                     "RND" => {
