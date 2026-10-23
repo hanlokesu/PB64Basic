@@ -296,6 +296,10 @@ __declspec(dllimport) int __stdcall WriteFile(void* hFile, const void* lpBuffer,
 __declspec(dllimport) int __stdcall CloseHandle(void* hObject);
 __declspec(dllimport) int __stdcall FlushFileBuffers(void* hFile);
 __declspec(dllimport) int __stdcall EscapeCommFunction(void* hFile, unsigned long dwFunc);
+__declspec(dllimport) int __stdcall GetCommModemStatus(void* hFile, unsigned long* lpModemStat);
+__declspec(dllimport) int __stdcall ClearCommError(void* hFile, unsigned long* lpErrors, void* lpStat);
+__declspec(dllimport) int __stdcall GetCommProperties(void* hFile, void* lpCommProp);
+__declspec(dllimport) int __stdcall SetupComm(void* hFile, unsigned long dwInQueue, unsigned long dwOutQueue);
 __declspec(dllimport) void* __stdcall CreateThread(void* lpThreadAttributes, unsigned long dwStackSize, void* lpStartAddress, void* lpParameter, unsigned long dwCreationFlags, unsigned long* lpThreadId);
 __declspec(dllimport) unsigned long __stdcall SuspendThread(void* hThread);
 __declspec(dllimport) unsigned long __stdcall ResumeThread(void* hThread);
@@ -1646,7 +1650,15 @@ char* pb_line_input(int filenum) {
     return bstr_from_buf(result);
 }
 
+/* COMM LINE timeout EOF query (batch 260); defined in the COMM section. */
+int pb_comm_is_eof(int channel);
+
 int pb_eof(int filenum) {
+    /* Batch 260: EOF(channel) on an open COMM port reflects the COMM LINE
+       timeout state (CHW COMM_LINE_statement.htm: on timeout the accumulated
+       partial line is returned and EOF becomes TRUE).  Non-COMM file numbers
+       fall through to the file check below. */
+    if (pb_comm_is_eof(filenum)) return -1;
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return -1;
     /* PB EOF() returns true when no more data to read � need to peek ahead */
     int ch = fgetc(file_handles[filenum]);
@@ -4248,6 +4260,39 @@ typedef struct _pb_commtimeouts {
 
 static HANDLE pb_comm_h[256];
 static int pb_comm_ok[256];
+static int pb_comm_wide[256];   /* CHR=WIDE mode from COMM OPEN (batch 260) */
+static int pb_comm_eof[256];    /* COMM LINE timed out -> EOF(channel) TRUE */
+
+/* DCB fFlags bit masks (batch 260) - the pb_dcb layout already matches the
+   real Windows DCB: offset 8 is the fFlags DWORD. */
+#define PB_F_BINARY       0x00000001UL
+#define PB_F_PARITY       0x00000002UL
+#define PB_F_OUTXCTSFLOW  0x00000004UL
+#define PB_F_OUTXDSRFLOW  0x00000008UL
+#define PB_F_DTRCONTROL   0x00000030UL
+#define PB_F_DSRSENSITIVITY 0x00000040UL
+#define PB_F_OUTX         0x00000100UL
+#define PB_F_INX          0x00000200UL
+#define PB_F_ERRORCHAR    0x00000400UL
+#define PB_F_NULL         0x00000800UL
+#define PB_F_RTSCONTROL   0x00003000UL
+
+/* COMM function keyword -> option string compare helper (uppercased copy) */
+static void pb_comm_opt(const char* in, char* out, int cap) {
+    int i = 0;
+    if (!in) { out[0] = '\0'; return; }
+    while (in[i] && i < cap - 1) {
+        out[i] = (char)toupper((unsigned char)in[i]);
+        i++;
+    }
+    out[i] = '\0';
+}
+
+/* TRUE if `channel` is an open COMM port whose COMM LINE has hit a timeout. */
+int pb_comm_is_eof(int channel) {
+    if (channel < 0 || channel > 255 || !pb_comm_ok[channel]) return 0;
+    return pb_comm_eof[channel];
+}
 
 /* Batch 206: COMM failures used to be completely silent.  A port that does not
    exist (or is already in use) gave the program no signal whatsoever - the return
@@ -4265,15 +4310,15 @@ static void pb_comm_report(const char* what, int channel) {
     fflush(stderr);
 }
 
-int pb_comm_open(const char* port, int channel, int baud, const char* parity, int data, int stop) {
+int pb_comm_open(const char* port, int channel, int baud, const char* parity, int data, int stop, int wide) {
     HANDLE h;
     pb_dcb dcb;
     pb_commtimeouts to;
     if (channel < 0 || channel > 255 || port == NULL) { pb_err = 5; return -1; }
-    if (pb_comm_ok[channel]) {
-        CloseHandle(pb_comm_h[channel]);
-        pb_comm_ok[channel] = 0;
-        pb_comm_h[channel] = NULL;
+    /* PBWin probe: OPEN of a channel already in use (COMM or file #) -> ERR 55 */
+    if (pb_comm_ok[channel]
+        || (channel >= 1 && channel < MAX_FILE_HANDLES && file_handles[channel] != NULL)) {
+        pb_err = 55; return -1;
     }
     h = CreateFileA(port, PB_GENERIC_READ_WRITE, 0, NULL, PB_OPEN_EXISTING, 0, NULL);
     if (h == PB_INVALID_HANDLE) {
@@ -4284,7 +4329,7 @@ int pb_comm_open(const char* port, int channel, int baud, const char* parity, in
                 port, channel);
         fflush(stderr);
         pb_comm_reported[channel] = 1;
-        pb_err = 57; return -1;
+        pb_err = 69; return -1;   /* PBWin probe: port open failure -> ERR 69 */
     }
     memset(&dcb, 0, sizeof(dcb));
     dcb.DCBlength = sizeof(dcb);
@@ -4302,6 +4347,8 @@ int pb_comm_open(const char* port, int channel, int baud, const char* parity, in
     SetCommTimeouts(h, &to);
     pb_comm_h[channel] = h;
     pb_comm_ok[channel] = 1;
+    pb_comm_wide[channel] = (wide != 0);
+    pb_comm_eof[channel] = 0;
     pb_comm_reported[channel] = 0;   /* re-arm: this channel now works */
     return 0;
 }
@@ -4314,14 +4361,90 @@ int pb_comm_close(int channel) {
     CloseHandle(pb_comm_h[channel]);
     pb_comm_h[channel] = NULL;
     pb_comm_ok[channel] = 0;
+    pb_comm_wide[channel] = 0;
+    pb_comm_eof[channel] = 0;
     return 0;
 }
 
-void pb_comm_reset(void) {
-    int i;
-    for (i = 0; i < 256; i++) {
-        if (pb_comm_ok[i]) pb_comm_close(i);
+int pb_comm_reset(int channel) {
+    pb_dcb dcb;
+    if (channel < 0 || channel > 255 || !pb_comm_ok[channel]) {
+        pb_comm_report("RESET", channel);
+        pb_err = 52; return -1;
     }
+    /* CHW COMM_RESET_statement.htm: switch off ALL flow control on the port. */
+    memset(&dcb, 0, sizeof(dcb));
+    dcb.DCBlength = sizeof(dcb);
+    if (!GetCommState(pb_comm_h[channel], &dcb)) { pb_err = 57; return -1; }
+    dcb.fBits &= ~(PB_F_OUTXCTSFLOW | PB_F_OUTXDSRFLOW | PB_F_DSRSENSITIVITY
+                   | PB_F_OUTX | PB_F_INX | PB_F_DTRCONTROL | PB_F_RTSCONTROL);
+    if (!SetCommState(pb_comm_h[channel], &dcb)) { pb_err = 57; return -1; }
+    return 0;
+}
+
+int pb_comm_get(int channel, const char* option) {
+    char opt[16];
+    unsigned long ms = 0, errs = 0;
+    if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || option == NULL) {
+        pb_comm_report("GET", channel);
+        pb_err = 5; return 0;   /* PBWin probe: COMM() on unopened channel -> ERR 5 */
+    }
+    pb_comm_opt(option, opt, (int)sizeof(opt));
+    {
+        pb_dcb dcb;
+        memset(&dcb, 0, sizeof(dcb));
+        dcb.DCBlength = sizeof(dcb);
+        GetCommState(pb_comm_h[channel], &dcb);
+        if (strcmp(opt, "BAUD") == 0) return (int)dcb.BaudRate;
+        if (strcmp(opt, "BYTE") == 0) return dcb.ByteSize;
+        if (strcmp(opt, "PARITY") == 0) return (dcb.fBits & PB_F_PARITY) ? -1 : 0;
+        if (strcmp(opt, "PARITYTYPE") == 0) return dcb.Parity;
+        if (strcmp(opt, "PARITYREPL") == 0) return (dcb.fBits & PB_F_ERRORCHAR) ? -1 : 0;
+        if (strcmp(opt, "PARITYCHAR") == 0) return (unsigned char)dcb.ErrorChar;
+        if (strcmp(opt, "STOP") == 0) return dcb.StopBits; /* 0=1, 1=1.5, 2=2 (CHW) */
+        if (strcmp(opt, "CTSFLOW") == 0) return (dcb.fBits & PB_F_OUTXCTSFLOW) ? -1 : 0;
+        if (strcmp(opt, "DSRFLOW") == 0) return (dcb.fBits & PB_F_OUTXDSRFLOW) ? -1 : 0;
+        if (strcmp(opt, "DSRSENS") == 0) return (dcb.fBits & PB_F_DSRSENSITIVITY) ? -1 : 0;
+        if (strcmp(opt, "DTRFLOW") == 0) return (((dcb.fBits & PB_F_DTRCONTROL) >> 4) == 2) ? -1 : 0;
+        if (strcmp(opt, "DTRLINE") == 0) return (((dcb.fBits & PB_F_DTRCONTROL) >> 4) == 1) ? -1 : 0;
+        if (strcmp(opt, "RTSFLOW") == 0) return (int)((dcb.fBits & PB_F_RTSCONTROL) >> 12);
+        if (strcmp(opt, "XINPFLOW") == 0) return (dcb.fBits & PB_F_INX) ? -1 : 0;
+        if (strcmp(opt, "XOUTFLOW") == 0) return (dcb.fBits & PB_F_OUTX) ? -1 : 0;
+        if (strcmp(opt, "NULL") == 0) return (dcb.fBits & PB_F_NULL) ? -1 : 0;
+        if (strcmp(opt, "BREAK") == 0) return 0; /* not queryable via Win32 API */
+    }
+    /* modem status lines (READ-ONLY) */
+    if (GetCommModemStatus(pb_comm_h[channel], &ms)) {
+        if (strcmp(opt, "CD") == 0 || strcmp(opt, "RLSD") == 0) return (ms & 0x80UL) ? -1 : 0; /* MS_RLSD_ON */
+        if (strcmp(opt, "CTS") == 0) return (ms & 0x10UL) ? -1 : 0;                            /* MS_CTS_ON */
+        if (strcmp(opt, "DSR") == 0) return (ms & 0x20UL) ? -1 : 0;                            /* MS_DSR_ON */
+        if (strcmp(opt, "RING") == 0) return (ms & 0x40UL) ? -1 : 0;                           /* MS_RING_ON */
+    }
+    if (strcmp(opt, "RXQUE") == 0 || strcmp(opt, "TXQUE") == 0) {
+        /* COMSTAT: DWORD fCtsHold.. (4 bytes) then cbInQue (offset 4), cbOutQue (offset 8) */
+        unsigned char stat[12];
+        memset(stat, 0, sizeof(stat));
+        if (ClearCommError(pb_comm_h[channel], &errs, stat)) {
+            unsigned long inque = *(unsigned long*)(stat + 4);
+            unsigned long outque = *(unsigned long*)(stat + 8);
+            if (strcmp(opt, "RXQUE") == 0) return (int)inque;
+            return (int)outque;
+        }
+    }
+    if (strcmp(opt, "RXBUFFER") == 0 || strcmp(opt, "TXBUFFER") == 0) {
+        /* COMMPROP: dwPacketLength(0) dwPacketVersion(4) dwServiceMask(8)
+           dwReserved1(12) dwMaxTxQueue(16) dwMaxRxQueue(20) */
+        unsigned char cp[28];
+        memset(cp, 0, sizeof(cp));
+        if (GetCommProperties(pb_comm_h[channel], cp)) {
+            unsigned long tx = *(unsigned long*)(cp + 16);
+            unsigned long rx = *(unsigned long*)(cp + 20);
+            if (strcmp(opt, "RXBUFFER") == 0) return (int)rx;
+            return (int)tx;
+        }
+    }
+    pb_err = 5;
+    return 0;
 }
 
 int pb_comm_send(int channel, const char* s) {
@@ -4368,10 +4491,15 @@ int pb_comm_line_input(int channel, char** dest) {
     }
     buf = (char*)malloc((size_t)cap);
     if (buf == NULL) { pb_err = 5; return -1; }
+    pb_comm_eof[channel] = 0;
     while (1) {
         unsigned long got = 0;
         char ch;
-        if (!ReadFile(pb_comm_h[channel], &ch, 1, &got, NULL) || got == 0) break;
+        if (!ReadFile(pb_comm_h[channel], &ch, 1, &got, NULL) || got == 0) {
+            /* timeout (COMM TIMEOUT) or device error -> partial line + EOF TRUE */
+            pb_comm_eof[channel] = 1;
+            break;
+        }
         c = (unsigned char)ch;
         if (c == '\r') continue;
         if (c == '\n') break;
@@ -4392,13 +4520,34 @@ int pb_comm_line_input(int channel, char** dest) {
     return n;
 }
 
-void pb_comm_print_str(int channel, const char* s) {
+int pb_comm_print_str(int channel, const char* s) {
+    unsigned long written = 0;
     if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
-        unsigned long written = 0;
         WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
-    } else {
-        pb_comm_report("PRINT", channel);
+        FlushFileBuffers(pb_comm_h[channel]);
+        return (int)written;
     }
+    pb_comm_report("PRINT", channel);
+    pb_err = 52;   /* PBWin probe: COMM PRINT on unopened channel -> ERR 52 */
+    return 0;
+}
+
+int pb_comm_print_line(int channel, const char* s) {
+    /* COMM PRINT: CR/LF appended unless a trailing ';' suppresses it.
+       The count returned includes the CR/LF (CHW COMM_PRINT_statement.htm). */
+    int n = 0;
+    char crlf[2] = { '\r', '\n' };
+    unsigned long written = 0;
+    if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
+        WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
+        n = (int)written;
+        if (WriteFile(pb_comm_h[channel], crlf, 2, &written, NULL)) n += (int)written;
+        FlushFileBuffers(pb_comm_h[channel]);
+        return n;
+    }
+    pb_comm_report("PRINT", channel);
+    pb_err = 52;
+    return 0;
 }
 
 void pb_comm_print_int(int channel, long long v) {
@@ -4415,22 +4564,65 @@ void pb_comm_print_dbl(int channel, double v) {
 
 int pb_comm_set(int channel, const char* option, int on) {
     unsigned long fn;
-    char opt[8];
-    int i = 0;
+    char opt[16];
+    pb_dcb dcb;
     if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || option == NULL) {
         pb_comm_report("SET", channel);
         pb_err = 52; return -1;
     }
-    while (option[i] && i < 7) {
-        opt[i] = (char)toupper((unsigned char)option[i]);
-        i++;
-    }
-    opt[i] = '\0';
+    pb_comm_opt(option, opt, (int)sizeof(opt));
+    /* EscapeCommFunction family: no DCB round-trip needed */
     if (strcmp(opt, "DTR") == 0) fn = on ? PB_SETDTR : PB_CLRDTR;
     else if (strcmp(opt, "RTS") == 0) fn = on ? PB_SETRTS : PB_CLRRTS;
     else if (strcmp(opt, "BREAK") == 0) fn = on ? PB_SETBREAK : PB_CLRBREAK;
-    else { pb_err = 5; return -1; }
-    return EscapeCommFunction(pb_comm_h[channel], fn) ? 0 : -1;
+    else {
+        /* Everything else goes through DCB (or SetupComm for the buffers) */
+        memset(&dcb, 0, sizeof(dcb));
+        dcb.DCBlength = sizeof(dcb);
+        if (!GetCommState(pb_comm_h[channel], &dcb)) { pb_err = 57; return -1; }
+        if (strcmp(opt, "BAUD") == 0) {
+            dcb.BaudRate = (unsigned long)(on > 0 ? on : 9600);
+        } else if (strcmp(opt, "BYTE") == 0) {
+            dcb.ByteSize = (unsigned char)(on > 0 ? on : 8);
+        } else if (strcmp(opt, "PARITY") == 0) {
+            if (on) dcb.fBits |= PB_F_PARITY; else dcb.fBits &= ~PB_F_PARITY;
+        } else if (strcmp(opt, "PARITYTYPE") == 0) {
+            dcb.Parity = (unsigned char)((on >= 0 && on <= 4) ? on : 0);
+        } else if (strcmp(opt, "PARITYREPL") == 0) {
+            if (on) dcb.fBits |= PB_F_ERRORCHAR; else dcb.fBits &= ~PB_F_ERRORCHAR;
+        } else if (strcmp(opt, "PARITYCHAR") == 0) {
+            dcb.ErrorChar = (char)(on & 0xFF);
+        } else if (strcmp(opt, "STOP") == 0) {
+            dcb.StopBits = (unsigned char)((on >= 0 && on <= 2) ? on : 0);
+        } else if (strcmp(opt, "CTSFLOW") == 0) {
+            if (on) dcb.fBits |= PB_F_OUTXCTSFLOW; else dcb.fBits &= ~PB_F_OUTXCTSFLOW;
+        } else if (strcmp(opt, "DSRFLOW") == 0) {
+            if (on) dcb.fBits |= PB_F_OUTXDSRFLOW; else dcb.fBits &= ~PB_F_OUTXDSRFLOW;
+        } else if (strcmp(opt, "DSRSENS") == 0) {
+            if (on) dcb.fBits |= PB_F_DSRSENSITIVITY; else dcb.fBits &= ~PB_F_DSRSENSITIVITY;
+        } else if (strcmp(opt, "DTRFLOW") == 0) {
+            dcb.fBits = (dcb.fBits & ~PB_F_DTRCONTROL) | ((on ? 2UL : 0UL) << 4);
+        } else if (strcmp(opt, "DTRLINE") == 0) {
+            dcb.fBits = (dcb.fBits & ~PB_F_DTRCONTROL) | ((on ? 1UL : 0UL) << 4);
+        } else if (strcmp(opt, "RTSFLOW") == 0) {
+            dcb.fBits = (dcb.fBits & ~PB_F_RTSCONTROL) | (((unsigned long)(on & 3)) << 12);
+        } else if (strcmp(opt, "XINPFLOW") == 0) {
+            if (on) dcb.fBits |= PB_F_INX; else dcb.fBits &= ~PB_F_INX;
+        } else if (strcmp(opt, "XOUTFLOW") == 0) {
+            if (on) dcb.fBits |= PB_F_OUTX; else dcb.fBits &= ~PB_F_OUTX;
+        } else if (strcmp(opt, "NULL") == 0) {
+            if (on) dcb.fBits |= PB_F_NULL; else dcb.fBits &= ~PB_F_NULL;
+        } else if (strcmp(opt, "TXBUFFER") == 0) {
+            return SetupComm(pb_comm_h[channel], 0, (unsigned long)(on > 0 ? on : 0)) ? 0 : -1;
+        } else if (strcmp(opt, "RXBUFFER") == 0) {
+            return SetupComm(pb_comm_h[channel], (unsigned long)(on > 0 ? on : 0), 0) ? 0 : -1;
+        } else {
+            pb_err = 5;
+            return -1;
+        }
+        if (!SetCommState(pb_comm_h[channel], &dcb)) { pb_err = 57; return -1; }
+    }
+    return 0;
 }
 
 int pb_comm_timeout(int channel, long long ms) {

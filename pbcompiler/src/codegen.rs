@@ -5792,13 +5792,14 @@ impl Compiler {
                 IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
+                IrType::I32,
             ],
             false,
         );
         self.module
             .declare_function("pb_comm_close", &IrType::I32, &[IrType::I32], false);
         self.module
-            .declare_function("pb_comm_reset", &IrType::Void, &[], false);
+            .declare_function("pb_comm_reset", &IrType::I32, &[IrType::I32], false);
         self.module.declare_function(
             "pb_comm_send",
             &IrType::I32,
@@ -5819,7 +5820,7 @@ impl Compiler {
         );
         self.module.declare_function(
             "pb_comm_print_str",
-            &IrType::Void,
+            &IrType::I32,
             &[IrType::I32, IrType::Ptr],
             false,
         );
@@ -5833,6 +5834,18 @@ impl Compiler {
             "pb_comm_print_dbl",
             &IrType::Void,
             &[IrType::I32, IrType::Double],
+            false,
+        );
+        self.module.declare_function(
+            "pb_comm_print_line",
+            &IrType::I32,
+            &[IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_comm_get",
+            &IrType::I32,
+            &[IrType::I32, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -18472,12 +18485,18 @@ impl Compiler {
                     } else {
                         fb.const_i32(0)
                     };
-                    fb.call_void("pb_comm_open", &[port, ch, baud, parity, data, stop]);
+                    let wide = if call.args.len() >= 7 {
+                        let v = self.compile_expr(fb, &call.args[6])?;
+                        self.to_i32(fb, &v)
+                    } else {
+                        fb.const_i32(0)
+                    };
+                    fb.call_void("pb_comm_open", &[port, ch, baud, parity, data, stop, wide]);
                 }
                 return Ok(());
             }
             "COMM CLOSE" => {
-                if let Some(arg) = call.args.first() {
+                for arg in &call.args {
                     let v = self.compile_expr(fb, arg)?;
                     let ch = self.to_i32(fb, &v);
                     fb.call_void("pb_comm_close", std::slice::from_ref(&ch));
@@ -18485,7 +18504,11 @@ impl Compiler {
                 return Ok(());
             }
             "COMM RESET" => {
-                fb.call_void("pb_comm_reset", &[]);
+                if let Some(arg) = call.args.first() {
+                    let v = self.compile_expr(fb, arg)?;
+                    let ch = self.to_i32(fb, &v);
+                    fb.call_void("pb_comm_reset", &[ch]);
+                }
                 return Ok(());
             }
             "COMM LINE INPUT" => {
@@ -18530,7 +18553,7 @@ impl Compiler {
                 }
                 return Ok(());
             }
-            "COMM SEND" => {
+            "COMM SEND" | "COMM SEND TO" => {
                 // batch 220: the official syntax requires all 2 arguments, so a shorter
                 // spelling is malformed. Report it instead of silently doing nothing.
                 if call.args.len() < 2 {
@@ -18545,23 +18568,93 @@ impl Compiler {
                     let v0 = self.compile_expr(fb, &call.args[0])?;
                     let ch = self.to_i32(fb, &v0);
                     let s = self.compile_expr(fb, &call.args[1])?;
-                    fb.call_void("pb_comm_send", &[ch, s]);
+                    // pb_comm_send returns the number of characters written
+                    // (CHW COMM_SEND_statement.htm: TO CharCountVar gauges success)
+                    let r = fb.call(&IrType::I32, "pb_comm_send", &[ch, s]);
+                    if name == "COMM SEND TO" && call.args.len() >= 3 {
+                        if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
+                            fb.store(&r, &ptr);
+                        }
+                    }
                 }
                 return Ok(());
             }
-            "COMM PRINT" => {
+            "COMM PRINT" | "COMM PRINT;" | "COMM PRINT TO" | "COMM PRINT;TO" => {
+                // CHW COMM_PRINT_statement.htm: the text is sent and a CR/LF pair is
+                // appended automatically; a trailing ';' suppresses it.  The optional
+                // TO CharCountVar receives the number of characters written
+                // (including the CR/LF when used).
                 if !call.args.is_empty() {
                     let v0 = self.compile_expr(fb, &call.args[0])?;
                     let ch = self.to_i32(fb, &v0);
-                    for arg in call.args.iter().skip(1) {
-                        let v = self.compile_expr(fb, arg)?;
-                        match &v.ty {
-                            IrType::I32 | IrType::I64 => {
-                                let vi = self.to_i64(fb, &v);
-                                fb.call_void("pb_comm_print_int", &[ch.clone(), vi]);
+                    let semi = name == "COMM PRINT;" || name == "COMM PRINT;TO";
+                    let has_to = name == "COMM PRINT TO" || name == "COMM PRINT;TO";
+                    if has_to {
+                        // Official form takes ONE string expression; TO receives the
+                        // count of the whole line.  Multi-expression calls are a fork
+                        // extension: TO then counts the final expression + CR/LF.
+                        let last_arg_idx = call.args.len() - 1; // CharCountVar
+                        let expr_count = call.args.len() - 2;
+                        if expr_count <= 1 {
+                            let sv = if expr_count == 1 {
+                                self.compile_expr(fb, &call.args[1])?
+                            } else {
+                                let (n, _) = self.module.add_string_constant("");
+                                Val::new(n, IrType::Ptr)
+                            };
+                            let r = if semi {
+                                fb.call(&IrType::I32, "pb_comm_print_str", &[ch.clone(), sv])
+                            } else {
+                                fb.call(&IrType::I32, "pb_comm_print_line", &[ch.clone(), sv])
+                            };
+                            if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[last_arg_idx])
+                            {
+                                fb.store(&r, &ptr);
                             }
-                            IrType::Double => fb.call_void("pb_comm_print_dbl", &[ch.clone(), v]),
-                            _ => fb.call_void("pb_comm_print_str", &[ch.clone(), v]),
+                        } else {
+                            for arg in call.args.iter().skip(1).take(expr_count - 1) {
+                                let v = self.compile_expr(fb, arg)?;
+                                match &v.ty {
+                                    IrType::I32 | IrType::I64 => {
+                                        let vi = self.to_i64(fb, &v);
+                                        fb.call_void("pb_comm_print_int", &[ch.clone(), vi]);
+                                    }
+                                    IrType::Double => {
+                                        fb.call_void("pb_comm_print_dbl", &[ch.clone(), v])
+                                    }
+                                    _ => fb.call_void("pb_comm_print_str", &[ch.clone(), v]),
+                                }
+                            }
+                            let lv = self.compile_expr(fb, &call.args[call.args.len() - 2])?;
+                            let r = if semi {
+                                fb.call(&IrType::I32, "pb_comm_print_str", &[ch.clone(), lv])
+                            } else {
+                                fb.call(&IrType::I32, "pb_comm_print_line", &[ch.clone(), lv])
+                            };
+                            if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[last_arg_idx])
+                            {
+                                fb.store(&r, &ptr);
+                            }
+                        }
+                    } else {
+                        for arg in call.args.iter().skip(1) {
+                            let v = self.compile_expr(fb, arg)?;
+                            match &v.ty {
+                                IrType::I32 | IrType::I64 => {
+                                    let vi = self.to_i64(fb, &v);
+                                    fb.call_void("pb_comm_print_int", &[ch.clone(), vi]);
+                                }
+                                IrType::Double => {
+                                    fb.call_void("pb_comm_print_dbl", &[ch.clone(), v])
+                                }
+                                _ => fb.call_void("pb_comm_print_str", &[ch.clone(), v]),
+                            }
+                        }
+                        if !semi {
+                            // a trailing ';' suppresses the CR/LF; otherwise it is
+                            // always appended (CHW COMM_PRINT_statement.htm)
+                            let (nl, _) = self.module.add_string_constant("");
+                            fb.call_void("pb_comm_print_line", &[ch, Val::new(nl, IrType::Ptr)]);
                         }
                     }
                 }
@@ -18577,6 +18670,26 @@ impl Compiler {
                         None,
                         call.line,
                     ));
+                }
+                // CHW COMM_SET_statement.htm: attempting to set a READ-ONLY
+                // attribute (CD/CTS/DSR/RING/RLSD/RXQUE/TXQUE) is a compile-time
+                // Error 542 "May not be altered".
+                if let Some(Expr::StringLit(opt)) = call.args.get(1) {
+                    let u = opt.to_uppercase();
+                    if u == "CD"
+                        || u == "CTS"
+                        || u == "DSR"
+                        || u == "RING"
+                        || u == "RLSD"
+                        || u == "RXQUE"
+                        || u == "TXQUE"
+                    {
+                        return Err(pb::error::PbError::parser(
+                            format!("COMM SET {} may not be altered (READ-ONLY attribute)", u),
+                            None,
+                            call.line,
+                        ));
+                    }
                 }
 
                 if call.args.len() >= 3 {
@@ -21583,6 +21696,39 @@ impl Compiler {
                     Val::new("null".to_string(), IrType::Ptr)
                 };
                 Some(Ok(fb.call(&IrType::Ptr, "pb_clsid_get", &[progid])))
+            }
+            "COMM" => {
+                // COMM([#] hComm, Comfunc) — CHW comm_function.htm.  Returns a
+                // LONG value/status; ERR is set on failure.  The parser turns the
+                // Comfunc keyword into a StringLit; hComm may carry an optional #
+                // which the parser already consumed.
+                let ch = if let Some(a) = args.first() {
+                    match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    fb.const_i32(0)
+                };
+                let ch = self.to_i32(fb, &ch);
+                let opt = match args.get(1) {
+                    Some(Expr::StringLit(s)) => {
+                        let (p, _) = self.module.add_string_constant(s);
+                        Val::new(p, IrType::Ptr)
+                    }
+                    Some(other) => match self.compile_expr(fb, other) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    },
+                    None => {
+                        return Some(Err(pb::error::PbError::parser(
+                            "COMM requires its arguments: COMM([#] hComm, Comfunc)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                Some(Ok(fb.call(&IrType::I32, "pb_comm_get", &[ch, opt])))
             }
             "EXIST" => {
                 let path = self.compile_expr(fb, &args[0]);

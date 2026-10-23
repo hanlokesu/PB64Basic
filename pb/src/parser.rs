@@ -12667,6 +12667,7 @@ impl Parser {
                 let mut parity = Expr::StringLit(String::new());
                 let mut data = Expr::IntegerLit(0);
                 let mut stop = Expr::IntegerLit(0);
+                let mut wide = Expr::IntegerLit(0);
                 while self.peek() == &Token::Comma {
                     self.advance();
                     if let Token::Identifier(w) = self.peek() {
@@ -12678,6 +12679,14 @@ impl Parser {
                             "PARITY" => parity = v,
                             "DATA" => data = v,
                             "STOP" => stop = v,
+                            "CHR" => {
+                                // CHR = ANSI | WIDE (CHW COMM_OPEN_statement.htm)
+                                if let Expr::Variable(w) = &v {
+                                    if w.eq_ignore_ascii_case("WIDE") {
+                                        wide = Expr::IntegerLit(1);
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     } else {
@@ -12689,6 +12698,7 @@ impl Parser {
                 args.push(parity);
                 args.push(data);
                 args.push(stop);
+                args.push(wide);
                 Ok(Statement::Call(CallStmt {
                     name: "COMM OPEN".to_string(),
                     args,
@@ -12696,29 +12706,28 @@ impl Parser {
                 }))
             }
             "LINE" => {
-                // COMM LINE INPUT [#]f, var$
+                // COMM LINE [INPUT] [#]f, var$ (CHW COMM_LINE_statement.htm:
+                // the INPUT keyword is optional)
                 if let Token::Input = self.peek() {
                     self.advance();
-                    if self.peek() == &Token::Hash {
-                        self.advance();
-                    }
-                    let f = self.parse_expression()?;
-                    self.expect(&Token::Comma)?;
-                    let var = self.parse_expression()?;
-                    self.consume_to_eol();
-                    return Ok(Statement::Call(CallStmt {
-                        name: "COMM LINE INPUT".to_string(),
-                        args: vec![f, var],
-                        line,
-                    }));
                 }
+                if self.peek() == &Token::Hash {
+                    self.advance();
+                }
+                let f = self.parse_expression()?;
+                self.expect(&Token::Comma)?;
+                let var = self.parse_expression()?;
                 self.consume_to_eol();
-                eprintln!("Error: COMM LINE: unsupported form on line {}", line);
-                self.error_count += 1;
-                Ok(Statement::Noop("COMM LINE".to_string(), line))
+                return Ok(Statement::Call(CallStmt {
+                    name: "COMM LINE INPUT".to_string(),
+                    args: vec![f, var],
+                    line,
+                }));
             }
             "PRINT" => {
-                // COMM PRINT [#]f, exprlist
+                // COMM PRINT [#]f, exprlist [;] [TO CharCountVar]
+                // (CHW COMM_PRINT_statement.htm: CR/LF auto-appended unless a
+                // trailing ';' suppresses it; TO receives the char count.)
                 if self.peek() == &Token::Hash {
                     self.advance();
                 }
@@ -12727,12 +12736,29 @@ impl Parser {
                     self.advance();
                     args.push(self.parse_expression()?);
                 }
+                let mut semi = false;
+                if self.peek() == &Token::Semicolon {
+                    self.advance();
+                    semi = true;
+                }
+                let mut to_var = None;
+                if let Token::Identifier(w) = self.peek() {
+                    if w.eq_ignore_ascii_case("TO") {
+                        self.advance();
+                        to_var = Some(self.parse_expression()?);
+                    }
+                }
                 self.consume_to_eol();
-                Ok(Statement::Call(CallStmt {
-                    name: "COMM PRINT".to_string(),
-                    args,
-                    line,
-                }))
+                let name = match (semi, to_var.is_some()) {
+                    (false, false) => "COMM PRINT".to_string(),
+                    (true, false) => "COMM PRINT;".to_string(),
+                    (false, true) => "COMM PRINT TO".to_string(),
+                    (true, true) => "COMM PRINT;TO".to_string(),
+                };
+                if let Some(tv) = to_var {
+                    args.push(tv);
+                }
+                Ok(Statement::Call(CallStmt { name, args, line }))
             }
             "RECV" => {
                 // COMM RECV [#]f, bytes&, var$
@@ -12752,27 +12778,49 @@ impl Parser {
                 }))
             }
             "RESET" => {
+                // COMM RESET [#] hComm , FLOW (CHW COMM_RESET_statement.htm)
+                if self.peek() == &Token::Hash {
+                    self.advance();
+                }
+                let f = self.parse_expression()?;
+                if let Token::Identifier(w) = self.peek() {
+                    if w.eq_ignore_ascii_case("FLOW") {
+                        self.advance();
+                    }
+                }
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: "COMM RESET".to_string(),
-                    args: vec![],
+                    args: vec![f],
                     line,
                 }))
             }
             "SEND" => {
-                // COMM SEND [#]f, string$
+                // COMM SEND [#]f, string$ [TO CharCountVar] (CHW)
                 if self.peek() == &Token::Hash {
                     self.advance();
                 }
                 let f = self.parse_expression()?;
                 self.expect(&Token::Comma)?;
                 let s = self.parse_expression()?;
+                let mut to_var = None;
+                if let Token::Identifier(w) = self.peek() {
+                    if w.eq_ignore_ascii_case("TO") {
+                        self.advance();
+                        to_var = Some(self.parse_expression()?);
+                    }
+                }
                 self.consume_to_eol();
-                Ok(Statement::Call(CallStmt {
-                    name: "COMM SEND".to_string(),
-                    args: vec![f, s],
-                    line,
-                }))
+                let name = if to_var.is_some() {
+                    "COMM SEND TO".to_string()
+                } else {
+                    "COMM SEND".to_string()
+                };
+                let mut args = vec![f, s];
+                if let Some(tv) = to_var {
+                    args.push(tv);
+                }
+                Ok(Statement::Call(CallStmt { name, args, line }))
             }
             "SET" => {
                 // COMM SET [#]f, Comfunc = value  (Comfunc: BAUD/PARITY/STOP/FLOW/DTR/RTS/BREAK...)
@@ -12834,14 +12882,23 @@ impl Parser {
                 }))
             }
             "CLOSE" => {
-                if self.peek() == &Token::Hash {
-                    self.advance();
+                // COMM CLOSE [#] hComm [, [#] hComm ...] (CHW: synonym of CLOSE)
+                let mut args = Vec::new();
+                loop {
+                    if self.peek() == &Token::Hash {
+                        self.advance();
+                    }
+                    args.push(self.parse_expression()?);
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
                 }
-                let f = self.parse_expression()?;
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: "COMM CLOSE".to_string(),
-                    args: vec![f],
+                    args,
                     line,
                 }))
             }
@@ -14438,6 +14495,30 @@ impl Parser {
                 }
                 self.expect(&Token::RParen)?;
                 Ok(Expr::FunctionCall("DIR$".to_string(), args))
+            }
+            Token::Identifier(name) if name.eq_ignore_ascii_case("COMM") => {
+                // COMM([#] hComm, Comfunc) - CHW comm_function.htm.  The #
+                // before hComm is optional; Comfunc is a keyword (BAUD/BYTE/
+                // PARITY/...), taken as a literal string so codegen can hand
+                // it to the runtime query function.
+                self.advance();
+                self.expect(&Token::LParen)?;
+                let mut args = Vec::new();
+                if self.peek() == &Token::Hash {
+                    self.advance();
+                }
+                args.push(self.parse_expression()?);
+                while self.peek() == &Token::Comma {
+                    self.advance();
+                    if let Token::Identifier(ref w) = self.peek().clone() {
+                        args.push(Expr::StringLit(w.to_uppercase()));
+                        self.advance();
+                    } else {
+                        args.push(self.parse_expression()?);
+                    }
+                }
+                self.expect(&Token::RParen)?;
+                Ok(Expr::FunctionCall("COMM".to_string(), args))
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("FILEATTR") => {
                 // FILEATTR([#] filenum&, fattr) — optional # before the file number.
