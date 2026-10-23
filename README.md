@@ -259,7 +259,7 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (891 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 263 (v0.2.081). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 263 (v0.2.082). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
 > > batch 263 (v0.2.081) - C 批语句级对齐清完：CB.NM* 五件套 + CALLBACK FUNCTION/SUB 顶层声明、COMM 错误码 PBWin 实测表全对齐、CLIPBOARD GET OEMTEXT/UNICODE 回落 + 真 ClipResult + PRINT# NUL-safe、METHOD = expr 官方返回值形式。CLASS 接口对象模型（对象变量 AS 接口名 + INTERFACE 类型注册 + NEWCOM）如实标注未实现，batch213 仍 ONLY-FORK 豁免，后续独立批次。
 > batch 260 (v0.2.080) - #LINK metastatement links external MS COFF object modules (.obj/.lib) into EXE/DLL hosts (extension over .SLL/.PBLIB; PBWin 10 rejects .obj with Error 630); DECLARE without LIB now generates a real external symbol (ALIAS keeps case, else upper-case ProcName per CHW) - undefined external calls fail at link instead of silently returning 0; #LINK relative paths resolve against cwd then the source file's folder. New examples batch260_make_obj.txt (how to build an object module with clang), sum.c/sum.obj/build_sum_obj.bat, batch260_link_test.bas (prints 50). Dual-run baseline headless 134 / MATCH 131 / DIFF 0 / EMPTY 1 / ONLY-FORK 2 (batch029 Inline ASM extension + batch260 #LINK .obj).
 > batch 254 (v0.2.079) - MSGBOX full syntax (statement/function/? shorthand, default title "PB64Basic"); CONTROL by-id verbs per CHW; CONTROL ADD SCROLLBAR/TAB txt$ slot; TAB()/TAB$() function forms; batch174 DIALOG GET CLIENT height after MENU ATTACH; batch205 TCP OPEN SERVER ADDR bind + CRLF line endings. Dual-run baseline MATCH 115 / DIFF 7 (env/resource) / EMPTY 1 / ONLY-FORK 1 (batch029 Inline ASM extension).
@@ -745,6 +745,16 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.082 (2026-10-23) — batch 263 docs erratum: C 清单三方核对 + CSV/MD 勘误 22 行
+
+- **C 批 147 项关键字清单 × CHW × CSV 三方核对**（commit `8fb7cbe`）：实现层面确认 C 系全部就位，同时发现 **CSV/MD 漏记 22 个已实现项**并当场补上：
+  - `CB.CTL` / `CB.CTLMSG` / `CB.HNDL` / `CB.LPARAM` / `CB.MSG` / `CB.WPARAM`（CB.\* 共 11 个字段，此前 CSV 只记 NM\* 5 个）
+  - `CLSID$`（batch 259 已实现，漏记）
+  - 转换函数 `CBYT` / `CCUR` / `CCUX` / `CDWD` / `CEXT` / `CINT` / `CLNG` / `CQUD`
+  - CV 家族 `CVCUR` / `CVD` / `CVE` / `CVI` / `CVS` / `CVWRD` / `CWRD`
+- **6 项状态升级 Established→Implemented**：`CALL` / `CALL DWORD` / `CALLSTK` / `CHDIR` / `CHDRIVE` / `CSET`（fork 实际全支持，CSV 此前保守标 Established）。
+- **数字变化**：rows 869→891，implemented 729→757，established 131；verify_coverage_docs 35 checks 0 FAIL；全量双跑回归 MATCH 153 / DIFF 0 / ONLY-FORK 3 不变（纯文档勘误，无代码改动）。
+
 ### v0.2.081 (2026-10-23) — batch 261-263: C 批收尾（CB.NM* / COMM 错误码 / CLIPBOARD 回落 / METHOD = expr）
 
 - **CB.NM\* 五件套**（batch 261, commit `aee13f8`）：`CB.NMCODE` / `CB.NMHDR` / `CB.NMHDR$([n])` / `CB.NMHWND` / `CB.NMID` 按 CHW 实现，仅 `CALLBACK FUNCTION` 声明内可用（PBWin Error 547 实证）。新增 `CALLBACK FUNCTION/SUB` 顶层声明（DDT 回调官方形式，无参数列表）；runtime 加 `cb_nm_buf[12]` 快照 + 5 getter，WM_NOTIFY 手工字节转换到 PB-layout。
