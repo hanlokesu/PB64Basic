@@ -754,23 +754,23 @@ exit code 0:
 - **COMM function row added to CSV**: CHW `COMM([#] hComm, Comfunc)` (BAUD/BREAK/BYTE/CD/CTS/...) was already implemented but missing from the CSV; now recorded as Implemented.
 
 
-### v0.2.082 (2026-10-23) — batch 263 docs erratum: C 清单三方核对 + CSV/MD 勘误 22 行
+### v0.2.082 (2026-10-23) - batch 263: docs erratum - C-list triple check + CSV/MD 22-row correction
 
-- **C 批 147 项关键字清单 × CHW × CSV 三方核对**（commit `8fb7cbe`）：实现层面确认 C 系全部就位，同时发现 **CSV/MD 漏记 22 个已实现项**并当场补上：
-  - `CB.CTL` / `CB.CTLMSG` / `CB.HNDL` / `CB.LPARAM` / `CB.MSG` / `CB.WPARAM`（CB.\* 共 11 个字段，此前 CSV 只记 NM\* 5 个）
-  - `CLSID$`（batch 259 已实现，漏记）
-  - 转换函数 `CBYT` / `CCUR` / `CCUX` / `CDWD` / `CEXT` / `CINT` / `CLNG` / `CQUD`
-  - CV 家族 `CVCUR` / `CVD` / `CVE` / `CVI` / `CVS` / `CVWRD` / `CWRD`
-- **6 项状态升级 Established→Implemented**：`CALL` / `CALL DWORD` / `CALLSTK` / `CHDIR` / `CHDRIVE` / `CSET`（fork 实际全支持，CSV 此前保守标 Established）。
-- **数字变化**：rows 869→891，implemented 729→757，established 131；verify_coverage_docs 35 checks 0 FAIL；全量双跑回归 MATCH 153 / DIFF 0 / ONLY-FORK 3 不变（纯文档勘误，无代码改动）。
+- **C-batch 147-keyword list x CHW x CSV triple check** (commit `8fb7cbe`): implementation-wise the whole C family is in place; meanwhile found and immediately fixed **22 CSV/MD rows missing for already-implemented items**:
+  - `CB.CTL` / `CB.CTLMSG` / `CB.HNDL` / `CB.LPARAM` / `CB.MSG` / `CB.WPARAM` (CB.* 11 fields total; the CSV only recorded the 5 NM* before)
+  - `CLSID$` (implemented in batch 259, was missing)
+  - Conversion functions `CBYT` / `CCUR` / `CCUX` / `CDWD` / `CEXT` / `CINT` / `CLNG` / `CQUD`
+  - CV family `CVCUR` / `CVD` / `CVE` / `CVI` / `CVS` / `CVWRD` / `CWRD`
+- **6 status upgrades Established->Implemented**: `CALL` / `CALL DWORD` / `CALLSTK` / `CHDIR` / `CHDRIVE` / `CSET` (the fork fully supports them; the CSV had been conservatively marked Established).
+- **Number changes**: rows 869->891, implemented 729->757, established 131; verify_coverage_docs 35 checks 0 FAIL; full dual-run regression MATCH 153 / DIFF 0 / ONLY-FORK 3 unchanged (pure docs erratum, no code change).
 
-### v0.2.081 (2026-10-23) — batch 261-263: C 批收尾（CB.NM* / COMM 错误码 / CLIPBOARD 回落 / METHOD = expr）
+### v0.2.081 (2026-10-23) - batch 261-263: C-batch wrap-up (CB.NM* / COMM error codes / CLIPBOARD fallback / METHOD = expr)
 
-- **CB.NM\* 五件套**（batch 261, commit `aee13f8`）：`CB.NMCODE` / `CB.NMHDR` / `CB.NMHDR$([n])` / `CB.NMHWND` / `CB.NMID` 按 CHW 实现，仅 `CALLBACK FUNCTION` 声明内可用（PBWin Error 547 实证）。新增 `CALLBACK FUNCTION/SUB` 顶层声明（DDT 回调官方形式，无参数列表）；runtime 加 `cb_nm_buf[12]` 快照 + 5 getter，WM_NOTIFY 手工字节转换到 PB-layout。
-- **COMM 函数族错误码对齐**（batch 260b, commit `10f0661`）：PBWin 实测表全对齐——`COMM()` 未打开=5、OPEN 不存在端口=69、通道占用=55、SEND/PRINT/RECV/LINE/SET/RESET/TIMEOUT/CLOSE=52；`COMM LINE [INPUT]` 的 INPUT 可选化。
-- **CLIPBOARD GET 回落**（batch 262, commit `1ffc6c7`）：GET OEMTEXT/UNICODE 按 CHW"Windows 自动转换"回落（SET TEXT → GET OEMTEXT/UNICODE 成功）；ClipResult 真实值（成功 -1 / 失败 0）；PRINT# 改 `fwrite` NUL-safe（UTF-16LE 串不再被截断）。
-- **METHOD = expr**（batch 263, commit `f5bd8d0`）：METHOD 体内官方返回值形式（此前 fork 516 报错）。
-- **新 examples**：`batch261_cbnm_test.bas` / `batch262_clip_fallback_test.bas` / `batch263_test.bas`；全量双跑回归 MATCH 153 / DIFF 0 / ONLY-FORK 3（batch029 内联 asm、batch213 CLASS 接口对象模型、batch260 #LINK——后两者语法 ONY-FORK），零回归。
+- **CB.NM* five-piece set** (batch 261, commit `aee13f8`): `CB.NMCODE` / `CB.NMHDR` / `CB.NMHDR$([n])` / `CB.NMHWND` / `CB.NMID` implemented per CHW, usable only inside a `CALLBACK FUNCTION` declaration (PBWin Error 547 proven). Added top-level `CALLBACK FUNCTION/SUB` declarations (the official DDT callback form, no parameter list); runtime adds a `cb_nm_buf[12]` snapshot + 5 getters, with manual byte conversion of WM_NOTIFY to the PB layout.
+- **COMM function-family error codes aligned** (batch 260b, commit `10f0661`): the PBWin-measured table is fully aligned - COMM() not open=5, OPEN non-existent port=69, channel busy=55, SEND/PRINT/RECV/LINE/SET/RESET/TIMEOUT/CLOSE=52; `COMM LINE [INPUT]` makes INPUT optional.
+- **CLIPBOARD GET fallback** (batch 262, commit `1ffc6c7`): GET OEMTEXT/UNICODE falls back per CHW "Windows automatic conversion" (SET TEXT -> GET OEMTEXT/UNICODE succeeds); ClipResult real values (success -1 / failure 0); PRINT# switched to `fwrite` NUL-safe (UTF-16LE strings no longer truncated).
+- **METHOD = expr** (batch 263, commit `f5bd8d0`): the official return-value form inside METHOD bodies (the fork previously reported 516).
+- **New examples**: `batch261_cbnm_test.bas` / `batch262_clip_fallback_test.bas` / `batch263_test.bas`; full dual-run regression MATCH 153 / DIFF 0 / ONLY-FORK 3 (batch029 inline asm, batch213 CLASS interface object model, batch260 #LINK - the latter two syntax-only fork), zero regression.
 
 ### v0.2.080 (2026-10-22)
 
