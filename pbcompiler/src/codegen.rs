@@ -5830,7 +5830,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_comm_recv",
             &IrType::I32,
-            &[IrType::I32, IrType::I64, IrType::Ptr],
+            &[IrType::I32, IrType::I64, IrType::Ptr, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -18633,7 +18633,14 @@ impl Compiler {
                     let v1 = self.compile_expr(fb, &call.args[1])?;
                     let bytes = self.to_i64(fb, &v1);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        fb.call_void("pb_comm_recv", &[ch, bytes, ptr]);
+                        // CHW COMM_RECV_statement.htm: string_var must match the
+                        // channel's character mode (CHR=ANSI -> STRING, CHR=WIDE
+                        // -> WSTRING), otherwise ERR 5 (Illegal function call).
+                        // The fork has no WSTRING type yet, so the destination
+                        // is always STRING (want_wide=0); the runtime compares
+                        // it against pb_comm_wide[channel] and reports ERR 5
+                        // when a WIDE channel receives into a STRING.
+                        fb.call_void("pb_comm_recv", &[ch, bytes, ptr, fb.const_i32(0)]);
                     }
                 }
                 return Ok(());

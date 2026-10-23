@@ -4524,13 +4524,19 @@ int pb_comm_send(int channel, const char* s) {
     return (int)written;
 }
 
-int pb_comm_recv(int channel, long long bytes, char** dest) {
+int pb_comm_recv(int channel, long long bytes, char** dest, int want_wide) {
     unsigned long got = 0;
     char* buf;
     long long n = (bytes > 0) ? bytes : 1;
     if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || dest == NULL) {
         pb_comm_report("RECV", channel);
         pb_err_var = pb_err = 52; return -1;
+    }
+    /* CHW COMM_RECV_statement.htm: string_var must match the channel's
+       character mode (CHR=ANSI -> STRING, CHR=WIDE -> WSTRING); a mismatch
+       is ERR 5 (Illegal function call). */
+    if ((pb_comm_wide[channel] ? 1 : 0) != (want_wide ? 1 : 0)) {
+        pb_err_var = pb_err = 5; return -1;
     }
     buf = (char*)malloc((size_t)n + 1);
     if (buf == NULL) { pb_err_var = pb_err = 5; return -1; }
