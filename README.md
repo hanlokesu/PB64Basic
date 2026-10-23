@@ -260,7 +260,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (892 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 265 (v0.2.083). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> > batch 265 (v0.2.083) - C 批收尾完成：CLASS 接口对象模型（INTERFACE 官方形态）+ ERR 54 / ON ERROR 三连修 / ERR 变量分离 + COMM RECV ERR 5 + batch213 CLASS 修复（ONLY-FORK 3→2）+ COMM 函数 CSV 补记。
+> > batch 265 (v0.2.083) - C-batch completion: CLASS interface object model (INTERFACE official shape) + ERR 54 / ON ERROR triple fix / ERR variable split + COMM RECV ERR 5 + batch213 CLASS fix (ONLY-FORK 3->2) + COMM function CSV row added.
 > > batch 263 (v0.2.081) - C 批语句级对齐清完：CB.NM* 五件套 + CALLBACK FUNCTION/SUB 顶层声明、COMM 错误码 PBWin 实测表全对齐、CLIPBOARD GET OEMTEXT/UNICODE 回落 + 真 ClipResult + PRINT# NUL-safe、METHOD = expr 官方返回值形式。CLASS 接口对象模型（对象变量 AS 接口名 + INTERFACE 类型注册 + NEWCOM）如实标注未实现，batch213 仍 ONLY-FORK 豁免，后续独立批次。
 > batch 260 (v0.2.080) - #LINK metastatement links external MS COFF object modules (.obj/.lib) into EXE/DLL hosts (extension over .SLL/.PBLIB; PBWin 10 rejects .obj with Error 630); DECLARE without LIB now generates a real external symbol (ALIAS keeps case, else upper-case ProcName per CHW) - undefined external calls fail at link instead of silently returning 0; #LINK relative paths resolve against cwd then the source file's folder. New examples batch260_make_obj.txt (how to build an object module with clang), sum.c/sum.obj/build_sum_obj.bat, batch260_link_test.bas (prints 50). Dual-run baseline headless 134 / MATCH 131 / DIFF 0 / EMPTY 1 / ONLY-FORK 2 (batch029 Inline ASM extension + batch260 #LINK .obj).
 > batch 254 (v0.2.079) - MSGBOX full syntax (statement/function/? shorthand, default title "PB64Basic"); CONTROL by-id verbs per CHW; CONTROL ADD SCROLLBAR/TAB txt$ slot; TAB()/TAB$() function forms; batch174 DIALOG GET CLIENT height after MENU ATTACH; batch205 TCP OPEN SERVER ADDR bind + CRLF line endings. Dual-run baseline MATCH 115 / DIFF 7 (env/resource) / EMPTY 1 / ONLY-FORK 1 (batch029 Inline ASM extension).
@@ -746,12 +746,13 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
-### v0.2.083 (2026-10-24) - batch 265: C 批收尾完成
-- **CLASS 接口对象模型（batch264）**：CHW 官方形态全落地——CLASS 块必须含 INTERFACE 块、对象变量 AS 接口名、`o = CLASS "C213"` 实例化、METHOD 点语法返回值、ISOBJECT TRUE(-1)/FALSE(0)。`examples/batch264_test.bas` 双侧逐字一致。
-- **ERR 54（Bad file mode）+ ON ERROR/RESUME 三连修 + ERR 变量分离（batch265）**：顺序模式（INPUT/OUTPUT/APPEND）上 PUT/GET（含 PUT$/GET$）→ ERR 54，BINARY/RANDOM 合法；修 RESUME 死循环、RESUME 不再清 ERR、ERR 变量与语句陷阱标志分离（runtime 98 处错误点同步）；PBWin ERR 粘性对齐（成功语句不清除 ERR）。`examples/batch265_test.bas` 双侧逐字一致。
-- **COMM RECV 字符模式 ERR 5（batch265b）**：string_var 必须匹配通道 CHR=WIDE/ANSI 模式，不匹配 → ERR 5（按 CHW 明确语义实现；fork 尚无 WSTRING 类型，无真串口不可行为验证，如实标注）。
-- **batch213 CLASS 官方形态修复**：CLASS 块补 INTERFACE（PBWin 562 根因），输出改 PRINT# 文件 → 双侧 MATCH，ONLY-FORK 3 → 2（剩 batch029 x86 / batch260 #LINK）。
-- **COMM 函数 CSV 补记**：CHW `COMM([#] hComm, Comfunc)` 官方函数（BAUD/BREAK/BYTE/CD/CTS/...）已实现但此前漏记，本版补入 CSV（Implemented）。
+### v0.2.083 (2026-10-24) - batch 265: C-batch completion
+- **CLASS interface object model (batch264)**: full CHW-official shape -- CLASS block must contain an INTERFACE block, object variable declared AS the interface name, instantiation via `o = CLASS "C213"`, METHOD dot-call with return values, ISOBJECT TRUE(-1)/FALSE(0). `examples/batch264_test.bas` matches byte-for-byte on both sides.
+- **ERR 54 (Bad file mode) + ON ERROR/RESUME triple fix + ERR variable split (batch265)**: PUT/GET (incl. PUT$/GET$) on sequential-mode (INPUT/OUTPUT/APPEND) files now raise ERR 54; BINARY/RANDOM stay legal. Fixed the RESUME infinite loop, RESUME no longer clears ERR, and the user-visible ERR is separated from the per-statement trap flag (98 runtime error sites synced). PBWin ERR stickiness aligned (successful statements keep the previous ERR). `examples/batch265_test.bas` matches byte-for-byte on both sides.
+- **COMM RECV character-mode check ERR 5 (batch265b)**: string_var must match the channel CHR=WIDE/ANSI mode; mismatch raises ERR 5 (implemented per CHW; the fork has no WSTRING type yet and no real serial port is available for behavioral verification -- honestly noted).
+- **batch213 CLASS official-shape fix**: INTERFACE block added (root cause of PBWin 562), output moved to PRINT# file -> dual MATCH; ONLY-FORK 3 -> 2 (batch029 x86 / batch260 #LINK remain).
+- **COMM function row added to CSV**: CHW `COMM([#] hComm, Comfunc)` (BAUD/BREAK/BYTE/CD/CTS/...) was already implemented but missing from the CSV; now recorded as Implemented.
+
 
 ### v0.2.082 (2026-10-23) — batch 263 docs erratum: C 清单三方核对 + CSV/MD 勘误 22 行
 
