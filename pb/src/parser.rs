@@ -231,7 +231,7 @@ impl Parser {
                 // batch 261: CALLBACK FUNCTION / CALLBACK SUB top-level declaration
                 // (CHW callbacks.htm — DDT callback functions are declared with
                 // the CALLBACK keyword, e.g. `CALLBACK FUNCTION DlgProc() AS LONG`).
-                match self.peek_at(1).clone() {
+                match self.peek_at(1) {
                     Some(Token::Function) => {
                         self.advance(); // CALLBACK
                         let fd = self.parse_function_decl()?;
@@ -307,23 +307,6 @@ impl Parser {
                 }
                 self.consume_to_eol();
                 Ok(None)
-            }
-            Token::Callback => {
-                self.advance();
-                match self.peek() {
-                    Token::Function => {
-                        let fd = self.parse_function_decl()?;
-                        Ok(Some(TopLevel::FunctionDecl(fd)))
-                    }
-                    Token::Sub => {
-                        let sd = self.parse_sub_decl()?;
-                        Ok(Some(TopLevel::SubDecl(sd)))
-                    }
-                    _ => {
-                        self.consume_to_eol();
-                        Ok(None)
-                    }
-                }
             }
             Token::Identifier(w) if w.eq_ignore_ascii_case("ASMDATA") => {
                 let ad = self.parse_asmdata_decl(line)?;
@@ -12757,11 +12740,11 @@ impl Parser {
                 self.expect(&Token::Comma)?;
                 let var = self.parse_expression()?;
                 self.consume_to_eol();
-                return Ok(Statement::Call(CallStmt {
+                Ok(Statement::Call(CallStmt {
                     name: "COMM LINE INPUT".to_string(),
                     args: vec![f, var],
                     line,
-                }));
+                }))
             }
             "PRINT" => {
                 // COMM PRINT [#]f, exprlist [;] [TO CharCountVar]

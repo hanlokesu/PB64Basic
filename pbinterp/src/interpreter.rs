@@ -528,8 +528,8 @@ impl Interpreter {
             }
             Statement::OnCall { .. } => Ok(Flow::Normal), // interp: approximate no-op
             Statement::Return => Ok(Flow::GoSubReturn),
-            Statement::ClipboardSetText { .. }
-            | Statement::ClipboardGetText { .. }
+            Statement::ClipboardSet { .. }
+            | Statement::ClipboardGet { .. }
             | Statement::ClipboardReset { .. }
             | Statement::InputFlush => Ok(Flow::Normal),
             Statement::OnErrorGoto(label) => {
