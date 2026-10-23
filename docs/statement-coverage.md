@@ -136,6 +136,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | COMBOBOX SET TEXT | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX SET USER | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX UNSELECT | STATEMENT | PB/Win only | Implemented |
+| COMM | FUNCTION | Win32 | Implemented |
 | COMM CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | COMM LINE | STATEMENT | PB/Win + PB/CC | Implemented |
 | COMM LINE INPUT | STATEMENT | PB/Win | Implemented |
