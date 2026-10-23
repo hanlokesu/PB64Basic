@@ -1193,6 +1193,11 @@ struct Compiler {
     event_sources: std::collections::HashMap<String, Vec<String>>,
     event_method_ids: std::collections::HashMap<String, i32>,
 
+    // CLASS interface model (batch 264): interface name (uppercase) -> the
+    // CLASS that implements it.  `LOCAL o AS Iface` + `o.M(a)` resolves the
+    // method through this map to the compiled <Class>_<Method> function.
+    interface_classes: std::collections::HashMap<String, String>,
+
     // String variables bound via FIELD dyn$ — their assignments must copy
     // into a fresh mutable buffer (a plain store would point at a read-only
     // string constant and pb_field_set would crash writing through it).
@@ -1348,6 +1353,7 @@ impl Compiler {
             xprint_dc: None,
             event_sources: std::collections::HashMap::new(),
             event_method_ids: std::collections::HashMap::new(),
+            interface_classes: std::collections::HashMap::new(),
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
         }
@@ -1366,7 +1372,8 @@ impl Compiler {
             PbType::String | PbType::FixedString(_) => IrType::Ptr,
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
-            PbType::Variant => IrType::I32, // default to LONG
+            PbType::Interface(_) => IrType::Ptr, // object reference (batch 264)
+            PbType::Variant => IrType::I32,      // default to LONG
         }
     }
 
@@ -1909,6 +1916,8 @@ impl Compiler {
             .declare_function("malloc", &IrType::Ptr, &[IrType::I32], false);
         self.module
             .declare_function("free", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_obj_new", &IrType::Ptr, &[IrType::I64], false);
         self.module.declare_function(
             "snprintf",
             &IrType::I32,
@@ -6378,6 +6387,15 @@ impl Compiler {
             let ifaces: Vec<String> = td.event_sources.iter().map(|s| s.to_uppercase()).collect();
             self.event_sources.insert(name.clone(), ifaces);
         }
+
+        // Interfaces implemented by this CLASS (batch 264).  Each INTERFACE
+        // block inside the CLASS names an interface this class implements;
+        // record interface name -> class name so `LOCAL o AS Iface` method
+        // calls can be lowered to this class's compiled METHOD functions.
+        for iface in &td.interfaces {
+            self.interface_classes
+                .insert(iface.to_uppercase(), name.clone());
+        }
     }
 
     fn register_function(&mut self, fd: &FunctionDecl) {
@@ -7920,6 +7938,10 @@ impl Compiler {
                 let info = self.symbols.lookup(&normalize_name(name))?;
                 match &info.pb_type {
                     PbType::UserDefined(t) => Some(normalize_name(t)),
+                    // an interface-typed object variable: the receiver type is
+                    // the interface name (batch 264); method resolution maps it
+                    // to the implementing CLASS via interface_classes.
+                    PbType::Interface(t) => Some(normalize_name(t)),
                     _ => None,
                 }
             }
@@ -7929,6 +7951,7 @@ impl Compiler {
                 let idx = *layout.field_map.get(&normalize_name(member))?;
                 match &layout.fields[idx].pb_type {
                     PbType::UserDefined(f) => Some(normalize_name(f)),
+                    PbType::Interface(f) => Some(normalize_name(f)),
                     _ => None,
                 }
             }
@@ -7937,6 +7960,32 @@ impl Compiler {
     }
 
     // ========== Lvalue pointer ==========
+
+    /// True when `expr` is a variable/member whose type is an INTERFACE name
+    /// (batch 264).  Such a variable holds a *pointer* to a heap object; when
+    /// it is the receiver of a method call it must be passed BY VALUE (the
+    /// pointer itself), not BYREF (the address of the caller's slot).
+    fn receiver_is_interface(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Variable(name) => {
+                if let Some(info) = self.symbols.lookup(&normalize_name(name)) {
+                    return matches!(info.pb_type, PbType::Interface(_));
+                }
+                false
+            }
+            Expr::TypeMember(base, member) => {
+                if let Some(t) = self.struct_type_of_expr(base) {
+                    if let Some(layout) = self.type_layouts.get(&t) {
+                        if let Some(idx) = layout.field_map.get(&normalize_name(member)) {
+                            return matches!(layout.fields[*idx].pb_type, PbType::Interface(_));
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
 
     /// Return a pointer to an lvalue expression (without loading it).
     fn compile_lvalue_ptr(
@@ -19128,7 +19177,14 @@ impl Compiler {
         if let Some(method) = name.strip_prefix('.') {
             if let Some(receiver) = call.args.first() {
                 match self.struct_type_of_expr(receiver) {
-                    Some(class) => {
+                    Some(mut class) => {
+                        // An interface-typed receiver resolves the method
+                        // against the CLASS that implements the interface
+                        // (batch 264), same rule as the expression form.
+                        if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase())
+                        {
+                            class = impl_class.clone();
+                        }
                         let qualified = format!("{}_{}", class, method);
                         let info = self
                             .functions
@@ -19136,7 +19192,17 @@ impl Compiler {
                             .cloned()
                             .or_else(|| self.subs.get(&qualified).cloned());
                         if let Some(info) = info {
-                            let margs = self.compile_call_args(fb, &call.args, &info)?;
+                            // Interface-typed receiver → BYVAL (see the
+                            // expression-form method call, batch 264).
+                            let mut m_args: Vec<Expr> = Vec::with_capacity(call.args.len());
+                            let recv = call.args.first().unwrap();
+                            if self.receiver_is_interface(recv) {
+                                m_args.push(Expr::ByvalOverride(Box::new(recv.clone())));
+                            } else {
+                                m_args.push(recv.clone());
+                            }
+                            m_args.extend(call.args.iter().skip(1).cloned());
+                            let margs = self.compile_call_args(fb, &m_args, &info)?;
                             if info.ret_type == IrType::Void {
                                 if info.is_stdcall {
                                     fb.call_void_stdcall(&info.ir_name, &margs);
@@ -20946,6 +21012,36 @@ impl Compiler {
                     Ok(fb.const_i32(0))
                 }
             }
+            Expr::ClassNew(class) => {
+                // CLASS "MyClass" — allocate a fresh instance of the CLASS's
+                // INSTANCE storage (CHW How_do_you_create_an_object_).  The
+                // object is a heap pointer; METHOD calls pass it as the
+                // implicit BYREF `this` argument.  Creation failure (calloc
+                // returns NULL) yields a NULL object, which PBWin semantics
+                // report as NOTHING (ISOBJECT() = 0).
+                let name = normalize_name(class);
+                if !self.type_layouts.contains_key(&name) {
+                    return Err(PbError::parser(
+                        format!(
+                            "CLASS \"{}\" - no CLASS/END CLASS block named `{}` in this program",
+                            class, name
+                        ),
+                        None,
+                        self.current_line,
+                    ));
+                }
+                // LLVM layout size of %Name via GEP on a null pointer:
+                //   %sz = getelementptr %Name, ptr null, i64 1
+                //   %sz2 = ptrtoint i64 %sz to i64
+                let gep_reg = fb.next_reg();
+                fb.raw_line(&format!(
+                    "  {} = getelementptr %{}, ptr null, i64 1",
+                    gep_reg, name
+                ));
+                let sz_reg = fb.next_reg();
+                fb.raw_line(&format!("  {} = ptrtoint ptr {} to i64", sz_reg, gep_reg));
+                Ok(fb.call(&IrType::Ptr, "pb_obj_new", &[Val::new(sz_reg, IrType::I64)]))
+            }
             Expr::MethodCall { base, name, args } => {
                 // `o.M(a, b)` — the dotted method-call sugar. Lower it to the
                 // qualified free function the METHOD was compiled as, prepending
@@ -20955,12 +21051,19 @@ impl Compiler {
                 //
                 // Loud on every failure path on purpose: an unresolvable receiver
                 // or method must stop the build, never produce a silent value.
-                let class = self.struct_type_of_expr(base).ok_or_else(|| {
+                let mut class = self.struct_type_of_expr(base).ok_or_else(|| {
                     PbError::runtime(format!(
                         "method call `.{}(...)`: receiver is not a TYPE instance",
                         name
                     ))
                 })?;
+                // An object variable declared `AS SomeInterface` resolves the
+                // method against the CLASS that implements that interface
+                // (batch 264): the METHOD was compiled as <Class>_<Method>, so
+                // the mangle must use the class name, not the interface name.
+                if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
+                    class = impl_class.clone();
+                }
                 let qualified = format!("{}_{}", class, normalize_name(name));
                 if !self.functions.contains_key(&qualified) {
                     return Err(PbError::runtime(format!(
@@ -20971,7 +21074,16 @@ impl Compiler {
                     )));
                 }
                 let mut call_args = Vec::with_capacity(args.len() + 1);
-                call_args.push((**base).clone());
+                // An interface-typed receiver holds a *pointer* to the heap
+                // object; pass it BY VALUE (the pointer itself), never BYREF
+                // (the address of the caller's variable slot), or a method that
+                // writes fields would clobber the caller's own variable
+                // storage (batch 264).
+                if self.receiver_is_interface(base) {
+                    call_args.push(Expr::ByvalOverride(Box::new((**base).clone())));
+                } else {
+                    call_args.push((**base).clone());
+                }
                 call_args.extend(args.iter().cloned());
                 let lowered = Expr::FunctionCall(qualified, call_args);
                 self.compile_expr(fb, &lowered)
@@ -21663,6 +21775,33 @@ impl Compiler {
             "USING" => Some(self.builtin_using(fb, args)),
             // File I/O builtins
             "FREEFILE" => Some(Ok(fb.call(&IrType::I32, "pb_freefile", &[]))),
+            "ISOBJECT" => {
+                // ISOBJECT(objvar) — CHW ISOBJECT_function.htm: 0 = no valid
+                // object reference (NOTHING / creation failed), -1 = valid.
+                // The fork object is a plain heap pointer, so validity is a
+                // non-NULL test.
+                let first = match args.first() {
+                    Some(f) => f,
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "ISOBJECT requires one argument: ISOBJECT(objvar)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                let v = match self.compile_expr(fb, first) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                // CHW ISOBJECT_function.htm: returns TRUE (-1) when the
+                // object variable holds a valid object reference, FALSE (0)
+                // otherwise.  The fork object is a plain heap pointer, so
+                // validity is a non-NULL test, and the result must be the
+                // official -1/0, never a raw 0/1 (batch 264).
+                let c = fb.icmp("ne", &v, &Val::new("null", IrType::Ptr));
+                Some(Ok(fb.select(&c, &fb.const_i32(-1), &fb.const_i32(0))))
+            }
             "PB_GET_CB_MSG" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_msg", &[]))),
             "PB_GET_CB_HNDL" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_hwnd", &[]))),
             "PB_GET_CB_CTL" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_ctl", &[]))),
@@ -22406,6 +22545,7 @@ impl Compiler {
             PbType::Ext => 12,            // %VARCLASS_EXT
             PbType::Cur => 13,            // %VARCLASS_CUR
             PbType::UserDefined(_) => 20, // %VARCLASS_TYPE
+            PbType::Interface(_) => 20,   // object reference, same class as TYPE
             PbType::Variant => 17,        // %VARCLASS_VRNT
             PbType::String => 23,         // %VARCLASS_STR
             PbType::FixedString(_) => 22, // %VARCLASS_FIX

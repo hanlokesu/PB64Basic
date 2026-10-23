@@ -7170,6 +7170,22 @@ void* pb_events_new_table(void) {
     pb_event_tbl* t = (pb_event_tbl*)calloc(1, sizeof(pb_event_tbl));
     return (void*)t;
 }
+
+/* pb_obj_new - allocate a zeroed heap block for a CLASS object (batch 264).
+ * The size is the LLVM layout size of the CLASS's INSTANCE struct, computed
+ * by the compiler with a GEP-on-null trick.  Returns NULL when the allocation
+ * fails; PBWin semantics then report the object variable as NOTHING
+ * (ISOBJECT() = 0).  Objects are not reference-counted in this fork; they
+ * live for the process lifetime, matching the object model's simplified
+ * <Class>_<Method>(this, ...) lowering. */
+void* pb_obj_new(long long size) {
+    // A CLASS with no INSTANCE members still produces a valid object
+    // (size 0 layout): allocate at least one byte so the pointer is never
+    // NULL (batch 264 -- ISOBJECT must see a real object).
+    if (size < 1) size = 1;
+    return calloc(1, (size_t)size);
+}
+
 void pb_events_add(void* tblp, int mname, pb_event_fn fn) {
     pb_event_tbl* t = (pb_event_tbl*)tblp;
     if (!t) return;

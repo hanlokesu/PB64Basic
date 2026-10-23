@@ -33,6 +33,10 @@ pub struct Parser {
     /// Set when the source contains `OPTION EXPLICIT` (same effect as
     /// `#DIM ALL`): every variable must be declared before it is used.
     pub option_explicit: bool,
+    /// Interface names declared by INTERFACE blocks inside CLASS blocks
+    /// (batch 264).  `AS <IfaceName>` then parses to PbType::Interface, whose
+    /// variable storage is a pointer (an object reference), never a struct.
+    interface_names: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -44,6 +48,7 @@ impl Parser {
             def_funcs: HashMap::new(),
             error_count: 0,
             option_explicit: false,
+            interface_names: std::collections::HashSet::new(),
         }
     }
 
@@ -330,6 +335,11 @@ impl Parser {
 
                 let mut fields: Vec<TypeField> = Vec::new();
                 let mut event_sources: Vec<String> = Vec::new();
+                // Interfaces implemented by this CLASS (batch 264).  An INTERFACE
+                // block inside a CLASS records the interface name -> class name
+                // mapping so `LOCAL o AS Iface` + `o.M(a)` can be lowered to the
+                // compiled <Class>_<Method> function.
+                let mut interfaces: Vec<String> = Vec::new();
                 loop {
                     if self.at_end() || self.peek() == &Token::Eof {
                         break;
@@ -397,6 +407,26 @@ impl Parser {
                         self.skip_eol();
                         continue;
                     }
+                    // INTERFACE IfaceName — implementation block inside a CLASS
+                    // (CHW CLASS_END_CLASS_Block: a CLASS implements an interface
+                    // by declaring an INTERFACE block that names it).  The block's
+                    // INHERIT line and END INTERFACE line are consumed by the
+                    // generic fall-through below; every METHOD body inside it is
+                    // compiled as a <Class>_<Method> function by the branch above.
+                    let is_iface = matches!(self.peek(), Token::Identifier(k)
+                                              if k.eq_ignore_ascii_case("INTERFACE"));
+                    if is_iface {
+                        self.advance(); // INTERFACE
+                        if let Token::Identifier(iname) = self.peek() {
+                            let iface = iname.to_uppercase();
+                            interfaces.push(iface.clone());
+                            self.interface_names.insert(iface);
+                            self.advance();
+                        }
+                        self.consume_to_eol();
+                        self.skip_eol();
+                        continue;
+                    }
                     // EVENT SOURCE IfaceName — advertise an event interface this
                     // class can raise (batch 222).  Collected into the TypeDecl so
                     // codegen can validate RAISEEVENT uses.
@@ -427,6 +457,7 @@ impl Parser {
                         fields,
                         line,
                         event_sources,
+                        interfaces,
                     })))
                 }
             }
@@ -1059,7 +1090,13 @@ impl Parser {
                     _ => {
                         let name = s.clone();
                         self.advance();
-                        Ok(PbType::UserDefined(name))
+                        // An interface name used as a variable type is an
+                        // object reference (batch 264): `LOCAL o AS MyIface`.
+                        if self.interface_names.contains(&name.to_uppercase()) {
+                            Ok(PbType::Interface(name.to_uppercase()))
+                        } else {
+                            Ok(PbType::UserDefined(name))
+                        }
                     }
                 }
             }
@@ -1128,6 +1165,7 @@ impl Parser {
             fields,
             line,
             event_sources: Vec::new(),
+            interfaces: Vec::new(),
         })
     }
 
@@ -14538,6 +14576,22 @@ impl Parser {
                 }
                 self.expect(&Token::RParen)?;
                 Ok(Expr::FunctionCall("DIR$".to_string(), args))
+            }
+            Token::Identifier(name) if name.eq_ignore_ascii_case("CLASS") => {
+                // CLASS "MyClass" — object instantiation expression (CHW
+                // How_do_you_create_an_object_: `LET objvar = CLASS "MyClass"`,
+                // LET optional).  The class name must be a string literal.
+                self.advance();
+                if let Token::StringLiteral(cls) = self.peek().clone() {
+                    self.advance();
+                    Ok(Expr::ClassNew(cls))
+                } else {
+                    Err(PbError::parser(
+                        "CLASS requires a string class name: CLASS \"MyClass\"".to_string(),
+                        None,
+                        self.current_line(),
+                    ))
+                }
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("COMM") => {
                 // COMM([#] hComm, Comfunc) - CHW comm_function.htm.  The #

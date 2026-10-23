@@ -19,8 +19,12 @@ pub enum PbType {
     Byte,
     Word,
     UserDefined(String), // TYPE name
-    Variant,             // untyped / default
-    Field,               // FIELD variable (16-byte: {ptr, len, pad})
+    /// Interface name used as an object-variable type: `LOCAL o AS MyInterface`
+    /// (CHW object model, batch 264).  The variable holds a heap object
+    /// reference (a pointer), so it maps to IrType::Ptr, never to a struct.
+    Interface(String),
+    Variant, // untyped / default
+    Field,   // FIELD variable (16-byte: {ptr, len, pad})
 }
 
 impl PbType {
@@ -138,6 +142,11 @@ pub struct TypeDecl {
     pub line: usize,
     /// EVENT SOURCE interfaces advertised by this class (batch 222).
     pub event_sources: Vec<String>,
+    /// Interface blocks implemented by this CLASS (batch 264).  Each entry is
+    /// the normalized (uppercase) interface name; codegen maps the interface
+    /// name used in `LOCAL o AS <Iface>` back to this class so `o.M(a)` can be
+    /// lowered to the compiled `<Class>_<Method>` function.
+    pub interfaces: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -558,6 +567,11 @@ pub enum Expr {
         name: String,
         args: Vec<Expr>,
     },
+    /// `CLASS "Name"` — object instantiation (CHW How_do_you_create_an_object_).
+    /// The class name is always a string literal; the result is a heap object
+    /// (a fresh instance of the CLASS's INSTANCE storage) or NULL on failure,
+    /// matching PBWin's "object variable = NOTHING when creation fails".
+    ClassNew(String),
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
     PercentConst(String),
