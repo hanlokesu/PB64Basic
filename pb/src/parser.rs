@@ -11713,6 +11713,21 @@ impl Parser {
                 if name_upper == "CLIPBOARD" {
                     return self.parse_clipboard_statement(line);
                 }
+                /* batch 263: METHOD = expr inside a METHOD body sets the
+                method's return value (CHW METHOD_END_METHOD_statements.htm
+                official form "METHOD = expression").  Previously this fell
+                into the type-declaration path and died with "DefType, Type
+                id, or AS... required" (fork 516). */
+                if name_upper == "METHOD" && self.peek_at(1) == Some(&Token::Eq) {
+                    self.advance(); // METHOD
+                    self.advance(); // =
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::FunctionReturn(FunctionReturnStmt {
+                        value,
+                        line,
+                    }));
+                }
                 if name_upper == "GLOBALMEM" {
                     return self.parse_globalmem_statement(line);
                 }
