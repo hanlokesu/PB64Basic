@@ -6,23 +6,23 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **869** (10 BLOCK, 258 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
-- **866** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **891** (10 BLOCK, 280 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
+- **888** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 729 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 137 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **866** | Implemented + Established |
+| ✅ Implemented (this project) | 757 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 131 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ **Total available** | **888** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (869 rows)
+## All keywords (891 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -70,14 +70,28 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | BUILD | FUNCTION | codegen builtin | Implemented |
 | BUILD$ | FUNCTION | Win32 | Implemented |
 | BYTE | FUNCTION | codegen builtin | Implemented |
-| CALL | STATEMENT | PB/Win + PB/CC | Established |
-| CALL DWORD | STATEMENT | PB/Win + PB/CC | Established |
-| CALLSTK | STATEMENT | PB/Win + PB/CC | Established |
+| CALL | STATEMENT | PB/Win + PB/CC | Implemented |
+| CALL DWORD | STATEMENT | PB/Win + PB/CC | Implemented |
+| CALLSTK | STATEMENT | PB/Win + PB/CC | Implemented |
 | CALLSTK$ | FUNCTION | Win32 | Implemented |
 | CALLSTKCOUNT | FUNCTION | codegen builtin | Implemented |
 | CBOOL | FUNCTION | codegen builtin | Implemented |
 | CBRT | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CBYTE | FUNCTION | codegen builtin | Implemented |
+| CB.CTL | FUNCTION | codegen builtin | Implemented |
+| CB.CTLMSG | FUNCTION | codegen builtin | Implemented |
+| CB.HNDL | FUNCTION | codegen builtin | Implemented |
+| CB.LPARAM | FUNCTION | codegen builtin | Implemented |
+| CB.MSG | FUNCTION | codegen builtin | Implemented |
+| CB.WPARAM | FUNCTION | codegen builtin | Implemented |
+| CBYT | FUNCTION | codegen builtin | Implemented |
+| CCUR | FUNCTION | codegen builtin | Implemented |
+| CCUX | FUNCTION | codegen builtin | Implemented |
+| CDWD | FUNCTION | codegen builtin | Implemented |
+| CEXT | FUNCTION | codegen builtin | Implemented |
+| CINT | FUNCTION | codegen builtin | Implemented |
+| CLNG | FUNCTION | codegen builtin | Implemented |
+| CQUD | FUNCTION | codegen builtin | Implemented |
 | CB.NMCODE | FUNCTION | codegen builtin | Implemented |
 | CB.NMHDR | FUNCTION | codegen builtin | Implemented |
 | CB.NMHDR$ | FUNCTION | codegen builtin | Implemented |
@@ -87,8 +101,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CDWORD | FUNCTION | codegen builtin | Implemented |
 | CEIL | FUNCTION | LLVM intrinsic | Implemented |
 | CFLT | FUNCTION | codegen builtin | Implemented |
-| CHDIR | STATEMENT | PB/Win + PB/CC | Established |
-| CHDRIVE | STATEMENT | PB/Win + PB/CC | Established |
+| CHDIR | STATEMENT | PB/Win + PB/CC | Implemented |
+| CHDRIVE | STATEMENT | PB/Win + PB/CC | Implemented |
 | CHOOSE | FUNCTION | codegen builtin | Implemented |
 | CHR | FUNCTION | codegen builtin | Implemented |
 | CHR$ | FUNCTION | Win32 | Implemented |
@@ -102,6 +116,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CLIP$ | FUNCTION | Win32 | Implemented |
 | CLIPBOARD | STATEMENT | PB/Win + PB/CC | Implemented |
 | CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
+| CLSID | FUNCTION | codegen builtin | Implemented |
 | CLS | STATEMENT | PB/CC only | Established |
 | CODEPTR | FUNCTION | codegen builtin | Implemented |
 | COLOR | STATEMENT | PB/CC only | Established |
@@ -201,7 +216,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CQUAD | FUNCTION | codegen builtin | Implemented |
 | CSC | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CSCH | FUNCTION | C runtime (MSVCRT) | Implemented |
-| CSET | STATEMENT | PB/Win + PB/CC | Established |
+| CSET | STATEMENT | PB/Win + PB/CC | Implemented |
 | CSET$ | FUNCTION | Win32 | Implemented |
 | CSNG | FUNCTION | codegen builtin | Implemented |
 | CSTR | FUNCTION | codegen builtin | Implemented |
@@ -209,6 +224,13 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CURDIR | FUNCTION | codegen builtin | Implemented |
 | CURDIR$ | FUNCTION | Win32 | Implemented |
 | CVBYT | FUNCTION | codegen builtin | Implemented |
+| CVCUR | FUNCTION | codegen builtin | Implemented |
+| CVD | FUNCTION | codegen builtin | Implemented |
+| CVE | FUNCTION | codegen builtin | Implemented |
+| CVI | FUNCTION | codegen builtin | Implemented |
+| CVS | FUNCTION | codegen builtin | Implemented |
+| CVWRD | FUNCTION | codegen builtin | Implemented |
+| CWRD | FUNCTION | codegen builtin | Implemented |
 | CVCUX | FUNCTION | codegen builtin | Implemented |
 | CVDWD | FUNCTION | codegen builtin | Implemented |
 | CVL | FUNCTION | codegen builtin | Implemented |
