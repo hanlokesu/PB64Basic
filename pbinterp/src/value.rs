@@ -38,6 +38,9 @@ impl Value {
             PbType::Variant => Value::Long(0),
             PbType::Field => Value::Str(String::new()),
             PbType::UserDefined(_) => Value::Long(0), // TODO: struct support
+            // batch264: interface-typed object variables are codegen-only;
+            // the interpreter approximates them as a null Long.
+            PbType::Interface(_) => Value::Long(0),
         }
     }
 

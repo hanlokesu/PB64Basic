@@ -1026,6 +1026,11 @@ impl Interpreter {
             Expr::Omitted => Err(PbError::runtime(
                 "Omitted argument slot is not valid inside an expression",
             )),
+            // batch264: CLASS instantiation is a codegen-only feature; the
+            // interpreter does not support object instantiation yet.
+            Expr::ClassNew(_) => Err(PbError::runtime(
+                "CLASS instantiation is not supported by the interpreter",
+            )),
         }
     }
 
