@@ -403,6 +403,11 @@ pub struct PrintStmt {
 pub struct PrintFileStmt {
     pub file_num: Expr,
     pub args: Vec<Expr>,
+    /// Trailing separator (`;` or `,`) suppresses the CR/LF, exactly as for
+    /// PRINT (CHW PRINT#: "If the final argument of a PRINT# statement is a
+    /// semicolon or comma, PRINT# will not append the (default) CR/LF byte
+    /// pair").  `None` means the statement writes its own newline.
+    pub trailing: Option<char>,
     pub line: usize,
 }
 

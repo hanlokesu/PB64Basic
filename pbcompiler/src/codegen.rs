@@ -1783,6 +1783,8 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_command_arg", &IrType::Ptr, &[IrType::I64], false);
+        self.module
+            .declare_function("pb_clsid_get", &IrType::Ptr, &[IrType::Ptr], false);
 
         // Debug/crash facilities (declared unconditionally — every function
         // body calls pb_debug_enter, including library/DLL sources without
@@ -19953,8 +19955,13 @@ impl Compiler {
             let s = self.val_to_string(fb, &val);
             fb.call_void("pb_print_file", &[filenum_i32.clone(), s]);
         }
-        // Print newline after args
-        fb.call_void("pb_print_file_newline", &[filenum_i32]);
+        // CHW PRINT#: a trailing `;` or `,` suppresses the CR/LF so the next
+        // PRINT# continues on the same line (batch259 probe exposed this: the
+        // old code always wrote a newline, so `PRINT #h, x;` differed from
+        // PBWin).
+        if pf.trailing.is_none() {
+            fb.call_void("pb_print_file_newline", &[filenum_i32]);
+        }
         Ok(())
     }
 
@@ -21561,6 +21568,21 @@ impl Compiler {
                     fb.const_i64(0)
                 };
                 Some(Ok(fb.call(&IrType::Ptr, "pb_command_arg", &[n])))
+            }
+            "CLSID" => {
+                // CLSID$(ProgramID$) — CHW: look up HKCR\<progid>\CLSID,
+                // return the 16-byte binary GUID string; empty string on any
+                // failure, and CLSID$ does NOT set ERR.  (normalize_name
+                // strips the trailing $, so the dispatch key is CLSID.)
+                let progid = if let Some(a) = args.first() {
+                    match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    Val::new("null".to_string(), IrType::Ptr)
+                };
+                Some(Ok(fb.call(&IrType::Ptr, "pb_clsid_get", &[progid])))
             }
             "EXIST" => {
                 let path = self.compile_expr(fb, &args[0]);

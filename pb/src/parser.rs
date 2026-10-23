@@ -13724,11 +13724,12 @@ impl Parser {
             self.advance();
             let file_num = self.parse_expression()?;
             self.expect(&Token::Comma)?;
-            let (args, _trailing) = self.parse_print_args()?;
+            let (args, trailing) = self.parse_print_args()?;
             self.consume_to_eol();
             return Ok(Statement::PrintFile(PrintFileStmt {
                 file_num,
                 args,
+                trailing,
                 line,
             }));
         }

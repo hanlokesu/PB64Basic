@@ -4556,7 +4556,68 @@ __declspec(dllimport) int __stdcall FreeLibrary(void* hLibModule);
 typedef void* HKEY_PB;
 __declspec(dllimport) long __stdcall RegOpenKeyExA(HKEY_PB, const char*, unsigned long, unsigned long, HKEY_PB*);
 __declspec(dllimport) long __stdcall RegQueryInfoKeyA(HKEY_PB, char*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, void*);
+__declspec(dllimport) long __stdcall RegQueryValueExA(HKEY_PB, const char*, unsigned long*, unsigned long*, unsigned char*, unsigned long*);
 __declspec(dllimport) long __stdcall RegCloseKey(HKEY_PB);;
+
+/* CLSID$(ProgramID$) - batch259 C batch, CHW CLSID$ function:
+   Look up HKCR\<progid>\CLSID default value, parse the GUID string
+   "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" into 16 binary bytes:
+   Data1/Data2/Data3 stored little-endian, Data4 raw order.  Returns a
+   heap BSTR of exactly 16 payload bytes, or an empty BSTR when the
+   ProgID is not found / any error occurs.  CHW: CLSID$ does NOT set
+   ERR on lookup failure -- it returns "". */
+static int pb_hexv(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+char* __stdcall pb_clsid_get(const char* progid) {
+    char keybuf[512];
+    unsigned char valbuf[128];
+    unsigned long type = 1;                 /* REG_SZ */
+    unsigned long size = sizeof(valbuf);
+    HKEY_PB hkey = 0;
+    if (!progid || !progid[0]) return pb_bstr_alloc("", 0);
+    {
+        int n = 0;
+        while (progid[n] && n < (int)sizeof(keybuf) - 8) { keybuf[n] = progid[n]; n++; }
+        memcpy(keybuf + n, "\\CLSID", 7);   /* includes trailing NUL */
+    }
+    if (RegOpenKeyExA((HKEY_PB)0x80000000L, keybuf, 0, 0x20019L, &hkey) != 0)
+        return pb_bstr_alloc("", 0);
+    if (RegQueryValueExA(hkey, "", 0, &type, valbuf, &size) != 0 || type != 1) {
+        RegCloseKey(hkey);
+        return pb_bstr_alloc("", 0);
+    }
+    RegCloseKey(hkey);
+    valbuf[127] = '\0';
+    {
+        unsigned char raw[16];
+        int idx = 0, half = 0;
+        unsigned char cur = 0;
+        const unsigned char* p = valbuf;
+        for (; *p && idx < 16; p++) {
+            int hv;
+            if (*p == '-' || *p == '{' || *p == '}') continue;
+            hv = pb_hexv((char)*p);
+            if (hv < 0) return pb_bstr_alloc("", 0);
+            if (half == 0) { cur = (unsigned char)(hv << 4); half = 1; }
+            else { cur |= (unsigned char)hv; raw[idx++] = cur; half = 0; }
+        }
+        if (idx != 16 || half != 0) return pb_bstr_alloc("", 0);
+        {
+            /* reorder to GUID binary layout (Data1..3 LE, Data4 raw) */
+            char bin[16];
+            bin[0] = (char)raw[3]; bin[1] = (char)raw[2];
+            bin[2] = (char)raw[1]; bin[3] = (char)raw[0];
+            bin[4] = (char)raw[5]; bin[5] = (char)raw[4];
+            bin[6] = (char)raw[7]; bin[7] = (char)raw[6];
+            memcpy(bin + 8, raw + 8, 8);
+            return pb_bstr_alloc(bin, 16);
+        }
+    }
+}
 __declspec(dllimport) int __stdcall SetConsoleTitleA(const char* lpConsoleTitle);
 __declspec(dllimport) unsigned long __stdcall GetConsoleTitleA(char* lpConsoleTitle, unsigned long nSize);
 #endif
