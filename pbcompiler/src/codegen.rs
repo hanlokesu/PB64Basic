@@ -21899,6 +21899,7 @@ impl Compiler {
             // String builtins
             "LEN" => Some(self.builtin_len(fb, args)),
             "CHR" => Some(self.builtin_chr(fb, args)),
+            "CHR$RANGE" => Some(self.builtin_chr_range(fb, args)),
             "ASC" => Some(self.builtin_asc(fb, args)),
             "STR" => Some(self.builtin_str(fb, args)),
             "HEX" => Some(self.builtin_hex(fb, args)),
@@ -24007,6 +24008,39 @@ impl Compiler {
         }
         // Constants carry a BSTR prefix; runtime strings are BSTRs: byte-length prefix
         Ok(fb.call(&IrType::I32, "pb_str_len", &[s]))
+    }
+
+    fn builtin_chr_range(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // CHR$(a TO b) — a range of character codes, e.g. CHR$(0 TO 255).
+        // (CHW CHR$_function.htm range form.)  Emits the byte sequence a..b.
+        let a = self.compile_expr(fb, &args[0])?;
+        let a_i32 = self.to_i32(fb, &a);
+        let b = self.compile_expr(fb, &args[1])?;
+        let b_i32 = self.to_i32(fb, &b);
+        // count = b - a + 1; malloc; loop a..=b storing bytes.
+        let count = fb.sub(&b_i32, &a_i32);
+        let count = fb.add(&count, &fb.const_i32(1));
+        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&count));
+        let loop_l = fb.next_label("chr.loop");
+        let body_l = fb.next_label("chr.body");
+        let done_l = fb.next_label("chr.done");
+        let i = fb.alloca(&IrType::I32);
+        fb.store(&a_i32, &i);
+        fb.br(&loop_l);
+        fb.label(&loop_l);
+        let cur = fb.load(&IrType::I32, &i);
+        let over = fb.icmp("sgt", &cur, &b_i32);
+        fb.condbr(&over, &done_l, &body_l);
+        fb.label(&body_l);
+        let byte = fb.trunc(&cur, &IrType::I8);
+        let off = fb.sub(&cur, &a_i32);
+        let slot = fb.gep_byte(&buf, &off);
+        fb.store(&byte, &slot);
+        let nxt = fb.add(&cur, &fb.const_i32(1));
+        fb.store(&nxt, &i);
+        fb.br(&loop_l);
+        fb.label(&done_l);
+        Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, count]))
     }
 
     fn builtin_chr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

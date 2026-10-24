@@ -891,7 +891,10 @@ long long pb_tally(char* s, char* m) {
     return c;
 }
 char* pb_strreverse(char* s) {
-    size_t n = strlen(s);
+    /* BSTR-safe: use the byte length, not strlen — CHR$(0 TO 255) starts with
+       NUL and strlen would report 0 (batch272: STRREVERSE$ of a NUL-leading
+       string silently returned ""). */
+    size_t n = SysStringByteLen(s);
     char* buf = (char*)malloc(n + 1);
     size_t i;
     for (i = 0; i < n; i++) buf[i] = s[n - 1 - i];
@@ -899,7 +902,7 @@ char* pb_strreverse(char* s) {
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 char* pb_strinsert(char* s, char* n, long long pos) {
-    size_t sl = strlen(s), nl = strlen(n);
+    size_t sl = SysStringByteLen(s), nl = SysStringByteLen(n);
     if (pos < 1) pos = 1;
     if ((size_t)pos > sl + 1) pos = (long long)sl + 1;
     size_t b = (size_t)pos - 1;
@@ -912,7 +915,7 @@ char* pb_strinsert(char* s, char* n, long long pos) {
     return pb_bstr_alloc(buf, (unsigned int)total);
 }
 char* pb_strdelete(char* s, long long start, long long count) {
-    size_t sl = strlen(s);
+    size_t sl = SysStringByteLen(s);
     if (start < 1) start = 1;
     if (count < 0) count = 0;
     size_t b = (size_t)start - 1;
@@ -927,7 +930,7 @@ char* pb_strdelete(char* s, long long start, long long count) {
     return pb_bstr_alloc(buf, (unsigned int)total);
 }
 char* pb_repeat(long long n, char* s) {
-    size_t sl = strlen(s);
+    size_t sl = SysStringByteLen(s);
     if (n < 0) n = 0;
     size_t total = (size_t)n * sl;
     char* buf = (char*)malloc(total + 1);

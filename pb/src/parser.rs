@@ -14946,23 +14946,44 @@ impl Parser {
                 // Check for function call or array access
                 let mut expr = if self.peek() == &Token::LParen {
                     self.advance();
-                    let args = if self.peek() == &Token::RParen {
-                        Vec::new()
+                    // CHR$(a TO b) — range form returns CHR$(a)+CHR$(a+1)+..+CHR$(b)
+                    // (CHW CHR$_function.htm).  Encode as CHR$RANGE so codegen
+                    // can emit a loop; the plain multi-arg path stays unchanged.
+                    if name.eq_ignore_ascii_case("CHR$") && self.peek() != &Token::RParen {
+                        let first = self.parse_expression()?;
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let last = self.parse_expression()?;
+                            self.expect(&Token::RParen)?;
+                            Expr::FunctionCall("CHR$RANGE".to_string(), vec![first, last])
+                        } else {
+                            let mut args = vec![first];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
+                            self.expect(&Token::RParen)?;
+                            Expr::FunctionCall(name, args)
+                        }
                     } else {
-                        self.parse_arg_list()?
-                    };
-                    self.expect(&Token::RParen)?;
-                    // Determine if this is a function call or array access
-                    // We can't tell at parse time — interpreter will resolve
-                    // METRICS also accepts the single-word metric names
-                    // (Caption, Menubar) as bare identifiers; fold those to
-                    // their SM_ index here, where the callee name is known.
-                    let args = if name.eq_ignore_ascii_case("METRICS") {
-                        args.into_iter().map(fold_metric_name).collect()
-                    } else {
-                        args
-                    };
-                    Expr::FunctionCall(name, args)
+                        let args = if self.peek() == &Token::RParen {
+                            Vec::new()
+                        } else {
+                            self.parse_arg_list()?
+                        };
+                        self.expect(&Token::RParen)?;
+                        // Determine if this is a function call or array access
+                        // We can't tell at parse time — interpreter will resolve
+                        // METRICS also accepts the single-word metric names
+                        // (Caption, Menubar) as bare identifiers; fold those to
+                        // their SM_ index here, where the callee name is known.
+                        let args = if name.eq_ignore_ascii_case("METRICS") {
+                            args.into_iter().map(fold_metric_name).collect()
+                        } else {
+                            args
+                        };
+                        Expr::FunctionCall(name, args)
+                    }
                 } else if name.eq_ignore_ascii_case("DATACOUNT")
                     || name.eq_ignore_ascii_case("THREADCOUNT")
                     || name.eq_ignore_ascii_case("PRINTERCOUNT")

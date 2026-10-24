@@ -162,6 +162,21 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
                 char::from_u32(n as u32).unwrap_or('\0').to_string(),
             ))
         }
+        "CHR$RANGE" => {
+            // CHR$(a TO b) — byte sequence a..b (parser encodes as CHR$RANGE).
+            let a = args.first().map(|a| a.to_i32()).unwrap_or(0);
+            let b = args.get(1).map(|a| a.to_i32()).unwrap_or(a);
+            let mut out = String::new();
+            let mut c = a;
+            loop {
+                out.push(char::from_u32(c as u32).unwrap_or('\0'));
+                if c >= b {
+                    break;
+                }
+                c += 1;
+            }
+            Some(Value::Str(out))
+        }
         "ASC" => {
             let s = args.first().map(|a| a.to_string_val()).unwrap_or_default();
             let val = s.bytes().next().unwrap_or(0) as i32;
