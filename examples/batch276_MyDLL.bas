@@ -44,15 +44,16 @@
 '  separate large feature.  The equates used here are declared with the
 '  official bare "%name = value" form.
 '
-'  Build as a DLL (the source's "#COMPILE DLL" puts PB64Basic into DLL mode):
-'    PB64Basic build batch276_MyDLL.bas -o MyDLL.obj --target x86_64-pc-windows-msvc
+'  Build as a DLL (the source's "#COMPILE DLL" puts PB64Basic into DLL mode).
+'  NO -o needed: output names follow the source file name, and the host
+'  batch276_testDLL.bas declares DECLARE ... LIB "batch276_MyDLL.DLL" to
+'  match them:
+'    PB64Basic build batch276_MyDLL.bas --target x86_64-pc-windows-msvc
 '        --runtime-lib ..\pb_runtime_x64.obj   (run from examples; .. = repo root)
 '
-'  *** OUTPUT FILES: MyDLL.dll + MyDLL.lib (NOT batch276_MyDLL.dll) ***
-'  The -o MyDLL.obj above is MANDATORY: the output names follow -o, and
-'  batch276_testDLL.bas links DECLARE ... LIB "MYDLL.DLL", i.e. it looks
-'  for MYDLL.lib / MYDLL.dll by that exact name. Without -o the outputs
-'  would be batch276_MyDLL.dll/.lib and TestDLL's link would fail.
+'  *** OUTPUT FILES: batch276_MyDLL.dll + batch276_MyDLL.lib ***
+'  (output names always follow the source file name, e.g. -o MyDLL.obj
+'   would instead emit MyDLL.dll + MyDLL.lib)
 '  One-click alternative: run build_mydll.bat in this folder.
 '
 '===============================================================================

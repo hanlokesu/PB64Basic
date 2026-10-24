@@ -1,8 +1,8 @@
 @echo off
 rem batch276: one-click build of the official MyDLL sample pair.
-rem Builds MyDLL.dll + MyDLL.lib (via -o MyDLL.obj, so the output names
-rem match the DECLARE ... LIB "MYDLL.DLL" in batch276_testDLL.bas), then
-rem links batch276_testDLL.exe against MYDLL.lib.
+rem Builds batch276_MyDLL.dll + batch276_MyDLL.lib (default output names,
+rem matching the DECLARE ... LIB "batch276_MyDLL.DLL" in
+rem batch276_testDLL.bas), then links batch276_testDLL.exe.
 rem Usage: run inside the examples folder, or from the repo root.
 setlocal
 cd /d "%~dp0"
@@ -12,17 +12,17 @@ if not exist "%FC%" (
     echo [ERROR] PB64Basic.exe not found. Build it first: cargo build --release -p pbcompiler
     exit /b 1
 )
-echo [1/2] Building MyDLL.dll + MyDLL.lib ...
-"%FC%" build batch276_MyDLL.bas -o MyDLL.obj --target x86_64-pc-windows-msvc --runtime-lib ..\pb_runtime_x64.obj
+echo [1/2] Building batch276_MyDLL.dll + batch276_MyDLL.lib ...
+"%FC%" build batch276_MyDLL.bas --target x86_64-pc-windows-msvc --runtime-lib ..\pb_runtime_x64.obj
 if errorlevel 1 (
     echo [ERROR] DLL build failed.
     exit /b 1
 )
-echo [2/2] Linking batch276_testDLL.exe against MYDLL.lib ...
+echo [2/2] Linking batch276_testDLL.exe ...
 "%FC%" build batch276_testDLL.bas --exe --target x86_64-pc-windows-msvc --runtime-lib ..\pb_runtime_x64.obj
 if errorlevel 1 (
     echo [ERROR] TestDLL build failed.
     exit /b 1
 )
-echo OK - MyDLL.dll, MyDLL.lib, batch276_testDLL.exe written.
-echo Run:  copy MyDLL.dll next to batch276_testDLL.exe, then run it (MSGBOX dialog pops up).
+echo OK - batch276_MyDLL.dll, batch276_MyDLL.lib, batch276_testDLL.exe written.
+echo Run:  batch276_testDLL.exe (loads batch276_MyDLL.dll from its folder; MSGBOX pops up).
