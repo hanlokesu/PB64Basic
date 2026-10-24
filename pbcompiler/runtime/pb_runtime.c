@@ -4515,6 +4515,10 @@ int pb_comm_get(int channel, const char* option) {
 
 int pb_comm_send(int channel, const char* s) {
     unsigned long written = 0;
+    /* channel number already used by an OPEN FILE -> Bad file mode (PBWin probe) */
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return -1;
+    }
     if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || s == NULL) {
         pb_comm_report("SEND", channel);
         pb_err_var = pb_err = 52; return -1;
@@ -4528,6 +4532,9 @@ int pb_comm_recv(int channel, long long bytes, char** dest, int want_wide) {
     unsigned long got = 0;
     char* buf;
     long long n = (bytes > 0) ? bytes : 1;
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return -1;
+    }
     if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || dest == NULL) {
         pb_comm_report("RECV", channel);
         pb_err_var = pb_err = 52; return -1;
@@ -4557,6 +4564,9 @@ int pb_comm_recv(int channel, long long bytes, char** dest, int want_wide) {
 int pb_comm_line_input(int channel, char** dest) {
     int n = 0, cap = 64, c;
     char* buf;
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return -1;
+    }
     if (channel < 0 || channel > 255 || !pb_comm_ok[channel] || dest == NULL) {
         pb_comm_report("LINE INPUT", channel);
         pb_err_var = pb_err = 52; return -1;
@@ -4594,6 +4604,9 @@ int pb_comm_line_input(int channel, char** dest) {
 
 int pb_comm_print_str(int channel, const char* s) {
     unsigned long written = 0;
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return 0;
+    }
     if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
         WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
         FlushFileBuffers(pb_comm_h[channel]);
@@ -4610,6 +4623,9 @@ int pb_comm_print_line(int channel, const char* s) {
     int n = 0;
     char crlf[2] = { '\r', '\n' };
     unsigned long written = 0;
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return 0;
+    }
     if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
         WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
         n = (int)written;
