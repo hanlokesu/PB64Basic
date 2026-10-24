@@ -7299,6 +7299,61 @@ void* pb_obj_new(long long size) {
     return calloc(1, (size_t)size);
 }
 
+/* ---- batch271: NEWCOM "ProgID" — real COM instantiation --------------------
+ * CHW Creating_a_DISPATCH_Object: `LET objvar = NEWCOM "ProgID"` creates a
+ * DISPATCH object via CLSIDFromProgID + CoCreateInstance(IID_IDispatch).
+ * The object variable then holds an IDispatch*; ISOBJECT()/OBJPTR() work on
+ * the raw pointer like any fork object.  OBJRESULT() returns the HRESULT of
+ * the most recent COM operation (0 = S_OK, negative = failure code).
+ */
+typedef struct _PB_GUID {
+    unsigned long  Data1;
+    unsigned short Data2;
+    unsigned short Data3;
+    unsigned char  Data4[8];
+} PB_GUID;
+
+__declspec(dllimport) int  __stdcall CoInitializeEx(void* pvReserved, unsigned long dwCoInit);
+__declspec(dllimport) int  __stdcall CLSIDFromProgID(const wchar_t* lpszProgID, PB_GUID* lpclsid);
+__declspec(dllimport) int  __stdcall CoCreateInstance(const PB_GUID* rclsid, void* pUnkOuter,
+                                                      unsigned long dwClsContext, const PB_GUID* riid,
+                                                      void** ppv);
+
+static const PB_GUID PB_IID_IDISPATCH =
+    {0x00020400, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+
+static int  pb_com_inited = 0;
+static long pb_com_hresult = 0;
+
+void pb_com_init(void) {
+    if (!pb_com_inited) {
+        CoInitializeEx(NULL, 0x2 /*COINIT_APARTMENTTHREADED*/);
+        pb_com_inited = 1;
+    }
+}
+
+void* pb_newcom(const char* progid) {
+    wchar_t wbuf[256];
+    PB_GUID clsid;
+    void* obj = NULL;
+    long hr;
+    pb_com_init();
+    MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
+    hr = CLSIDFromProgID(wbuf, &clsid);
+    if (hr != 0) return NULL;
+    hr = CoCreateInstance(&clsid, NULL, 0x7 /*CLSCTX_ALL*/, &PB_IID_IDISPATCH, &obj);
+    /* batch271 measured: PBWin's OBJRESULT stays 0 both on NEWCOM success AND
+     * failure (it reflects OBJECT-statement hResults, not NEWCOM).  Keep the
+     * result slot at 0 so OBJRESULT matches PBWin on both paths. */
+    pb_com_hresult = 0;
+    if (hr != 0) return NULL;
+    return obj;
+}
+
+long pb_com_result(void) {
+    return pb_com_hresult;
+}
+
 void pb_events_add(void* tblp, int mname, pb_event_fn fn) {
     pb_event_tbl* t = (pb_event_tbl*)tblp;
     if (!t) return;

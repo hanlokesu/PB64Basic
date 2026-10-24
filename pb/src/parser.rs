@@ -41,7 +41,7 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Located>) -> Self {
-        Parser {
+        let mut parser = Parser {
             tokens,
             pending: std::collections::VecDeque::new(),
             pos: 0,
@@ -49,7 +49,14 @@ impl Parser {
             error_count: 0,
             option_explicit: false,
             interface_names: std::collections::HashSet::new(),
-        }
+        };
+        // batch271: pre-register the built-in COM interface names (CHW
+        // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
+        // IUNKNOWN = generic IUnknown).  `LOCAL o AS IDISPATCH` must be a
+        // pointer object reference, not an unsized user type.
+        parser.interface_names.insert("IDISPATCH".to_string());
+        parser.interface_names.insert("IUNKNOWN".to_string());
+        parser
     }
 
     fn peek(&self) -> &Token {
@@ -14593,6 +14600,22 @@ impl Parser {
                     ))
                 }
             }
+            Token::Identifier(name) if name.eq_ignore_ascii_case("NEWCOM") => {
+                // NEWCOM "ProgID" — COM object instantiation (CHW
+                // Creating_a_DISPATCH_Object: `LET objvar = NEWCOM "ProgID"`,
+                // LET optional).  The ProgID must be a string literal.
+                self.advance();
+                if let Token::StringLiteral(progid) = self.peek().clone() {
+                    self.advance();
+                    Ok(Expr::NewCom(progid))
+                } else {
+                    Err(PbError::parser(
+                        "NEWCOM requires a ProgID string: NEWCOM \"ProgID\"".to_string(),
+                        None,
+                        self.current_line(),
+                    ))
+                }
+            }
             Token::Identifier(name) if name.eq_ignore_ascii_case("COMM") => {
                 // COMM([#] hComm, Comfunc) - CHW comm_function.htm.  The #
                 // before hComm is optional; Comfunc is a keyword (BAUD/BYTE/
@@ -14953,6 +14976,10 @@ impl Parser {
                     || name.eq_ignore_ascii_case("THREADID")
                     || name.eq_ignore_ascii_case("FUNCNAME")
                     || name.eq_ignore_ascii_case("FUNCNAME$")
+                    // batch271: OBJRESULT must be called WITHOUT parentheses in
+                    // PBWin (Error 477 with parens), so the bare form is the
+                    // official one.
+                    || name.eq_ignore_ascii_case("OBJRESULT")
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())

@@ -572,6 +572,10 @@ pub enum Expr {
     /// (a fresh instance of the CLASS's INSTANCE storage) or NULL on failure,
     /// matching PBWin's "object variable = NOTHING when creation fails".
     ClassNew(String),
+    /// `NEWCOM "ProgID"` — COM object instantiation (CHW Creating_a_DISPATCH_
+    /// Object).  The ProgID is always a string literal; the result is a COM
+    /// IDispatch* (or NULL when CoCreateInstance fails), matching PBWin.
+    NewCom(String),
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
     PercentConst(String),

@@ -4796,6 +4796,11 @@ impl Compiler {
             .declare_function("pb_class_create", &IrType::Ptr, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_class_destroy", &IrType::Void, &[IrType::Ptr], false);
+        // batch271: NEWCOM "ProgID" COM instantiation + OBJRESULT
+        self.module
+            .declare_function("pb_newcom", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_com_result", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_method_call",
             &IrType::I32,
@@ -21170,6 +21175,19 @@ impl Compiler {
                 fb.raw_line(&format!("  {} = ptrtoint ptr {} to i64", sz_reg, gep_reg));
                 Ok(fb.call(&IrType::Ptr, "pb_obj_new", &[Val::new(sz_reg, IrType::I64)]))
             }
+            Expr::NewCom(progid) => {
+                // NEWCOM "ProgID" — COM object instantiation (CHW
+                // Creating_a_DISPATCH_Object).  Lowered to a runtime call that
+                // does CLSIDFromProgID + CoCreateInstance(IID_IDispatch) and
+                // returns the IDispatch* (NULL on failure).  The result is a
+                // plain heap pointer, so ISOBJECT()/OBJPTR() work unchanged.
+                let (progid_name, _) = self.module.add_string_constant(progid);
+                Ok(fb.call(
+                    &IrType::Ptr,
+                    "pb_newcom",
+                    &[Val::new(progid_name, IrType::Ptr)],
+                ))
+            }
             Expr::MethodCall { base, name, args } => {
                 // `o.M(a, b)` — the dotted method-call sugar. Lower it to the
                 // qualified free function the METHOD was compiled as, prepending
@@ -21929,6 +21947,28 @@ impl Compiler {
                 // official -1/0, never a raw 0/1 (batch 264).
                 let c = fb.icmp("ne", &v, &Val::new("null", IrType::Ptr));
                 Some(Ok(fb.select(&c, &fb.const_i32(-1), &fb.const_i32(0))))
+            }
+            // batch271: OBJRESULT — most recent COM operation HRESULT
+            // (CHW OBJRESULT_function.htm; 0 = S_OK).  Fork stores the
+            // HRESULT from the last pb_newcom in the runtime.
+            "OBJRESULT" => Some(Ok(fb.call(&IrType::I32, "pb_com_result", &[]))),
+            // OBJPTR(objvar) — raw object pointer (CHW OBJPTR_function.htm).
+            // The fork object is a plain pointer value, so OBJPTR(o) is o itself.
+            "OBJPTR" => {
+                let first = match args.first() {
+                    Some(f) => f,
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "OBJPTR requires one argument: OBJPTR(objvar)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                match self.compile_expr(fb, first) {
+                    Ok(v) => Some(Ok(v)),
+                    Err(e) => Some(Err(e)),
+                }
             }
             "PB_GET_CB_MSG" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_msg", &[]))),
             "PB_GET_CB_HNDL" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_hwnd", &[]))),
