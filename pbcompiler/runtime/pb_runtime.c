@@ -1623,6 +1623,10 @@ void pb_print_file(int filenum, const char* text) {
 
 void pb_print_file_newline(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        /* batch 270: PBWin writes CRLF (0d 0a) to PRINT # files; fork wrote
+           bare LF because the file handle is opened in binary mode ("wb",
+           "ab", "r+b") where fputc('\n') stays LF.  Write both bytes. */
+        fputc('\r', file_handles[filenum]);
         fputc('\n', file_handles[filenum]);
     }
 }
