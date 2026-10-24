@@ -23430,11 +23430,26 @@ impl Compiler {
             return Err(PbError::runtime("radix function requires 1 argument"));
         }
         let v = self.compile_expr(fb, &args[0])?;
-        let vi = self.to_i64(fb, &v);
         let base = match which {
             "BIN" => 2,
             "OCT" => 8,
             _ => 10,
+        };
+        // DEC$ rounds fractional values to the nearest even integer (PBWin10
+        // measured: DEC$(1.5)=2, DEC$(2.5)=2, DEC$(3.5)=4, DEC$(-1.5)=-2 —
+        // banker's rounding, CHW DEC$_function.htm "Any fractional part of the
+        // value is rounded").  BIN$/OCT$ keep the plain truncation they had
+        // before (their CHW pages say "integral value", untested for halves).
+        let vi = if base == 10 && matches!(v.ty, IrType::Double | IrType::Float) {
+            let d = if v.ty == IrType::Float {
+                fb.fpext(&v, &IrType::Double)
+            } else {
+                v
+            };
+            let r = fb.call(&IrType::Double, "llvm.roundeven.f64", &[d]);
+            self.to_i64(fb, &r)
+        } else {
+            self.to_i64(fb, &v)
         };
         let digits = if args.len() > 1 {
             let d = self.compile_expr(fb, &args[1])?;
