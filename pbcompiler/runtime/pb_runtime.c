@@ -3050,6 +3050,14 @@ double pb_read_data_num(void) {
     return atof(data_pool[data_cursor++]);
 }
 
+/* READ$(n%) — CHW READ_function.htm: 1-based random access to the local DATA
+   list; n > DATACOUNT returns an empty string with no runtime error. */
+char* pb_read_data_idx(long long n) {
+    if (n < 1 || n > data_count) return pb_bstr_alloc("", 0);
+    const char* item = data_pool[n - 1];
+    return pb_bstr_alloc(item, (int)strlen(item));
+}
+
 void pb_data_reset(void) {
     data_cursor = 0;
 }

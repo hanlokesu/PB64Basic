@@ -286,7 +286,7 @@ pub enum Statement {
         out_var: Expr,
     }, // REGREPL mask$ IN target$ WITH repl$ [AT start&] TO iPos&, newtarget$ (batch 35)
     Block(Vec<Statement>), // multiple statements from one parse (e.g. LOCAL a, b)
-    Data(Vec<String>), // DATA item1, item2, ... (string constants)
+    Data(Vec<DataItem>), // DATA item1, item2, ... (string constants)
     Restore,       // RESTORE — reset DATA read cursor
     Noop(String, usize), // (unimplemented statement name, source line)
     Asm(String),   // inline assembly text (from ! or ASM)
@@ -301,6 +301,15 @@ pub struct DefTypeStmt {
     pub pb_type: PbType,
     pub ranges: Vec<(char, char)>,
     pub line: usize,
+}
+
+/// One DATA item.  `quoted` records whether the source wrote it inside quotes:
+/// quoted items keep leading/trailing spaces; unquoted items are trimmed at
+/// compile time (CHW DATA_statement.htm).
+#[derive(Debug, Clone)]
+pub struct DataItem {
+    pub text: String,
+    pub quoted: bool,
 }
 
 #[derive(Debug, Clone)]

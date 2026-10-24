@@ -5452,6 +5452,8 @@ impl Compiler {
         self.module
             .declare_function("pb_read_data_num", &IrType::Double, &[], false);
         self.module
+            .declare_function("pb_read_data_idx", &IrType::Ptr, &[IrType::I64], false);
+        self.module
             .declare_function("pb_data_reset", &IrType::Void, &[], false);
         self.module.declare_function(
             "pb_array_scan_num",
@@ -7178,9 +7180,16 @@ impl Compiler {
                 Ok(())
             }
             Statement::Data(items) => {
-                // DATA item1, item2, ... — register constants into the runtime pool
+                // DATA item1, item2, ... — register constants into the runtime
+                // pool.  CHW: unquoted items are trimmed of leading/trailing
+                // spaces at compile time; quoted items keep them.
                 for item in items {
-                    let (str_name, _) = self.module.add_string_constant(item);
+                    let text = if item.quoted {
+                        item.text.clone()
+                    } else {
+                        item.text.trim().to_string()
+                    };
+                    let (str_name, _) = self.module.add_string_constant(&text);
                     let sv = Val::new(str_name, IrType::Ptr);
                     fb.call_void("pb_data_append", &[sv]);
                 }
@@ -21137,6 +21146,12 @@ impl Compiler {
                     } else {
                         Ok(val)
                     }
+                } else if raw_upper == "READ$" {
+                    // CHW READ_function.htm: value$ = READ$(n%) — 1-based
+                    // random access to the local DATA list; n > DATACOUNT → "".
+                    let idx_val = self.compile_expr(fb, &args[0])?;
+                    let n = self.to_i64(fb, &idx_val);
+                    Ok(fb.call(&IrType::Ptr, "pb_read_data_idx", &[n]))
                 } else if let Some(result) = self.compile_builtin(fb, &name, args) {
                     result
                 } else if let Some(info) = self.functions.get(&name).cloned() {

@@ -1809,38 +1809,59 @@ impl Parser {
         self.tokens.get(self.pos + offset).map(|t| &t.token)
     }
 
-    fn parse_data_items(&mut self) -> Vec<String> {
+    fn parse_data_items(&mut self) -> Vec<DataItem> {
         let mut items = Vec::new();
         loop {
             match self.peek().clone() {
                 Token::StringLiteral(s) => {
-                    items.push(s);
+                    items.push(DataItem {
+                        text: s,
+                        quoted: true,
+                    });
                     self.advance();
                 }
                 Token::IntegerLiteral(n) => {
-                    items.push(n.to_string());
+                    items.push(DataItem {
+                        text: n.to_string(),
+                        quoted: false,
+                    });
                     self.advance();
                 }
                 Token::FloatLiteral(f) => {
-                    items.push(f.to_string());
+                    items.push(DataItem {
+                        text: f.to_string(),
+                        quoted: false,
+                    });
                     self.advance();
                 }
                 Token::Identifier(s) => {
-                    items.push(s);
+                    items.push(DataItem {
+                        text: s,
+                        quoted: false,
+                    });
                     self.advance();
                 }
                 Token::Minus => {
                     self.advance();
                     match self.peek().clone() {
                         Token::IntegerLiteral(n) => {
-                            items.push(format!("-{}", n));
+                            items.push(DataItem {
+                                text: format!("-{}", n),
+                                quoted: false,
+                            });
                             self.advance();
                         }
                         Token::FloatLiteral(f) => {
-                            items.push(format!("-{}", f));
+                            items.push(DataItem {
+                                text: format!("-{}", f),
+                                quoted: false,
+                            });
                             self.advance();
                         }
-                        _ => items.push("-".to_string()),
+                        _ => items.push(DataItem {
+                            text: "-".to_string(),
+                            quoted: false,
+                        }),
                     }
                 }
                 _ => break,

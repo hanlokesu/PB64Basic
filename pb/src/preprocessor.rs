@@ -457,7 +457,20 @@ impl Preprocessor {
             }
 
             // Regular line — emit it (prepend active PREFIX source code, batch 26)
-            let expanded = self.expand_macros(trimmed_full, &full_line);
+            // DATA rewrite (batch 275): the lexer uppercases bare identifiers,
+            // which corrupts unquoted DATA items (CHW: unquoted items are trimmed
+            // of leading/trailing spaces but keep their text).  Rewrite unquoted
+            // items as quoted string literals so the lexer keeps them verbatim.
+            let data_rewritten: Option<String> =
+                if upper_full.starts_with("DATA ") || upper_full == "DATA" {
+                    Some(rewrite_data_line(trimmed_full))
+                } else {
+                    None
+                };
+            let expanded = self.expand_macros(
+                data_rewritten.as_deref().unwrap_or(trimmed_full),
+                data_rewritten.as_deref().unwrap_or(&full_line),
+            );
             let mut emitted_text = expanded;
             // Second rewrite site (batch 129 legacy): `expand_macros` seeds
             // from the ORIGINAL line (`full`), so a `?`-leading line can come
@@ -935,4 +948,72 @@ fn strip_comment(s: &str) -> String {
         }
     }
     s.trim().to_string()
+}
+
+/// Rewrite a `DATA ...` line so every *unquoted* item becomes a quoted string
+/// literal, keeping its text verbatim (CHW DATA_statement.htm: unquoted items
+/// are trimmed of leading/trailing spaces but otherwise preserved).  The
+/// lexer uppercases bare identifiers, which would corrupt items like `plain`;
+/// quoting them sidesteps that.  Quoted items are left untouched (they keep
+/// their spaces).  An unquoted `:` ends the data list (statement separator,
+/// CHW); anything after it is left as-is.
+fn rewrite_data_line(line: &str) -> String {
+    let head = "DATA";
+    let rest = line[head.len()..].trim_start();
+    let mut out = String::new();
+    out.push_str(head);
+    let mut data_part_end = rest.len();
+    let mut in_string = false;
+    for (i, ch) in rest.char_indices() {
+        if ch == '"' {
+            in_string = !in_string;
+        } else if ch == ':' && !in_string {
+            data_part_end = i;
+            break;
+        }
+    }
+    let data = &rest[..data_part_end];
+    let tail = &rest[data_part_end..];
+    let mut items: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_q = false;
+    for ch in data.chars() {
+        if ch == '"' {
+            in_q = !in_q;
+            cur.push(ch);
+        } else if ch == ',' && !in_q {
+            items.push(cur.clone());
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+    }
+    if !cur.is_empty() || !items.is_empty() {
+        items.push(cur);
+    }
+    let mut first = true;
+    for item in &items {
+        let it = item.trim();
+        if it.is_empty() {
+            continue;
+        }
+        if !first {
+            out.push_str(", ");
+        }
+        first = false;
+        if it.starts_with('"') && it.ends_with('"') && it.len() >= 2 {
+            out.push_str(it);
+        } else {
+            out.push('"');
+            out.push_str(it);
+            out.push('"');
+        }
+    }
+    if first {
+        out.push(' ');
+    }
+    if !tail.is_empty() {
+        out.push_str(tail);
+    }
+    out
 }
