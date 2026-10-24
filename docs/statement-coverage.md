@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 266 (v0.2.084)** — 2026-10-24. All statements through batch 266 are reflected in this matrix.
+> **Last updated from batch 276 (v0.2.085)** — 2026-10-25. All statements through batch 276 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **892** (10 BLOCK, 281 FUNCTION, 5 OPERATOR, 593 STATEMENT, 3 FORK EXTENSION).
-- **889** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **909** (12 BLOCK, 283 FUNCTION, 5 OPERATOR, 606 STATEMENT, 3 FORK EXTENSION).
+- **906** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 758 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 131 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **889** | Implemented + Established |
+| ✅ Implemented (this project) | 779 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 127 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ **Total available** | **906** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (892 rows)
+## All keywords (909 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -45,7 +45,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ARRAY SCAN | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY SELECT | FORK EXTENSION | PB/Win + PB/CC | Implemented |
 | ARRAY SHUFFLE | STATEMENT | PB/Win + PB/CC | Implemented |
-| ARRAY SORT | STATEMENT | PB/Win + PB/CC | Established |
+| ARRAY SORT | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY SWAP | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY TAGARRAY | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY TAGARRAY ERASE | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -111,7 +111,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CHRTOOEM$ | FUNCTION | Win32 | Implemented |
 | CHRTOUTF8 | FUNCTION | codegen builtin | Implemented |
 | CHRTOUTF8$ | FUNCTION | Win32 | Implemented |
-| CLASS/END CLASS | BLOCK | PB/Win + PB/CC | Established |
+| CLASS/END CLASS | BLOCK | PB/Win + PB/CC | Implemented |
 | CLIP | FUNCTION | codegen builtin | Implemented |
 | CLIP$ | FUNCTION | Win32 | Implemented |
 | CLIPBOARD | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -238,7 +238,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CVQ | FUNCTION | codegen builtin | Implemented |
 | CVW | FUNCTION | codegen builtin | Implemented |
 | CWORD | FUNCTION | codegen builtin | Implemented |
-| DATA | STATEMENT | PB/Win + PB/CC | Established |
+| DATA | STATEMENT | PB/Win + PB/CC | Implemented |
 | DATACOUNT | FUNCTION | codegen builtin | Implemented |
 | DAYNAME | FUNCTION | codegen builtin | Implemented |
 | DAYNAME$ | FUNCTION | Win32 | Implemented |
@@ -247,6 +247,18 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DECLARE | STATEMENT | PB/Win + PB/CC | Implemented |
 | DECR | STATEMENT | PB/Win + PB/CC | Established |
 | DEF | OPERATOR | PB/Win + PB/CC | Implemented |
+| DEFBYT | STATEMENT | PB/Win only | Implemented |
+| DEFCUR | STATEMENT | PB/Win only | Implemented |
+| DEFCUX | STATEMENT | PB/Win only | Implemented |
+| DEFDBL | STATEMENT | PB/Win only | Implemented |
+| DEFDWD | STATEMENT | PB/Win only | Implemented |
+| DEFEXT | STATEMENT | PB/Win only | Implemented |
+| DEFINT | STATEMENT | PB/Win only | Implemented |
+| DEFLNG | STATEMENT | PB/Win only | Implemented |
+| DEFQUD | STATEMENT | PB/Win only | Implemented |
+| DEFSNG | STATEMENT | PB/Win only | Implemented |
+| DEFSTR | STATEMENT | PB/Win only | Implemented |
+| DEFWRD | STATEMENT | PB/Win only | Implemented |
 | DESKTOP GET CLIENT | STATEMENT | PB/Win + PB/CC | Established |
 | DESKTOP GET LOC | STATEMENT | PB/Win + PB/CC | Established |
 | DESKTOP GET PPI | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -295,8 +307,10 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DISPLAY FONT | STATEMENT | PB/Win only | Implemented |
 | DISPLAY OPENFILE | STATEMENT | PB/Win only | Implemented |
 | DISPLAY SAVEFILE | STATEMENT | PB/Win only | Implemented |
+| DLLMAIN | FUNCTION | PB/Win only | Implemented |
 | DOUBLE | FUNCTION | codegen builtin | Implemented |
 | END | STATEMENT | PB/Win + PB/CC | Established |
+| ENUM | BLOCK | PB/Win only | Implemented |
 | ENVIRON | STATEMENT | PB/Win + PB/CC | Established |
 | ENVIRON$ | FUNCTION | Win32 | Implemented |
 | EOF | FUNCTION | codegen builtin | Implemented |
@@ -318,6 +332,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | EXP10 | FUNCTION | LLVM intrinsic | Implemented |
 | EXP2 | FUNCTION | LLVM intrinsic | Implemented |
 | EXPM1 | FUNCTION | C runtime (MSVCRT) | Implemented |
+| EXPORT | STATEMENT | PB/Win only | Implemented |
 | EXTRACT | FUNCTION | codegen builtin | Implemented |
 | EXTRACT$ | FUNCTION | Win32 | Implemented |
 | FIELD | STATEMENT | PB/Win + PB/CC | Established |
@@ -493,6 +508,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | LET *(WITH OBJECTS)* | STATEMENT | PB/Win + PB/CC | Implemented |
 | LET *(WITH TYPES)* | STATEMENT | PB/Win + PB/CC | Established |
 | LET *(WITH VARIANTS)* | STATEMENT | PB/Win + PB/CC | Implemented |
+| LIBMAIN | FUNCTION | PB/Win only | Implemented |
 | LINE INPUT# | STATEMENT | PB/Win + PB/CC | Implemented |
 | LISTBOX ADD | STATEMENT | PB/Win only | Implemented |
 | LISTBOX DELETE | STATEMENT | PB/Win only | Implemented |
@@ -643,7 +659,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | PLAY WAVE | STATEMENT | PB/Win + PB/CC | Established |
 | POKE | FUNCTION | codegen builtin | Implemented |
 | PREFIX | BLOCK | PB/Win + PB/CC | Established |
-| PRINT# | STATEMENT | PB/Win + PB/CC | Established |
+| PRINT# | STATEMENT | PB/Win + PB/CC | Implemented |
 | PRINTER$ | FUNCTION | Win32 | Implemented |
 | PRINTERCOUNT | FUNCTION | codegen builtin | Implemented |
 | PROCESS GET PRIORITY | STATEMENT | PB/Win + PB/CC | Established |
@@ -821,6 +837,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | UDP OPEN | STATEMENT | PB/Win + PB/CC | Established |
 | UDP RECV | STATEMENT | PB/Win + PB/CC | Established |
 | UDP SEND | STATEMENT | PB/Win + PB/CC | Established |
+| UNION | BLOCK | PB/Win only | Implemented |
 | UNLOCK | STATEMENT | PB/Win + PB/CC | Established |
 | UNWRAP | FUNCTION | codegen builtin | Implemented |
 | UNWRAP$ | FUNCTION | Win32 | Implemented |
