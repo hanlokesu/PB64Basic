@@ -418,9 +418,19 @@ impl Preprocessor {
                 continue;
             }
 
-            // #INCLUDE "file"
+            // #INCLUDE "file"  (also `#INCLUDE ONCE "file"`, the PBWin-official
+            // form; batch 276: official samples always use ONCE.  ONCE-once
+            // semantics are the same here since included paths are tracked
+            // per file, so just strip the keyword.)
             if upper_full.starts_with("#INCLUDE") {
-                let rest = trimmed_full[8..].trim();
+                let mut rest = trimmed_full[8..].trim();
+                if let Some(no_once) = rest
+                    .strip_prefix("ONCE")
+                    .or_else(|| rest.strip_prefix("once"))
+                    .or_else(|| rest.strip_prefix("Once"))
+                {
+                    rest = no_once.trim();
+                }
                 if let Some(inc_path) = extract_string(rest) {
                     let resolved = resolve_include_path(file, &inc_path);
                     match self.process_file(&resolved) {
@@ -436,10 +446,18 @@ impl Preprocessor {
                 continue;
             }
 
-            // %CONSTANT = value  (define a constant)
+            // %CONSTANT = value  (define a constant).  Official form is
+            // `%CONSTANT %name = value` (CHW constant_directive.htm); the
+            // leading `%CONSTANT` keyword must be stripped or the recorded
+            // key becomes "%CONSTANT %NAME" and lookups of %NAME miss (they
+            // fell back to 0 — batch 276 traced the LIBMAIN SELECT CASE
+            // matching nothing through exactly this).
             if trimmed_full.starts_with('%') {
                 if let Some(eq_pos) = trimmed_full.find('=') {
-                    let name = trimmed_full[..eq_pos].trim().to_uppercase();
+                    let mut name = trimmed_full[..eq_pos].trim().to_uppercase();
+                    if name.starts_with("%CONSTANT") {
+                        name = name["%CONSTANT".len()..].trim().to_string();
+                    }
                     let val_str = trimmed_full[eq_pos + 1..].trim();
                     // Strip trailing comments
                     let val_str = strip_comment(val_str);
@@ -934,7 +952,27 @@ fn resolve_include_path(current_file: &Path, include_path: &str) -> PathBuf {
     // Convert backslashes to forward slashes for cross-platform
     let normalized = include_path.replace('\\', "/");
     let parent = current_file.parent().unwrap_or_else(|| Path::new("."));
-    parent.join(normalized)
+    let local = parent.join(&normalized);
+    if local.exists() {
+        return local;
+    }
+    // CHW #INCLUDE: "The compiler scans the search path for each #INCLUDE
+    // file before checking the current (default) directory."  Batch 276:
+    // official samples do `#INCLUDE ONCE "Win32api.inc"`; the file lives in
+    // the PBWin10 WINAPI folder, not next to the source.  Auto-detect the
+    // installed PBWin include directory (same spirit as the Windows SDK lib
+    // auto-detection) and fall back to it so official samples compile as-is.
+    for cand in [
+        "C:\\PBWin10\\WINAPI",
+        "C:\\PBWin10\\WINAPI\\INC",
+        "C:\\PBWin9\\WINAPI",
+    ] {
+        let p = std::path::Path::new(cand).join(&normalized);
+        if p.exists() {
+            return p;
+        }
+    }
+    local
 }
 
 fn strip_comment(s: &str) -> String {

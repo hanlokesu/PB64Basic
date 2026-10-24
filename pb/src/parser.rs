@@ -69,6 +69,11 @@ pub struct Parser {
     /// (batch 264).  `AS <IfaceName>` then parses to PbType::Interface, whose
     /// variable storage is a pointer (an object reference), never a struct.
     interface_names: std::collections::HashSet<String>,
+    /// Name of the FUNCTION whose body is being parsed (batch 276).  Inside a
+    /// function body, `LIBMAIN = expr` is the official return-value assignment
+    /// (CHW LIBMAIN_DLLMAIN_function.htm) and must parse as FunctionReturn,
+    /// not as an assignment to an undeclared variable.
+    current_function_name: Option<String>,
 }
 
 impl Parser {
@@ -81,6 +86,7 @@ impl Parser {
             error_count: 0,
             option_explicit: false,
             interface_names: std::collections::HashSet::new(),
+            current_function_name: None,
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -1150,7 +1156,29 @@ impl Parser {
         let name = match self.peek().clone() {
             Token::PercentConstant(s) => {
                 self.advance();
-                s
+                if s.eq_ignore_ascii_case("%CONSTANT") {
+                    // Official form `%CONSTANT %name = value` (CHW
+                    // constant_directive.htm): the keyword token is a plain
+                    // PercentConstant like the name itself.  Consume it, then
+                    // take the next PercentConstant as the name (batch 276 —
+                    // previously the keyword was taken as the name and the
+                    // real name caused "Expected Eq, got PercentConstant").
+                    match self.peek().clone() {
+                        Token::PercentConstant(s2) => {
+                            self.advance();
+                            s2
+                        }
+                        _ => {
+                            return Err(PbError::parser(
+                                "Expected %CONSTANT name",
+                                self.current_file(),
+                                line,
+                            ))
+                        }
+                    }
+                } else {
+                    s
+                }
             }
             _ => {
                 return Err(PbError::parser(
@@ -1457,7 +1485,9 @@ impl Parser {
         };
 
         self.consume_to_eol();
+        self.current_function_name = Some(name.to_uppercase());
         let body = self.parse_body(&[BodyEnd::EndFunction])?;
+        self.current_function_name = None;
 
         Ok(FunctionDecl {
             name,
@@ -12158,6 +12188,21 @@ impl Parser {
                 // Peek ahead to decide
                 if self.peek_at(1) == Some(&Token::Eq) {
                     // Simple assignment: name = expr
+                    // Inside a FUNCTION body, `FuncName = expr` is the official
+                    // return-value assignment (CHW LIBMAIN example).  Same AST
+                    // as the `FUNCTION = expr` form (batch 276).
+                    if let Some(fn_name) = &self.current_function_name {
+                        if *fn_name == name_upper {
+                            self.advance(); // consume name
+                            self.advance(); // consume =
+                            let value = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::FunctionReturn(FunctionReturnStmt {
+                                value,
+                                line,
+                            }));
+                        }
+                    }
                     self.advance(); // consume name
                     self.advance(); // consume =
                     let value = self.parse_expression()?;

@@ -217,6 +217,7 @@ pub fn compile(
     compiler.option_explicit = opts.option_explicit;
     compiler.session_mode = opts.session_mode;
     compiler.debug_mode = opts.debug_mode;
+    compiler.dll_mode = opts.dll_mode;
     compiler.pp_constants = pp_constants.clone();
     compiler.compile_program(program)?;
     // Report statements that were silently dropped (no code generated)
@@ -308,14 +309,26 @@ pub fn compile(
     // Link if requested
     if opts.dll_mode {
         let dll_path = output_path.with_extension("dll");
-        link_dll(&obj_paths[0], &dll_path, opts, &compiler.link_files)?;
+        link_dll(
+            &obj_paths[0],
+            &dll_path,
+            opts,
+            &compiler.link_files,
+            &compiler.dll_import_libs,
+        )?;
         eprintln!("[PB64Basic] Linked DLL: {}", dll_path.display());
     }
 
     if opts.exe_mode {
         let exe_path = output_path.with_extension("exe");
         let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
-        link_exe(&obj_refs, &exe_path, opts, &compiler.link_files)?;
+        link_exe(
+            &obj_refs,
+            &exe_path,
+            opts,
+            &compiler.link_files,
+            &compiler.dll_import_libs,
+        )?;
         eprintln!("[PB64Basic] Linked EXE: {}", exe_path.display());
     }
 
@@ -627,6 +640,7 @@ fn link_dll(
     dll_path: &Path,
     opts: &CompileOptions,
     link_files: &[String],
+    dll_import_libs: &[String],
 ) -> PbResult<()> {
     let mut args: Vec<String> = vec![
         "-shared".to_string(),
@@ -653,6 +667,19 @@ fn link_dll(
         }
     }
 
+    // User-DLL import libraries (batch 276), same cwd → output-dir fallback.
+    for lib_spec in dll_import_libs {
+        let p = std::path::Path::new(lib_spec);
+        if p.exists() {
+            args.push(lib_spec.clone());
+        } else if let Some(parent) = dll_path.parent() {
+            let cand = parent.join(lib_spec);
+            if cand.exists() {
+                args.push(cand.to_string_lossy().to_string());
+            }
+        }
+    }
+
     // Runtime library (pb_debug_enter, pb_bstr_alloc, pb_str_concat, ...)
     if let Some(ref runtime) = opts.runtime_lib {
         args.push(runtime.clone());
@@ -661,6 +688,20 @@ fn link_dll(
     args.push("-o".to_string());
     args.push(dll_path.to_string_lossy().to_string());
     args.push("-loleaut32".to_string());
+    // DLL entry point (batch 276): with libucrt/libvcruntime/libcmt linked,
+    // lld's default DLL entry `_DllMainCRTStartup` exists and initialises the
+    // CRT (heap, stdio) before calling the codegen-emitted DllMain.  A bare
+    // `/ENTRY:DllMain` skips CRT init, so LIBMAIN's runtime calls (malloc,
+    // fopen, ...) crashed the load with STATUS_DLL_INIT_FAILED (1114) even
+    // when LIBMAIN returned TRUE.  Let the CRT entry stand as-is.
+    // clang adds `-defaultlib:libcmt` only when linking an EXE; `-shared` omits
+    // it, so the runtime's UCRT references (__stdio_common_vsprintf, fopen,
+    // fflush, malloc, ...) stay unresolved.  Measured with clang -v: the UCRT
+    // symbols live in libucrt, with libvcruntime + libcmt needed alongside
+    // (link_exe gets all three implicitly through the EXE driver path).
+    args.push("-Wl,-defaultlib:libucrt".to_string());
+    args.push("-Wl,-defaultlib:libvcruntime".to_string());
+    args.push("-Wl,-defaultlib:libcmt".to_string());
     // 32-bit: UCRT keeps `printf`/`scanf` in the legacy stdio shim, which MSVC
     // links but clang does not.  Without it a program that uses PRINT fails with
     // `undefined symbol: _printf`.
@@ -705,6 +746,7 @@ fn link_exe(
     exe_path: &Path,
     opts: &CompileOptions,
     link_files: &[String],
+    dll_import_libs: &[String],
 ) -> PbResult<()> {
     let mut args: Vec<String> = vec![format!("--target={}", opts.target)];
 
@@ -732,6 +774,21 @@ fn link_exe(
             }
         } else {
             args.push(lf.clone());
+        }
+    }
+
+    // Import libraries for user DLLs (batch 276): `DECLARE ... LIB "x.dll"`
+    // emits dllimport symbols; hand the matching x.lib to the linker, resolved
+    // from cwd, then the output EXE's directory (same fallback as #LINK).
+    for lib_spec in dll_import_libs {
+        let p = std::path::Path::new(lib_spec);
+        if p.exists() {
+            args.push(lib_spec.clone());
+        } else if let Some(parent) = exe_path.parent() {
+            let cand = parent.join(lib_spec);
+            if cand.exists() {
+                args.push(cand.to_string_lossy().to_string());
+            }
         }
     }
 
@@ -1196,6 +1253,15 @@ struct Compiler {
     // Debug mode: emit extra logging calls (modal text, state transitions)
     debug_mode: bool,
 
+    // DLL output mode (batch 276): entry point is DllMain, not main
+    dll_mode: bool,
+
+    /// Import libraries for `DECLARE ... LIB "x.dll"` of user DLLs (batch 276):
+    /// system DLLs (kernel32/user32/...) already come via `-l<name>` in the
+    /// link step; a user DLL's symbols are resolved by handing its .lib to the
+    /// linker, found next to the source / output directory like #LINK files.
+    dll_import_libs: Vec<String>,
+
     // Preprocessor %CONSTANTS (name → value)
     pp_constants: HashMap<String, i64>,
 
@@ -1366,6 +1432,8 @@ impl Compiler {
             session_mode: false,
             session_fields: Vec::new(),
             debug_mode: false,
+            dll_mode: false,
+            dll_import_libs: Vec::new(),
             pp_constants: HashMap::new(),
             warnings: Vec::new(),
             xprint_dc: None,
@@ -6316,8 +6384,42 @@ impl Compiler {
             }
         }
 
-        // Emit main() entry point that calls PBMAIN() if it exists
-        if let Some(pbmain) = self.functions.get("PBMAIN") {
+        // Emit main() entry point that calls PBMAIN() if it exists.
+        // DLL mode (batch 276): entry point is DllMain (Windows calls it on
+        // load/unload); a user LIBMAIN/DLLMAIN function is forwarded to,
+        // otherwise DllMain returns TRUE (1).
+        if self.dll_mode {
+            let mut fb = self.module.create_function_builder(
+                "DllMain",
+                &IrType::I32,
+                &[
+                    ("hinst".to_string(), IrType::I64),    // HINSTANCE
+                    ("reason".to_string(), IrType::I32),   // DWORD
+                    ("reserved".to_string(), IrType::I64), // LPVOID
+                ],
+            );
+            let hinst = Val::new("%hinst".to_string(), IrType::I64);
+            let reason = Val::new("%reason".to_string(), IrType::I32);
+            let reserved = Val::new("%reserved".to_string(), IrType::I64);
+            let libmain = self
+                .functions
+                .get("LIBMAIN")
+                .or_else(|| self.functions.get("DLLMAIN"))
+                .cloned();
+            if let Some(lm) = libmain {
+                // LIBMAIN(BYVAL hInstance AS DWORD, BYVAL lReason AS LONG,
+                // BYVAL lReserved AS LONG) AS LONG — truncate the 64-bit
+                // handles to the 32-bit parameter slots (x64 ABI: upper half
+                // of the register is ignored by the callee).
+                let h32 = fb.trunc(&hinst, &IrType::I32);
+                let rv32 = fb.trunc(&reserved, &IrType::I32);
+                let ret = fb.call(&IrType::I32, &lm.ir_name, &[h32, reason, rv32]);
+                fb.ret(&ret);
+            } else {
+                fb.ret(&Val::new("1".to_string(), IrType::I32));
+            }
+            self.module.add_function_body(fb.finish());
+        } else if let Some(pbmain) = self.functions.get("PBMAIN") {
             let pbmain_ir_name = pbmain.ir_name.clone();
             let mut fb = self
                 .module
@@ -6612,6 +6714,20 @@ impl Compiler {
         let lib_name = ds.lib.as_deref().unwrap_or("").to_uppercase();
         let is_stdcall = self.module.is_32bit() && Self::is_win32_stdcall_dll(&lib_name);
         let is_stubbed = Self::is_stubbed_dll(&lib_name);
+        // User DLL import (batch 276): record the .lib so the link step can
+        // resolve the dllimport symbols.  System DLLs are already covered by
+        // `-lkernel32`/`-luser32`/... in link_exe/link_dll.
+        if ds.lib.is_some() && !is_stubbed && !Self::is_win32_stdcall_dll(&lib_name) {
+            let raw = ds.lib.as_deref().unwrap_or("");
+            let stem = raw
+                .strip_suffix(".dll")
+                .or_else(|| raw.strip_suffix(".DLL"))
+                .unwrap_or(raw);
+            let lib_spec = format!("{}.lib", stem);
+            if !self.dll_import_libs.contains(&lib_spec) {
+                self.dll_import_libs.push(lib_spec);
+            }
+        }
 
         if ds.is_function {
             let ret_type = Self::ir_type_for(&ds.return_type);
