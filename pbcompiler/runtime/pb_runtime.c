@@ -3839,7 +3839,8 @@ static void swap_elem(char* a, char* b, int es) {
 void pb_array_sort2(char* base, int elem_size, long long total, long long index,
                     long long count, int type, int descend,
                     char* tag_base, int tag_elem_size,
-                    long long from, long long to, int collate_mode, char* collate) {
+                    long long from, long long to, int collate_mode, char* collate,
+                    long long cmp_fn) {
     if (!base || total <= 1) return;
     if (index < 1) index = 1;
     if (count <= 0) count = total - index + 1;
@@ -3854,12 +3855,21 @@ void pb_array_sort2(char* base, int elem_size, long long total, long long index,
     } else if (collate_mode == 2 && collate) {
         tbl = (const unsigned char*)collate;
     }
+    /* custom CALL sort: cmp_fn is the address of a user comparison function
+       taking two BYREF element pointers and returning -1/0/1 (CHW
+       ARRAY_SORT_statement.htm CALL form).  Elements are passed by address
+       exactly like a BYREF variable slot, so a fixed-string element (a BSTR
+       pointer slot) is passed as its own address. */
+    int (*cmp_user)(const void*, const void*) = (int (*)(const void*, const void*))cmp_fn;
     long long i, j;
     for (i = 0; i < n - 1; i++) {
         long long best = i;
         for (j = i + 1; j < n; j++) {
             int c;
-            if (type == 3) {
+            if (cmp_fn) {
+                c = cmp_user(base + (index - 1 + best) * elem_size,
+                             base + (index - 1 + j) * elem_size);
+            } else if (type == 3) {
                 const char* x = *(char* const*)(base + (index - 1 + best) * elem_size);
                 const char* y = *(char* const*)(base + (index - 1 + j) * elem_size);
                 c = str_cmp_sort(x, y, from, to, tbl);

@@ -17582,9 +17582,10 @@ impl Compiler {
                             !matches!(call.args.get(4), None | Some(Expr::IntegerLit(0)));
                         // Custom CALL/USING sort (args[8]): PBWin rejects dynamic
                         // STRING arrays at compile time (Error 482); fixed-string
-                        // /UDT arrays are valid but the codegen bridge is not
-                        // implemented yet — fail loudly, never silently no-op.
-                        if let Some(Expr::FunctionCall(cfn, _)) = call.args.get(8) {
+                        // /UDT arrays pass the user comparison function's address
+                        // to pb_array_sort2 (CODEPTR-style), which calls it with
+                        // the address of each pair of elements (-1/0/1).
+                        let cmp_fn = if let Some(Expr::FunctionCall(cfn, _)) = call.args.get(8) {
                             let cfname = normalize_name(cfn);
                             if is_dynamic_str {
                                 return Err(PbError::runtime(format!(
@@ -17592,11 +17593,21 @@ impl Compiler {
                                     cfname
                                 )));
                             }
-                            return Err(PbError::runtime(format!(
-                                "ARRAY SORT: custom CALL {}() bridge not implemented yet",
-                                cfname
-                            )));
-                        }
+                            if let Some(info) = self.functions.get(&cfname) {
+                                let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
+                                fb.ptrtoint64(&gv)
+                            } else if let Some(info) = self.subs.get(&cfname) {
+                                let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
+                                fb.ptrtoint64(&gv)
+                            } else {
+                                return Err(PbError::runtime(format!(
+                                    "ARRAY SORT: custom CALL {}() - function not found",
+                                    cfname
+                                )));
+                            }
+                        } else {
+                            fb.const_i64(0)
+                        };
                         if is_dynamic_str && has_from {
                             return Ok(());
                         }
@@ -17616,6 +17627,7 @@ impl Compiler {
                                 to,
                                 fb.const_i32(collate_mode as i32),
                                 collate_str,
+                                cmp_fn,
                             ],
                         );
                     }
