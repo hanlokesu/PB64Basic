@@ -47,7 +47,13 @@
 '  Build as a DLL (the source's "#COMPILE DLL" puts PB64Basic into DLL mode):
 '    PB64Basic build batch276_MyDLL.bas -o MyDLL.obj --target x86_64-pc-windows-msvc
 '        --runtime-lib ..\pb_runtime_x64.obj   (run from examples; .. = repo root)
-'  This emits MyDLL.dll and MyDLL.lib next to the source.
+'
+'  *** OUTPUT FILES: MyDLL.dll + MyDLL.lib (NOT batch276_MyDLL.dll) ***
+'  The -o MyDLL.obj above is MANDATORY: the output names follow -o, and
+'  batch276_testDLL.bas links DECLARE ... LIB "MYDLL.DLL", i.e. it looks
+'  for MYDLL.lib / MYDLL.dll by that exact name. Without -o the outputs
+'  would be batch276_MyDLL.dll/.lib and TestDLL's link would fail.
+'  One-click alternative: run build_mydll.bat in this folder.
 '
 '===============================================================================
 
