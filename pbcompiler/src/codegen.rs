@@ -820,6 +820,21 @@ fn link_exe(
                     0,
                 ));
             }
+            // Neither the import library nor the DLL exists anywhere we look.
+            // Silently letting the link proceed produced only a confusing
+            // "undefined symbol: __declspec(dllimport) ..." from lld (batch
+            // 276c); name the missing file instead.
+            return Err(PbError::preprocessor(
+                format!(
+                    "Import library {} not found (and {} not found either). \
+                     Build the DLL first with PB64Basic (it emits the .lib next \
+                     to the .dll) or place the import library next to the source \
+                     file / EXE.",
+                    lib_spec, dll_spec
+                ),
+                None,
+                0,
+            ));
         }
     }
 
