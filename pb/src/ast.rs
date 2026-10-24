@@ -57,6 +57,7 @@ pub enum TopLevel {
     DimDeclList(Vec<DimStatement>),
     ConstDecl(ConstDecl),
     TypeDecl(TypeDecl),
+    EnumDecl(EnumDecl), // ENUM ... END ENUM — members register as equates
     SubDecl(SubDecl),
     FunctionDecl(FunctionDecl),
     DeclareStmt(DeclareStmt), // DECLARE SUB/FUNCTION — skip at runtime
@@ -140,6 +141,11 @@ pub struct TypeDecl {
     pub name: String,
     pub fields: Vec<TypeField>,
     pub line: usize,
+    /// True when declared as `UNION name ... END UNION` (CHW UNION/END UNION):
+    /// all members overlap at offset 0; the structure size equals the longest
+    /// member. LLVM has no union type, so codegen lays the struct out as
+    /// `[<max-size> x i8]` and member access becomes offset-0 bitcast.
+    pub is_union: bool,
     /// EVENT SOURCE interfaces advertised by this class (batch 222).
     pub event_sources: Vec<String>,
     /// Interface blocks implemented by this CLASS (batch 264).  Each entry is
@@ -147,6 +153,24 @@ pub struct TypeDecl {
     /// name used in `LOCAL o AS <Iface>` back to this class so `o.M(a)` can be
     /// lowered to the compiled `<Class>_<Method>` function.
     pub interfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDecl {
+    pub name: String,
+    /// Members in declaration order; value = explicit value or auto-increment.
+    pub items: Vec<EnumItem>,
+    pub line: usize,
+    /// BITS option: members auto-assign 1, 2, 4, 8 ... (CHW ENUM/END ENUM).
+    pub bits: bool,
+    /// SINGULAR option: members register without the ENUM-name prefix.
+    pub singular: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumItem {
+    pub name: String, // %MEMBER or MEMBER (equate name)
+    pub value: Option<Expr>,
 }
 
 #[derive(Debug, Clone)]

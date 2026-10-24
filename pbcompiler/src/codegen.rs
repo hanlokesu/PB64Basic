@@ -780,14 +780,45 @@ fn link_exe(
     // Import libraries for user DLLs (batch 276): `DECLARE ... LIB "x.dll"`
     // emits dllimport symbols; hand the matching x.lib to the linker, resolved
     // from cwd, then the output EXE's directory (same fallback as #LINK).
+    // If no .lib exists (PBWin's official DLL samples ship DLL-only), fall
+    // back to the .dll itself: lld-link accepts a DLL input and auto-generates
+    // the import library for its exported symbols.
     for lib_spec in dll_import_libs {
         let p = std::path::Path::new(lib_spec);
         if p.exists() {
             args.push(lib_spec.clone());
-        } else if let Some(parent) = exe_path.parent() {
+            continue;
+        }
+        let mut found = false;
+        if let Some(parent) = exe_path.parent() {
             let cand = parent.join(lib_spec);
             if cand.exists() {
                 args.push(cand.to_string_lossy().to_string());
+                found = true;
+            }
+        }
+        if !found {
+            // No .lib anywhere. lld-link cannot take a bare .dll as input
+            // ("bad file type. Did you specify a DLL instead of an import
+            // library?"), so surface a clear error instead of a dead link
+            // attempt. The official PBWin DLL samples ship DLL-only; the fix
+            // is to produce an import library (e.g. compile the DLL with this
+            // compiler, which emits the .lib, or llvm-dlltool on a .def).
+            let dll_spec = lib_spec.replace(".lib", ".dll").replace(".LIB", ".DLL");
+            let d = std::path::Path::new(&dll_spec);
+            let d2 = exe_path.parent().map(|p| p.join(&dll_spec));
+            if (d.exists() || d2.as_ref().map_or(false, |p| p.exists())) {
+                return Err(PbError::preprocessor(
+                    format!(
+                        "Import library {} not found but {} exists. lld-link needs an \
+                         import library, not a raw DLL. Build the DLL with PB64Basic \
+                         (it emits the .lib next to the .dll) or generate one from a \
+                         .def with llvm-dlltool.",
+                        lib_spec, dll_spec
+                    ),
+                    None,
+                    0,
+                ));
             }
         }
     }
@@ -1265,6 +1296,12 @@ struct Compiler {
     // Preprocessor %CONSTANTS (name → value)
     pp_constants: HashMap<String, i64>,
 
+    // ENUM members (batch 276b): CHW ENUM/END ENUM registers each member as
+    // an equate. Keys are the lookup spelling used at use sites: `%NAME.MEMBER`
+    // for normal ENUMs, `%MEMBER` for SINGULAR ones. Value follows CHW rules
+    // (auto 0,1,2...; explicit value then +1; BITS 1,2,4,8...).
+    enum_constants: HashMap<String, i64>,
+
     // Unimplemented-statement warnings collected during codegen (name / line)
     warnings: Vec<String>,
     #[allow(dead_code)]
@@ -1435,6 +1472,7 @@ impl Compiler {
             dll_mode: false,
             dll_import_libs: Vec::new(),
             pp_constants: HashMap::new(),
+            enum_constants: HashMap::new(),
             warnings: Vec::new(),
             xprint_dc: None,
             event_sources: std::collections::HashMap::new(),
@@ -6259,6 +6297,9 @@ impl Compiler {
                 TopLevel::SubDecl(sd) => {
                     self.register_sub(sd);
                 }
+                TopLevel::EnumDecl(ed) => {
+                    self.register_enum(ed);
+                }
                 TopLevel::DeclareStmt(ds) => {
                     self.register_declare(ds);
                 }
@@ -6501,6 +6542,40 @@ impl Compiler {
         let mut field_map = HashMap::new();
         let mut ir_types = Vec::new();
 
+        if td.is_union {
+            // CHW UNION: every member overlaps at offset 0; the structure size
+            // equals the longest member. LLVM has no union type, so the struct
+            // gets ONE field of the largest member type and every member name
+            // maps to index 0 — all members live at offset 0, exactly as the
+            // CHW "members overlap in memory" rule requires.
+            let mut largest: Option<(IrType, u32)> = None;
+            for field in td.fields.iter() {
+                let ir_type = Self::ir_type_for_field(&field.pb_type);
+                let sz = Self::ir_size_bytes(&ir_type);
+                if largest.as_ref().map_or(true, |(_, ls)| sz > *ls) {
+                    largest = Some((ir_type.clone(), sz));
+                }
+                let field_name = normalize_name(&field.name);
+                field_map.insert(field_name.clone(), 0usize); // all at offset 0
+                fields.push(FieldInfo {
+                    name: field_name,
+                    pb_type: field.pb_type.clone(),
+                    ir_type,
+                });
+            }
+            let single = largest.map(|(t, _)| t).unwrap_or(IrType::I8);
+            self.module.define_struct_type(&name, &[single]);
+            self.type_layouts.insert(
+                name.clone(),
+                TypeLayout {
+                    ir_name: name.clone(),
+                    fields,
+                    field_map,
+                },
+            );
+            return;
+        }
+
         for (i, field) in td.fields.iter().enumerate() {
             let field_name = normalize_name(&field.name);
             let ir_type = Self::ir_type_for_field(&field.pb_type);
@@ -6536,6 +6611,48 @@ impl Compiler {
         for iface in &td.interfaces {
             self.interface_classes
                 .insert(iface.to_uppercase(), name.clone());
+        }
+    }
+
+    fn register_enum(&mut self, ed: &EnumDecl) {
+        let name = normalize_name(&ed.name);
+        let mut next: i64 = if ed.bits { 1 } else { 0 };
+        let mut first = true;
+        for it in &ed.items {
+            let member = normalize_name(&it.name).trim_start_matches('%').to_string();
+            let v = if let Some(expr) = &it.value {
+                let cv = Self::eval_const_expr(expr).unwrap_or(0);
+                if ed.bits && cv == 0 {
+                    next = 0;
+                    next
+                } else {
+                    cv
+                }
+            } else if ed.bits {
+                if first {
+                    next = 0;
+                } else if next <= 1 {
+                    next = 1;
+                } else {
+                    next *= 2;
+                }
+                next
+            } else {
+                next
+            };
+            // CHW: non-SINGULAR members are `%Name.member`, SINGULAR ones are
+            // plain `%member`. PBWin also accepts the bare member everywhere,
+            // so register both spellings.
+            let key = if ed.singular {
+                format!("%{}", member)
+            } else {
+                format!("%{}.{}", name, member)
+            };
+            self.enum_constants.insert(key.to_uppercase(), v);
+            self.enum_constants
+                .insert(format!("%{}", member).to_uppercase(), v);
+            next = v + 1;
+            first = false;
         }
     }
 
@@ -21216,12 +21333,17 @@ impl Compiler {
                 // Look up the program's own #CONST/%X= first, then fall back
                 // to the built-in Win32 equate table below.
                 let upper = name.to_uppercase();
-                let val = self.pp_constants.get(&upper).copied().or_else(|| {
-                    PB_BUILTIN_EQUATES
-                        .iter()
-                        .find(|(k, _)| *k == upper.as_str())
-                        .map(|(_, v)| *v)
-                });
+                let val = self
+                    .pp_constants
+                    .get(&upper)
+                    .copied()
+                    .or_else(|| self.enum_constants.get(&upper).copied())
+                    .or_else(|| {
+                        PB_BUILTIN_EQUATES
+                            .iter()
+                            .find(|(k, _)| *k == upper.as_str())
+                            .map(|(_, v)| *v)
+                    });
                 let v = val.unwrap_or(0);
                 Ok(fb.const_i32(v as i32))
             }

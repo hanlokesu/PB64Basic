@@ -147,6 +147,31 @@ impl Parser {
         }
     }
 
+    /// Skip a balanced parenthesised group (TYPE/UNION member array
+    /// subscripts, e.g. `a1(1 TO 1024)`). Nested parens are handled.
+    fn skip_balanced_parens(&mut self) {
+        if self.peek() != &Token::LParen {
+            return;
+        }
+        self.advance(); // LParen
+        let mut depth = 1usize;
+        while depth > 0 && !self.at_end() {
+            match self.peek() {
+                Token::LParen => {
+                    depth += 1;
+                    self.advance();
+                }
+                Token::RParen => {
+                    depth -= 1;
+                    self.advance();
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
     fn skip_eol(&mut self) {
         while matches!(self.peek(), Token::Eol | Token::Colon) {
             self.advance();
@@ -268,6 +293,14 @@ impl Parser {
             Token::Type => {
                 let td = self.parse_type_decl(line)?;
                 Ok(Some(TopLevel::TypeDecl(td)))
+            }
+            Token::Union => {
+                let td = self.parse_union_decl(line)?;
+                Ok(Some(TopLevel::TypeDecl(td)))
+            }
+            Token::Enum => {
+                let ed = self.parse_enum_decl(line)?;
+                Ok(Some(TopLevel::EnumDecl(ed)))
             }
             Token::Sub => {
                 let sd = self.parse_sub_decl()?;
@@ -501,6 +534,7 @@ impl Parser {
                         name,
                         fields,
                         line,
+                        is_union: false,
                         event_sources,
                         interfaces,
                     })))
@@ -1215,8 +1249,12 @@ impl Parser {
                 break;
             }
 
-            // Parse field: name AS type
+            // Parse field: name AS type (array subscripts `(lo TO hi)` are
+            // skipped — CHW TYPE members may be arrays).
             let fname = self.consume_identifier()?;
+            if self.peek() == &Token::LParen {
+                self.skip_balanced_parens();
+            }
             self.expect(&Token::As)?;
             let ftype = self.parse_type()?;
             fields.push(TypeField {
@@ -1231,8 +1269,134 @@ impl Parser {
             name,
             fields,
             line,
+            is_union: false,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
+        })
+    }
+
+    /// `UNION name ... END UNION` (CHW UNION/END UNION): a user-defined type
+    /// whose members all overlap at offset 0. Same member syntax as TYPE
+    /// (`name [(subscripts)] AS type`), including embedded arrays. Bit fields
+    /// (`AS BIT * n`) are not supported yet — they surface as parse errors.
+    fn parse_union_decl(&mut self, line: usize) -> PbResult<TypeDecl> {
+        self.advance(); // UNION
+        let name = self.consume_identifier()?;
+        self.consume_to_eol();
+        self.skip_eol();
+
+        let mut fields = Vec::new();
+        loop {
+            if self.peek() == &Token::End {
+                self.advance();
+                if self.peek() == &Token::Union {
+                    self.advance();
+                }
+                self.consume_to_eol();
+                break;
+            }
+            if self.at_end() {
+                break;
+            }
+            // Optional `name[(lo TO hi)[, ...]]` array subscripts (TYPE member
+            // arrays follow the same rules — CHW TYPE/END TYPE "TYPE Members").
+            let fname = self.consume_identifier()?;
+            if self.peek() == &Token::LParen {
+                self.skip_balanced_parens();
+            }
+            self.expect(&Token::As)?;
+            let ftype = self.parse_type()?;
+            fields.push(TypeField {
+                name: fname,
+                pb_type: ftype,
+            });
+            self.consume_to_eol();
+            self.skip_eol();
+        }
+
+        Ok(TypeDecl {
+            name,
+            fields,
+            line,
+            is_union: true,
+            event_sources: Vec::new(),
+            interfaces: Vec::new(),
+        })
+    }
+
+    /// `ENUM name [BITS] [SINGULAR] ... END ENUM` (CHW ENUM/END ENUM):
+    /// each member registers as an equate. Auto-increment from 0 (or from the
+    /// previous explicit value + 1); BITS mode auto-assigns 1, 2, 4, 8 ...
+    fn parse_enum_decl(&mut self, line: usize) -> PbResult<EnumDecl> {
+        self.advance(); // ENUM
+        let name = self.consume_identifier()?;
+        let mut bits = false;
+        let mut singular = false;
+        loop {
+            match self.peek() {
+                Token::Identifier(ref s) if s.eq_ignore_ascii_case("BITS") => {
+                    self.advance();
+                    bits = true;
+                }
+                Token::Identifier(ref s) if s.eq_ignore_ascii_case("SINGULAR") => {
+                    self.advance();
+                    singular = true;
+                }
+                _ => break,
+            }
+        }
+        self.consume_to_eol();
+        self.skip_eol();
+
+        let mut items = Vec::new();
+        loop {
+            if self.peek() == &Token::End {
+                self.advance();
+                if self.peek() == &Token::Enum {
+                    self.advance();
+                }
+                self.consume_to_eol();
+                break;
+            }
+            if self.at_end() {
+                break;
+            }
+            let item_name = match self.peek().clone() {
+                Token::PercentConstant(s) => {
+                    self.advance();
+                    s
+                }
+                Token::Identifier(s) => {
+                    self.advance();
+                    s
+                }
+                _ => {
+                    self.consume_to_eol();
+                    self.skip_eol();
+                    continue;
+                }
+            };
+            let value = if self.peek() == &Token::Eq {
+                self.advance();
+                let v = self.parse_expression()?;
+                Some(v)
+            } else {
+                None
+            };
+            items.push(EnumItem {
+                name: item_name,
+                value,
+            });
+            self.consume_to_eol();
+            self.skip_eol();
+        }
+
+        Ok(EnumDecl {
+            name,
+            items,
+            line,
+            bits,
+            singular,
         })
     }
 

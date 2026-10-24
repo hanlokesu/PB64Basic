@@ -30,6 +30,18 @@ fn main() {
 
     let file_path = &args[2];
     let dll_mode = args.iter().any(|a| a == "--dll");
+    // Source-level `#COMPILE DLL` (official PBWin form) implies DLL mode even
+    // without --dll on the command line (batch 276: official DLL samples use
+    // `#COMPILE DLL` only; run_examples/release flows pass no --dll).
+    let src_has_compile_dll = std::fs::read_to_string(file_path)
+        .map(|s| {
+            s.lines().take(64).any(|l| {
+                let t = l.trim().to_uppercase();
+                t.starts_with("#COMPILE DLL") || t.starts_with("#COMPILE SLL")
+            })
+        })
+        .unwrap_or(false);
+    let dll_mode = dll_mode || src_has_compile_dll;
     let exe_mode = args.iter().any(|a| a == "--exe");
     let session_mode = args.iter().any(|a| a == "--session-struct");
     let parse_only = args.iter().any(|a| a == "--parse-only");
