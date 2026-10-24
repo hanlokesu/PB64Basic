@@ -1444,6 +1444,18 @@ impl Compiler {
         self.module
             .declare_function("pb_get_record", &IrType::Void, &[IrType::I32], false);
         self.module.declare_function(
+            "pb_put_str",
+            &IrType::Void,
+            &[IrType::I32, IrType::I64, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_get_str",
+            &IrType::Void,
+            &[IrType::I32, IrType::I64, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_seek_record",
             &IrType::Void,
             &[IrType::I32, IrType::I64],
@@ -11350,7 +11362,8 @@ impl Compiler {
                         PbType::Single => 4,
                         PbType::Quad | PbType::Double | PbType::Ext | PbType::Cur => 8,
                         PbType::FixedString(n) => *n as i64,
-                        _ => 0, // dynamic STRING / Variant / UDT: raw size not fixed
+                        PbType::String => -1, // dynamic STRING: 2-byte LE length prefix + bytes
+                        _ => 0,               // Variant / UDT: raw size not fixed
                     };
                     if size > 0 {
                         fb.call_void(
@@ -11361,12 +11374,23 @@ impl Compiler {
                             },
                             &[filenum, pos_val, ptr, fb.const_i64(size)],
                         );
+                    } else if size == -1 {
+                        // dynamic STRING (PBWin-measured, batch 269): PUT writes a
+                        // 2-byte LE length prefix + the bytes at the record offset;
+                        // GET reads the prefix then the payload.  RANDOM offsets
+                        // are (pos-1)*rec_len, BINARY are pos-1 byte offsets.
+                        if call.name == "GET" {
+                            fb.call_void("pb_get_str", &[filenum, pos_val, ptr]);
+                        } else {
+                            let sv = self.compile_expr(fb, var_expr)?;
+                            fb.call_void("pb_put_str", &[filenum, pos_val, sv]);
+                        }
                     } else {
-                        // batch 220: a dynamic STRING / Variant / UDT record target used to
+                        // batch 220: a Variant / UDT record target used to
                         // compile into a silent no-op (size 0 skipped the call). Report it.
                         return Err(PbError::parser(
                             format!(
-                                "{} # with a variable-size variable (dynamic STRING/Variant/UDT) is not supported; use {} # filenum& , ... for string I/O",
+                                "{} # with a variable-size variable (Variant/UDT) is not supported; use {} # filenum& , ... for string I/O",
                                 call.name,
                                 if call.name == "GET" { "GET$" } else { "PUT$" }
                             ),

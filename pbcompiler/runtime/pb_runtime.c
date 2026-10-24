@@ -3729,7 +3729,12 @@ void pb_get(int filenum, long long pos, char* buf, long long size) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* CHW error 54: GET on a file opened in sequential mode -> ERR 54 */
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
-        if (pos > 0) fseek(file_handles[filenum], (long)(pos - 1), SEEK_SET);
+        /* PBWin: on a RANDOM file, pos is the 1-based RECORD number ->
+           byte offset (pos-1)*rec_len; on a BINARY file it is a 1-based
+           byte offset (PBWin-measured record layout, batch 269 probe). */
+        long long off = (pos > 0) ? (pos - 1) : 0;
+        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+        _fseeki64(file_handles[filenum], off, SEEK_SET);
         fread(buf, 1, (size_t)size, file_handles[filenum]);
     }
 }
@@ -3739,8 +3744,59 @@ void pb_put(int filenum, long long pos, char* buf, long long size) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* CHW error 54: PUT on a file opened in sequential mode -> ERR 54 */
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
-        if (pos > 0) fseek(file_handles[filenum], (long)(pos - 1), SEEK_SET);
+        long long off = (pos > 0) ? (pos - 1) : 0;
+        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+        _fseeki64(file_handles[filenum], off, SEEK_SET);
         fwrite(buf, 1, (size_t)size, file_handles[filenum]);
+        fflush(file_handles[filenum]);
+    }
+}
+
+/* PUT #f [, pos], strvar: PBWin writes a 2-byte LE length prefix + bytes at
+   the record offset (RANDOM: (pos-1)*rec_len; BINARY: pos-1 byte offset).
+   The record area is NOT padded to rec_len (PBWin-measured, batch 269). */
+void pb_put_str(int filenum, long long pos, const char* s) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        long long off = (pos > 0) ? (pos - 1) : 0;
+        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+        unsigned long n = (s != NULL) ? SysStringByteLen(s) : 0;
+        unsigned char hdr[2] = { (unsigned char)(n & 0xFF), (unsigned char)((n >> 8) & 0xFF) };
+        _fseeki64(file_handles[filenum], off, SEEK_SET);
+        fwrite(hdr, 1, 2, file_handles[filenum]);
+        if (n > 0) fwrite(s, 1, n, file_handles[filenum]);
+        fflush(file_handles[filenum]);
+    }
+}
+
+/* GET #f [, pos], strvar: read the 2-byte LE length prefix, then n bytes.
+   Short read (prefix past EOF) yields an empty string, err stays 0.
+   NOTE: like pb_str_assign_copy, the old slot value is NOT freed (the fork's
+   string slots are static/compiler-managed; freeing a stack/static slot was
+   a heap-corruption crash, batch 269). */
+void pb_get_str(int filenum, long long pos, char** dest) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum] && dest) {
+        if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        long long off = (pos > 0) ? (pos - 1) : 0;
+        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+        _fseeki64(file_handles[filenum], off, SEEK_SET);
+        unsigned char hdr[2] = { 0, 0 };
+        size_t got = fread(hdr, 1, 2, file_handles[filenum]);
+        unsigned long n = 0;
+        if (got == 2) {
+            n = (unsigned long)hdr[0] | ((unsigned long)hdr[1] << 8);
+            if (n > 0) {
+                char* tmp = (char*)malloc(n);
+                if (tmp) {
+                    size_t rb = fread(tmp, 1, n, file_handles[filenum]);
+                    char* nb = pb_bstr_alloc(tmp, (long)rb);
+                    free(tmp);
+                    if (nb) *dest = nb;
+                    return;
+                }
+            }
+        }
+        *dest = pb_bstr_alloc("", 0);
     }
 }
 
