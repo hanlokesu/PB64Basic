@@ -16,7 +16,7 @@
 '
 '  Build as an EXE:
 '    PB64Basic build batch276_testDLL.bas --exe --target x86_64-pc-windows-msvc
-'        --runtime-lib pb_runtime_x64.obj
+'        --runtime-lib ..\pb_runtime_x64.obj   (run from examples; .. = repo root)
 '
 '==============================================================================
 

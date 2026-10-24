@@ -42,7 +42,11 @@ fn main() {
         })
         .unwrap_or(false);
     let dll_mode = dll_mode || src_has_compile_dll;
-    let exe_mode = args.iter().any(|a| a == "--exe");
+    // A source-level `#COMPILE DLL` (or --dll) wins over --exe: a DLL source
+    // must never also run the EXE link (undefined `main` from libcmt.exe,
+    // batch 276b). run_examples/release always pass --exe, so without this
+    // guard every DLL example would fail its compile gate.
+    let exe_mode = args.iter().any(|a| a == "--exe") && !dll_mode;
     let session_mode = args.iter().any(|a| a == "--session-struct");
     let parse_only = args.iter().any(|a| a == "--parse-only");
     let emit_llvm = args.iter().any(|a| a == "--emit-llvm");
