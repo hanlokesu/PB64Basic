@@ -45,7 +45,7 @@
 '  official bare "%name = value" form.
 '
 '  Build as a DLL (the source's "#COMPILE DLL" puts PB64Basic into DLL mode):
-'    PB64Basic build MyDLL.bas --target x86_64-pc-windows-msvc
+'    PB64Basic build batch276_MyDLL.bas -o MyDLL.obj --target x86_64-pc-windows-msvc
 '        --runtime-lib pb_runtime_x64.obj
 '  This emits MyDLL.dll and MyDLL.lib next to the source.
 '

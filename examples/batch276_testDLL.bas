@@ -10,12 +10,12 @@
 '
 '  This file is the official TestDLL.bas shape
 '  (C:\PBWin10\samples\DLL\TestDLL.bas), the host application for the
-'  MyDLL.bas in this directory.  Build MyDLL.bas first with PB64Basic
+'  MyDLL.bas in this directory.  Build batch276_MyDLL.bas first with PB64Basic
 '  (it emits MyDLL.lib), then build this EXE - the DECLARE ... LIB
 '  "MYDLL.DLL" resolves to MyDLL.lib next to the source.
 '
 '  Build as an EXE:
-'    PB64Basic build TestDLL.bas --exe --target x86_64-pc-windows-msvc
+'    PB64Basic build batch276_testDLL.bas --exe --target x86_64-pc-windows-msvc
 '        --runtime-lib pb_runtime_x64.obj
 '
 '==============================================================================
