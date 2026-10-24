@@ -807,7 +807,7 @@ fn link_exe(
             let dll_spec = lib_spec.replace(".lib", ".dll").replace(".LIB", ".DLL");
             let d = std::path::Path::new(&dll_spec);
             let d2 = exe_path.parent().map(|p| p.join(&dll_spec));
-            if (d.exists() || d2.as_ref().map_or(false, |p| p.exists())) {
+            if d.exists() || d2.as_ref().is_some_and(|p| p.exists()) {
                 return Err(PbError::preprocessor(
                     format!(
                         "Import library {} not found but {} exists. lld-link needs an \
@@ -6567,7 +6567,7 @@ impl Compiler {
             for field in td.fields.iter() {
                 let ir_type = Self::ir_type_for_field(&field.pb_type);
                 let sz = Self::ir_size_bytes(&ir_type);
-                if largest.as_ref().map_or(true, |(_, ls)| sz > *ls) {
+                if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
                     largest = Some((ir_type.clone(), sz));
                 }
                 let field_name = normalize_name(&field.name);
@@ -7457,7 +7457,7 @@ impl Compiler {
                         std::mem::swap(&mut c0, &mut c1);
                     }
                     for code in c0 as u8..=c1 as u8 {
-                        if (b'A'..=b'Z').contains(&code) {
+                        if code.is_ascii_uppercase() {
                             self.def_types[(code - b'A') as usize] = Some(dt.pb_type.clone());
                         }
                     }
@@ -8088,7 +8088,7 @@ impl Compiler {
                     if !name_has_type_suffix(orig_name) {
                         if let Some(first) = orig_name.chars().next() {
                             let code = first.to_ascii_uppercase() as u8;
-                            if (b'A'..=b'Z').contains(&code) {
+                            if code.is_ascii_uppercase() {
                                 def_pb = self.def_types[(code - b'A') as usize].clone();
                             }
                         }
@@ -25581,7 +25581,7 @@ impl Compiler {
         if !name_has_type_suffix(original_name) {
             if let Some(first) = original_name.chars().next() {
                 let code = first.to_ascii_uppercase() as u8;
-                if (b'A'..=b'Z').contains(&code) {
+                if code.is_ascii_uppercase() {
                     pb_type = self.def_types[(code - b'A') as usize].clone();
                 }
             }

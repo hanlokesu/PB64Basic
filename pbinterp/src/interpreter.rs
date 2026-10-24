@@ -112,6 +112,7 @@ impl Interpreter {
                 TopLevel::Statement(_) => {}   // will execute below
                 TopLevel::AsmData(_) => {}     // data blob, no runtime effect in interp
                 TopLevel::LinkFile(_) => {}    // #LINK: link-time only, no interp effect
+                TopLevel::EnumDecl(_) => {}    // enum constants live in the parser/codegen side
             }
         }
 
@@ -578,6 +579,7 @@ impl Interpreter {
             Statement::InputConsole(_) => Ok(Flow::Normal),
             Statement::LineInputConsole(_) => Ok(Flow::Normal),
             Statement::Noop(_, _) => Ok(Flow::Normal),
+            Statement::DefType(_) => Ok(Flow::Normal), // compile-time implicit typing, no interp effect
             // Inline assembly is not executed by the interpreter.
             Statement::Asm(_) => Ok(Flow::Normal),
         }
