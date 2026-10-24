@@ -8,6 +8,38 @@ use crate::error::{PbError, PbResult};
 use crate::token::{Located, Token};
 use std::collections::HashMap;
 
+/// The 12 official DEFtype statement names (CHW DEFBYT_DEFCUR_DEFCUX_DEFDBL_
+/// DEFDWD_DEFEXT_DEFINT_DEFLNG.htm).  Note DEFtype only affects implicitly
+/// declared variables; under #DIM ALL / OPTION EXPLICIT it has no effect.
+const DEFTYPE_NAMES: [&str; 12] = [
+    "DEFBYT", "DEFWRD", "DEFINT", "DEFLNG", "DEFQUD", "DEFSNG", "DEFDBL", "DEFEXT", "DEFCUR",
+    "DEFCUX", "DEFDWD", "DEFSTR",
+];
+
+fn is_deftype_name(name: &str) -> bool {
+    DEFTYPE_NAMES.contains(&name.to_uppercase().as_str())
+}
+
+fn deftype_for_name(name: &str) -> Option<PbType> {
+    match name.to_uppercase().as_str() {
+        "DEFBYT" => Some(PbType::Byte),
+        "DEFWRD" => Some(PbType::Word),
+        "DEFINT" => Some(PbType::Integer),
+        "DEFLNG" => Some(PbType::Long),
+        "DEFQUD" => Some(PbType::Quad),
+        "DEFSNG" => Some(PbType::Single),
+        "DEFDBL" => Some(PbType::Double),
+        "DEFEXT" => Some(PbType::Ext),
+        "DEFCUR" => Some(PbType::Cur),
+        // No ExtCurrency in PbType; Cur maps to Double storage (fork's
+        // PbType::Cur -> IrType::Double).  DEFCUX keeps that mapping.
+        "DEFCUX" => Some(PbType::Cur),
+        "DEFDWD" => Some(PbType::Dword),
+        "DEFSTR" => Some(PbType::String),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BodyEnd {
     EndMethod,
@@ -2852,6 +2884,7 @@ impl Parser {
         let line = self.current_line();
 
         match self.peek().clone() {
+            Token::Identifier(name) if is_deftype_name(&name) => self.parse_deftype_statement(),
             Token::If => self.parse_if_statement(),
             Token::For => self.parse_for_statement(),
             Token::Do => self.parse_do_loop(),
@@ -12350,6 +12383,64 @@ impl Parser {
 
         self.consume_to_eol();
         Ok(dims)
+    }
+
+    /// DEFINT A-E, G, Q, Y-Z — default type for implicitly-declared variables
+    /// whose names start with the given letters (CHW DEFBYT_DEFCUR_..._DEFLNG.htm).
+    /// Ranges are letter or letter-letter; case-insensitive; later DEFtype
+    /// statements override earlier ones where ranges overlap.
+    fn parse_deftype_statement(&mut self) -> PbResult<Statement> {
+        let line = self.current_line();
+        let name = match self.peek() {
+            Token::Identifier(n) => n.clone(),
+            _ => return Err(PbError::parser("DEFtype expected", None, line)),
+        };
+        self.advance(); // consume DEFxxx
+        let pb_type = deftype_for_name(&name)
+            .ok_or_else(|| PbError::parser("unknown DEFtype name", None, line))?;
+        let mut ranges: Vec<(char, char)> = Vec::new();
+        loop {
+            // letter_range := letter | letter '-' letter
+            let first = match self.peek() {
+                Token::Identifier(c) if c.len() == 1 => {
+                    let ch = c.chars().next().unwrap().to_ascii_uppercase();
+                    if !ch.is_ascii_alphabetic() {
+                        return Err(PbError::parser("DEFtype letter expected", None, line));
+                    }
+                    ch
+                }
+                _ => return Err(PbError::parser("DEFtype letter expected", None, line)),
+            };
+            self.advance();
+            if self.peek() == &Token::Minus {
+                self.advance();
+                let last = match self.peek() {
+                    Token::Identifier(c) if c.len() == 1 => {
+                        let ch = c.chars().next().unwrap().to_ascii_uppercase();
+                        if !ch.is_ascii_alphabetic() {
+                            return Err(PbError::parser("DEFtype letter expected", None, line));
+                        }
+                        ch
+                    }
+                    _ => return Err(PbError::parser("DEFtype letter expected", None, line)),
+                };
+                self.advance();
+                ranges.push((first, last));
+            } else {
+                ranges.push((first, first));
+            }
+            if self.peek() == &Token::Comma {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        self.consume_to_eol();
+        Ok(Statement::DefType(DefTypeStmt {
+            pb_type,
+            ranges,
+            line,
+        }))
     }
 
     fn parse_if_statement(&mut self) -> PbResult<Statement> {

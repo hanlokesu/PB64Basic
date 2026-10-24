@@ -290,6 +290,17 @@ pub enum Statement {
     Restore,       // RESTORE — reset DATA read cursor
     Noop(String, usize), // (unimplemented statement name, source line)
     Asm(String),   // inline assembly text (from ! or ASM)
+    DefType(DefTypeStmt), // DEFINT/DEFSTR/... — default type for letters (CHW DEFBYT_..._DEFLNG.htm)
+}
+
+/// DEFtype statement: `DEFINT A-E, G, Q, Y-Z` — letters (case-insensitive) that
+/// get the given default type when used as implicitly-declared variables.
+/// A single letter is stored as (c, c); a range as (from, to) inclusive.
+#[derive(Debug, Clone)]
+pub struct DefTypeStmt {
+    pub pb_type: PbType,
+    pub ranges: Vec<(char, char)>,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone)]

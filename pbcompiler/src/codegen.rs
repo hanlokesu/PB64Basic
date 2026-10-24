@@ -1131,6 +1131,10 @@ struct Compiler {
     symbols: SymbolTable,
     /// True when the source declared `OPTION EXPLICIT`.
     option_explicit: bool,
+    /// DEFtype statements (batch 273): per-letter default type for implicitly
+    /// declared variables.  Index 0..25 = 'A'..'Z'.  Later DEFtype statements
+    /// override earlier ones where ranges overlap (CHW DEFBYT_..._DEFLNG.htm).
+    def_types: [Option<PbType>; 26],
     /// Line of the statement currently being compiled (0 = unknown).
     current_line: usize,
 
@@ -1340,6 +1344,7 @@ impl Compiler {
             module: ModuleBuilder::new(target),
             symbols: SymbolTable::new(),
             option_explicit: false,
+            def_types: std::array::from_fn(|_| None),
             current_line: 0,
             functions: HashMap::new(),
             subs: HashMap::new(),
@@ -7186,6 +7191,22 @@ impl Compiler {
                 fb.call_void("pb_data_reset", &[]);
                 Ok(())
             }
+            Statement::DefType(dt) => {
+                // Compile-time only: register per-letter default types for
+                // implicitly declared variables.  No runtime code is emitted.
+                for (from, to) in &dt.ranges {
+                    let (mut c0, mut c1) = (from.to_ascii_uppercase(), to.to_ascii_uppercase());
+                    if c0 > c1 {
+                        std::mem::swap(&mut c0, &mut c1);
+                    }
+                    for code in c0 as u8..=c1 as u8 {
+                        if (b'A'..=b'Z').contains(&code) {
+                            self.def_types[(code - b'A') as usize] = Some(dt.pb_type.clone());
+                        }
+                    }
+                }
+                Ok(())
+            }
             Statement::If(i) => self.compile_if(fb, i),
             Statement::For(f) => self.compile_for(fb, f),
             Statement::DoLoop(d) => self.compile_do_loop(fb, d),
@@ -7803,21 +7824,30 @@ impl Compiler {
                             self.current_line,
                         ));
                     }
-                    // Official PB: a bare undeclared name has no type source
-                    // (no DEFxxx support yet) → Error 516, matching the official
-                    // compiler instead of silently auto-declaring LONG.
+                    // Official PB: a bare undeclared name needs a type source
+                    // (name suffix or DEFxxx).  A DEFtype-registered letter
+                    // gives the implicit type; otherwise Error 516.
+                    let mut def_pb = None;
                     if !name_has_type_suffix(orig_name) {
-                        return Err(PbError::parser(
-                            format!(
-                                "DefType, Type id (?%&!#$), or AS... required: {}",
-                                orig_name.to_uppercase()
-                            ),
-                            None,
-                            self.current_line,
-                        ));
+                        if let Some(first) = orig_name.chars().next() {
+                            let code = first.to_ascii_uppercase() as u8;
+                            if (b'A'..=b'Z').contains(&code) {
+                                def_pb = self.def_types[(code - b'A') as usize].clone();
+                            }
+                        }
+                        if def_pb.is_none() {
+                            return Err(PbError::parser(
+                                format!(
+                                    "DefType, Type id (?%&!#$), or AS... required: {}",
+                                    orig_name.to_uppercase()
+                                ),
+                                None,
+                                self.current_line,
+                            ));
+                        }
                     }
-                    // Auto-declare local → use original name for type inference
-                    let pb_type = infer_type_from_name(orig_name);
+                    // Auto-declare local → use original name (or DEFtype) for type inference
+                    let pb_type = def_pb.unwrap_or_else(|| infer_type_from_name(orig_name));
                     let ir_type = Self::ir_type_for(&pb_type);
                     let ptr = fb.alloca(&ir_type);
                     let converted = self.convert_value(fb, &value, &ir_type, &pb_type);
@@ -25276,20 +25306,30 @@ impl Compiler {
             ));
         }
         // Official PB: an undeclared variable needs a type source (name suffix
-        // or DEFxxx). This fork has no DEFxxx support yet, so a bare name is
-        // Error 516, never silently auto-declared.
+        // or DEFxxx).  A DEFtype-registered letter gives the implicit type
+        // (CHW DEFBYT_..._DEFLNG.htm); a bare name otherwise is Error 516,
+        // never silently auto-declared.
+        let mut pb_type = None;
         if !name_has_type_suffix(original_name) {
-            return Err(PbError::parser(
-                format!(
-                    "DefType, Type id (?%&!#$), or AS... required: {}",
-                    original_name.to_uppercase()
-                ),
-                None,
-                self.current_line,
-            ));
+            if let Some(first) = original_name.chars().next() {
+                let code = first.to_ascii_uppercase() as u8;
+                if (b'A'..=b'Z').contains(&code) {
+                    pb_type = self.def_types[(code - b'A') as usize].clone();
+                }
+            }
+            if pb_type.is_none() {
+                return Err(PbError::parser(
+                    format!(
+                        "DefType, Type id (?%&!#$), or AS... required: {}",
+                        original_name.to_uppercase()
+                    ),
+                    None,
+                    self.current_line,
+                ));
+            }
         }
         // Auto-allocate → use original_name (with type suffix) for type inference
-        let pb_type = infer_type_from_name(original_name);
+        let pb_type = pb_type.unwrap_or_else(|| infer_type_from_name(original_name));
         let ir_type = Self::ir_type_for(&pb_type);
         let ptr = fb.alloca(&ir_type);
         if Self::is_string_pb(&pb_type) {
