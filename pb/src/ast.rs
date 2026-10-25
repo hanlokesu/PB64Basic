@@ -177,6 +177,11 @@ pub struct EnumItem {
 pub struct TypeField {
     pub name: String,
     pub pb_type: PbType,
+    /// CHW "Structures within structures" (TYPE/END TYPE block, batch 278):
+    /// a bare nested structure name on its own line embeds that TYPE/UNION.
+    /// Members are flattened into the outer type (X.H works, not only
+    /// X.ABCD2.ABCD1.H). Some(name) = nested embed; name/pb_type are empty.
+    pub nested: Option<String>,
 }
 
 #[derive(Debug, Clone)]

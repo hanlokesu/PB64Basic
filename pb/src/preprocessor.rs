@@ -51,9 +51,57 @@ fn strip_trailing_comment(line: &str) -> &str {
     line
 }
 
+/// Replace every occurrence of `$NAME` (or `$$NAME`) in `text` with `value`,
+/// guarding against matching a longer identifier (`$NAME_EXTRA` stays intact).
+fn substitute_equate_text(text: &str, name: &str, value: &str) -> String {
+    let bytes = text.as_bytes();
+    let nlen = name.len();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'$' && text[i..].starts_with(name) {
+            let before_ok = i == 0
+                || !(bytes[i - 1].is_ascii_alphanumeric()
+                    || bytes[i - 1] == b'_'
+                    || bytes[i - 1] == b'$');
+            let after_ok = i + nlen >= bytes.len()
+                || !(bytes[i + nlen].is_ascii_alphanumeric()
+                    || bytes[i + nlen] == b'_'
+                    || bytes[i + nlen] == b'$');
+            if before_ok && after_ok {
+                out.push_str(value);
+                i += nlen;
+                continue;
+            }
+        }
+        // Copy one UTF-8 char
+        let ch_len = utf8_char_len(bytes[i]);
+        out.push_str(&text[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
+    }
+}
+
 /// Preprocessor: resolves #INCLUDE, %CONSTANTS, MACRO blocks, and strips directives.
 pub struct Preprocessor {
     constants: HashMap<String, i64>,
+    /// String equates: `$CLSID_XXX = "..."` / `$$NAME` (batch 278).  The key
+    /// is the full uppercase equate name (e.g. "$CLSID_FOO"); the value is the
+    /// raw right-hand side of the definition line (quotes included), which is
+    /// text-substituted where the equate name appears later in the source.
+    string_constants: HashMap<String, String>,
     included: HashSet<PathBuf>,
     macros: HashMap<String, MacroDef>,
     pub resources: Vec<(u32, PathBuf)>,
@@ -76,6 +124,7 @@ impl Preprocessor {
     pub fn new() -> Self {
         Preprocessor {
             constants: HashMap::new(),
+            string_constants: HashMap::new(),
             included: HashSet::new(),
             macros: HashMap::new(),
             resources: Vec::new(),
@@ -446,6 +495,25 @@ impl Preprocessor {
                 continue;
             }
 
+            // $NAME = "..." — string equate (CHW equate directive; the
+            // official MyDLL.bas uses $CLSID_xxx for its COM class IDs).
+            // Definitions are recorded and later occurrences are text-
+            // substituted with the raw definition text (quotes included).
+            // The definition line itself is NOT emitted (pure preprocessor
+            // directive — the parser has no $NAME statement).
+            if trimmed_full.starts_with('$') {
+                if let Some(eq_pos) = trimmed_full.find('=') {
+                    let name = trimmed_full[..eq_pos].trim().to_uppercase();
+                    if name.starts_with('$') && name.len() > 1 {
+                        let val_str = strip_comment(trimmed_full[eq_pos + 1..].trim());
+                        self.string_constants
+                            .insert(name.clone(), val_str.to_string());
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
             // %CONSTANT = value  (define a constant).  Official form is
             // `%CONSTANT %name = value` (CHW constant_directive.htm); the
             // leading `%CONSTANT` keyword must be stripped or the recorded
@@ -515,6 +583,28 @@ impl Preprocessor {
             }
 
             i += 1;
+        }
+
+        // String equate substitution (batch 278): every `$NAME` occurrence is
+        // text-replaced with the definition's right-hand side, except on the
+        // definition lines themselves (they were pushed raw above).
+        if !self.string_constants.is_empty() {
+            let map: Vec<(String, String)> = self
+                .string_constants
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for sl in lines.iter_mut() {
+                let t = sl.text.trim_start();
+                if t.starts_with('$') && sl.text.contains('=') {
+                    continue; // definition line
+                }
+                let mut out = sl.text.clone();
+                for (name, value) in &map {
+                    out = substitute_equate_text(&out, name, value);
+                }
+                sl.text = out;
+            }
         }
 
         Ok(lines)

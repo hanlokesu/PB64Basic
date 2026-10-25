@@ -74,6 +74,11 @@ pub struct Parser {
     /// (CHW LIBMAIN_DLLMAIN_function.htm) and must parse as FunctionReturn,
     /// not as an assignment to an undeclared variable.
     current_function_name: Option<String>,
+    /// Names of already-defined TYPE/UNION structures (batch 278).  A bare
+    /// structure name on its own line inside another TYPE/UNION embeds that
+    /// structure (CHW "Structures within structures"); without this registry
+    /// the parser would demand `AS` and reject the embed as Error 477.
+    defined_types: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -87,6 +92,7 @@ impl Parser {
             option_explicit: false,
             interface_names: std::collections::HashSet::new(),
             current_function_name: None,
+            defined_types: std::collections::HashSet::new(),
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -102,6 +108,54 @@ impl Parser {
             .get(self.pos)
             .map(|t| &t.token)
             .unwrap_or(&Token::Eof)
+    }
+
+    /// Reserved words allowed as TYPE/UNION member names (batch 278; the
+    /// official MyDLL.bas uses BYREF / DWORD as members). Returns the
+    /// canonical uppercase spelling for the given keyword token.
+    fn keyword_field_spelling(tok: &Token) -> Option<String> {
+        Some(
+            match tok {
+                Token::Dword => "DWORD",
+                Token::Long => "LONG",
+                Token::Integer => "INTEGER",
+                Token::Single => "SINGLE",
+                Token::Double => "DOUBLE",
+                Token::Ext => "EXT",
+                Token::Quad => "QUAD",
+                Token::Cur => "CUR",
+                Token::String_ => "STRING",
+                Token::Byref => "BYREF",
+                Token::Byval => "BYVAL",
+                Token::Input => "INPUT",
+                Token::Output => "OUTPUT",
+                Token::Append => "APPEND",
+                Token::Optional => "OPTIONAL",
+                Token::Static => "STATIC",
+                Token::Register => "REGISTER",
+                Token::Threaded => "THREADED",
+                _ => return None,
+            }
+            .to_string(),
+        )
+    }
+
+    /// Consume a member/field name: an identifier, or a reserved word that PB
+    /// allows in that position (e.g. `BYREF AS LONG` inside a TYPE block).
+    fn consume_field_name(&mut self) -> PbResult<String> {
+        if let Token::Identifier(w) = self.peek() {
+            let w = w.clone();
+            self.advance();
+            return Ok(w);
+        }
+        if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+            self.advance();
+            return Ok(spelling);
+        }
+        Err(PbError::generic(format!(
+            "Expected identifier (member name) at line {}",
+            self.current_line()
+        )))
     }
 
     fn peek_located(&self) -> &Located {
@@ -463,6 +517,7 @@ impl Parser {
                             fields.push(TypeField {
                                 name: fname,
                                 pb_type: ftype,
+                                nested: None,
                             });
                             if self.peek() == &Token::Comma {
                                 self.advance();
@@ -1251,20 +1306,38 @@ impl Parser {
 
             // Parse field: name AS type (array subscripts `(lo TO hi)` are
             // skipped — CHW TYPE members may be arrays).
-            let fname = self.consume_identifier()?;
+            let fname = self.consume_field_name()?;
             if self.peek() == &Token::LParen {
                 self.skip_balanced_parens();
+            }
+            // CHW "Structures within structures": a bare previously-defined
+            // structure name on its own line embeds that TYPE/UNION.
+            if self.peek() != &Token::As
+                && self.defined_types.contains(&fname.to_uppercase())
+            {
+                let nested_name = fname.to_uppercase();
+                fields.push(TypeField {
+                    name: String::new(),
+                    pb_type: PbType::Long,
+                    nested: Some(nested_name),
+                });
+                self.consume_to_eol();
+                self.skip_eol();
+                continue;
             }
             self.expect(&Token::As)?;
             let ftype = self.parse_type()?;
             fields.push(TypeField {
                 name: fname,
                 pb_type: ftype,
+                nested: None,
             });
             self.consume_to_eol();
             self.skip_eol();
         }
 
+        let key = name.to_uppercase();
+        self.defined_types.insert(key);
         Ok(TypeDecl {
             name,
             fields,
@@ -1300,20 +1373,38 @@ impl Parser {
             }
             // Optional `name[(lo TO hi)[, ...]]` array subscripts (TYPE member
             // arrays follow the same rules — CHW TYPE/END TYPE "TYPE Members").
-            let fname = self.consume_identifier()?;
+            let fname = self.consume_field_name()?;
             if self.peek() == &Token::LParen {
                 self.skip_balanced_parens();
+            }
+            // CHW: structures may be embedded inside a UNION too (same member
+            // syntax as TYPE).
+            if self.peek() != &Token::As
+                && self.defined_types.contains(&fname.to_uppercase())
+            {
+                let nested_name = fname.to_uppercase();
+                fields.push(TypeField {
+                    name: String::new(),
+                    pb_type: PbType::Long,
+                    nested: Some(nested_name),
+                });
+                self.consume_to_eol();
+                self.skip_eol();
+                continue;
             }
             self.expect(&Token::As)?;
             let ftype = self.parse_type()?;
             fields.push(TypeField {
                 name: fname,
                 pb_type: ftype,
+                nested: None,
             });
             self.consume_to_eol();
             self.skip_eol();
         }
 
+        let key = name.to_uppercase();
+        self.defined_types.insert(key);
         Ok(TypeDecl {
             name,
             fields,
@@ -15346,7 +15437,22 @@ impl Parser {
                 // can therefore lower `obj.M(a)` to `<Class>_<Method>(obj, a)`.
                 while self.peek() == &Token::Dot {
                     self.advance();
-                    let member = self.consume_identifier()?;
+                    // Member name may be a reserved word used as a TYPE member
+                    // (batch 278, official MyDLL.bas: BYREF / DWORD members).
+                    let member = if let Token::Identifier(w) = self.peek() {
+                        let w = w.clone();
+                        self.advance();
+                        w
+                    } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+                        self.advance();
+                        spelling
+                    } else {
+                        return Err(PbError::parser(
+                            "Expected member name after '.'",
+                            self.current_file(),
+                            self.current_line(),
+                        ));
+                    };
                     if self.peek() == &Token::LParen {
                         self.advance();
                         let args = if self.peek() == &Token::RParen {

@@ -1414,6 +1414,15 @@ struct TypeLayout {
     ir_name: String,                   // normalized TYPE name
     fields: Vec<FieldInfo>,            // ordered fields
     field_map: HashMap<String, usize>, // normalized field name → index
+    /// True when declared as `UNION name ... END UNION` (batch 278; nested
+    /// union embeds flatten into the host layout but keep this flag so a
+    /// nested TYPE embedding a union reuses the overlap rule).
+    is_union: bool,
+    /// Byte size of the struct as laid out in memory (LLVM ABI alignment,
+    /// matching the actual `alloca` footprint). Used by LEN/SIZEOF of a UDT
+    /// (batch 278; previously LEN on a TYPE variable crashed by passing the
+    /// whole struct by value to the string `pb_str_len`).
+    size: u32,
 }
 
 #[allow(dead_code)]
@@ -1534,6 +1543,36 @@ impl Compiler {
             IrType::Array(n, elem) => (*n as u32) * Self::ir_size_bytes(elem),
             _ => 4,
         }
+    }
+
+    /// ABI alignment of a scalar IR type (LLVM x64 defaults; matches the real
+    /// `alloca` footprint so LEN/SIZEOF of a UDT agree with memory).
+    fn ir_align_bytes(ir: &IrType) -> u32 {
+        match ir {
+            IrType::I1 | IrType::I8 => 1,
+            IrType::I16 => 2,
+            IrType::I32 | IrType::Float => 4,
+            IrType::I64 | IrType::Double | IrType::Ptr => 8,
+            IrType::Array(_, elem) => Self::ir_align_bytes(elem),
+            _ => 4,
+        }
+    }
+
+    /// LLVM struct layout size: fields are placed at ABI-aligned offsets and
+    /// the whole struct is padded to its maximum member alignment (batch 278,
+    /// LEN/SIZEOF of a UDT).
+    fn llvm_abi_size(types: &[IrType]) -> u32 {
+        let mut offset = 0u32;
+        let mut max_align = 1u32;
+        for t in types {
+            let al = Self::ir_align_bytes(t);
+            if al > max_align {
+                max_align = al;
+            }
+            offset = (offset + al - 1) / al * al;
+            offset += Self::ir_size_bytes(t);
+        }
+        (offset + max_align - 1) / max_align * max_align
     }
 
     /// IR type for a struct field → FixedString becomes [N x i8] instead of ptr
@@ -6577,6 +6616,27 @@ impl Compiler {
             // CHW "members overlap in memory" rule requires.
             let mut largest: Option<(IrType, u32)> = None;
             for field in td.fields.iter() {
+                // CHW: structures may also be embedded inside a UNION; their
+                // (flattened) members overlap at offset 0 like any member.
+                if let Some(nested_name) = &field.nested {
+                    if let Some(sub) = self.type_layouts.get(nested_name) {
+                        for m in &sub.fields {
+                            let ir_type = m.ir_type.clone();
+                            let sz = Self::ir_size_bytes(&ir_type);
+                            if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
+                                largest = Some((ir_type.clone(), sz));
+                            }
+                            let mn = normalize_name(&m.name);
+                            field_map.insert(mn.clone(), 0usize); // overlap
+                            fields.push(FieldInfo {
+                                name: mn,
+                                pb_type: m.pb_type.clone(),
+                                ir_type,
+                            });
+                        }
+                        continue;
+                    }
+                }
                 let ir_type = Self::ir_type_for_field(&field.pb_type);
                 let sz = Self::ir_size_bytes(&ir_type);
                 if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
@@ -6590,6 +6650,10 @@ impl Compiler {
                     ir_type,
                 });
             }
+            let union_size = largest
+                .as_ref()
+                .map(|(_, sz)| *sz)
+                .unwrap_or(1);
             let single = largest.map(|(t, _)| t).unwrap_or(IrType::I8);
             self.module.define_struct_type(&name, &[single]);
             self.type_layouts.insert(
@@ -6598,21 +6662,85 @@ impl Compiler {
                     ir_name: name.clone(),
                     fields,
                     field_map,
+                    is_union: true,
+                    size: union_size,
                 },
             );
             return;
         }
 
-        for (i, field) in td.fields.iter().enumerate() {
-            let field_name = normalize_name(&field.name);
-            let ir_type = Self::ir_type_for_field(&field.pb_type);
-            ir_types.push(ir_type.clone());
-            field_map.insert(field_name.clone(), i);
-            fields.push(FieldInfo {
-                name: field_name,
-                pb_type: field.pb_type.clone(),
-                ir_type,
-            });
+        // CHW "Structures within structures" (batch 278): a bare previously
+        // defined structure name embeds that TYPE/UNION; members flatten into
+        // this structure (X.H works directly, per the CHW example).
+        let mut idx = 0usize;
+        for field in td.fields.iter() {
+            if let Some(nested_name) = &field.nested {
+                let sub = match self.type_layouts.get(nested_name) {
+                    Some(s) => s,
+                    None => {
+                        // Forward reference (embedded type defined later).
+                        // Not supported yet: keep the structure registrable by
+                        // treating the embed as an opaque LONG field so the
+                        // layout does not silently shrink.
+                        ir_types.push(IrType::I32);
+                        field_map.insert(normalize_name(nested_name), idx);
+                        fields.push(FieldInfo {
+                            name: normalize_name(nested_name),
+                            pb_type: PbType::Long,
+                            ir_type: IrType::I32,
+                        });
+                        idx += 1;
+                        continue;
+                    }
+                };
+                if sub.is_union {
+                    // Embedded UNION: one struct field sized to the largest
+                    // member; every member maps to that same index (overlap).
+                    let largest = sub
+                        .fields
+                        .iter()
+                        .max_by_key(|f| Self::ir_size_bytes(&f.ir_type));
+                    let ir_type = largest
+                        .map(|f| f.ir_type.clone())
+                        .unwrap_or(IrType::I8);
+                    ir_types.push(ir_type.clone());
+                    for m in &sub.fields {
+                        let mn = normalize_name(&m.name);
+                        field_map.insert(mn.clone(), idx);
+                        fields.push(FieldInfo {
+                            name: mn,
+                            pb_type: m.pb_type.clone(),
+                            ir_type: m.ir_type.clone(),
+                        });
+                    }
+                    idx += 1;
+                } else {
+                    // Embedded TYPE: flatten its (already expanded) members in
+                    // declaration order.
+                    for m in &sub.fields {
+                        let mn = normalize_name(&m.name);
+                        ir_types.push(m.ir_type.clone());
+                        field_map.insert(mn.clone(), idx);
+                        fields.push(FieldInfo {
+                            name: mn,
+                            pb_type: m.pb_type.clone(),
+                            ir_type: m.ir_type.clone(),
+                        });
+                        idx += 1;
+                    }
+                }
+            } else {
+                let field_name = normalize_name(&field.name);
+                let ir_type = Self::ir_type_for_field(&field.pb_type);
+                ir_types.push(ir_type.clone());
+                field_map.insert(field_name.clone(), idx);
+                fields.push(FieldInfo {
+                    name: field_name,
+                    pb_type: field.pb_type.clone(),
+                    ir_type,
+                });
+                idx += 1;
+            }
         }
 
         self.module.define_struct_type(&name, &ir_types);
@@ -6622,6 +6750,8 @@ impl Compiler {
                 ir_name: name.clone(),
                 fields,
                 field_map,
+                is_union: false,
+                size: Self::llvm_abi_size(&ir_types),
             },
         );
 
@@ -24387,6 +24517,15 @@ impl Compiler {
             if let Some(info) = self.symbols.lookup(&nn) {
                 if let PbType::FixedString(n) = info.pb_type {
                     return Ok(fb.const_i32(n as i32));
+                }
+                // LEN of a UDT variable = the structure size in memory (CHW
+                // LEN function, batch 278; previously this crashed by passing
+                // the whole struct by value to pb_str_len).
+                if let PbType::UserDefined(tname) = &info.pb_type {
+                    let key = normalize_name(tname);
+                    if let Some(layout) = self.type_layouts.get(&key) {
+                        return Ok(fb.const_i32(layout.size as i32));
+                    }
                 }
             }
         }
