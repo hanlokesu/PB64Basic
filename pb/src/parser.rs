@@ -14458,48 +14458,47 @@ impl Parser {
                 return Ok(Statement::Noop("OBJECT".to_string(), line));
             }
         };
-        // Dot + member identifier (compound references are future work; we take
-        // the first member and consume any remaining .member as-is).
-        let mut member = String::new();
-        if self.peek() == &Token::Dot {
+        // Dot + member identifier, repeated for each segment of the chain
+        // (compound references: `o.A.B`, `o.Range(x).Value`, ...).  Each
+        // segment may carry its own optional argument list.
+        let mut members: Vec<ObjectMember> = Vec::new();
+        while self.peek() == &Token::Dot {
             self.advance();
-            if self.peek_identifier().is_some() {
-                member = self.consume_identifier()?;
-            } else {
+            let Some(name) = self.peek_identifier() else {
                 self.consume_to_eol();
                 eprintln!("Error: OBJECT: expected a member name on line {}", line);
                 self.error_count += 1;
                 return Ok(Statement::Noop("OBJECT".to_string(), line));
-            }
-            while self.peek() == &Token::Dot {
+            };
+            let _ = name;
+            let name = self.consume_identifier()?;
+            let mut margs: Vec<Expr> = Vec::new();
+            if self.peek() == &Token::LParen {
                 self.advance();
-                let _ = self.peek_identifier();
-                self.consume_identifier()?;
-            }
-        }
-        let mut args: Vec<Expr> = Vec::new();
-        if self.peek() == &Token::LParen {
-            self.advance();
-            while self.peek() != &Token::RParen && !self.at_eol_or_eof() {
-                let arg = self.parse_expression()?;
-                args.push(arg);
-                if self.peek() == &Token::Comma {
+                while self.peek() != &Token::RParen && !self.at_eol_or_eof() {
+                    let arg = self.parse_expression()?;
+                    margs.push(arg);
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                if self.peek() == &Token::RParen {
                     self.advance();
-                } else {
-                    break;
                 }
             }
-            if self.peek() == &Token::RParen {
-                self.advance();
-            }
+            members.push(ObjectMember { name, args: margs });
         }
         let mut result: Option<String> = None;
         if kind == "LET" || kind == "SET" {
-            // = ValueVar
+            // = ValueVar — appended to the last member's argument list
             if self.peek() == &Token::Eq {
                 self.advance();
                 let value = self.parse_expression()?;
-                args.push(value);
+                if let Some(last) = members.last_mut() {
+                    last.args.push(value);
+                }
             }
         } else if self.peek() == &Token::To {
             // TO is the reserved Token::To (not an Identifier)
@@ -14511,8 +14510,7 @@ impl Parser {
         self.consume_to_eol();
         Ok(Statement::ObjectCall(ObjectCallStmt {
             object,
-            member,
-            args,
+            members,
             result,
             kind: kind.to_string(),
             line,

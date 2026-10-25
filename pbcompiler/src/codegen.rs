@@ -7622,6 +7622,9 @@ impl Compiler {
                 // method/property access (batch278-74).  Lowered to
                 // pb_com_invoke(disp, member, argvals[], argtypes[], n,
                 //              result_ptr, rtype, wflags).
+                // Compound chains (`o.Drives.Count`) walk each intermediate
+                // segment as a property GET returning an IDispatch, then run
+                // the final segment with the requested args/kind.
                 if oc.kind == "LET" || oc.kind == "SET" {
                     return Err(PbError::runtime(format!(
                         "OBJECT {}: property write (DISPATCH_PROPERTYPUT) not implemented yet (line {})",
@@ -7629,31 +7632,35 @@ impl Compiler {
                     )));
                 }
                 let objv = self.compile_expr(fb, &oc.object)?;
-                let (mname, _) = self.module.add_string_constant(&oc.member);
-                let wflags = if oc.kind == "GET" { 2 } else { 1 };
-                let n = oc.args.len();
-                let arr_ty = IrType::Array(n.max(1), Box::new(IrType::Ptr));
-                let ty_ty = IrType::Array(n.max(1), Box::new(IrType::I32));
-                let arr_slot = fb.alloca(&arr_ty);
-                let ty_slot = fb.alloca(&ty_ty);
-                for (i, arg) in oc.args.iter().enumerate() {
-                    let (ptr, pb) = self.compile_lvalue_ptr(fb, arg)?;
-                    let tcode = com_type_code(&pb).map_err(|e| {
-                        PbError::runtime(format!(
-                            "OBJECT {} `{}`: argument #{} {} (line {})",
-                            oc.kind,
-                            oc.member,
-                            i + 1,
-                            e,
-                            oc.line
-                        ))
-                    })?;
-                    let idx = fb.const_i32(i as i32);
-                    let p_slot = fb.gep_array(&arr_ty, &arr_slot, &idx);
-                    fb.store(&ptr, &p_slot);
-                    let t_slot = fb.gep_array(&ty_ty, &ty_slot, &idx);
-                    fb.store(&fb.const_i32(tcode), &t_slot);
+                if oc.members.is_empty() {
+                    return Err(PbError::runtime(format!(
+                        "OBJECT {}: no member after the object variable (line {})",
+                        oc.kind, oc.line
+                    )));
                 }
+                let mut cur = objv;
+                let tmp_obj_slot = fb.alloca(&IrType::Ptr);
+                let nsegs = oc.members.len();
+                for seg in oc.members[..nsegs - 1].iter() {
+                    let seg_wflags = 2; /* DISPATCH_PROPERTYGET — intermediate
+                                        members must be objects */
+                    let (mname, _) = self.module.add_string_constant(&seg.name);
+                    emit_object_call_args(
+                        self,
+                        fb,
+                        oc,
+                        seg,
+                        &mname,
+                        cur,
+                        tmp_obj_slot.clone(),
+                        11,
+                        seg_wflags,
+                    )?;
+                    cur = fb.load(&IrType::Ptr, &tmp_obj_slot);
+                }
+                let last = oc.members.last().unwrap();
+                let (mname, _) = self.module.add_string_constant(&last.name);
+                let wflags = if oc.kind == "GET" { 2 } else { 1 };
                 let (res_ptr, rtype_pb) = match &oc.result {
                     Some(rn) => self.compile_lvalue_ptr(fb, &Expr::Variable(rn.clone()))?,
                     None => (fb.const_null_ptr(), PbType::Long),
@@ -7663,24 +7670,11 @@ impl Compiler {
                     Err(e) => {
                         return Err(PbError::runtime(format!(
                             "OBJECT {} `{}`: result type {} (line {})",
-                            oc.kind, oc.member, e, oc.line
+                            oc.kind, last.name, e, oc.line
                         )));
                     }
                 };
-                let _hr = fb.call(
-                    &IrType::I32,
-                    "pb_com_invoke",
-                    &[
-                        objv,
-                        Val::new(mname, IrType::Ptr),
-                        arr_slot,
-                        ty_slot,
-                        fb.const_i32(n as i32),
-                        res_ptr,
-                        fb.const_i32(rtype),
-                        fb.const_i32(wflags),
-                    ],
-                );
+                emit_object_call_args(self, fb, oc, last, &mname, cur, res_ptr, rtype, wflags)?;
                 Ok(())
             }
             Statement::If(i) => self.compile_if(fb, i),
@@ -26064,6 +26058,60 @@ fn name_has_type_suffix(name: &str) -> bool {
         || name.ends_with('!')
         || name.ends_with('@')
         || name.ends_with('$')
+}
+
+/// Emit one pb_com_invoke call for a single OBJECT member segment
+/// (intermediate or final).  Args are PB variables; each is marshalled by
+/// type code into a VARIANT array passed to the runtime.
+fn emit_object_call_args(
+    codegen: &mut Compiler,
+    fb: &mut FunctionBuilder,
+    oc: &ObjectCallStmt,
+    seg: &ObjectMember,
+    mname: &String,
+    disp: Val,
+    res_ptr: Val,
+    rtype: i32,
+    wflags: i32,
+) -> PbResult<()> {
+    let n = seg.args.len();
+    let arr_ty = IrType::Array(n.max(1), Box::new(IrType::Ptr));
+    let ty_ty = IrType::Array(n.max(1), Box::new(IrType::I32));
+    let arr_slot = fb.alloca(&arr_ty);
+    let ty_slot = fb.alloca(&ty_ty);
+    for (i, arg) in seg.args.iter().enumerate() {
+        let (ptr, pb) = codegen.compile_lvalue_ptr(fb, arg)?;
+        let tcode = com_type_code(&pb).map_err(|e| {
+            PbError::runtime(format!(
+                "OBJECT {} `{}`: argument #{} {} (line {})",
+                oc.kind,
+                seg.name,
+                i + 1,
+                e,
+                oc.line
+            ))
+        })?;
+        let idx = fb.const_i32(i as i32);
+        let p_slot = fb.gep_array(&arr_ty, &arr_slot, &idx);
+        fb.store(&ptr, &p_slot);
+        let t_slot = fb.gep_array(&ty_ty, &ty_slot, &idx);
+        fb.store(&fb.const_i32(tcode), &t_slot);
+    }
+    let _hr = fb.call(
+        &IrType::I32,
+        "pb_com_invoke",
+        &[
+            disp,
+            Val::new(mname.clone(), IrType::Ptr),
+            arr_slot,
+            ty_slot,
+            fb.const_i32(n as i32),
+            res_ptr,
+            fb.const_i32(rtype),
+            fb.const_i32(wflags),
+        ],
+    );
+    Ok(())
 }
 
 /// COM VARIANT type code for a PB variable type (batch278-74).

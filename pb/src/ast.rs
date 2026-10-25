@@ -331,14 +331,23 @@ pub enum Statement {
 
 /// OBJECT CALL/GET/LET/SET — DISPATCH interface access (batch278-74).
 /// kind: "CALL" | "GET" | "LET" | "SET".
+/// members: the dotted member chain, e.g. `o.Drives.Count` = [Drives, Count].
+/// Every segment carries its own optional argument list, so both official
+/// shapes work: `o.A.B(x)` (args on the last segment) and `o.A(x).B` (args on
+/// an intermediate segment, like the Excel sample `Range(vRange).Value`).
 #[derive(Debug, Clone)]
 pub struct ObjectCallStmt {
     pub object: Expr,
-    pub member: String,
-    pub args: Vec<Expr>,
+    pub members: Vec<ObjectMember>,
     pub result: Option<String>,
     pub kind: String,
     pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectMember {
+    pub name: String,
+    pub args: Vec<Expr>,
 }
 
 /// DEFtype statement: `DEFINT A-E, G, Q, Y-Z` — letters (case-insensitive) that

@@ -7483,6 +7483,18 @@ static void pb_com_coerce_result(PB_VARIANT* v, int rtype, void* slot) {
         case 8:  *(long long*)slot = (v->vt == 6) ? v->v.cyVal : (long long)0; break;
         case 9:  *(long*)slot = (v->vt == 11 && v->v.boolVal) ? -1 : 0; break;
         case 10: *(PB_VARIANT*)slot = *v; break;
+        case 11: /* IDISPATCH object: keep the interface pointer (compound
+                    member chains walk it for the next segment).  A non-object
+                    result is a marshalling error -> NULL + DISP_E_BADVARTYPE. */
+            if (v->vt == 9 && v->v.pVal) {
+                *(void**)slot = v->v.pVal;
+            } else if (v->vt == 9) {
+                *(void**)slot = NULL;
+            } else {
+                *(void**)slot = NULL;
+                pb_com_hresult = (long)0x80020005L; /* DISP_E_BADVARTYPE */
+            }
+            break;
         default: break;
     }
 }
