@@ -104,7 +104,34 @@ impl Lexer {
                 // String literal
                 '"' => {
                     let tok = self.read_string_literal(start_line, start_col)?;
-                    tokens.push(tok);
+                    // Trailing `$$` marks a WIDE (UTF-16) string literal:
+                    // `"..."$$`.  Consume the two dollar signs and upgrade
+                    // the token (CHW WSTRING_Data_Type; batch280).
+                    if self.peek() == Some('$') {
+                        self.advance();
+                        if self.peek() == Some('$') {
+                            self.advance();
+                            let Located {
+                                token,
+                                line,
+                                col,
+                                file,
+                            } = tok;
+                            tokens.push(Located {
+                                token: match token {
+                                    Token::StringLiteral(s) => Token::WideStringLiteral(s),
+                                    other => other,
+                                },
+                                line,
+                                col,
+                                file,
+                            });
+                        } else {
+                            tokens.push(tok);
+                        }
+                    } else {
+                        tokens.push(tok);
+                    }
                 }
 
                 // Hash: could be #INCLUDE, #COMPILE, etc., or file number prefix

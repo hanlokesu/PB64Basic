@@ -1526,6 +1526,7 @@ impl Compiler {
             PbType::Double | PbType::Ext | PbType::Cur => IrType::Double,
             PbType::Single => IrType::Float,
             PbType::String | PbType::FixedString(_) => IrType::Ptr,
+            PbType::WString => IrType::Ptr, // UTF-16 BSTR pointer (batch280)
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
             PbType::Interface(_) => IrType::Ptr, // object reference (batch 264)
@@ -21449,6 +21450,10 @@ impl Compiler {
                 let (str_name, _) = self.module.add_string_constant(s);
                 Ok(Val::new(str_name, IrType::Ptr))
             }
+            Expr::WideStringLit(s) => {
+                let (str_name, _) = self.module.add_wstring_constant(s);
+                Ok(Val::new(str_name, IrType::Ptr))
+            }
             Expr::Variable(orig_name) => {
                 // Built-in string equates ($CRLF, $TAB, ...) — check before normalize
                 // (normalize would strip the leading/trailing $ and hide the equate)
@@ -23287,6 +23292,7 @@ impl Compiler {
             PbType::Interface(_) => 20,   // object reference, same class as TYPE
             PbType::Variant => 17,        // %VARCLASS_VRNT
             PbType::String => 23,         // %VARCLASS_STR
+            PbType::WString => 23,        // WSTRING reports as STRING class (batch280)
             PbType::FixedString(_) => 22, // %VARCLASS_FIX
             PbType::Field => 24,          // %VARCLASS_FLD
         }
@@ -26123,6 +26129,7 @@ fn com_type_code(pb: &PbType) -> Result<i32, String> {
         PbType::Long => Ok(0),
         PbType::Double => Ok(1),
         PbType::String | PbType::FixedString(_) => Ok(2),
+        PbType::WString => Ok(12), /* UTF-16 BSTR, passed as-is (batch280) */
         PbType::Single => Ok(3),
         PbType::Dword => Ok(4),
         PbType::Word => Ok(5),

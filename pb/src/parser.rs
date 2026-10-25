@@ -1148,7 +1148,7 @@ impl Parser {
             }
             Token::Identifier(w) if w.eq_ignore_ascii_case("WSTRING") => {
                 self.advance();
-                Ok(PbType::String) // WSTRING = STRING alias (UTF-16 not yet modeled)
+                Ok(PbType::WString) // UTF-16 wide string (batch280)
             }
             Token::Integer => {
                 self.advance();
@@ -15064,6 +15064,10 @@ impl Parser {
             Token::StringLiteral(s) => {
                 self.advance();
                 Ok(Expr::StringLit(s))
+            }
+            Token::WideStringLiteral(s) => {
+                self.advance();
+                Ok(Expr::WideStringLit(s))
             }
             Token::PercentConstant(name) => {
                 self.advance();

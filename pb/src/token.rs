@@ -9,6 +9,10 @@ pub enum Token {
     IntegerLiteral(i64),
     FloatLiteral(f64),
     StringLiteral(String),
+    /// `"..."$$` — a WIDE (UTF-16) string literal (CHW WSTRING_Data_Type).
+    /// The lexer consumes the trailing `$$` so the parser can build a
+    /// UTF-16 BSTR instead of an ANSI one (batch280).
+    WideStringLiteral(String),
 
     // Identifiers and constants
     Identifier(String),      // e.g. "Cash", "CoName$", "i&"

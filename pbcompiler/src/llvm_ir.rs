@@ -297,6 +297,51 @@ impl ModuleBuilder {
         )
     }
 
+    /// Create a WIDE (UTF-16) string constant in the standard COM BSTR
+    /// layout: 4-byte LE byte count (UTF-16 payload, no terminator) +
+    /// UTF-16LE payload + 2 NUL bytes (batch280).  The returned value is a
+    /// GEP pointer to the payload (skips the 4-byte prefix), exactly like
+    /// the ANSI BSTR constants.
+    pub fn add_wstring_constant(&mut self, value: &str) -> (String, usize) {
+        let name = format!(".wstr.{}", self.str_counter);
+        self.str_counter += 1;
+        let mut bytes: Vec<u8> = Vec::new();
+        for u in value.encode_utf16() {
+            bytes.push((u & 0xFF) as u8);
+            bytes.push((u >> 8) as u8);
+        }
+        let n = bytes.len(); // payload byte count (UTF-16, no terminator)
+        let mut escaped = String::new();
+        for b in &bytes {
+            match *b {
+                b'\\' => escaped.push_str("\\5C"),
+                b'"' => escaped.push_str("\\22"),
+                0x20..=0x7E => escaped.push(*b as char),
+                _ => {
+                    write!(escaped, "\\{:02X}", b).unwrap();
+                }
+            }
+        }
+        let n0 = n & 0xFF;
+        let n1 = (n >> 8) & 0xFF;
+        let n2 = (n >> 16) & 0xFF;
+        let n3 = (n >> 24) & 0xFF;
+        writeln!(
+            self.globals,
+            "@{} = private unnamed_addr constant [{} x i8] c\"\\{:02X}\\{:02X}\\{:02X}\\{:02X}{}\\00\\00\"",
+            name, n + 6, n0, n1, n2, n3, escaped
+        )
+        .unwrap();
+        (
+            format!(
+                "getelementptr ([{} x i8], ptr @{}, i64 0, i64 4)",
+                n + 6,
+                name
+            ),
+            n,
+        )
+    }
+
     /// Create a new function builder. Call `finish()` and pass result to `add_function_body()`.
     pub fn create_function_builder(
         &self,

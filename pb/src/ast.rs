@@ -11,6 +11,10 @@ pub enum PbType {
     Double,
     Single,
     String,
+    /// WSTRING — a UTF-16 wide string variable (CHW WSTRING_Data_Type,
+    /// batch280).  Storage is a BSTR pointer holding UTF-16LE bytes with a
+    /// 4-byte byte-count prefix, exactly like STRING but encoded UTF-16.
+    WString,
     FixedString(usize), // STRING * N
     Quad,
     Dword,
@@ -629,6 +633,9 @@ pub enum Expr {
     IntegerLit(i64),
     FloatLit(f64),
     StringLit(String),
+    /// `"..."$$` — a WIDE (UTF-16) string literal (batch280).  Lowered to a
+    /// UTF-16 BSTR constant; WSTRING variables hold UTF-16 BSTR pointers.
+    WideStringLit(String),
     Variable(String),
     ArrayAccess(String, Vec<Expr>),
     TypeMember(Box<Expr>, String),

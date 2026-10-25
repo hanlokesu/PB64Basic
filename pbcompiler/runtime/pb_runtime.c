@@ -7432,6 +7432,8 @@ static unsigned short pb_com_vt_for(int tc) {
         case 8: return 6;      /* VT_CY   */
         case 9: return 11;     /* VT_BOOL */
         case 10: return 12;    /* VT_VARIANT */
+        case 12: return 8;     /* VT_BSTR — WSTRING slot already holds a
+                                  UTF-16 BSTR (batch280) */
         default: return 0;     /* VT_EMPTY */
     }
 }
@@ -7554,6 +7556,11 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
                     v->v.pVal = wb;
                     break;
                 }
+                case 12: { /* WSTRING: slot already points at a UTF-16 BSTR
+                               (length prefix + UTF-16LE + NUL) — pass as-is. */
+                    v->v.pVal = *(void**)pargs[i];
+                    break;
+                }
                 case 3: v->v.fltVal = *(float*)pargs[i]; break;
                 case 4: v->v.ulVal = *(unsigned long*)pargs[i]; break;
                 case 5: v->v.uiVal = *(unsigned short*)pargs[i]; break;
@@ -7585,6 +7592,8 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
             if (ptypes[i] == 2 && vargs[nargs - 1 - i].v.pVal) {
                 SysFreeString((char*)vargs[nargs - 1 - i].v.pVal);
             }
+            /* ptypes[i] == 12 (WSTRING) passes the slot pointer as-is —
+               it belongs to the PB variable, never freed here. */
         }
         free(vargs);
     }
