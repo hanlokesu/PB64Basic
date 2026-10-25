@@ -4974,6 +4974,22 @@ impl Compiler {
             .declare_function("pb_newcom", &IrType::Ptr, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_com_result", &IrType::I32, &[], false);
+        // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
+        self.module.declare_function(
+            "pb_com_invoke",
+            &IrType::I32,
+            &[
+                IrType::Ptr, // IDispatch*
+                IrType::Ptr, // member name (ANSI cstr)
+                IrType::Ptr, // arg value array (ptr slots)
+                IrType::Ptr, // arg type code array (i32 slots)
+                IrType::I32, // arg count
+                IrType::Ptr, // result slot (or null)
+                IrType::I32, // result type code
+                IrType::I32, // wflags (1 METHOD / 2 PROPERTYGET)
+            ],
+            false,
+        );
         self.module.declare_function(
             "pb_method_call",
             &IrType::I32,
@@ -6650,10 +6666,7 @@ impl Compiler {
                     ir_type,
                 });
             }
-            let union_size = largest
-                .as_ref()
-                .map(|(_, sz)| *sz)
-                .unwrap_or(1);
+            let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
             let single = largest.map(|(t, _)| t).unwrap_or(IrType::I8);
             self.module.define_struct_type(&name, &[single]);
             self.type_layouts.insert(
@@ -6700,9 +6713,7 @@ impl Compiler {
                         .fields
                         .iter()
                         .max_by_key(|f| Self::ir_size_bytes(&f.ir_type));
-                    let ir_type = largest
-                        .map(|f| f.ir_type.clone())
-                        .unwrap_or(IrType::I8);
+                    let ir_type = largest.map(|f| f.ir_type.clone()).unwrap_or(IrType::I8);
                     ir_types.push(ir_type.clone());
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
@@ -7604,6 +7615,72 @@ impl Compiler {
                         }
                     }
                 }
+                Ok(())
+            }
+            Statement::ObjectCall(oc) => {
+                // OBJECT CALL/GET obj.member[(vars)] [TO result] — DISPATCH
+                // method/property access (batch278-74).  Lowered to
+                // pb_com_invoke(disp, member, argvals[], argtypes[], n,
+                //              result_ptr, rtype, wflags).
+                if oc.kind == "LET" || oc.kind == "SET" {
+                    return Err(PbError::runtime(format!(
+                        "OBJECT {}: property write (DISPATCH_PROPERTYPUT) not implemented yet (line {})",
+                        oc.kind, oc.line
+                    )));
+                }
+                let objv = self.compile_expr(fb, &oc.object)?;
+                let (mname, _) = self.module.add_string_constant(&oc.member);
+                let wflags = if oc.kind == "GET" { 2 } else { 1 };
+                let n = oc.args.len();
+                let arr_ty = IrType::Array(n.max(1), Box::new(IrType::Ptr));
+                let ty_ty = IrType::Array(n.max(1), Box::new(IrType::I32));
+                let arr_slot = fb.alloca(&arr_ty);
+                let ty_slot = fb.alloca(&ty_ty);
+                for (i, arg) in oc.args.iter().enumerate() {
+                    let (ptr, pb) = self.compile_lvalue_ptr(fb, arg)?;
+                    let tcode = com_type_code(&pb).map_err(|e| {
+                        PbError::runtime(format!(
+                            "OBJECT {} `{}`: argument #{} {} (line {})",
+                            oc.kind,
+                            oc.member,
+                            i + 1,
+                            e,
+                            oc.line
+                        ))
+                    })?;
+                    let idx = fb.const_i32(i as i32);
+                    let p_slot = fb.gep_array(&arr_ty, &arr_slot, &idx);
+                    fb.store(&ptr, &p_slot);
+                    let t_slot = fb.gep_array(&ty_ty, &ty_slot, &idx);
+                    fb.store(&fb.const_i32(tcode), &t_slot);
+                }
+                let (res_ptr, rtype_pb) = match &oc.result {
+                    Some(rn) => self.compile_lvalue_ptr(fb, &Expr::Variable(rn.clone()))?,
+                    None => (fb.const_null_ptr(), PbType::Long),
+                };
+                let rtype = match com_type_code(&rtype_pb) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Err(PbError::runtime(format!(
+                            "OBJECT {} `{}`: result type {} (line {})",
+                            oc.kind, oc.member, e, oc.line
+                        )));
+                    }
+                };
+                let _hr = fb.call(
+                    &IrType::I32,
+                    "pb_com_invoke",
+                    &[
+                        objv,
+                        Val::new(mname, IrType::Ptr),
+                        arr_slot,
+                        ty_slot,
+                        fb.const_i32(n as i32),
+                        res_ptr,
+                        fb.const_i32(rtype),
+                        fb.const_i32(wflags),
+                    ],
+                );
                 Ok(())
             }
             Statement::If(i) => self.compile_if(fb, i),
@@ -25987,6 +26064,29 @@ fn name_has_type_suffix(name: &str) -> bool {
         || name.ends_with('!')
         || name.ends_with('@')
         || name.ends_with('$')
+}
+
+/// COM VARIANT type code for a PB variable type (batch278-74).
+/// Codes shared with the runtime's pb_com_invoke:
+///   0 LONG 1 DOUBLE 2 STRING 3 SINGLE 4 DWORD 5 WORD 6 BYTE 7 QUAD 8 CURRENCY
+///   9 BOOL 10 VARIANT
+fn com_type_code(pb: &PbType) -> Result<i32, String> {
+    match pb {
+        PbType::Long => Ok(0),
+        PbType::Double => Ok(1),
+        PbType::String | PbType::FixedString(_) => Ok(2),
+        PbType::Single => Ok(3),
+        PbType::Dword => Ok(4),
+        PbType::Word => Ok(5),
+        PbType::Byte => Ok(6),
+        PbType::Quad => Ok(7),
+        PbType::Cur => Ok(8),
+        PbType::Variant => Ok(10),
+        other => Err(format!(
+            "type `{}` is not COM-compatible for OBJECT parameters/results",
+            other.suffix()
+        )),
+    }
 }
 
 /// Infer PB type from variable name suffix.

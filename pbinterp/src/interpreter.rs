@@ -580,6 +580,9 @@ impl Interpreter {
             Statement::LineInputConsole(_) => Ok(Flow::Normal),
             Statement::Noop(_, _) => Ok(Flow::Normal),
             Statement::DefType(_) => Ok(Flow::Normal), // compile-time implicit typing, no interp effect
+            // OBJECT CALL/GET — DISPATCH access is not executed by the
+            // interpreter (COM runtime call; batch278-74).
+            Statement::ObjectCall(_) => Ok(Flow::Normal),
             // Inline assembly is not executed by the interpreter.
             Statement::Asm(_) => Ok(Flow::Normal),
         }

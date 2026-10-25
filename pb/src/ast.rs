@@ -320,6 +320,25 @@ pub enum Statement {
     Noop(String, usize), // (unimplemented statement name, source line)
     Asm(String),   // inline assembly text (from ! or ASM)
     DefType(DefTypeStmt), // DEFINT/DEFSTR/... — default type for letters (CHW DEFBYT_..._DEFLNG.htm)
+    /* batch278-74: OBJECT CALL/GET/LET/SET obj.member[(args)] [TO result] —
+     * DISPATCH method/property access with VARIANT marshalling (CHW OBJECT
+     * statement / How_do_you_call_a_DISPATCH_METHOD).  `object` is the object
+     * variable (IDispatch*), `args` are COM-compatible variables (literal and
+     * expression args are rejected by the parser, matching CHW), `result` is
+     * the optional result variable name. */
+    ObjectCall(ObjectCallStmt),
+}
+
+/// OBJECT CALL/GET/LET/SET — DISPATCH interface access (batch278-74).
+/// kind: "CALL" | "GET" | "LET" | "SET".
+#[derive(Debug, Clone)]
+pub struct ObjectCallStmt {
+    pub object: Expr,
+    pub member: String,
+    pub args: Vec<Expr>,
+    pub result: Option<String>,
+    pub kind: String,
+    pub line: usize,
 }
 
 /// DEFtype statement: `DEFINT A-E, G, Q, Y-Z` — letters (case-insensitive) that

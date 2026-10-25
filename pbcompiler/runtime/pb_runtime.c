@@ -33,6 +33,7 @@ __declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const voi
 /* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
 __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, unsigned int len);
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
+__declspec(dllimport) wchar_t* __stdcall SysAllocStringLen(const wchar_t* psz, unsigned int len);
 __declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
 __declspec(dllimport) int __stdcall CharToOemA(const char* lpszSrc, char* lpszDst);
@@ -7363,6 +7364,219 @@ void* pb_newcom(const char* progid) {
 
 long pb_com_result(void) {
     return pb_com_hresult;
+}
+
+/* ---- batch278-74: OBJECT CALL / OBJECT GET — DISPATCH invocation with
+ * VARIANT marshalling (CHW OBJECT_statement / How_do_you_call_a_DISPATCH_METHOD).
+ * Type codes shared with codegen:
+ *   0 LONG(I4) 1 DOUBLE(R8) 2 STRING(ANSI PB BSTR -> VT_BSTR) 3 SINGLE(R4)
+ *   4 DWORD(UI4) 5 WORD(UI2) 6 BYTE(UI1) 7 QUAD(I8) 8 CURRENCY 9 BOOL(VT_BOOL)
+ *   10 VARIANT (caller passes a 16-byte PB_VARIANT slot)
+ * wflags: 1 DISPATCH_METHOD (OBJECT CALL), 2 DISPATCH_PROPERTYGET (OBJECT GET),
+ *         4 DISPATCH_PROPERTYPUT (OBJECT LET).
+ * Returns the HRESULT (also stored for OBJRESULT). */
+typedef struct _PB_IDISPATCHVtbl {
+    long (__stdcall *QueryInterface)(void*, const PB_GUID*, void**);
+    unsigned long (__stdcall *AddRef)(void*);
+    unsigned long (__stdcall *Release)(void*);
+    long (__stdcall *GetTypeInfoCount)(void*, unsigned int*);
+    long (__stdcall *GetTypeInfo)(void*, unsigned int, unsigned long, void**);
+    long (__stdcall *GetIDsOfNames)(void*, const PB_GUID*, wchar_t**,
+                                    unsigned int, unsigned long, long*);
+    long (__stdcall *Invoke)(void*, long, const PB_GUID*, unsigned long,
+                             unsigned short, void*, void*, void*, unsigned int*);
+} PB_IDISPATCHVtbl;
+
+typedef struct _PB_IDISPATCH {
+    PB_IDISPATCHVtbl* lpVtbl;
+} PB_IDISPATCH;
+
+typedef struct _PB_VARIANT {
+    unsigned short vt;
+    unsigned short wReserved1;
+    unsigned short wReserved2;
+    unsigned short wReserved3;
+    union {
+        long long llVal;          /* VT_I8    */
+        double dblVal;            /* VT_R8    */
+        float fltVal;             /* VT_R4    */
+        long lVal;                /* VT_I4    */
+        unsigned long ulVal;      /* VT_UI4   */
+        unsigned short uiVal;     /* VT_UI2   */
+        unsigned char bVal;       /* VT_UI1   */
+        short boolVal;            /* VT_BOOL  */
+        long long cyVal;          /* VT_CY    */
+        void* pVal;               /* VT_BSTR / VT_DISPATCH / VT_UNKNOWN */
+    } v;
+} PB_VARIANT;
+
+typedef struct _PB_DISPPARAMS {
+    PB_VARIANT* rgvarg;           /* last-to-first! */
+    long* rgdispidNamedArgs;
+    unsigned int cArgs;
+    unsigned int cNamedArgs;
+} PB_DISPPARAMS;
+
+static const PB_GUID PB_IID_NULL = {0, 0, 0, {0, 0, 0, 0, 0, 0, 0, 0}};
+
+static unsigned short pb_com_vt_for(int tc) {
+    switch (tc) {
+        case 0: return 3;      /* VT_I4   */
+        case 1: return 5;      /* VT_R8   */
+        case 2: return 8;      /* VT_BSTR */
+        case 3: return 4;      /* VT_R4   */
+        case 4: return 19;     /* VT_UI4  */
+        case 5: return 18;     /* VT_UI2  */
+        case 6: return 17;     /* VT_UI1  */
+        case 7: return 20;     /* VT_I8   */
+        case 8: return 6;      /* VT_CY   */
+        case 9: return 11;     /* VT_BOOL */
+        case 10: return 12;    /* VT_VARIANT */
+        default: return 0;     /* VT_EMPTY */
+    }
+}
+
+/* Convert the result VARIANT into the PB-typed result slot. */
+static void pb_com_coerce_result(PB_VARIANT* v, int rtype, void* slot) {
+    switch (rtype) {
+        case 0: /* LONG */
+            switch (v->vt) {
+                case 3:  *(long*)slot = v->v.lVal; break;
+                case 11: *(long*)slot = v->v.boolVal ? -1 : 0; break;
+                case 19: *(long*)slot = (long)v->v.ulVal; break;
+                case 20: *(long*)slot = (long)v->v.llVal; break;
+                case 5:  *(long*)slot = (long)v->v.dblVal; break;
+                case 4:  *(long*)slot = (long)v->v.fltVal; break;
+                default: *(long*)slot = 0; break;
+            }
+            break;
+        case 1: /* DOUBLE */
+            switch (v->vt) {
+                case 5:  *(double*)slot = v->v.dblVal; break;
+                case 3:  *(double*)slot = (double)v->v.lVal; break;
+                case 4:  *(double*)slot = (double)v->v.fltVal; break;
+                case 11: *(double*)slot = v->v.boolVal ? 1.0 : 0.0; break;
+                case 19: *(double*)slot = (double)v->v.ulVal; break;
+                default: *(double*)slot = 0.0; break;
+            }
+            break;
+        case 2: { /* STRING: COM BSTR (UTF-16) -> ANSI PB string */
+            char* src = NULL;
+            int slen = 0;
+            if (v->vt == 8 && v->v.pVal) {
+                int n = WideCharToMultiByte(0, 0, (wchar_t*)v->v.pVal, -1, NULL, 0, NULL, NULL);
+                if (n > 0) {
+                    src = (char*)malloc((size_t)n);
+                    WideCharToMultiByte(0, 0, (wchar_t*)v->v.pVal, -1, src, n, NULL, NULL);
+                    slen = n - 1;
+                }
+            }
+            *(char**)slot = pb_bstr_alloc(src ? src : "", src ? (unsigned int)slen : 0);
+            if (src) free(src);
+            break;
+        }
+        case 3:  *(float*)slot = (v->vt == 4) ? v->v.fltVal : 0.0f; break;
+        case 4:  *(unsigned long*)slot = (v->vt == 19) ? v->v.ulVal : (unsigned long)0; break;
+        case 5:  *(unsigned short*)slot = (v->vt == 18) ? v->v.uiVal : (unsigned short)0; break;
+        case 6:  *(unsigned char*)slot = (v->vt == 17) ? v->v.bVal : (unsigned char)0; break;
+        case 7:  *(long long*)slot = (v->vt == 20) ? v->v.llVal : (long long)0; break;
+        case 8:  *(long long*)slot = (v->vt == 6) ? v->v.cyVal : (long long)0; break;
+        case 9:  *(long*)slot = (v->vt == 11 && v->v.boolVal) ? -1 : 0; break;
+        case 10: *(PB_VARIANT*)slot = *v; break;
+        default: break;
+    }
+}
+
+long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptypes,
+                   int nargs, void* presult, int rtype, int wflags) {
+    PB_IDISPATCH* d = (PB_IDISPATCH*)disp;
+    PB_VARIANT* vargs = NULL;
+    PB_VARIANT vresult;
+    wchar_t wname[512];
+    long dispid = 0;
+    long hr;
+    unsigned int argerr = 0;
+    int i;
+
+    if (!d) {
+        pb_com_hresult = (long)0x80004003L; /* E_POINTER */
+        return pb_com_hresult;
+    }
+    pb_com_init();
+    if (mname && mname[0]) {
+        wchar_t* pname = wname; /* rgszNames is wchar_t*[] — a pointer array */
+        MultiByteToWideChar(0, 0, mname, -1, (short*)wname, 512);
+        hr = d->lpVtbl->GetIDsOfNames(d, &PB_IID_NULL, &pname, 1,
+                                      0x400 /*LOCALE_USER_DEFAULT*/, &dispid);
+        if (hr != 0) {
+            pb_com_hresult = hr;
+            return hr;
+        }
+    } else {
+        dispid = 0; /* DISPID_VALUE */
+    }
+    if (nargs > 0) {
+        vargs = (PB_VARIANT*)calloc((size_t)nargs, sizeof(PB_VARIANT));
+        if (!vargs) {
+            pb_com_hresult = (long)0x8007000EL; /* E_OUTOFMEMORY */
+            return pb_com_hresult;
+        }
+        for (i = 0; i < nargs; i++) {
+            PB_VARIANT* v = &vargs[nargs - 1 - i]; /* DISPPARAMS is last-to-first */
+            v->vt = pb_com_vt_for(ptypes[i]);
+            switch (ptypes[i]) {
+                case 0: v->v.lVal = *(long*)pargs[i]; break;
+                case 1: v->v.dblVal = *(double*)pargs[i]; break;
+                case 2: { /* ANSI PB string (literal-constant pointer or BSTR) -> UTF-16 COM BSTR.
+                           * Fork string slots may point at interned C-string constants (no
+                           * BSTR length prefix) or at real BSTRs; read length via strlen so
+                           * constants cannot make us read before the string (A/V risk).
+                           * NUL-containing BSTRs passed to COM are a recorded limitation. */
+                    const char* s = *(const char**)pargs[i];
+                    unsigned int blen = s ? (unsigned int)strlen(s) : 0;
+                    int n = s ? MultiByteToWideChar(0, 0, s, (int)blen, NULL, 0) : 0;
+                    wchar_t* wb = n > 0 ? (wchar_t*)SysAllocStringLen(NULL, n) : NULL;
+                    if (wb && s && n > 0) {
+                        MultiByteToWideChar(0, 0, s, (int)blen, (short*)wb, n);
+                    }
+                    v->v.pVal = wb;
+                    break;
+                }
+                case 3: v->v.fltVal = *(float*)pargs[i]; break;
+                case 4: v->v.ulVal = *(unsigned long*)pargs[i]; break;
+                case 5: v->v.uiVal = *(unsigned short*)pargs[i]; break;
+                case 6: v->v.bVal = *(unsigned char*)pargs[i]; break;
+                case 7: v->v.llVal = *(long long*)pargs[i]; break;
+                case 8: v->v.cyVal = *(long long*)pargs[i]; break;
+                case 9: v->v.boolVal = (*(long*)pargs[i]) ? -1 : 0; break;
+                case 10: *v = *(PB_VARIANT*)pargs[i]; break;
+                default: v->vt = 0; break;
+            }
+        }
+    }
+    memset(&vresult, 0, sizeof(vresult));
+    {
+        PB_DISPPARAMS dp;
+        dp.rgvarg = vargs;
+        dp.rgdispidNamedArgs = NULL;
+        dp.cArgs = (unsigned int)nargs;
+        dp.cNamedArgs = 0;
+        hr = d->lpVtbl->Invoke(d, dispid, &PB_IID_NULL, 0x400,
+                               (unsigned short)wflags, &dp, &vresult, NULL, &argerr);
+    }
+    pb_com_hresult = hr;
+    if (hr == 0 && presult) {
+        pb_com_coerce_result(&vresult, rtype, presult);
+    }
+    if (vargs) {
+        for (i = 0; i < nargs; i++) {
+            if (ptypes[i] == 2 && vargs[nargs - 1 - i].v.pVal) {
+                SysFreeString((char*)vargs[nargs - 1 - i].v.pVal);
+            }
+        }
+        free(vargs);
+    }
+    return hr;
 }
 
 void pb_events_add(void* tblp, int mname, pb_event_fn fn) {

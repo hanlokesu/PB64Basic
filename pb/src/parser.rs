@@ -1312,9 +1312,7 @@ impl Parser {
             }
             // CHW "Structures within structures": a bare previously-defined
             // structure name on its own line embeds that TYPE/UNION.
-            if self.peek() != &Token::As
-                && self.defined_types.contains(&fname.to_uppercase())
-            {
+            if self.peek() != &Token::As && self.defined_types.contains(&fname.to_uppercase()) {
                 let nested_name = fname.to_uppercase();
                 fields.push(TypeField {
                     name: String::new(),
@@ -1379,9 +1377,7 @@ impl Parser {
             }
             // CHW: structures may be embedded inside a UNION too (same member
             // syntax as TYPE).
-            if self.peek() != &Token::As
-                && self.defined_types.contains(&fname.to_uppercase())
-            {
+            if self.peek() != &Token::As && self.defined_types.contains(&fname.to_uppercase()) {
                 let nested_name = fname.to_uppercase();
                 fields.push(TypeField {
                     name: String::new(),
@@ -3859,6 +3855,29 @@ impl Parser {
             Token::Identifier(ref name) => {
                 let name_upper = name.to_uppercase();
 
+                // OBJECT CALL/GET/LET/SET obj.member [(args)] [TO result] —
+                // DISPATCH access with VARIANT marshalling (batch278-74).
+                if name_upper == "OBJECT" {
+                    // CALL is the reserved Token::Call (not an Identifier);
+                    // GET/LET/SET are plain identifiers.
+                    let obj_kind: Option<String> = match self.peek_at(1) {
+                        Some(Token::Call) => Some("CALL".to_string()),
+                        Some(Token::Identifier(kw)) => {
+                            let k = kw.to_uppercase();
+                            if k == "GET" || k == "LET" || k == "SET" {
+                                Some(k)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let Some(k) = obj_kind {
+                        self.advance(); // OBJECT
+                        self.advance(); // CALL/GET/LET/SET
+                        return self.parse_object_stmt(&k, line);
+                    }
+                }
                 // DATA item1, item2, ... — string constants for READ
                 if name_upper == "DATA" {
                     self.advance(); // consume DATA
@@ -14413,6 +14432,91 @@ impl Parser {
         let file_num = self.parse_expression()?;
         self.consume_to_eol();
         Ok(Statement::Close(CloseStmt { file_num, line }))
+    }
+
+    /// OBJECT CALL/GET/LET/SET obj.member[(args)] [TO result] — DISPATCH access
+    /// (batch278-74).  The `OBJECT CALL/GET/LET/SET` keyword run has already been
+    /// consumed; `kind` is the uppercase form ("CALL"/"GET"/"LET"/"SET").
+    /// Per CHW: args/result must be COM-compatible VARIABLES (literals and
+    /// expressions are rejected).
+    fn parse_object_stmt(&mut self, kind: &str, line: usize) -> PbResult<Statement> {
+        // interface.member[.member...] — parse manually so `o.M` stays a plain
+        // object reference and is NOT lowered to Expr::MethodCall (which would
+        // route it through the internal CLASS method machinery).
+        let object = match self.peek().clone() {
+            Token::Identifier(v) => {
+                self.advance();
+                Expr::Variable(v)
+            }
+            _ => {
+                self.consume_to_eol();
+                eprintln!(
+                    "Error: OBJECT: expected an object variable on line {}",
+                    line
+                );
+                self.error_count += 1;
+                return Ok(Statement::Noop("OBJECT".to_string(), line));
+            }
+        };
+        // Dot + member identifier (compound references are future work; we take
+        // the first member and consume any remaining .member as-is).
+        let mut member = String::new();
+        if self.peek() == &Token::Dot {
+            self.advance();
+            if self.peek_identifier().is_some() {
+                member = self.consume_identifier()?;
+            } else {
+                self.consume_to_eol();
+                eprintln!("Error: OBJECT: expected a member name on line {}", line);
+                self.error_count += 1;
+                return Ok(Statement::Noop("OBJECT".to_string(), line));
+            }
+            while self.peek() == &Token::Dot {
+                self.advance();
+                let _ = self.peek_identifier();
+                self.consume_identifier()?;
+            }
+        }
+        let mut args: Vec<Expr> = Vec::new();
+        if self.peek() == &Token::LParen {
+            self.advance();
+            while self.peek() != &Token::RParen && !self.at_eol_or_eof() {
+                let arg = self.parse_expression()?;
+                args.push(arg);
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            if self.peek() == &Token::RParen {
+                self.advance();
+            }
+        }
+        let mut result: Option<String> = None;
+        if kind == "LET" || kind == "SET" {
+            // = ValueVar
+            if self.peek() == &Token::Eq {
+                self.advance();
+                let value = self.parse_expression()?;
+                args.push(value);
+            }
+        } else if self.peek() == &Token::To {
+            // TO is the reserved Token::To (not an Identifier)
+            self.advance();
+            if self.peek_identifier().is_some() {
+                result = Some(self.consume_identifier()?);
+            }
+        }
+        self.consume_to_eol();
+        Ok(Statement::ObjectCall(ObjectCallStmt {
+            object,
+            member,
+            args,
+            result,
+            kind: kind.to_string(),
+            line,
+        }))
     }
 
     /// FIELD #n, size AS var [, size2 AS var2 ...]
