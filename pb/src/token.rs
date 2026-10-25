@@ -137,6 +137,7 @@ pub enum Token {
 
     // DLL export/import keywords
     Export,
+    Common,
     Alias,
     Lib,
     Callback,
@@ -180,6 +181,7 @@ impl Token {
             "ERROR" => Some(Token::Error),
             "EXIT" => Some(Token::Exit),
             "EXPORT" => Some(Token::Export),
+            "COMMON" => Some(Token::Common),
             "EXT" => Some(Token::Ext),
             "FOR" => Some(Token::For),
             "FREEFILE" => Some(Token::FreeFile),

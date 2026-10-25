@@ -195,6 +195,8 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
 pub struct CompileOptions {
     pub dll_mode: bool,
     pub exe_mode: bool,
+    pub sll_mode: bool, // #COMPILE SLL: archive the object into a .SLL static library
+    pub sll_name: Option<String>, // #COMPILE SLL = "name.SLL" explicit output name
     pub session_mode: bool,
     pub emit_llvm: bool,
     pub debug_mode: bool, // enable verbose debug logging (modal text, assertions)
@@ -218,6 +220,7 @@ pub fn compile(
     compiler.session_mode = opts.session_mode;
     compiler.debug_mode = opts.debug_mode;
     compiler.dll_mode = opts.dll_mode;
+    compiler.sll_mode = opts.sll_mode;
     compiler.pp_constants = pp_constants.clone();
     compiler.compile_program(program)?;
     // Report statements that were silently dropped (no code generated)
@@ -1302,6 +1305,10 @@ struct Compiler {
     // DLL output mode (batch 276): entry point is DllMain, not main
     dll_mode: bool,
 
+    // SLL output mode (batch 277): static link library — no entry point,
+    // the object is archived into a .SLL file
+    sll_mode: bool,
+
     /// Import libraries for `DECLARE ... LIB "x.dll"` of user DLLs (batch 276):
     /// system DLLs (kernel32/user32/...) already come via `-l<name>` in the
     /// link step; a user DLL's symbols are resolved by handing its .lib to the
@@ -1485,6 +1492,7 @@ impl Compiler {
             session_fields: Vec::new(),
             debug_mode: false,
             dll_mode: false,
+            sll_mode: false,
             dll_import_libs: Vec::new(),
             pp_constants: HashMap::new(),
             enum_constants: HashMap::new(),
@@ -6475,6 +6483,10 @@ impl Compiler {
                 fb.ret(&Val::new("1".to_string(), IrType::I32));
             }
             self.module.add_function_body(fb.finish());
+        } else if self.sll_mode {
+            // SLL (static link library): no entry point at all — the module
+            // is archived and linked into a host EXE/DLL via #LINK.
+            // (batch 277: #COMPILE SLL must NOT require PBMAIN.)
         } else if let Some(pbmain) = self.functions.get("PBMAIN") {
             let pbmain_ir_name = pbmain.ir_name.clone();
             let mut fb = self
@@ -21415,11 +21427,70 @@ impl Compiler {
                         Ok(fb.call(&info.ret_type, &info.ir_name, &compiled_args))
                     }
                 } else {
-                    self.warnings.push(format!(
-                        "expression function `{}` not implemented - replaced with 0",
-                        name
-                    ));
-                    Ok(fb.const_i32(0)) // Unknown function
+                    // Implicit external reference (PB semantics, batch 277):
+                    // calling a function that is neither a builtin nor locally
+                    // defined emits an extern reference so the linker can
+                    // resolve it against #LINK'd .obj / .SLL / .lib modules
+                    // (e.g. a COMMON procedure from a #COMPILE SLL library).
+                    // Return type is inferred from the name suffix (PB
+                    // default: LONG when there is no suffix). Parameters are
+                    // passed BY REFERENCE, matching PB's default parameter
+                    // convention (CHW: parameters are passed by reference by
+                    // default): variables pass their address, expressions go
+                    // through a temporary slot.
+                    let ret = if raw_upper.ends_with('$') {
+                        IrType::Ptr
+                    } else if raw_upper.ends_with('#') {
+                        IrType::Double
+                    } else if raw_upper.ends_with('&') {
+                        IrType::I64
+                    } else {
+                        IrType::I32
+                    };
+                    let compiled_args = args
+                        .iter()
+                        .map(|a| match a {
+                            Expr::ByvalOverride(inner) => {
+                                // Explicit BYVAL at the call site overrides the
+                                // BYREF default: pass the value directly.
+                                let val = self.compile_expr(fb, inner)?;
+                                let val = if val.ty == IrType::I1 {
+                                    self.to_i32(fb, &val)
+                                } else {
+                                    val
+                                };
+                                let val = if val.ty == IrType::I32 {
+                                    // x64 ABI: full 8-byte slot (inttoptr
+                                    // zero-extends, keeping the low 32 bits).
+                                    fb.inttoptr(&val)
+                                } else {
+                                    val
+                                };
+                                Ok(val)
+                            }
+                            Expr::Variable(vname) => {
+                                let norm = normalize_name(vname);
+                                let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
+                                Ok(Val::new(ptr_name, IrType::Ptr))
+                            }
+                            _ => {
+                                let val = self.compile_expr(fb, a)?;
+                                let val = if val.ty == IrType::I1 {
+                                    self.to_i32(fb, &val)
+                                } else {
+                                    val
+                                };
+                                let tmp = fb.alloca(&val.ty);
+                                fb.store(&val, &tmp);
+                                Ok(tmp)
+                            }
+                        })
+                        .collect::<Result<Vec<Val>, _>>()?;
+                    let param_types: Vec<IrType> =
+                        compiled_args.iter().map(|v| v.ty.clone()).collect();
+                    self.module
+                        .declare_function(&name, &ret, &param_types, false);
+                    Ok(fb.call(&ret, &name, &compiled_args))
                 }
             }
             Expr::ArrayAccess(arr_name, indices) => {

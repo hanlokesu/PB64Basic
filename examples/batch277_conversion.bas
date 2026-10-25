@@ -1,0 +1,6 @@
+#COMPILE SLL "batch277_conversion.sll"
+#DIM ALL
+
+FUNCTION MillimetersToInches(BYVAL mm AS DOUBLE) COMMON AS DOUBLE
+  FUNCTION = mm * 0.03937#
+END FUNCTION

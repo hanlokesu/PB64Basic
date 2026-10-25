@@ -4,10 +4,10 @@
 // See LICENSE for the full license terms.
 // =====================================================================
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
-use pb::error::PbResult;
+use pb::error::{PbError, PbResult};
 use pb::lexer::Lexer;
 use pb::parser::Parser;
 use pb::preprocessor::Preprocessor;
@@ -33,20 +33,44 @@ fn main() {
     // Source-level `#COMPILE DLL` (official PBWin form) implies DLL mode even
     // without --dll on the command line (batch 276: official DLL samples use
     // `#COMPILE DLL` only; run_examples/release flows pass no --dll).
+    // `#COMPILE SLL` (batch 277) is a *Static Link Library*: it must NOT be
+    // built as a DLL — the object is archived into <name>.SLL instead.
+    let mut sll_mode = false;
+    let mut sll_name: Option<String> = None;
     let src_has_compile_dll = std::fs::read_to_string(file_path)
         .map(|s| {
             s.lines().take(64).any(|l| {
                 let t = l.trim().to_uppercase();
-                t.starts_with("#COMPILE DLL") || t.starts_with("#COMPILE SLL")
+                if t.starts_with("#COMPILE SLL") {
+                    sll_mode = true;
+                    // Optional output name: `#COMPILE SLL = "name.SLL"` (CHW
+                    // "Creating a Static Link Library") or the bare form
+                    // `#COMPILE SLL "name.sll"` (CHW "SLL example"). Anything
+                    // after "#COMPILE SLL" that is not empty is the name.
+                    // Extract from the ORIGINAL (case-preserved) line so the
+                    // SLL file keeps the user's spelling (t is uppercased).
+                    let orig = l.trim();
+                    let rest = orig["#COMPILE SLL".len()..].trim();
+                    let rest = rest.trim_start_matches('=').trim();
+                    let name = rest.trim_matches('"').trim_matches('\'').trim();
+                    if !name.is_empty() {
+                        sll_name = Some(name.to_string());
+                    }
+                    true
+                } else if t.starts_with("#COMPILE DLL") {
+                    true
+                } else {
+                    false
+                }
             })
         })
         .unwrap_or(false);
-    let dll_mode = dll_mode || src_has_compile_dll;
+    let dll_mode = dll_mode || (src_has_compile_dll && !sll_mode);
     // A source-level `#COMPILE DLL` (or --dll) wins over --exe: a DLL source
     // must never also run the EXE link (undefined `main` from libcmt.exe,
     // batch 276b). run_examples/release always pass --exe, so without this
     // guard every DLL example would fail its compile gate.
-    let exe_mode = args.iter().any(|a| a == "--exe") && !dll_mode;
+    let exe_mode = args.iter().any(|a| a == "--exe") && !dll_mode && !sll_mode;
     let session_mode = args.iter().any(|a| a == "--session-struct");
     let parse_only = args.iter().any(|a| a == "--parse-only");
     let emit_llvm = args.iter().any(|a| a == "--emit-llvm");
@@ -86,6 +110,8 @@ fn main() {
     let mut opts = codegen::CompileOptions {
         dll_mode,
         exe_mode,
+        sll_mode,
+        sll_name,
         session_mode,
         emit_llvm,
         debug_mode,
@@ -233,6 +259,77 @@ fn compile_file(
         "[PB64Basic] Codegen complete ({:.1}s)",
         t3.elapsed().as_secs_f64()
     );
+
+    // Phase 4b: #COMPILE SLL → archive the compiled object(s) into a static
+    // link library named after the source (ABC.BAS → ABC.SLL), or the
+    // explicit `#COMPILE SLL = "name.SLL"` name. The .SLL is a COFF archive
+    // (llvm-ar), structurally identical to a .lib, so a host program can
+    // `#LINK "ABC.SLL"` and lld pulls the members in (batch 277).
+    if opts.sll_mode {
+        let mut obj_inputs: Vec<std::path::PathBuf> = Vec::new();
+        let base = output_path.with_extension("");
+        for cand in ["main.obj", "split.obj", "obj"] {
+            let p = output_path.with_extension(cand);
+            if p.exists() {
+                obj_inputs.push(p);
+                break;
+            }
+        }
+        if obj_inputs.is_empty() {
+            return Err(PbError::generic(
+                "SLL build: no object file produced (expected <name>.obj)",
+            ));
+        }
+        let sll_path = match &opts.sll_name {
+            Some(n) => {
+                let mut p = PathBuf::from(n);
+                if p.extension().is_none() {
+                    p.set_extension("sll");
+                }
+                if p.is_absolute() {
+                    p
+                } else {
+                    output_path.parent().unwrap_or(Path::new(".")).join(p)
+                }
+            }
+            None => base.with_extension("sll"),
+        };
+        let ar = if std::process::Command::new("llvm-ar")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            "llvm-ar".to_string()
+        } else {
+            r"C:\Program Files\LLVM\bin\llvm-ar.exe".to_string()
+        };
+        let mut cmd = std::process::Command::new(&ar);
+        cmd.arg("cr").arg(&sll_path);
+        for o in &obj_inputs {
+            cmd.arg(o);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                eprintln!(
+                    "[PB64Basic] Wrote SLL: {} ({} object(s))",
+                    sll_path.display(),
+                    obj_inputs.len()
+                );
+            }
+            Ok(out) => {
+                return Err(PbError::generic(format!(
+                    "SLL archive failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                )));
+            }
+            Err(e) => {
+                return Err(PbError::generic(format!(
+                    "SLL archive failed (cannot run {}): {}",
+                    ar, e
+                )));
+            }
+        }
+    }
 
     // Phase 5: Embed resources (icons, version info, etc.) into EXE
     if opts.exe_mode {

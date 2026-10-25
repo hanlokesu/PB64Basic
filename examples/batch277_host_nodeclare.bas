@@ -1,0 +1,16 @@
+#COMPILE EXE
+#DIM ALL
+
+#LINK "batch277_lib.sll"
+
+FUNCTION PBMAIN () AS LONG
+  LOCAL t AS LONG
+  LOCAL f AS LONG
+  OPEN "out277n.txt" FOR OUTPUT AS #1
+  PRINT #1, "A"
+  t = MyAdd(20, 30)
+  PRINT #1, "B"
+  PRINT #1, t
+  CLOSE #1
+  FUNCTION = 0
+END FUNCTION

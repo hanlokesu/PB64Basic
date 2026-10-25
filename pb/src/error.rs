@@ -83,6 +83,17 @@ impl PbError {
             col: None,
         }
     }
+
+    /// Generic (non-file-system) build error, e.g. an external tool failure.
+    pub fn generic(msg: impl Into<String>) -> Self {
+        PbError {
+            kind: ErrorKind::Io,
+            message: msg.into(),
+            file: None,
+            line: None,
+            col: None,
+        }
+    }
 }
 
 impl PbError {

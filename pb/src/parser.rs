@@ -1571,13 +1571,17 @@ impl Parser {
             Vec::new()
         };
 
-        // Optional EXPORT keyword
-        let export = if self.peek() == &Token::Export {
+        // Optional COMMON / EXPORT descriptors (SLL sharing, CHW
+        // "Creating a Static Link Library"): both may appear, in any order,
+        // e.g. `SUB xxx() COMMON EXPORT`. fork links statically, so the
+        // descriptors are accepted and have no behavioural difference.
+        let mut export = false;
+        while matches!(self.peek(), Token::Common | Token::Export) {
+            if self.peek() == &Token::Export {
+                export = true;
+            }
             self.advance();
-            true
-        } else {
-            false
-        };
+        }
 
         self.consume_to_eol();
         let body = self.parse_body(&[BodyEnd::EndSub, BodyEnd::EndMethod])?;
@@ -1632,14 +1636,15 @@ impl Parser {
             Vec::new()
         };
 
-        // Optional EXPORT keyword — comes BEFORE the AS return type in PB:
-        //   FUNCTION Foo (x AS LONG) EXPORT AS STRING
-        let export = if self.peek() == &Token::Export {
+        // Optional COMMON / EXPORT descriptors — come BEFORE the AS return
+        // type in PB: `FUNCTION Foo (x AS LONG) COMMON EXPORT AS STRING`
+        let mut export = false;
+        while matches!(self.peek(), Token::Common | Token::Export) {
+            if self.peek() == &Token::Export {
+                export = true;
+            }
             self.advance();
-            true
-        } else {
-            false
-        };
+        }
 
         let return_type = if self.peek() == &Token::As {
             self.advance();
@@ -1800,6 +1805,13 @@ impl Parser {
         } else {
             Vec::new()
         };
+
+        // Optional COMMON / EXPORT descriptors (SLL sharing) — come BEFORE
+        // the AS return type: `DECLARE FUNCTION MyFunc(Parm AS LONG) COMMON
+        // AS DOUBLE`. Accepted and ignored (fork links statically).
+        while matches!(self.peek(), Token::Common | Token::Export) {
+            self.advance();
+        }
 
         // Optional AS type (for FUNCTION)
         let return_type = if is_function && self.peek() == &Token::As {
