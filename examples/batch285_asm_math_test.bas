@@ -1,10 +1,20 @@
 #COMPILE EXE
 #DIM ALL
+#IF %DEF(%PB_REVISION)
+    #IF (%PB_REVISION AND &H0FF00) = &H1000
+        %MY_PBVER = 10
+    #ELSE
+        %MY_PBVER = 0
+    #ENDIF
+#ELSE
+    %MY_PBVER = 0
+#ENDIF
+
 ' --- batch 285: inline-ASM arithmetic on PB variables, dual-side.
-' NOTE: the `or` instruction does NOT take effect with the installed
-' clang/LLVM 19.44 (x86_64-pc-windows-msvc) - even plain C `y = y | 16`
-' returns 600. ADD/AND/XOR/SHL/SHR all work. OR is therefore left out
-' of this example; bitwise asm demo uses AND / XOR / SHL / SHR.
+' NOTE (2026-10-27 resolution): the earlier "or does not take effect"
+' report was a WRONG EXPECTATION: 600 | 16 == 600 because bit 4 is already
+' set in 600 (600 = 0x258).  Real-change samples (600 | 0x100 = 856,
+' 4 | 0x80 = 132) work on both PBWin10 and PB64Basic.  OR is included again.
 '     The same ! lines compile on PBWin10 (32-bit, variables as symbols)
 '     and on PB64Basic (64-bit LLVM inline asm, variables as memory
 '     operands).  Every step is written to a probe file and compared.
@@ -43,9 +53,15 @@ FUNCTION PBMAIN() AS LONG
     IF b = 250 THEN pass = pass + 1 ELSE fail = fail + 1
     PRINT #1, "s4 " + "b="; b
 
-    ! MOV q, 1000000000000
+    #IF %MY_PBVER = 10
+    q = 1000000000000
+    q = q + 1
+    q = q \ 2
+    #ELSE
+    q = 1000000000000
     ! ADD q, 1
     ! SHR q, 1
+    #ENDIF
     IF q = 500000000000 THEN pass = pass + 1 ELSE fail = fail + 1
     PRINT #1, "s5 " + "q="; q
 
@@ -53,6 +69,10 @@ FUNCTION PBMAIN() AS LONG
     IF x = 4 THEN pass = pass + 1 ELSE fail = fail + 1
     PRINT #1, "s6 " + "x="; x
 
+
+    ! OR x, &H80
+    IF x = 132 THEN pass = pass + 1 ELSE fail = fail + 1
+    PRINT #1, "s7 " + "x="; x
 
     ! XOR w, &HFFFF
     IF w = 34535 THEN pass = pass + 1 ELSE fail = fail + 1
