@@ -588,7 +588,7 @@ MKDIR,STATEMENT,PB/Win + PB/CC,Implemented
 MKDWD,FUNCTION,codegen builtin,Implemented
 MKDWD$,STATEMENT,PB/Win + PB/CC,Implemented
 MKE,FUNCTION,codegen builtin,Implemented
-MKE$,STATEMENT,PB/Win + PB/CC,Established
+MKE$,STATEMENT,PB/Win + PB/CC,Implemented
 MKI$,STATEMENT,PB/Win + PB/CC,Implemented
 MKL$,STATEMENT,PB/Win + PB/CC,Implemented
 MKQ$,STATEMENT,PB/Win + PB/CC,Implemented

@@ -14,8 +14,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 903 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 3 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ Implemented (this project) | 904 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **906** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
@@ -617,7 +617,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MKDWD | FUNCTION | codegen builtin | Implemented |
 | MKDWD$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKE | FUNCTION | codegen builtin | Implemented |
-| MKE$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKE$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKI$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKL$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKQ$ | STATEMENT | PB/Win + PB/CC | Implemented |

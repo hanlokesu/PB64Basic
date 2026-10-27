@@ -1009,6 +1009,74 @@ double pb_cv_cur(char* s, long long off, long long scale) {
     for (i = 0; i < 8; i++) uv |= ((unsigned long long)p[off - 1 + i]) << (8 * i);
     return (double)(long long)uv / (double)scale;
 }
+/* MKE$ (batch283b): pack a double as the official PB 10-byte 80-bit extended
+   (x87) format.  Byte layout verified against PBWin10 probe: MKE$(1.5) =
+   00 00 00 00 00 00 00 C0 FF 3F; MKE$(-1.5) = ... C0 FF BF; MKE$(0) = 10 zeros.
+   Sign(1) | exponent(15, bias 16383) | explicit-integer significand(64). */
+char* pb_mkext(double v) {
+    unsigned char buf[10];
+    union { double d; unsigned long long u; } du;
+    unsigned long long m;
+    int e, sign, i;
+    du.d = v;
+    sign = (int)(du.u >> 63);
+    {
+        int dexp = (int)((du.u >> 52) & 0x7FF);
+        unsigned long long dfrac = du.u & 0xFFFFFFFFFFFFFULL;
+        if (dexp == 0x7FF) {                     /* inf / nan */
+            m = (1ULL << 63) | (dfrac << 11);
+            e = 0x7FFF;
+        } else if (dexp == 0) {
+            if (dfrac == 0) { m = 0; e = 0; }    /* +/- 0 */
+            else {                               /* double denormal -> normalise */
+                int shift = 0;
+                unsigned long long f = dfrac;
+                while (!(f & (1ULL << 52))) { f <<= 1; shift++; }
+                m = (1ULL << 63) | ((f << 11) & 0x7FFFFFFFFFFFFFFFULL);
+                e = 16383 - 1022 - shift;
+            }
+        } else {                                 /* normal double */
+            m = (1ULL << 63) | (dfrac << 11);
+            e = dexp - 1023 + 16383;
+        }
+    }
+    for (i = 0; i < 8; i++) buf[i] = (unsigned char)(m >> (8 * i));
+    buf[8] = (unsigned char)(e & 0xFF);
+    buf[9] = (unsigned char)(((e >> 8) & 0x7F) | (sign ? 0x80 : 0));
+    return pb_bstr_alloc((const char*)buf, 10);
+}
+/* CVE$: read a 10-byte 80-bit extended back as a double. */
+double pb_cv_ext(char* s, long long off) {
+    unsigned char* p = (unsigned char*)s;
+    unsigned long long m = 0;
+    int i;
+    if (off < 1) off = 1;
+    for (i = 0; i < 8; i++) m |= ((unsigned long long)p[off - 1 + i]) << (8 * i);
+    {
+        /* off is 1-based; the 10 bytes start at p[off-1].  m reads p[off-1..off+6];
+           exponent/sign live at p[off+7] and p[off+8]. */
+        int e = p[off - 1 + 8] | ((p[off - 1 + 9] & 0x7F) << 8);
+        int sign = (p[off - 1 + 9] >> 7) & 1;
+        union { double d; unsigned long long u; } du;
+        int dexp;
+        unsigned long long dfrac;
+        if (e == 0x7FFF) {
+            dexp = 0x7FF;
+            dfrac = (m & 0x7FFFFFFFFFFFFFFFULL) >> 11;
+        } else if (e == 0) {
+            if (m == 0) { dexp = 0; dfrac = 0; }
+            else {                               /* extended denormal: round-to-zero */
+                dexp = 0; dfrac = 0;             /* below double range (honest) */
+            }
+        } else {
+            dfrac = (m & 0x7FFFFFFFFFFFFFFFULL) >> 11;
+            dexp = e - 16383 + 1023;
+        }
+        du.u = ((unsigned long long)sign << 63)
+             | ((unsigned long long)dexp << 52) | dfrac;
+        return du.d;
+    }
+}
 
 /* DESKTOP GET CLIENT / LOC / PPI (work area = screen minus taskbar) */
 typedef struct { long left, top, right, bottom; } PB_RECT;
@@ -4062,11 +4130,42 @@ long long pb_array_scan(char* base, int elem_size, long long total, long long in
     return 0;
 }
 
+/* PBWin-style string compare for = / <> / < / > / <= / >= (batch 283b).
+   strcmp truncates at the first NUL, so binary strings (every MK*$ result,
+   any BSTR with embedded NUL) compared equal wrongly.  Compare by the BSTR
+   byte-prefixed length (Windows) or strlen (elsewhere): memcmp over the
+   shorter length, then length decides.  Returns -1/0/1 like strcmp. */
+int pb_str_cmp(const char* a, const char* b) {
+    if (!a && !b) return 0;
+    if (!a) return -1;
+    if (!b) return 1;
+#ifdef _WIN32
+    unsigned int la = (unsigned int)SysStringByteLen(a);
+    unsigned int lb = (unsigned int)SysStringByteLen(b);
+#else
+    unsigned int la = (unsigned int)strlen(a);
+    unsigned int lb = (unsigned int)strlen(b);
+#endif
+    unsigned int n = la < lb ? la : lb;
+    if (n) {
+        int c = memcmp(a, b, n);
+        if (c) return c < 0 ? -1 : 1;
+    }
+    return la == lb ? 0 : (la < lb ? -1 : 1);
+}
+
 /* ASC(s$ [, pos]) — character code at 1-based pos; negative pos counts from
    the end; null string / pos 0 / out-of-range returns -1 (CHW + PBWin10). */
 long long pb_asc_get(char* s, long long pos) {
     if (!s) return -1;
+    /* batch283e probe: ASC must index a BSTR by its byte-prefixed length, NOT
+       strlen - MK*$ / binary strings contain NUL bytes (strlen truncates and
+       every byte after the first NUL reads as out-of-range -> -1). */
+#ifdef _WIN32
+    long long len = (long long)SysStringByteLen(s);
+#else
     long long len = (long long)strlen(s);
+#endif
     if (len == 0) return -1;
     if (pos < 0) pos = len + 1 + pos;
     if (pos < 1 || pos > len) return -1;

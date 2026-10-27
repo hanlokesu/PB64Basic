@@ -2132,8 +2132,12 @@ impl Compiler {
         // C string library (size_t = i32 on 32-bit)
         self.module
             .declare_function("strlen", &IrType::I32, &[IrType::Ptr], false);
-        self.module
-            .declare_function("strcmp", &IrType::I32, &[IrType::Ptr, IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_str_cmp",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("strcpy", &IrType::Ptr, &[IrType::Ptr, IrType::Ptr], false);
         self.module.declare_function(
@@ -3818,6 +3822,8 @@ impl Compiler {
             &[IrType::Double, IrType::I64],
             false,
         );
+        self.module
+            .declare_function("pb_mkext", &IrType::Ptr, &[IrType::Double], false);
         self.module.declare_function(
             "pb_cv_int",
             &IrType::I64,
@@ -3834,6 +3840,12 @@ impl Compiler {
             "pb_cv_cur",
             &IrType::Double,
             &[IrType::Ptr, IrType::I64, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cv_ext",
+            &IrType::Double,
+            &[IrType::Ptr, IrType::I64],
             false,
         );
         self.module
@@ -22130,32 +22142,34 @@ impl Compiler {
                 Ok(self.compile_str_concat(fb, &safe_l, &safe_r, lwide, rwide))
             }
             BinaryOp::Eq => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                // pb_str_cmp: BSTR-length-aware compare (strcmp truncates at the
+                // first NUL - binary MK*$ strings compared wrong, batch 283b)
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("eq", &cmp, &zero))
             }
             BinaryOp::Neq => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("ne", &cmp, &zero))
             }
             BinaryOp::Lt => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("slt", &cmp, &zero))
             }
             BinaryOp::Gt => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("sgt", &cmp, &zero))
             }
             BinaryOp::Lte => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("sle", &cmp, &zero))
             }
             BinaryOp::Gte => {
-                let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
+                let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_l, safe_r]);
                 let zero = fb.const_i32(0);
                 Ok(fb.icmp("sge", &cmp, &zero))
             }
@@ -22218,10 +22232,11 @@ impl Compiler {
     // ========== Comparison helpers ==========
 
     fn string_compare(&self, fb: &mut FunctionBuilder, pred: &str, a: &Val, b: &Val) -> Val {
-        // Null-guard both operands: null → empty string (prevents strcmp crash)
+        // Null-guard both operands: null → empty string (prevents crash).
+        // pb_str_cmp is BSTR-length-aware (strcmp truncates at NUL, batch 283b).
         let safe_a = self.null_guard_string(fb, a);
         let safe_b = self.null_guard_string(fb, b);
-        let cmp = fb.call(&IrType::I32, "strcmp", &[safe_a, safe_b]);
+        let cmp = fb.call(&IrType::I32, "pb_str_cmp", &[safe_a, safe_b]);
         let zero = fb.const_i32(0);
         fb.icmp(pred, &cmp, &zero)
     }
@@ -22544,7 +22559,8 @@ impl Compiler {
             "ISEVEN" => Some(self.builtin_parity(fb, args, false)),
             "ISODD" => Some(self.builtin_parity(fb, args, true)),
             "CVCUR" | "CVCUX" => Some(self.builtin_cv_cur(fb, args, name)),
-            "CVS" | "CVD" | "CVE" => Some(self.builtin_cv_dbl(fb, args, name)),
+            "CVE" => Some(self.builtin_cv_ext(fb, args)),
+            "CVS" | "CVD" => Some(self.builtin_cv_dbl(fb, args, name)),
             "TALLY" => Some(self.builtin_tally(fb, args)),
             "STRREVERSE" => Some(self.builtin_strreverse(fb, args)),
             "STRINSERT" => Some(self.builtin_strinsert(fb, args)),
@@ -23144,11 +23160,8 @@ impl Compiler {
                     fb.call(&IrType::Ptr, "pb_mksingle", &[f])
                 }))
             }
-            "MKD" | "MKE" => {
+            "MKD" => {
                 // MKD$ — 8-byte binary string (double precision)
-                // MKE$ — EXT in this compiler is an 8-byte IEEE-754 double (the official
-                // PB 10-byte 80-bit extended format is not modelled), so MKE$ yields the
-                // same 8 bytes as MKD$. Documented in the coverage matrix.
                 if args.is_empty() {
                     return Some(Err(PbError::runtime("MKD$ requires 1 argument")));
                 }
@@ -23156,6 +23169,18 @@ impl Compiler {
                 Some(v.map(|val| {
                     let d = self.to_f64(fb, &val);
                     fb.call(&IrType::Ptr, "pb_mkdouble", &[d])
+                }))
+            }
+            "MKE" => {
+                // MKE$ — 10-byte 80-bit extended (official PB format, x87
+                // layout; byte-verified against PBWin10 probe batch283e).
+                if args.is_empty() {
+                    return Some(Err(PbError::runtime("MKE$ requires 1 argument")));
+                }
+                let v = self.compile_expr(fb, &args[0]);
+                Some(v.map(|val| {
+                    let d = self.to_f64(fb, &val);
+                    fb.call(&IrType::Ptr, "pb_mkext", &[d])
                 }))
             }
             "MKBYT" => {
@@ -23955,6 +23980,21 @@ impl Compiler {
             "pb_cv_cur",
             &[sval, off, fb.const_i32(scale)],
         ))
+    }
+
+    // Batch 283b: CVE$ — read a 10-byte 80-bit extended back as a double.
+    fn builtin_cv_ext(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.is_empty() {
+            return Err(PbError::runtime("CVE$ requires 1 argument"));
+        }
+        let sval = self.compile_expr(fb, &args[0])?;
+        let off = if args.len() >= 2 {
+            let o = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &o)
+        } else {
+            fb.const_i32(1)
+        };
+        Ok(fb.call(&IrType::Double, "pb_cv_ext", &[sval, off]))
     }
 
     // Batch 38: string / math builtins
