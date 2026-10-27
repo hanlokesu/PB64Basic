@@ -3813,6 +3813,12 @@ impl Compiler {
         self.module
             .declare_function("pb_mkdouble", &IrType::Ptr, &[IrType::Double], false);
         self.module.declare_function(
+            "pb_mkcur",
+            &IrType::Ptr,
+            &[IrType::Double, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
             "pb_cv_int",
             &IrType::I64,
             &[IrType::Ptr, IrType::I64, IrType::I64, IrType::I64],
@@ -3820,6 +3826,12 @@ impl Compiler {
         );
         self.module.declare_function(
             "pb_cv_dbl",
+            &IrType::Double,
+            &[IrType::Ptr, IrType::I64, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cv_cur",
             &IrType::Double,
             &[IrType::Ptr, IrType::I64, IrType::I64],
             false,
@@ -5623,6 +5635,12 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_mkbyt", &IrType::Ptr, &[IrType::I32], false);
+        self.module.declare_function(
+            "pb_mkcur",
+            &IrType::Ptr,
+            &[IrType::Double, IrType::I64],
+            false,
+        );
         self.module.declare_function(
             "pb_shift_left",
             &IrType::I64,
@@ -22345,6 +22363,12 @@ impl Compiler {
     fn val_to_string(&mut self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         if val.ty == IrType::Ptr {
             val.clone()
+        } else if val.ty.is_int() {
+            // PBWin PRINT integer formatting (batch283 probe): a leading space
+            // before EVERY value, negatives included (" -2").  pb_dec emits
+            // " %lld" exactly; STR$ keeps its own % d space-flag path.
+            let i64 = self.to_i64(fb, val);
+            fb.call(&IrType::Ptr, "pb_dec", &[i64])
         } else {
             self.num_to_string(fb, val)
         }
@@ -22519,7 +22543,8 @@ impl Compiler {
             "ISFALSE" => Some(self.builtin_istrue(fb, args, true)),
             "ISEVEN" => Some(self.builtin_parity(fb, args, false)),
             "ISODD" => Some(self.builtin_parity(fb, args, true)),
-            "CVS" | "CVD" | "CVE" | "CVCUR" | "CVCUX" => Some(self.builtin_cv_dbl(fb, args, name)),
+            "CVCUR" | "CVCUX" => Some(self.builtin_cv_cur(fb, args, name)),
+            "CVS" | "CVD" | "CVE" => Some(self.builtin_cv_dbl(fb, args, name)),
             "TALLY" => Some(self.builtin_tally(fb, args)),
             "STRREVERSE" => Some(self.builtin_strreverse(fb, args)),
             "STRINSERT" => Some(self.builtin_strinsert(fb, args)),
@@ -23082,17 +23107,29 @@ impl Compiler {
                     fb.call(&IrType::Ptr, "pb_mklong", &[b])
                 }))
             }
-            "MKQ" | "MKCUR" | "MKCUX" => {
-                // MKQ$ / MKCUR$ / MKCUX$ — 8-byte binary string
+            "MKQ" => {
+                // MKQ$ — 8-byte binary string (quad integer)
                 if args.is_empty() {
-                    return Some(Err(PbError::runtime(
-                        "MKQ$/MKCUR$/MKCUX$ requires 1 argument",
-                    )));
+                    return Some(Err(PbError::runtime("MKQ$ requires 1 argument")));
                 }
                 let v = self.compile_expr(fb, &args[0]);
                 Some(v.map(|val| {
                     let b = self.to_i64(fb, &val);
                     fb.call(&IrType::Ptr, "pb_mkquad", &[b])
+                }))
+            }
+            "MKCUR" | "MKCUX" => {
+                // MKCUR$ / MKCUX$ — 8-byte CURRENCY fixed-point pack.
+                // PBWin CURRENCY is a signed 64-bit int scaled by 10000 (CUR)
+                // / 100 (CUX); MKCUR$(123.45) packs int64 1234500.
+                if args.is_empty() {
+                    return Some(Err(PbError::runtime("MKCUR$/MKCUX$ requires 1 argument")));
+                }
+                let v = self.compile_expr(fb, &args[0]);
+                Some(v.map(|val| {
+                    let d = self.to_f64(fb, &val);
+                    let scale = if name == "MKCUR" { 10000 } else { 100 };
+                    fb.call(&IrType::Ptr, "pb_mkcur", &[d, fb.const_i32(scale)])
                 }))
             }
             "MKS" => {
@@ -23893,6 +23930,31 @@ impl Compiler {
             fb.const_i32(1)
         };
         Ok(fb.call(&IrType::Double, "pb_cv_dbl", &[sval, off, fb.const_i32(n)]))
+    }
+    // Batch 283: CVCUR$ / CVCUX$ — read an 8-byte CURRENCY fixed-point int
+    // back as a double (PBWin: CURRENCY scaled by 10000 / 100).
+    fn builtin_cv_cur(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        name: &str,
+    ) -> PbResult<Val> {
+        if args.is_empty() {
+            return Err(PbError::runtime("CVCUR$/CVCUX$ requires 1 argument"));
+        }
+        let sval = self.compile_expr(fb, &args[0])?;
+        let off = if args.len() >= 2 {
+            let o = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &o)
+        } else {
+            fb.const_i32(1)
+        };
+        let scale = if name == "CVCUR" { 10000 } else { 100 };
+        Ok(fb.call(
+            &IrType::Double,
+            "pb_cv_cur",
+            &[sval, off, fb.const_i32(scale)],
+        ))
     }
 
     // Batch 38: string / math builtins

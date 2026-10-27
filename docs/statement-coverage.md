@@ -1,6 +1,6 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 282 (v0.2.087)** — 2026-10-27. All statements through batch 282 are reflected in this matrix.
+> **Last updated from batch 283 (v0.2.087)** — 2026-10-27. All statements through batch 283 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
@@ -14,8 +14,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 893 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 13 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ Implemented (this project) | 903 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 3 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **906** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
@@ -608,23 +608,23 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MID$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MIN | FUNCTION | codegen builtin | Implemented |
 | MKBYT | FUNCTION | codegen builtin | Implemented |
-| MKBYT$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKCUR$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKBYT$ | STATEMENT | PB/Win + PB/CC | Implemented |
+| MKCUR$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKCUX | FUNCTION | codegen builtin | Implemented |
-| MKCUX$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKD$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKCUX$ | STATEMENT | PB/Win + PB/CC | Implemented |
+| MKD$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKDIR | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKDWD | FUNCTION | codegen builtin | Implemented |
-| MKDWD$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKDWD$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKE | FUNCTION | codegen builtin | Implemented |
 | MKE$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKI$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKL$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKQ$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKI$ | STATEMENT | PB/Win + PB/CC | Implemented |
+| MKL$ | STATEMENT | PB/Win + PB/CC | Implemented |
+| MKQ$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKS | FUNCTION | codegen builtin | Implemented |
-| MKS$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKS$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKWRD | FUNCTION | codegen builtin | Implemented |
-| MKWRD$ | STATEMENT | PB/Win + PB/CC | Established |
+| MKWRD$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MOD | FUNCTION | codegen builtin | Implemented |
 | MONTHNAME | FUNCTION | codegen builtin | Implemented |
 | MONTHNAME$ | FUNCTION | Win32 | Implemented |

@@ -1,4 +1,4 @@
-# Last updated from batch 282 (v0.2.087) - 2026-10-27,,,,
+# Last updated from batch 283 (v0.2.087) - 2026-10-27,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
@@ -579,23 +579,23 @@ MID,FUNCTION,codegen builtin,Implemented
 MID$,STATEMENT,PB/Win + PB/CC,Implemented
 MIN,FUNCTION,codegen builtin,Implemented
 MKBYT,FUNCTION,codegen builtin,Implemented
-MKBYT$,STATEMENT,PB/Win + PB/CC,Established
-MKCUR$,STATEMENT,PB/Win + PB/CC,Established
+MKBYT$,STATEMENT,PB/Win + PB/CC,Implemented
+MKCUR$,STATEMENT,PB/Win + PB/CC,Implemented
 MKCUX,FUNCTION,codegen builtin,Implemented
-MKCUX$,STATEMENT,PB/Win + PB/CC,Established
-MKD$,STATEMENT,PB/Win + PB/CC,Established
+MKCUX$,STATEMENT,PB/Win + PB/CC,Implemented
+MKD$,STATEMENT,PB/Win + PB/CC,Implemented
 MKDIR,STATEMENT,PB/Win + PB/CC,Implemented
 MKDWD,FUNCTION,codegen builtin,Implemented
-MKDWD$,STATEMENT,PB/Win + PB/CC,Established
+MKDWD$,STATEMENT,PB/Win + PB/CC,Implemented
 MKE,FUNCTION,codegen builtin,Implemented
 MKE$,STATEMENT,PB/Win + PB/CC,Established
-MKI$,STATEMENT,PB/Win + PB/CC,Established
-MKL$,STATEMENT,PB/Win + PB/CC,Established
-MKQ$,STATEMENT,PB/Win + PB/CC,Established
+MKI$,STATEMENT,PB/Win + PB/CC,Implemented
+MKL$,STATEMENT,PB/Win + PB/CC,Implemented
+MKQ$,STATEMENT,PB/Win + PB/CC,Implemented
 MKS,FUNCTION,codegen builtin,Implemented
-MKS$,STATEMENT,PB/Win + PB/CC,Established
+MKS$,STATEMENT,PB/Win + PB/CC,Implemented
 MKWRD,FUNCTION,codegen builtin,Implemented
-MKWRD$,STATEMENT,PB/Win + PB/CC,Established
+MKWRD$,STATEMENT,PB/Win + PB/CC,Implemented
 MOD,FUNCTION,codegen builtin,Implemented
 MONTHNAME,FUNCTION,codegen builtin,Implemented
 MONTHNAME$,FUNCTION,Win32,Implemented

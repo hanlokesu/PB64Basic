@@ -761,8 +761,11 @@ char* pb_oct(long long v) {
     return pb_bstr_alloc(buf, (unsigned int)i);
 }
 char* pb_dec(long long v) {
+    /* PRINT integer formatting (PBWin10): leading space before every value,
+       including negatives (" -2").  STR$ does NOT use pb_dec (it uses % d /
+       % lld in codegen), so this only affects PRINT-family output. */
     char buf[24];
-    int n = snprintf(buf, sizeof(buf), "%lld", v);
+    int n = snprintf(buf, sizeof(buf), " %lld", v);
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 
@@ -989,6 +992,22 @@ double pb_cv_dbl(char* s, long long off, long long n) {
 
 char* pb_mkdouble(double v) {
     return pb_bstr_alloc((const char*)&v, 8);      /* MKD$ */
+}
+/* MKCUR$ / MKCUX$ (batch283): CURRENCY fixed-point pack.  PBWin stores
+   CURRENCY as a signed 64-bit int scaled by 10000 (CUR) / 100 (CUX);
+   MKCUR$(123.45) yields the bytes of int64 1234500. */
+char* pb_mkcur(double x, long long scale) {
+    long long v = (long long)llround(x * (double)scale);
+    return pb_bstr_alloc((const char*)&v, 8);
+}
+/* CVCUR$ / CVCUX$: read the 8-byte fixed-point int back, as a double. */
+double pb_cv_cur(char* s, long long off, long long scale) {
+    unsigned char* p = (unsigned char*)s;
+    unsigned long long uv = 0;
+    int i;
+    if (off < 1) off = 1;
+    for (i = 0; i < 8; i++) uv |= ((unsigned long long)p[off - 1 + i]) << (8 * i);
+    return (double)(long long)uv / (double)scale;
 }
 
 /* DESKTOP GET CLIENT / LOC / PPI (work area = screen minus taskbar) */
