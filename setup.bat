@@ -89,6 +89,7 @@ copy /Y "%~dp0jkide\User_Menu.bas"   "%ADDON%\" >nul
 copy /Y "%~dp0jkide\Userdll.bas"     "%ADDON%\" >nul
 copy /Y "%~dp0jkide\userdll.dll"     "%JKIDE_DIR%\" >nul
 echo [OK] addon sources copied to %ADDON%
+echo [OK] addon files updated to the latest version (userdll.dll replaced)
 set "PBWIN="
 if exist "C:\PBWin10\bin\PBWin.exe" set "PBWIN=C:\PBWin10\bin\PBWin.exe"
 set "PB64=%~dp0PB64Basic.exe"

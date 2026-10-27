@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (912 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 286 (v0.2.090). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 287 (v0.2.091). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> > batch 287 (v0.2.091) - JK-IDE Compilers menu error UX: PBWin10 now runs JK-IDE's own compile command (editor highlight + red gutter dot + caret jump, same as F9), PB64Basic/PBXB64 stream the log to the Output Window (error lines auto-red) and fake the jump via the editor's Scintilla control (SCI_GOTOLINE + red roundrect marker); setup.bat overwrites the addon files on every Y run, so re-running it updates an existing JK-IDE install to the latest addon.
 > batch 286 (v0.2.090) - JK-IDE Compilers menu integration shipped in the release (userdll addon + JKIDE.ini paths + optional zip-root setup.bat install step).
 > > batch 285 (v0.2.089) - inline-asm hardening (clobber scan, hex/oct/bin immediates, WORD unsigned reads) + three asm examples with dual-side behavioral verification (cpuid byte-identical, math 10/10 both sides, simd 4/0 both sides - PBWin10 upgraded from stub to real MMX/x87/SSE).
 > > batch 284 (v0.2.088) - NEWCOM/GETCOM/ANYCOM with CLSID + LIB registry-free COM creation; PRINT# byte-exact separator/number semantics matched to PBWin.
@@ -769,6 +770,32 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.091 (2026-10-28) - batch 287: JK-IDE compile-error UX overhaul (native editor markers + error jump)
+
+The JK-IDE "Compilers" menu now reports compile errors the way the IDE
+itself does - red text in the Output Window plus an in-editor jump to the
+offending line:
+
+- PBWin 10: the menu now triggers JK-IDE's own compile command (the same
+  command as F9, IDM_COMPILE 1501) instead of shelling out, so JK-IDE
+  parses the log itself: the error line is highlighted in the editor,
+  marked with a red dot in the gutter, annotated with a tooltip, and the
+  caret jumps to it - identical to a native F9 compile.
+- PB64Basic / PBXB64: JK-IDE does not know these compilers, so the addon
+  "fakes" the native behaviour: the compile runs in a shell, every log
+  line is streamed to the Output Window (lines containing "Error " turn
+  red automatically), and on failure the addon drives the active editor's
+  Scintilla control directly (SCI_GOTOLINE plus a red roundrect marker)
+  to jump to the first error line.
+- The zip-root setup.bat always overwrites the addon files (the five
+  User_*.bas sources and userdll.dll) whenever it runs with Y, so
+  re-running setup on a machine that already has JK-IDE updates the addon
+  to the latest version - no uninstall or reinstall needed. README-jkide.md
+  now states this explicitly.
+
+No language keywords changed: CSV rows and statuses are identical to
+v0.2.090.  Regression baseline: MATCH 156 / DIFF 0 / ONLY-FORK 3.
+
 ### v0.2.090 (2026-10-27) - batch 286: JK-IDE Compilers menu integration shipped in the release
 
 The release zip now carries a ready-to-use JK-IDE integration kit

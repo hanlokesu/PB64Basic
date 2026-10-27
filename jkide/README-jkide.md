@@ -13,7 +13,7 @@ leaving the IDE.
 | `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
 | `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
 | `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
-| `userdll.dll` | pre-built addon (PBWin 10 compiled, 69120 bytes) |
+| `userdll.dll` | pre-built addon (PBWin 10 compiled, 73216 bytes) |
 | `JKIDE.ini` | configuration template - all compiler paths live here |
 | `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` in the IDE's own `JK-IDE.ini` |
 
@@ -44,8 +44,33 @@ The `Compilers` menu appears between `Options` and `Tools`. Its items:
 * **PBXB64** - PowerBASIC 64-bit fork (optional, detected if installed)
 * **Compile (default)** - JK-IDE's own default compile action
 
-After each run a message box shows the compiler output and `EXITCODE=...`
-(0 = success).
+### Updating an existing JK-IDE install (important)
+
+`Setup.bat` **always overwrites the addon files** whenever you answer `Y` to
+the JK-IDE question - the five `User_*.bas` sources go into the `Addon\`
+folder and the prebuilt `userdll.dll` replaces the one next to `jk-ide.exe`.
+So if you already have JK-IDE (installed by an earlier PB64Basic release, by
+the author's package, or manually):
+
+* **Re-run `Setup.bat` from the new zip and answer `Y`** - it detects the
+  existing JK-IDE and copies the new addon over the old one. This is the
+  supported upgrade path; do not copy individual files by hand.
+* Close JK-IDE before re-running `Setup.bat` (the running IDE locks
+  `userdll.dll` and the copy would fail), then start it again. The menu and
+  all fixes from the new version are then active.
+
+### Compile-error reporting
+
+The menu reports compile errors the way JK-IDE itself does:
+
+* **PBWin 10** runs JK-IDE's own compile command (the same as F9): the error
+  line is highlighted in the editor, marked with a red dot in the gutter,
+  annotated with a tooltip, and the caret jumps to it.
+* **PB64Basic / PBXB64** are external compilers the IDE does not know, so the
+  addon fakes the native behaviour: the compile log is streamed to the
+  Output Window (lines containing "Error " turn red automatically) and the
+  editor jumps to the first error line with a red marker.
+* Success shows the compiler output and `EXITCODE=0` in the Output Window.
 
 ## If the auto-download fails
 
@@ -96,3 +121,11 @@ Install PBWin 10, open `Addon\Userdll.bas` in JK-IDE and compile
 (`#utility compile10` builds `Userdll.dll` into the Addon folder). Copy it
 over the one in the JK-IDE root while JK-IDE is closed. Source files must be
 kept CRLF and ASCII-only (PBWin rejects other encodings).
+
+Note: compiling the addon needs `Visualdesigner\controls\*.inc` (e.g.
+`link.inc`) inside the JK-IDE folder. The official `jkb.zip` (as of
+2026-04-16) ships that folder empty, so a freshly auto-downloaded JK-IDE
+cannot recompile the addon and fails with Error 493; the prebuilt
+`userdll.dll` included in this zip does not need it. If you hit 493, copy
+`Visualdesigner\controls` from a complete JK-IDE 2.4 install (e.g.
+`C:\PBWin10\JK-IDE`).
