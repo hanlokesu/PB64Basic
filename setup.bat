@@ -24,6 +24,15 @@ echo ==================================================
 pause
 echo.
 echo ==================================================
+echo   
+echo.
+echo ==================================================
+echo   
+echo.
+echo ==================================================
+echo   
+echo.
+echo ==================================================
 echo   Optional: JK-IDE integration (Compilers menu)
 echo ==================================================
 echo This installs the PB64Basic Compilers menu into JK-IDE so you can
@@ -34,13 +43,42 @@ if /I not "%JKDO%"=="Y" goto :skip_jk
 set "JKIDE_DIR="
 if exist "%ProgramFiles(x86)%\JK-IDE\jk-ide.exe" set "JKIDE_DIR=%ProgramFiles(x86)%\JK-IDE"
 if exist "C:\PBWin10\JK-IDE\jk-ide.exe" set "JKIDE_DIR=C:\PBWin10\JK-IDE"
-if not defined JKIDE_DIR (
-    set /p "JKIDE_DIR=Enter the folder that contains jk-ide.exe (e.g. C:\PBWin10\JK-IDE): "
+if not defined JKIDE_DIR goto :jk_dl
+goto :jkdir_ok
+:jk_dl
+set /p "JKDO2=JK-IDE not found. Auto-download it from the author official site (~43 MB)? (Y/N): "
+if /I not "%JKDO2%"=="Y" goto :jkdir_manual
+echo Downloading jkb.zip from the author official Dropbox (Juergen Kuehlwein)...
+set "JKDL=%TEMP%\jkb_download.zip"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ua='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'; try { Invoke-WebRequest -Uri 'https://www.dropbox.com/scl/fi/tc6syg81rcd42u9spefdf/jkb.zip?rlkey=sfsfvic3tm0nim75unuj1ux5y&st=cg1pbwwe&dl=1' -OutFile $env:JKDL -UseBasicParsing -Headers @{'User-Agent'=$ua} } catch { exit 1 }"
+if not exist "%JKDL%" (
+    echo [ERROR] Download failed. Get JK-IDE manually from the author thread:
+    echo http://pump.richheimer.de/showthread.php?tid=120
+    echo then re-run this setup.bat and enter its folder.
+    goto :skip_jk
 )
+set /p "JKIDE_DIR=Extract JK-IDE to which folder? (Enter = C:\JK-IDE): "
+if "%JKIDE_DIR%"=="" set "JKIDE_DIR=C:\JK-IDE"
+if not exist "%JKIDE_DIR%" mkdir "%JKIDE_DIR%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='SilentlyContinue'; try { Expand-Archive -LiteralPath $env:JKDL -DestinationPath $env:JKIDE_DIR -Force } catch { exit 1 }"
+set "JKFOUND="
+for /f "delims=" %%F in ('dir /s /b "%JKIDE_DIR%\jk-ide.exe" 2^>nul') do set "JKFOUND=%%F"
+if not defined JKFOUND (
+    echo [ERROR] jk-ide.exe not found under %JKIDE_DIR% after extraction.
+    echo Check the folder manually, then re-run setup.bat and enter the JK-IDE folder.
+    goto :skip_jk
+)
+for %%F in ("%JKFOUND%") do set "JKIDE_DIR=%%~dpF"
+if "%JKIDE_DIR:~-1%"=="\" set "JKIDE_DIR=%JKIDE_DIR:~0,-1%"
+goto :jkdir_ok
+:jkdir_manual
+set /p "JKIDE_DIR=Enter the folder that contains jk-ide.exe (Enter = skip): "
+if "%JKIDE_DIR%"=="" goto :skip_jk
 if not exist "%JKIDE_DIR%\jk-ide.exe" (
     echo [WARN] jk-ide.exe not found in %JKIDE_DIR% - skipping JK-IDE integration.
     goto :skip_jk
 )
+:jkdir_ok
 echo [OK] JK-IDE found: %JKIDE_DIR%
 set "ADDON=%JKIDE_DIR%\Addon"
 if not exist "%ADDON%" mkdir "%ADDON%"

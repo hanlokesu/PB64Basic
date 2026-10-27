@@ -9,20 +9,32 @@ leaving the IDE.
 
 | file | purpose |
 |---|---|
-| `Setup.bat` (zip root) | one-shot installer: locates JK-IDE, copies the addon, writes `JKIDE.ini`, enables the addon |
+| `Setup.bat` (zip root) | one-shot installer: finds JK-IDE (auto-downloads it if missing), copies the addon, writes `JKIDE.ini`, enables the addon |
 | `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
 | `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
 | `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
 | `userdll.dll` | pre-built addon (PBWin 10 compiled, 69120 bytes) |
 | `JKIDE.ini` | configuration template - all compiler paths live here |
-| `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` |
+| `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` in the IDE's own `JK-IDE.ini` |
 
 ## How to install
 
 1. Unpack the PB64Basic zip anywhere on the target machine.
 2. Double-click `Setup.bat` (in the zip root).
-3. If JK-IDE is not detected automatically you will be asked for its folder,
-   e.g. `C:\PBWin10\JK-IDE`.
+3. Answer `Y` to the "JK-IDE integration" question.
+
+Then one of two things happens:
+
+* **JK-IDE already installed** (typical `C:\PBWin10\JK-IDE` or
+  `%ProgramFiles(x86)%\JK-IDE`): it is detected automatically and the addon
+  is installed into it.
+* **JK-IDE not found**: the setup asks *"Auto-download it from the author
+  official site (~43 MB)? (Y/N)"*.
+  * `Y` - downloads `jkb.zip` from the author's official Dropbox, asks where
+    to unpack it (Enter = `C:\JK-IDE`), extracts and installs the addon.
+  * `N` - you are asked for the folder that contains `jk-ide.exe`
+    (Enter alone = skip the integration).
+
 4. Restart JK-IDE.
 
 The `Compilers` menu appears between `Options` and `Tools`. Its items:
@@ -34,6 +46,23 @@ The `Compilers` menu appears between `Options` and `Tools`. Its items:
 
 After each run a message box shows the compiler output and `EXITCODE=...`
 (0 = success).
+
+## If the auto-download fails
+
+The download URL is the author's own Dropbox link (Juergen Kuehlwein, thread
+"Download and setup" at http://pump.richheimer.de/showthread.php?tid=120).
+If the link ever changes or the download is blocked (a proxy, firewall or
+corporate policy), open that page in a browser, download `jkb.zip` manually,
+unpack it anywhere, then re-run `Setup.bat` and enter that folder when
+asked.
+
+Notes about the package:
+
+* It is portable ("path independent"): no registry writes, no install step.
+* It is **not digitally signed**; Windows SmartScreen and some antivirus
+  tools may show a warning - this is normal for this project, allow it.
+* The first launch of JK-IDE asks you to accept its license; afterwards the
+  `Compilers` menu is already present because the addon is enabled.
 
 ## Configuration (`JKIDE.ini`)
 
@@ -52,7 +81,9 @@ executable and working-dir keys; the PBWin include dir must stay space-free
 
 ## Requirements
 
-* JK-IDE 2.4.x (free, closed source) - get it from the PowerBASIC forums.
+* JK-IDE 2.4.x (free, closed source) - installed automatically by
+  `Setup.bat` if missing, or get it from the PowerBASIC forums
+  (http://pump.richheimer.de/showthread.php?tid=120).
 * At least one of the compilers above. PBWin 10 and PBXB64 are commercial
   PowerBASIC products; PB64Basic is free and included in this zip.
 * The first PBWin compile needs `C:\PBWin10\WINAPI` (the stock install
