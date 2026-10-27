@@ -1,0 +1,67 @@
+# JK-IDE integration for PB64Basic
+
+PB64Basic Enhanced ships with a ready-made JK-IDE addon that adds a
+**Compilers** menu to the JK-IDE menu bar. From that menu you can compile
+the active file with **PBWin 10**, **PB64Basic** or **PBXB64** without
+leaving the IDE.
+
+## What is in this folder
+
+| file | purpose |
+|---|---|
+| `Setup.bat` (zip root) | one-shot installer: locates JK-IDE, copies the addon, writes `JKIDE.ini`, enables the addon |
+| `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
+| `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
+| `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
+| `userdll.dll` | pre-built addon (PBWin 10 compiled, 69120 bytes) |
+| `JKIDE.ini` | configuration template - all compiler paths live here |
+| `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` |
+
+## How to install
+
+1. Unpack the PB64Basic zip anywhere on the target machine.
+2. Double-click `Setup.bat` (in the zip root).
+3. If JK-IDE is not detected automatically you will be asked for its folder,
+   e.g. `C:\PBWin10\JK-IDE`.
+4. Restart JK-IDE.
+
+The `Compilers` menu appears between `Options` and `Tools`. Its items:
+
+* **PBWin 10** - PowerBASIC for Windows 10 (`/IC:\PBWin10\WINAPI /L /Q`)
+* **PB64Basic** - this project's 64-bit compiler
+* **PBXB64** - PowerBASIC 64-bit fork (optional, detected if installed)
+* **Compile (default)** - JK-IDE's own default compile action
+
+After each run a message box shows the compiler output and `EXITCODE=...`
+(0 = success).
+
+## Configuration (`JKIDE.ini`)
+
+`JKIDE.ini` sits in the JK-IDE folder, next to `userdll.dll`. Keys:
+
+| key | meaning |
+|---|---|
+| `PbwinExe` / `PbwinCwd` / `PbwinInc` | PBWin executable, its working dir, its WINAPI include dir (no trailing space; `/I` path must be space-free) |
+| `Pb64Exe` / `Pb64Cwd` / `Pb64Runtime` | PB64Basic executable, working dir, runtime object name |
+| `Pbxb64Exe` / `Pbxb64Cwd` | PBXB64 executable and working dir |
+
+Leave a key empty if that compiler is not installed - the menu then shows a
+clear message instead of running. Paths with spaces are allowed in the
+executable and working-dir keys; the PBWin include dir must stay space-free
+(PBWin itself rejects quoted `/I` paths).
+
+## Requirements
+
+* JK-IDE 2.4.x (free, closed source) - get it from the PowerBASIC forums.
+* At least one of the compilers above. PBWin 10 and PBXB64 are commercial
+  PowerBASIC products; PB64Basic is free and included in this zip.
+* The first PBWin compile needs `C:\PBWin10\WINAPI` (the stock install
+  layout). If PBWin lives elsewhere, edit `PbwinExe` / `PbwinCwd` /
+  `PbwinInc` in `JKIDE.ini`.
+
+## Rebuilding the addon yourself
+
+Install PBWin 10, open `Addon\Userdll.bas` in JK-IDE and compile
+(`#utility compile10` builds `Userdll.dll` into the Addon folder). Copy it
+over the one in the JK-IDE root while JK-IDE is closed. Source files must be
+kept CRLF and ASCII-only (PBWin rejects other encodings).

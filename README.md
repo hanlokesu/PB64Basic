@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (912 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 285 (v0.2.089). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 286 (v0.2.090). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 286 (v0.2.090) - JK-IDE Compilers menu integration shipped in the release (userdll addon + JKIDE.ini paths + optional zip-root setup.bat install step).
 > > batch 285 (v0.2.089) - inline-asm hardening (clobber scan, hex/oct/bin immediates, WORD unsigned reads) + three asm examples with dual-side behavioral verification (cpuid byte-identical, math 10/10 both sides, simd 4/0 both sides - PBWin10 upgraded from stub to real MMX/x87/SSE).
 > > batch 284 (v0.2.088) - NEWCOM/GETCOM/ANYCOM with CLSID + LIB registry-free COM creation; PRINT# byte-exact separator/number semantics matched to PBWin.
 > > batch 283 (v0.2.087) - MK*$ pack family: 11/11 upgraded to Implemented after PBWin dual-run probes (MKCUR$/MKCUX$ fixed-point pack + CVCUR$/CVCUX$ read-back fixed, PRINT negative leading space fixed, MKE$ 10-byte 80-bit extended + CVE$ read-back + ASC BSTR-length NUL fix).
@@ -768,6 +769,33 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.090 (2026-10-27) - batch 286: JK-IDE Compilers menu integration shipped in the release
+
+The release zip now carries a ready-to-use JK-IDE integration kit
+(the IDE is the PowerBASIC environment this project develops with):
+
+- A "Compilers" top-level menu (installed through the official userdll
+  addon, visible at startup) compiles the active file with PBWin 10,
+  PB64Basic or PBXB64 in one click.  Menu ids: %JKCOMP_PBWIN10 = 55011,
+  %JKCOMP_PB64 = 55012, %JKCOMP_PBXB64 = 55013.
+- The addon reads every tool path from JKIDE.ini (same folder as
+  userdll.dll), so paths stay machine-specific - edit the INI and restart
+  JK-IDE; no recompile needed.
+- The zip-root setup.bat gained an optional JK-IDE integration step
+  (type Y): it detects jk-ide.exe, copies the addon sources and the
+  prebuilt userdll.dll, writes JKIDE.ini from the detected tools, and
+  enables Userdll=1 - all without admin rights.
+- The jkide\ folder ships User_Setup/User_Code/User_Command/User_Menu/
+  Userdll.bas, the prebuilt userdll.dll, the JKIDE.ini template,
+  enable_userdll.ps1 and README-jkide.md.
+- Verified end-to-end on this machine: menu appears at startup (usersetup
+  injection), all three compilers fired via WM_COMMAND produce real .exe
+  products (EXITCODE=0), and a staged unpack+install of the zip's
+  setup.bat restores the working configuration.
+
+No language keywords changed: CSV rows and statuses are identical to
+v0.2.089.  Regression baseline: MATCH 156 / DIFF 0 / ONLY-FORK 3.
+
 ### v0.2.089 (2026-10-27) - batch 285: inline-asm hardening, behavioral verification
 
 Inline-asm compiler hardening and dual-side behavioral verification for the
