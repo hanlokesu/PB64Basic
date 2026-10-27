@@ -1,6 +1,6 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 276 (v0.2.085)** — 2026-10-25. All statements through batch 276 are reflected in this matrix.
+> **Last updated from batch 280 (v0.2.086)** — 2026-10-27. All statements through batch 280 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
@@ -14,8 +14,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 779 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 127 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ Implemented (this project) | 780 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 126 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **906** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
@@ -634,7 +634,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | NOT | OPERATOR | PB/Win + PB/CC | Established |
 | NUL | FUNCTION | PB/Win + PB/CC | Established |
 | NUL$ | FUNCTION | Win32 | Implemented |
-| OBJECT | STATEMENT | PB/Win + PB/CC | Established |
+| OBJECT | STATEMENT | PB/Win + PB/CC | Implemented |
 | OCT | FUNCTION | codegen builtin | Implemented |
 | OCT$ | FUNCTION | Win32 | Implemented |
 | OEMTOCHR | FUNCTION | codegen builtin | Implemented |

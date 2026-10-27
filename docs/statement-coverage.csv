@@ -1,4 +1,4 @@
-# Last updated from batch 276 (v0.2.085) - 2026-10-25,,,,
+# Last updated from batch 280 (v0.2.086) - 2026-10-27,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
@@ -603,7 +603,7 @@ MOUSEPTR,STATEMENT,PB/CC only,Established
 MSGBOX,STATEMENT,PB/Win only,Established
 NAME,STATEMENT,PB/Win + PB/CC,Established
 NUL$,FUNCTION,Win32,Implemented
-OBJECT,STATEMENT,PB/Win + PB/CC,Established
+OBJECT,STATEMENT,PB/Win + PB/CC,Implemented
 OCT,FUNCTION,codegen builtin,Implemented
 OCT$,FUNCTION,Win32,Implemented
 OEMTOCHR,FUNCTION,codegen builtin,Implemented
