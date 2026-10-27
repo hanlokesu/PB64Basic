@@ -21915,11 +21915,11 @@ impl Compiler {
                 // pointer, so ISOBJECT()/OBJPTR() work.
                 let (pn, _) = self.module.add_string_constant(progid);
                 let clsid_v = match clsid {
-                    Some(e) => self.compile_expr(fb, &e)?,
+                    Some(e) => self.compile_expr(fb, e)?,
                     None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
                 };
                 let lib_v = match lib {
-                    Some(e) => self.compile_expr(fb, &e)?,
+                    Some(e) => self.compile_expr(fb, e)?,
                     None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
                 };
                 let mode_v = Val::new(mode.to_string(), IrType::I32);
