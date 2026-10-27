@@ -4054,6 +4054,145 @@ long long pb_asc_get(char* s, long long pos) {
     return (long long)(unsigned char)s[pos - 1];
 }
 
+/* ===== WSTRING (UTF-16 BSTR) helpers - batch 281 =====
+   PBWin semantics measured by probe (batch281_wstr_probe / probe2):
+   - LEN(wstr) = UTF-16 code-unit count (BSTR byte prefix / 2)
+   - ASC(wstr, n) = UTF-16 code at 1-based n (0..65535); negative counts
+     from the end; null / 0 / out-of-range -> -1 (same shape as pb_asc_get)
+   - INSTR over a wide haystack/needle searches by code unit, 1-based
+   - Mixed STRING+WSTRING concatenation promotes to WSTRING. */
+
+#define PB_CP_ACP 0
+
+int pb_wstr_len(const char* s) {
+    if (!s) return 0;
+#ifdef _WIN32
+    return (int)((unsigned long)SysStringByteLen(s) / 2);
+#else
+    { const unsigned char* p = (const unsigned char*)s; int n = 0;
+      while (p[0] || p[1]) { n++; p += 2; } return n; }
+#endif
+}
+
+long long pb_wstr_asc(char* s, long long pos) {
+    if (!s) return -1;
+    long long len = (long long)pb_wstr_len(s);
+    if (len == 0) return -1;
+    if (pos < 0) pos = len + 1 + pos;
+    if (pos < 1 || pos > len) return -1;
+    const unsigned char* p = (const unsigned char*)s + (long long)(pos - 1) * 2;
+    return (long long)((unsigned short)((unsigned short)p[0] | ((unsigned short)p[1] << 8)));
+}
+
+/* ANSI BSTR payload -> UTF-16 BSTR (freshly BSTR-alloc'd). */
+char* pb_ansi_to_wide(const char* ansi) {
+    static const char empty[] = "";
+    if (!ansi) ansi = empty;
+#ifdef _WIN32
+    unsigned int alen = (unsigned int)SysStringByteLen(ansi);
+    int wlen = MultiByteToWideChar(PB_CP_ACP, 0, ansi, (int)alen, NULL, 0);
+    if (wlen < 0) wlen = 0;
+    char* tmp = (char*)malloc((size_t)wlen * 2 + 2);
+    if (wlen > 0) MultiByteToWideChar(PB_CP_ACP, 0, ansi, (int)alen, (short*)tmp, wlen);
+    char* result = pb_bstr_alloc(tmp, (unsigned int)(wlen * 2));
+    free(tmp);
+    return result;
+#else
+    { size_t n = strlen(ansi); size_t i;
+      char* tmp = (char*)malloc(n * 2 + 2);
+      for (i = 0; i < n; i++) { tmp[i*2] = ansi[i]; tmp[i*2+1] = 0; }
+      tmp[n*2] = 0; tmp[n*2+1] = 0;
+      char* result = pb_bstr_alloc(tmp, (unsigned int)(n * 2));
+      free(tmp); return result; }
+#endif
+}
+
+/* INSTR over UTF-16 payloads: 1-based char position, 0 = not found.
+   start>=1 scans left->right; start<=-1 scans right->left and the returned
+   position is still absolute (left-to-right, CHW INSTR function). */
+long long pb_wide_instr(const char* main_s, const char* match_s, long long start) {
+    static const char empty[] = "";
+    if (!main_s) main_s = empty;
+    if (!match_s) match_s = empty;
+    long long mlen = (long long)pb_wstr_len(main_s);
+    long long nlen = (long long)pb_wstr_len(match_s);
+    if (start == 0 || mlen == 0) return 0;
+    if (nlen == 0) {
+        if (start > 0) return start;
+        if (start < 0) return mlen + start + 1;
+        return 1;
+    }
+    long long from;
+    int reverse = 0;
+    if (start < 0) { reverse = 1; from = mlen + start; }
+    else { from = start - 1; }
+    if (from < 0) from = 0;
+    if (reverse) {
+        for (long long i = from; i >= 0; i--) {
+            if (i + nlen > mlen) continue;
+            long long j;
+            for (j = 0; j < nlen; j++) {
+                unsigned short a = (unsigned short)((unsigned char)main_s[(i+j)*2] | ((unsigned short)(unsigned char)main_s[(i+j)*2+1] << 8));
+                unsigned short b = (unsigned short)((unsigned char)match_s[j*2] | ((unsigned short)(unsigned char)match_s[j*2+1] << 8));
+                if (a != b) break;
+            }
+            if (j == nlen) return i + 1;
+        }
+        return 0;
+    }
+    for (long long i = from; i + nlen <= mlen; i++) {
+        long long j;
+        for (j = 0; j < nlen; j++) {
+            unsigned short a = (unsigned short)((unsigned char)main_s[(i+j)*2] | ((unsigned short)(unsigned char)main_s[(i+j)*2+1] << 8));
+            unsigned short b = (unsigned short)((unsigned char)match_s[j*2] | ((unsigned short)(unsigned char)match_s[j*2+1] << 8));
+            if (a != b) break;
+        }
+        if (j == nlen) return i + 1;
+    }
+    return 0;
+}
+
+/* LEFT$ on a wide payload: first n code units (n<0 -> empty; n>len -> all). */
+char* pb_wstr_left(const char* s, long long n) {
+    static const char empty[] = "";
+    if (!s) s = empty;
+    long long len = (long long)pb_wstr_len(s);
+    if (n < 0) n = 0;
+    if (n > len) n = len;
+    return pb_bstr_alloc(s, (unsigned int)(n * 2));
+}
+
+/* RIGHT$ on a wide payload: last n code units. */
+char* pb_wstr_right(const char* s, long long n) {
+    static const char empty[] = "";
+    if (!s) s = empty;
+    long long len = (long long)pb_wstr_len(s);
+    if (n < 0) n = 0;
+    if (n > len) n = len;
+    return pb_bstr_alloc(s + (len - n) * 2, (unsigned int)(n * 2));
+}
+
+/* MID$ on a wide payload (PB semantics): 1-based start; start<0 counts from
+   the end; count<0 = len-|count|; out-of-range -> empty; has_count=0 -> rest. */
+char* pb_wstr_mid(const char* s, long long start, long long count, int has_count) {
+    static const char empty[] = "";
+    if (!s) s = empty;
+    long long len = (long long)pb_wstr_len(s);
+    if (start < 0) start = len + start + 1;
+    if (start < 1 || start > len) return pb_bstr_alloc(empty, 0);
+    long long n;
+    if (has_count) {
+        if (count < 0) count = len + count;  /* len - |count| */
+        if (count < 0) count = 0;
+        long long avail = len - start + 1;
+        n = count < avail ? count : avail;
+    } else {
+        n = len - start + 1;
+    }
+    if (n <= 0) return pb_bstr_alloc(empty, 0);
+    return pb_bstr_alloc(s + (start - 1) * 2, (unsigned int)(n * 2));
+}
+
 /* ARRAY ADD: add elements of src array into dst array (in-place), batch 67 */
 void pb_array_add(void* dst, const void* src, int elem_size, int is_float, long long total) {
     if (total <= 0) return;
