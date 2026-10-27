@@ -260,7 +260,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (912 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 285 (v0.2.089). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> > batch 285 (v0.2.089) - inline-asm hardening (clobber scan, hex/oct/bin immediates, WORD unsigned reads) + three asm examples with dual-side behavioral verification (cpuid byte-identical, math 10/10 both sides, simd fork 4/0).
+> > batch 285 (v0.2.089) - inline-asm hardening (clobber scan, hex/oct/bin immediates, WORD unsigned reads) + three asm examples with dual-side behavioral verification (cpuid byte-identical, math 10/10 both sides, simd 4/0 both sides - PBWin10 upgraded from stub to real MMX/x87/SSE).
 > > batch 284 (v0.2.088) - NEWCOM/GETCOM/ANYCOM with CLSID + LIB registry-free COM creation; PRINT# byte-exact separator/number semantics matched to PBWin.
 > > batch 283 (v0.2.087) - MK*$ pack family: 11/11 upgraded to Implemented after PBWin dual-run probes (MKCUR$/MKCUX$ fixed-point pack + CVCUR$/CVCUX$ read-back fixed, PRINT negative leading space fixed, MKE$ 10-byte 80-bit extended + CVE$ read-back + ASC BSTR-length NUL fix).
 > > batch 282 (v0.2.087) - Established pool audit: 113 keywords promoted Established -> Implemented (codegen/parser/runtime + dual-run evidence); 13 kept Established - INTERFACE x2 (CLASS interface object model, next feature) and MK*$ x11 (not implemented).
@@ -783,7 +783,7 @@ batch 285 examples:
 - New examples: batch285_asm_cpuid_test (CPUID via inline asm, %MY_PBVER
   discriminator for the 32-bit label form), batch285_asm_math_test
   (MOV/ADD/SUB/IMUL/OR/AND/XOR/SHL/SHR over LONG/WORD/BYTE/QUAD),
-  batch285_asm_simd_test (MMX/x87/SSE on the fork side).
+  batch285_asm_simd_test (MMX/x87/SSE, same 4 groups on both sides).
 - OR step restored in the math example: the earlier "or does not take effect"
   report was a wrong expectation (600 | 16 == 600 because bit 4 of 600 is
   already set; 600 | 0x100 == 856 on both sides). QUAD asm is gated by
@@ -791,8 +791,11 @@ batch 285 examples:
   operands (Error 427/497).
 - Behavioral verification completed on both sides: cpuid output is
   byte-identical (eax=198313, mmx=1, sse=1); math pass=10/10 on PBWin10 and
-  PB64Basic with identical probe files; simd pass=4/0 on the fork, stub on
-  PBWin10 by design (batch 029 covers the 32-bit MMX side).
+  PB64Basic with identical probe files; simd runs the same 4 groups
+  (MMX PADDB / x87 FLD1+FSTP / x87 FADD / SSE XORPS+ADDPS) on both compilers
+  with byte-identical probe files (pass=4, fail=0) - the PBWin10 side was
+  upgraded from a stub to real code after probing confirmed PBWin10's 32-bit
+  inline assembler accepts every MMX/x87/SSE instruction used.
 
 Regression baseline unchanged: MATCH 156 / DIFF 0 / ONLY-FORK 3.
 

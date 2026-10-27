@@ -1,26 +1,9 @@
 #COMPILE EXE
 #DIM ALL
-#IF %DEF(%PB_REVISION)
-    #IF (%PB_REVISION AND &H0FF00) = &H1000
-        %MY_PBVER = 10
-    #ELSE
-        %MY_PBVER = 0
-    #ENDIF
-#ELSE
-    %MY_PBVER = 0
-#ENDIF
 
 ' --- batch 285: MMX / SSE / x87 inline asm.
-'     PBWin10 branch: stub (the official 32-bit MMX syntax differs from the
-'     64-bit LLVM form used below; batch029 covers the PBWin side).
-'     PB64Basic branch: real 64-bit MMX/SSE/x87 with PB variable operands.
-#IF %MY_PBVER = 10
-FUNCTION PBMAIN() AS LONG
-    OPEN "out285simd.txt" FOR OUTPUT AS #1
-    PRINT #1, "simd: stub on PBWin10 (see batch029)"
-    CLOSE #1
-END FUNCTION
-#ELSE
+'     Same 4 groups run verbatim on both compilers (PBWin10 32-bit and
+'     PB64Basic 64-bit); output goes to out285simd.txt for side-by-side diff.
 FUNCTION PBMAIN() AS LONG
     LOCAL q_in AS QUAD
     LOCAL q_out AS QUAD
@@ -65,4 +48,3 @@ FUNCTION PBMAIN() AS LONG
     PRINT #1, "asm simd: pass="; pass; " fail="; fail
     CLOSE #1
 END FUNCTION
-#ENDIF
