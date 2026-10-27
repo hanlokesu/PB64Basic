@@ -755,6 +755,18 @@ impl FunctionBuilder {
         Val::new(r, to.clone())
     }
 
+    /// Unsigned int to float (PB WORD is unsigned, batch 285).
+    pub fn uitofp(&mut self, val: &Val, to: &IrType) -> Val {
+        let r = self.next_reg();
+        writeln!(
+            self.body,
+            "  {} = uitofp {} {} to {}",
+            r, val.ty, val.name, to
+        )
+        .unwrap();
+        Val::new(r, to.clone())
+    }
+
     /// Float to signed int.
     pub fn fptosi(&mut self, val: &Val, to: &IrType) -> Val {
         let r = self.next_reg();

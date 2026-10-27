@@ -8169,10 +8169,26 @@ impl Compiler {
                     continue;
                 }
                 let trimmed = tok.trim();
+                fn parse_asm_imm(t: &str) -> Option<i64> {
+                    // PB literal prefixes in inline asm: &H hex, &O octal,
+                    // &B binary, & decimal (case-insensitive), like PBWin.
+                    let up = t.to_uppercase();
+                    if let Some(h) = up.strip_prefix("&H") {
+                        i64::from_str_radix(h, 16).ok()
+                    } else if let Some(o) = up.strip_prefix("&O") {
+                        i64::from_str_radix(o, 8).ok()
+                    } else if let Some(b) = up.strip_prefix("&B") {
+                        i64::from_str_radix(b, 2).ok()
+                    } else if let Some(d) = t.strip_prefix('&') {
+                        d.parse::<i64>().ok()
+                    } else {
+                        t.parse::<i64>().ok()
+                    }
+                }
                 let parsed = if let Some(rest) = trimmed.strip_prefix('-') {
-                    rest.parse::<i64>().ok().map(|v| -v)
+                    parse_asm_imm(rest).map(|v| -v)
                 } else {
-                    trimmed.parse::<i64>().ok()
+                    parse_asm_imm(&trimmed)
                 };
                 if let Some(v) = parsed {
                     ops.push(Op::Imm(v));
@@ -8268,11 +8284,55 @@ impl Compiler {
             return Ok(());
         }
         let asm_str = instruction_texts.join("\n");
-        let c = if constraints.is_empty() {
-            "~{memory}".to_string()
-        } else {
-            format!("{},~{{memory}}", constraints.join(","))
-        };
+        // Inline asm freely clobbers caller-saved registers (PBWin semantics:
+        // only EBX/ESI/EDI are auto-preserved).  LLVM needs every register the
+        // asm touches declared as a clobber, or its register allocator assumes
+        // they survive and the program crashes (batch 285: the official CPUID
+        // sample from Common32.bas -> 0xC0000005).  Scan the instruction text
+        // for register tokens, plus the classic read-modify-everything
+        // instructions (CPUID/RDTSC/XGETBV) which write registers not spelled
+        // out in the text.
+        const ASM_REGS: &[&str] = &[
+            "EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP", "RAX", "RBX", "RCX", "RDX",
+            "RSI", "RDI", "RBP", "RSP", "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15", "AL",
+            "BL", "CL", "DL", "AH", "BH", "CH", "DH", "AX", "BX", "CX", "DX", "SI", "DI", "BP",
+            "SP", "MM0", "MM1", "MM2", "MM3", "MM4", "MM5", "MM6", "MM7", "XMM0", "XMM1", "XMM2",
+            "XMM3", "XMM4", "XMM5", "XMM6", "XMM7", "XMM8", "XMM9", "XMM10", "XMM11", "XMM12",
+            "XMM13", "XMM14", "XMM15",
+        ];
+        let upper = asm_str.to_uppercase();
+        let mut clobbers: Vec<String> = Vec::new();
+        for w in split_asm_tokens(&upper) {
+            if ASM_REGS.contains(&w.as_str()) {
+                let c = w.to_lowercase();
+                if !clobbers.contains(&c) {
+                    clobbers.push(c);
+                }
+            }
+        }
+        if upper.contains("CPUID") {
+            for r in ["eax", "ebx", "ecx", "edx"] {
+                if !clobbers.contains(&r.to_string()) {
+                    clobbers.push(r.to_string());
+                }
+            }
+        }
+        if upper.contains("RDTSC") || upper.contains("XGETBV") {
+            for r in ["eax", "edx"] {
+                if !clobbers.contains(&r.to_string()) {
+                    clobbers.push(r.to_string());
+                }
+            }
+        }
+        let mut clobber_parts: Vec<String> = vec!["~{memory}".to_string()];
+        for r in &clobbers {
+            clobber_parts.push(format!("~{{{}}}", r));
+        }
+        let mut c = constraints.join(",");
+        if !c.is_empty() {
+            c.push(',');
+        }
+        c.push_str(&clobber_parts.join(","));
         if args.is_empty() {
             fb.raw_line(&format!(
                 "call void asm sideeffect inteldialect \"{}\", \"{}\"()",
@@ -22393,9 +22453,12 @@ impl Compiler {
             IrType::I1 => fb.zext(val, &IrType::I32),
             // BYTE is unsigned; without this arm the catch-all below
             // returns the value unchanged and callers that truncate to
-            // i8 emit an illegal `trunc i8 to i8` (batch 171).
+            // i8 emit an illegal `trunc i8 to i8` (batch 171).  WORD (I16)
+            // is also unsigned in PB (0..65535), so widen with zext too
+            // (batch 285: `w = 31000 : XOR w, &HFFFF` -> 34536, and a
+            // signed extension made the IF comparison fail).
             IrType::I8 => fb.zext(val, &IrType::I32),
-            IrType::I16 => fb.sext(val, &IrType::I32),
+            IrType::I16 => fb.zext(val, &IrType::I32),
             IrType::I64 => fb.trunc(val, &IrType::I32),
             IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I32),
             _ => val.clone(),
@@ -22406,7 +22469,9 @@ impl Compiler {
         match &val.ty {
             IrType::Double => val.clone(),
             IrType::Float => fb.fpext(val, &IrType::Double),
-            IrType::I1 | IrType::I16 | IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
+            // WORD (I16) is unsigned in PB: widen via uitofp (batch 285)
+            IrType::I16 => fb.uitofp(val, &IrType::Double),
+            IrType::I1 | IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
             _ => val.clone(),
         }
     }
@@ -22415,8 +22480,9 @@ impl Compiler {
         let aw = a.ty.bit_width();
         let bw = b.ty.bit_width();
         let ext = |fb: &mut FunctionBuilder, v: &Val, ty: &IrType| -> Val {
-            // PB BYTE (I8) is unsigned — widen with zext, everything else sext
-            if v.ty == IrType::I8 {
+            // PB BYTE (I8) and WORD (I16) are unsigned — widen with zext,
+            // everything else sext (batch 285: WORD XOR must not sign-extend)
+            if v.ty == IrType::I8 || v.ty == IrType::I16 {
                 fb.zext(v, ty)
             } else {
                 fb.sext(v, ty)
@@ -22491,8 +22557,9 @@ impl Compiler {
             }
             if val.ty.is_int() {
                 if val.ty.bit_width() < target_ir.bit_width() {
-                    // PB BYTE (I8) is unsigned; widen with zext, everything else sext
-                    if val.ty == IrType::I8 {
+                    // PB BYTE (I8) and WORD (I16) are unsigned; widen with
+                    // zext, everything else sext (batch 285: WORD semantics)
+                    if val.ty == IrType::I8 || val.ty == IrType::I16 {
                         fb.zext(val, target_ir)
                     } else {
                         fb.sext(val, target_ir)
