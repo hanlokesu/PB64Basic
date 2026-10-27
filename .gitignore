@@ -41,3 +41,6 @@ _bak*/
 /b265_seq_b.dat
 /b265_seq_c.txt
 /b265_seq_d.dat
+
+# batch283 probe temp output (evidence lives in _dual_check/b283_fk/)
+/out283.txt
