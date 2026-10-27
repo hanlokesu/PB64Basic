@@ -1712,6 +1712,18 @@ void pb_print_file(int filenum, const char* text) {
     }
 }
 
+void pb_print_file_item(int filenum, const char* text) {
+    /* PRINT # item writer (batch284): PBWin appends one space AFTER every
+       item (strings and numbers alike), including the last one before CR/LF.
+       The number itself carries no leading space (pb_dec_file), so
+       `PRINT #1, "x="; r` yields "x= -1 " exactly as PBWin. */
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        unsigned long n = SysStringByteLen(text);
+        fwrite(text, 1, n, file_handles[filenum]);
+        fputc(' ', file_handles[filenum]);
+    }
+}
+
 void pb_print_file_newline(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* batch 270: PBWin writes CRLF (0d 0a) to PRINT # files; fork wrote
@@ -7568,12 +7580,16 @@ void* pb_obj_new(long long size) {
     return calloc(1, (size_t)size);
 }
 
-/* ---- batch271: NEWCOM "ProgID" — real COM instantiation --------------------
- * CHW Creating_a_DISPATCH_Object: `LET objvar = NEWCOM "ProgID"` creates a
- * DISPATCH object via CLSIDFromProgID + CoCreateInstance(IID_IDispatch).
- * The object variable then holds an IDispatch*; ISOBJECT()/OBJPTR() work on
- * the raw pointer like any fork object.  OBJRESULT() returns the HRESULT of
- * the most recent COM operation (0 = S_OK, negative = failure code).
+/* ---- batch271/284: NEWCOM / GETCOM / ANYCOM — real COM instantiation ------
+ * CHW How_do_you_create_an_object_:
+ *   LET objvar = NEWCOM "ProgID"                  (CoCreateInstance, new)
+ *   LET objvar = GETCOM "ProgID"                  (GetActiveObject, running)
+ *   LET objvar = ANYCOM "ProgID"                  (active, else new)
+ *   LET objvar = NEWCOM CLSID "{...}"             (GUID string, no ProgID)
+ *   LET objvar = NEWCOM CLSID "{...}" LIB "dll"   (registry-free load)
+ * The object variable holds an IDispatch*; ISOBJECT()/OBJPTR() work on the
+ * raw pointer.  OBJRESULT() returns the HRESULT of the most recent COM
+ * operation (0 = S_OK, negative = failure code).
  */
 typedef struct _PB_GUID {
     unsigned long  Data1;
@@ -7584,12 +7600,19 @@ typedef struct _PB_GUID {
 
 __declspec(dllimport) int  __stdcall CoInitializeEx(void* pvReserved, unsigned long dwCoInit);
 __declspec(dllimport) int  __stdcall CLSIDFromProgID(const wchar_t* lpszProgID, PB_GUID* lpclsid);
+__declspec(dllimport) int  __stdcall CLSIDFromString(const wchar_t* lpsz, PB_GUID* lpclsid);
 __declspec(dllimport) int  __stdcall CoCreateInstance(const PB_GUID* rclsid, void* pUnkOuter,
                                                       unsigned long dwClsContext, const PB_GUID* riid,
                                                       void** ppv);
+__declspec(dllimport) int  __stdcall GetActiveObject(const PB_GUID* rclsid, void* pUnkReserved,
+                                                     void** ppunk);
+__declspec(dllimport) void* __stdcall LoadLibraryA(const char* lpFileName);
+__declspec(dllimport) void* __stdcall GetProcAddress(void* hModule, const char* lpProcName);
 
 static const PB_GUID PB_IID_IDISPATCH =
     {0x00020400, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
+static const PB_GUID PB_IID_ICLASSFACTORY =
+    {0x00000001, 0x0000, 0x0000, {0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46}};
 
 static int  pb_com_inited = 0;
 static long pb_com_hresult = 0;
@@ -7601,21 +7624,71 @@ void pb_com_init(void) {
     }
 }
 
-void* pb_newcom(const char* progid) {
-    wchar_t wbuf[256];
-    PB_GUID clsid;
+/* Registry-free COM: load the DLL, resolve DllGetClassObject, ask it for the
+ * class factory, CreateInstance(IID_IDispatch).  Returns the IDispatch* or
+ * NULL.  (CHW: "no need for the server to be registered at all.") */
+static void* pb_com_new_from_lib(const PB_GUID* cg, const char* lib) {
+    void* h = LoadLibraryA(lib);
+    if (!h) return NULL;
+    typedef int (__stdcall* DGCO_FN)(const PB_GUID*, const PB_GUID*, void**);
+    DGCO_FN dgco = (DGCO_FN)GetProcAddress(h, "DllGetClassObject");
+    if (!dgco) return NULL;
+    void* fac = NULL;
+    if (dgco(cg, &PB_IID_ICLASSFACTORY, &fac) != 0 || !fac) return NULL;
+    /* IClassFactory vtable: 0 QI, 1 AddRef, 2 Release, 3 CreateInstance */
+    typedef int (__stdcall* CREATEINST_FN)(void*, void*, const PB_GUID*, void**);
+    typedef unsigned long (__stdcall* RELEASE_FN)(void*);
+    CREATEINST_FN ci = (CREATEINST_FN)((void***)fac)[0][3];
+    RELEASE_FN rel = (RELEASE_FN)((void***)fac)[0][2];
+    void* obj = NULL;
+    long hr = ci(fac, NULL, &PB_IID_IDISPATCH, &obj);
+    rel(fac);
+    return hr == 0 ? obj : NULL;
+}
+
+void* pb_com_new(int mode, const char* progid, const char* clsid, const char* lib) {
+    PB_GUID cg;
     void* obj = NULL;
     long hr;
     pb_com_init();
-    MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
-    hr = CLSIDFromProgID(wbuf, &clsid);
-    if (hr != 0) return NULL;
-    hr = CoCreateInstance(&clsid, NULL, 0x7 /*CLSCTX_ALL*/, &PB_IID_IDISPATCH, &obj);
+    if (clsid && clsid[0]) {
+        /* ClassID$ is a 16-byte binary GUID (CLSID$() result), or a "{...}"
+         * string form.  PB BSTRs carry their own length, so the binary form
+         * survives the NUL bytes. */
+        size_t clen = SysStringByteLen(clsid);
+        if (clen == 16) {
+            memcpy(&cg, clsid, 16);
+        } else {
+            wchar_t wc[96];
+            MultiByteToWideChar(0 /*CP_ACP*/, 0, clsid, -1, (short*)wc, 96);
+            hr = CLSIDFromString(wc, &cg);
+            if (hr != 0) { pb_com_hresult = 0; return NULL; }
+        }
+    } else {
+        wchar_t wbuf[256];
+        MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
+        hr = CLSIDFromProgID(wbuf, &cg);
+        if (hr != 0) { pb_com_hresult = 0; return NULL; }
+    }
+    if (lib && lib[0]) {
+        obj = pb_com_new_from_lib(&cg, lib);
+    } else if (mode == 1) {
+        /* GETCOM: open an existing running instance */
+        hr = GetActiveObject(&cg, NULL, &obj);
+        if (hr != 0) obj = NULL;
+    } else {
+        hr = CoCreateInstance(&cg, NULL, 0x7 /*CLSCTX_ALL*/, &PB_IID_IDISPATCH, &obj);
+        if (hr != 0 && mode == 2) {
+            /* ANYCOM: prefer an existing running instance */
+            if (GetActiveObject(&cg, NULL, &obj) != 0) obj = NULL;
+        } else if (hr != 0) {
+            obj = NULL;
+        }
+    }
     /* batch271 measured: PBWin's OBJRESULT stays 0 both on NEWCOM success AND
      * failure (it reflects OBJECT-statement hResults, not NEWCOM).  Keep the
      * result slot at 0 so OBJRESULT matches PBWin on both paths. */
     pb_com_hresult = 0;
-    if (hr != 0) return NULL;
     return obj;
 }
 

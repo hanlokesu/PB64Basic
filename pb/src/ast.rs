@@ -656,10 +656,20 @@ pub enum Expr {
     /// (a fresh instance of the CLASS's INSTANCE storage) or NULL on failure,
     /// matching PBWin's "object variable = NOTHING when creation fails".
     ClassNew(String),
-    /// `NEWCOM "ProgID"` — COM object instantiation (CHW Creating_a_DISPATCH_
-    /// Object).  The ProgID is always a string literal; the result is a COM
-    /// IDispatch* (or NULL when CoCreateInstance fails), matching PBWin.
-    NewCom(String),
+    /// `NEWCOM / GETCOM / ANYCOM "ProgID"` — external COM object instantiation
+    /// (CHW How_do_you_create_an_object_ / Creating_a_DISPATCH_Object).
+    /// mode: 0 NEWCOM (CoCreateInstance), 1 GETCOM (GetActiveObject),
+    /// 2 ANYCOM (active-or-new).  The ProgID is a string literal; clsid/lib
+    /// are the optional `CLSID ClassID$ [LIB DllPath$]` clauses (expressions:
+    /// ClassID$ is a 16-byte binary GUID, e.g. the CLSID$() result; DllPath$
+    /// is the COM server file path).  The result is a COM IDispatch* (or NULL
+    /// on failure), matching PBWin.
+    ComNew {
+        mode: i32,
+        progid: String,
+        clsid: Option<Box<Expr>>,
+        lib: Option<Box<Expr>>,
+    },
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
     PercentConst(String),

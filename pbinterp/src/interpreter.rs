@@ -1037,7 +1037,7 @@ impl Interpreter {
             Expr::ClassNew(_) => Err(PbError::runtime(
                 "CLASS instantiation is not supported by the interpreter",
             )),
-            Expr::NewCom(_) => Err(PbError::runtime(
+            Expr::ComNew { .. } => Err(PbError::runtime(
                 "NEWCOM instantiation is not supported by the interpreter",
             )),
         }

@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 283 (v0.2.087)** — 2026-10-27. All statements through batch 283 are reflected in this matrix.
+> **Last updated from batch 284 (v0.2.088)** — 2026-10-27. All statements through batch 284 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **909** (12 BLOCK, 283 FUNCTION, 5 OPERATOR, 606 STATEMENT, 3 FORK EXTENSION).
-- **906** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **912** (12 BLOCK, 283 FUNCTION, 5 OPERATOR, 609 STATEMENT, 3 FORK EXTENSION).
+- **909** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 904 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 907 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **906** | Implemented + Established |
+| ✅ **Total available** | **909** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (909 rows)
+## All keywords (912 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -33,6 +33,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ACOS | FUNCTION | LLVM intrinsic | Implemented |
 | ACOSH | FUNCTION | LLVM intrinsic | Implemented |
 | AND | OPERATOR | PB/Win + PB/CC | Implemented |
+| ANYCOM | STATEMENT | PB/Win only | Implemented |
 | ARRAY ADD | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY ARRAYIX | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY ASSIGN | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -75,31 +76,28 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CALLSTK | STATEMENT | PB/Win + PB/CC | Implemented |
 | CALLSTK$ | FUNCTION | Win32 | Implemented |
 | CALLSTKCOUNT | FUNCTION | codegen builtin | Implemented |
-| CBOOL | FUNCTION | codegen builtin | Implemented |
-| CBRT | FUNCTION | C runtime (MSVCRT) | Implemented |
-| CBYTE | FUNCTION | codegen builtin | Implemented |
 | CB.CTL | FUNCTION | codegen builtin | Implemented |
 | CB.CTLMSG | FUNCTION | codegen builtin | Implemented |
 | CB.HNDL | FUNCTION | codegen builtin | Implemented |
 | CB.LPARAM | FUNCTION | codegen builtin | Implemented |
 | CB.MSG | FUNCTION | codegen builtin | Implemented |
-| CB.WPARAM | FUNCTION | codegen builtin | Implemented |
-| CBYT | FUNCTION | codegen builtin | Implemented |
-| CCUR | FUNCTION | codegen builtin | Implemented |
-| CCUX | FUNCTION | codegen builtin | Implemented |
-| CDWD | FUNCTION | codegen builtin | Implemented |
-| CEXT | FUNCTION | codegen builtin | Implemented |
-| CINT | FUNCTION | codegen builtin | Implemented |
-| CLNG | FUNCTION | codegen builtin | Implemented |
-| CQUD | FUNCTION | codegen builtin | Implemented |
 | CB.NMCODE | FUNCTION | codegen builtin | Implemented |
 | CB.NMHDR | FUNCTION | codegen builtin | Implemented |
 | CB.NMHDR$ | FUNCTION | codegen builtin | Implemented |
 | CB.NMHWND | FUNCTION | codegen builtin | Implemented |
 | CB.NMID | FUNCTION | codegen builtin | Implemented |
+| CB.WPARAM | FUNCTION | codegen builtin | Implemented |
+| CBOOL | FUNCTION | codegen builtin | Implemented |
+| CBRT | FUNCTION | C runtime (MSVCRT) | Implemented |
+| CBYT | FUNCTION | codegen builtin | Implemented |
+| CBYTE | FUNCTION | codegen builtin | Implemented |
+| CCUR | FUNCTION | codegen builtin | Implemented |
+| CCUX | FUNCTION | codegen builtin | Implemented |
 | CDBL | FUNCTION | codegen builtin | Implemented |
+| CDWD | FUNCTION | codegen builtin | Implemented |
 | CDWORD | FUNCTION | codegen builtin | Implemented |
 | CEIL | FUNCTION | LLVM intrinsic | Implemented |
+| CEXT | FUNCTION | codegen builtin | Implemented |
 | CFLT | FUNCTION | codegen builtin | Implemented |
 | CHDIR | STATEMENT | PB/Win + PB/CC | Implemented |
 | CHDRIVE | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -111,13 +109,15 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CHRTOOEM$ | FUNCTION | Win32 | Implemented |
 | CHRTOUTF8 | FUNCTION | codegen builtin | Implemented |
 | CHRTOUTF8$ | FUNCTION | Win32 | Implemented |
+| CINT | FUNCTION | codegen builtin | Implemented |
 | CLASS/END CLASS | BLOCK | PB/Win + PB/CC | Implemented |
 | CLIP | FUNCTION | codegen builtin | Implemented |
 | CLIP$ | FUNCTION | Win32 | Implemented |
 | CLIPBOARD | STATEMENT | PB/Win + PB/CC | Implemented |
+| CLNG | FUNCTION | codegen builtin | Implemented |
 | CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
-| CLSID | FUNCTION | codegen builtin | Implemented |
 | CLS | STATEMENT | PB/CC only | Implemented |
+| CLSID | FUNCTION | codegen builtin | Implemented |
 | CODEPTR | FUNCTION | codegen builtin | Implemented |
 | COLOR | STATEMENT | PB/CC only | Implemented |
 | COMBOBOX ADD | STATEMENT | PB/Win only | Implemented |
@@ -180,22 +180,22 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CONTROL ADD TRACKBAR | STATEMENT | PB/Win only | Implemented |
 | CONTROL ADD TREEVIEW | STATEMENT | PB/Win only | Implemented |
 | CONTROL ADD UPDOWN | STATEMENT | PB/Win only | Implemented |
-| CONTROL DISABLE | STATEMENT | PB/Win only | Implemented
-| CONTROL ENABLE | STATEMENT | PB/Win only | Implemented
-| CONTROL GET CHECK | STATEMENT | PB/Win only | Implemented
+| CONTROL DISABLE | STATEMENT | PB/Win only | Implemented |
+| CONTROL ENABLE | STATEMENT | PB/Win only | Implemented |
+| CONTROL GET CHECK | STATEMENT | PB/Win only | Implemented |
 | CONTROL GET CLIENT | STATEMENT | PB/Win only | Implemented |
 | CONTROL GET LOC | STATEMENT | PB/Win only | Implemented |
 | CONTROL GET SIZE | STATEMENT | PB/Win only | Implemented |
-| CONTROL GET TEXT | STATEMENT | PB/Win only | Implemented
+| CONTROL GET TEXT | STATEMENT | PB/Win only | Implemented |
 | CONTROL GET USER | STATEMENT | PB/Win only | Implemented |
 | CONTROL HANDLE | STATEMENT | PB/Win only | Implemented |
-| CONTROL HIDE | STATEMENT | PB/Win only | Implemented
-| CONTROL KILL | STATEMENT | PB/Win only | Implemented
+| CONTROL HIDE | STATEMENT | PB/Win only | Implemented |
+| CONTROL KILL | STATEMENT | PB/Win only | Implemented |
 | CONTROL NORMALIZE | STATEMENT | PB/Win only | Implemented |
 | CONTROL POST | STATEMENT | PB/Win only | Implemented |
 | CONTROL REDRAW | STATEMENT | PB/Win only | Implemented |
 | CONTROL SEND | STATEMENT | PB/Win only | Implemented |
-| CONTROL SET CHECK | STATEMENT | PB/Win only | Implemented
+| CONTROL SET CHECK | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET CLIENT | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET COLOR | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET FOCUS | STATEMENT | PB/Win only | Implemented |
@@ -207,7 +207,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CONTROL SET LOC | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET OPTION | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET SIZE | STATEMENT | PB/Win only | Implemented |
-| CONTROL SET TEXT | STATEMENT | PB/Win only | Implemented
+| CONTROL SET TEXT | STATEMENT | PB/Win only | Implemented |
 | CONTROL SET USER | STATEMENT | PB/Win only | Implemented |
 | CONTROL SHOW STATE | STATEMENT | PB/Win only | Implemented |
 | COS | FUNCTION | LLVM intrinsic | Implemented |
@@ -215,6 +215,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | COT | FUNCTION | C runtime (MSVCRT) | Implemented |
 | COTH | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CQUAD | FUNCTION | codegen builtin | Implemented |
+| CQUD | FUNCTION | codegen builtin | Implemented |
 | CSC | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CSCH | FUNCTION | C runtime (MSVCRT) | Implemented |
 | CSET | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -226,18 +227,18 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CURDIR$ | FUNCTION | Win32 | Implemented |
 | CVBYT | FUNCTION | codegen builtin | Implemented |
 | CVCUR | FUNCTION | codegen builtin | Implemented |
+| CVCUX | FUNCTION | codegen builtin | Implemented |
 | CVD | FUNCTION | codegen builtin | Implemented |
+| CVDWD | FUNCTION | codegen builtin | Implemented |
 | CVE | FUNCTION | codegen builtin | Implemented |
 | CVI | FUNCTION | codegen builtin | Implemented |
-| CVS | FUNCTION | codegen builtin | Implemented |
-| CVWRD | FUNCTION | codegen builtin | Implemented |
-| CWRD | FUNCTION | codegen builtin | Implemented |
-| CVCUX | FUNCTION | codegen builtin | Implemented |
-| CVDWD | FUNCTION | codegen builtin | Implemented |
 | CVL | FUNCTION | codegen builtin | Implemented |
 | CVQ | FUNCTION | codegen builtin | Implemented |
+| CVS | FUNCTION | codegen builtin | Implemented |
 | CVW | FUNCTION | codegen builtin | Implemented |
+| CVWRD | FUNCTION | codegen builtin | Implemented |
 | CWORD | FUNCTION | codegen builtin | Implemented |
+| CWRD | FUNCTION | codegen builtin | Implemented |
 | DATA | STATEMENT | PB/Win + PB/CC | Implemented |
 | DATACOUNT | FUNCTION | codegen builtin | Implemented |
 | DAYNAME | FUNCTION | codegen builtin | Implemented |
@@ -266,18 +267,18 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DIALOG CENTER | FORK EXTENSION | PB/Win only | Implemented |
 | DIALOG DEFAULT FONT | STATEMENT | PB/Win only | Implemented |
 | DIALOG DISABLE | STATEMENT | PB/Win only | Implemented |
-| DIALOG DOEVENTS | STATEMENT | PB/Win only | Implemented
+| DIALOG DOEVENTS | STATEMENT | PB/Win only | Implemented |
 | DIALOG ENABLE | STATEMENT | PB/Win only | Implemented |
-| DIALOG END | STATEMENT | PB/Win only | Implemented
+| DIALOG END | STATEMENT | PB/Win only | Implemented |
 | DIALOG GET CLIENT | STATEMENT | PB/Win only | Implemented |
 | DIALOG GET LOC | STATEMENT | PB/Win only | Implemented |
 | DIALOG GET SIZE | STATEMENT | PB/Win only | Implemented |
-| DIALOG GET TEXT | STATEMENT | PB/Win only | Implemented
+| DIALOG GET TEXT | STATEMENT | PB/Win only | Implemented |
 | DIALOG GET USER | STATEMENT | PB/Win only | Implemented |
 | DIALOG HIDE | STATEMENT | PB/Win only | Implemented |
 | DIALOG MAXIMIZE | STATEMENT | PB/Win only | Implemented |
 | DIALOG MINIMIZE | STATEMENT | PB/Win only | Implemented |
-| DIALOG NEW | STATEMENT | PB/Win only | Implemented
+| DIALOG NEW | STATEMENT | PB/Win only | Implemented |
 | DIALOG NONSTABLE | STATEMENT | PB/Win only | Implemented |
 | DIALOG NORMALIZE | STATEMENT | PB/Win only | Implemented |
 | DIALOG PIXELS | STATEMENT | PB/Win only | Implemented |
@@ -289,11 +290,11 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DIALOG SET ICON | STATEMENT | PB/Win only | Implemented |
 | DIALOG SET LOC | STATEMENT | PB/Win only | Implemented |
 | DIALOG SET SIZE | STATEMENT | PB/Win only | Implemented |
-| DIALOG SET TEXT | STATEMENT | PB/Win only | Implemented
+| DIALOG SET TEXT | STATEMENT | PB/Win only | Implemented |
 | DIALOG SET USER | STATEMENT | PB/Win only | Implemented |
-| DIALOG SHOW MODAL | STATEMENT | PB/Win only | Implemented
+| DIALOG SHOW MODAL | STATEMENT | PB/Win only | Implemented |
 | DIALOG SHOW MODELESS | STATEMENT | PB/Win only | Implemented |
-| DIALOG SHOW STATE | STATEMENT | PB/Win only | Implemented
+| DIALOG SHOW STATE | STATEMENT | PB/Win only | Implemented |
 | DIALOG STABILIZE | STATEMENT | PB/Win only | Implemented |
 | DIALOG UNITS | STATEMENT | PB/Win only | Implemented |
 | DIM | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -359,6 +360,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | GET$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | GET$$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | GETATTR | FUNCTION | codegen builtin | Implemented |
+| GETCOM | STATEMENT | PB/Win only | Implemented |
 | GET_STR | FUNCTION | codegen builtin | Implemented |
 | GET_WSTR | FUNCTION | codegen builtin | Implemented |
 | GLOBAL | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -631,6 +633,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MOUSEPTR | STATEMENT | PB/CC only | Implemented |
 | MSGBOX | STATEMENT | PB/Win only | Implemented |
 | NAME | STATEMENT | PB/Win + PB/CC | Implemented |
+| NEWCOM | STATEMENT | PB/Win only | Implemented |
 | NOT | OPERATOR | PB/Win + PB/CC | Implemented |
 | NUL | FUNCTION | PB/Win + PB/CC | Implemented |
 | NUL$ | FUNCTION | Win32 | Implemented |

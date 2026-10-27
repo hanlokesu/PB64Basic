@@ -2069,6 +2069,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_print_file_item",
+            &IrType::Void,
+            &[IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_print_file_newline",
             &IrType::Void,
             &[IrType::I32],
@@ -5029,9 +5035,13 @@ impl Compiler {
             .declare_function("pb_class_create", &IrType::Ptr, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_class_destroy", &IrType::Void, &[IrType::Ptr], false);
-        // batch271: NEWCOM "ProgID" COM instantiation + OBJRESULT
-        self.module
-            .declare_function("pb_newcom", &IrType::Ptr, &[IrType::Ptr], false);
+        // batch271/284: NEWCOM/GETCOM/ANYCOM COM instantiation + OBJRESULT
+        self.module.declare_function(
+            "pb_com_new",
+            &IrType::Ptr,
+            &[IrType::I32, IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_com_result", &IrType::I32, &[], false);
         // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
@@ -20853,8 +20863,18 @@ impl Compiler {
         let filenum_i32 = self.to_i32(fb, &filenum);
         for arg in &pf.args {
             let val = self.compile_expr(fb, arg)?;
-            let s = self.val_to_string(fb, &val);
-            fb.call_void("pb_print_file", &[filenum_i32.clone(), s]);
+            if val.ty == IrType::Ptr {
+                // String item: written as-is (batch284 PBWin-measured -- a ';'
+                // separator adds no space between strings: "A"; "B" -> "AB").
+                fb.call_void("pb_print_file", &[filenum_i32.clone(), val]);
+            } else {
+                // Numeric item: PBWin STR$ formatting -- leading blank for
+                // positive/zero, none for negative (" 5" / "-1"), plus one
+                // trailing space (present after every numeric item, including
+                // the last one before CR/LF).
+                let s = self.num_to_string(fb, &val);
+                fb.call_void("pb_print_file_item", &[filenum_i32.clone(), s]);
+            }
         }
         // CHW PRINT#: a trailing `;` or `,` suppresses the CR/LF so the next
         // PRINT# continues on the same line (batch259 probe exposed this: the
@@ -21880,17 +21900,33 @@ impl Compiler {
                 fb.raw_line(&format!("  {} = ptrtoint ptr {} to i64", sz_reg, gep_reg));
                 Ok(fb.call(&IrType::Ptr, "pb_obj_new", &[Val::new(sz_reg, IrType::I64)]))
             }
-            Expr::NewCom(progid) => {
-                // NEWCOM "ProgID" — COM object instantiation (CHW
-                // Creating_a_DISPATCH_Object).  Lowered to a runtime call that
-                // does CLSIDFromProgID + CoCreateInstance(IID_IDispatch) and
-                // returns the IDispatch* (NULL on failure).  The result is a
-                // plain heap pointer, so ISOBJECT()/OBJPTR() work unchanged.
-                let (progid_name, _) = self.module.add_string_constant(progid);
+            Expr::ComNew {
+                mode,
+                progid,
+                clsid,
+                lib,
+            } => {
+                // NEWCOM/GETCOM/ANYCOM — COM object instantiation (CHW
+                // Creating_a_DISPATCH_Object / How_do_you_create_an_object_).
+                // Lowered to a runtime call that does CLSIDFromProgID (or the
+                // 16-byte CLSID$ binary GUID / "{...}" string for the CLSID
+                // form) + CoCreateInstance / GetActiveObject / either,
+                // returning the IDispatch* (NULL on failure).  A plain heap
+                // pointer, so ISOBJECT()/OBJPTR() work.
+                let (pn, _) = self.module.add_string_constant(progid);
+                let clsid_v = match clsid {
+                    Some(e) => self.compile_expr(fb, &e)?,
+                    None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
+                };
+                let lib_v = match lib {
+                    Some(e) => self.compile_expr(fb, &e)?,
+                    None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
+                };
+                let mode_v = Val::new(mode.to_string(), IrType::I32);
                 Ok(fb.call(
                     &IrType::Ptr,
-                    "pb_newcom",
-                    &[Val::new(progid_name, IrType::Ptr)],
+                    "pb_com_new",
+                    &[mode_v, Val::new(pn, IrType::Ptr), clsid_v, lib_v],
                 ))
             }
             Expr::MethodCall { base, name, args } => {
@@ -22372,20 +22408,6 @@ impl Compiler {
             IrType::Float => fb.fpext(val, &IrType::Double),
             IrType::I1 | IrType::I16 | IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
             _ => val.clone(),
-        }
-    }
-
-    fn val_to_string(&mut self, fb: &mut FunctionBuilder, val: &Val) -> Val {
-        if val.ty == IrType::Ptr {
-            val.clone()
-        } else if val.ty.is_int() {
-            // PBWin PRINT integer formatting (batch283 probe): a leading space
-            // before EVERY value, negatives included (" -2").  pb_dec emits
-            // " %lld" exactly; STR$ keeps its own % d space-flag path.
-            let i64 = self.to_i64(fb, val);
-            fb.call(&IrType::Ptr, "pb_dec", &[i64])
-        } else {
-            self.num_to_string(fb, val)
         }
     }
 

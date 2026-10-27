@@ -1,14 +1,18 @@
-# Last updated from batch 283 (v0.2.087) - 2026-10-27,,,,
+# Last updated from batch 284 (v0.2.088) - 2026-10-27,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 Keyword,Kind,Platform,Status
-ABS,FUNCTION,LLVM intrinsic,Implemented
-#COMPILE SLL,STATEMENT,PB/Win only,Implemented
-#COMPILE EXE,STATEMENT,PB/Win only,Implemented
 #COMPILE DLL,STATEMENT,PB/Win only,Implemented
+#COMPILE EXE,STATEMENT,PB/Win only,Implemented
+#COMPILE SLL,STATEMENT,PB/Win only,Implemented
+#LINK,STATEMENT,PB/Win only,Implemented
+ABS,FUNCTION,LLVM intrinsic,Implemented
 ACCEL ATTACH,STATEMENT,PB/Win only,Implemented
+ACODE,FUNCTION,PB/Win + PB/CC,Implemented
 ACODE$,FUNCTION,Win32,Implemented
 ACOS,FUNCTION,LLVM intrinsic,Implemented
 ACOSH,FUNCTION,LLVM intrinsic,Implemented
+AND,OPERATOR,PB/Win + PB/CC,Implemented
+ANYCOM,STATEMENT,PB/Win only,Implemented
 ARRAY ADD,STATEMENT,PB/Win + PB/CC,Implemented
 ARRAY ARRAYIX,STATEMENT,PB/Win + PB/CC,Implemented
 ARRAY ASSIGN,STATEMENT,PB/Win + PB/CC,Implemented
@@ -51,31 +55,28 @@ CALL DWORD,STATEMENT,PB/Win + PB/CC,Implemented
 CALLSTK,STATEMENT,PB/Win + PB/CC,Implemented
 CALLSTK$,FUNCTION,Win32,Implemented
 CALLSTKCOUNT,FUNCTION,codegen builtin,Implemented
-CBOOL,FUNCTION,codegen builtin,Implemented
-CBRT,FUNCTION,C runtime (MSVCRT),Implemented
-CBYTE,FUNCTION,codegen builtin,Implemented
 CB.CTL,FUNCTION,codegen builtin,Implemented
 CB.CTLMSG,FUNCTION,codegen builtin,Implemented
 CB.HNDL,FUNCTION,codegen builtin,Implemented
 CB.LPARAM,FUNCTION,codegen builtin,Implemented
 CB.MSG,FUNCTION,codegen builtin,Implemented
-CB.WPARAM,FUNCTION,codegen builtin,Implemented
-CBYT,FUNCTION,codegen builtin,Implemented
-CCUR,FUNCTION,codegen builtin,Implemented
-CCUX,FUNCTION,codegen builtin,Implemented
-CDWD,FUNCTION,codegen builtin,Implemented
-CEXT,FUNCTION,codegen builtin,Implemented
-CINT,FUNCTION,codegen builtin,Implemented
-CLNG,FUNCTION,codegen builtin,Implemented
-CQUD,FUNCTION,codegen builtin,Implemented
 CB.NMCODE,FUNCTION,codegen builtin,Implemented
 CB.NMHDR,FUNCTION,codegen builtin,Implemented
 CB.NMHDR$,FUNCTION,codegen builtin,Implemented
 CB.NMHWND,FUNCTION,codegen builtin,Implemented
 CB.NMID,FUNCTION,codegen builtin,Implemented
+CB.WPARAM,FUNCTION,codegen builtin,Implemented
+CBOOL,FUNCTION,codegen builtin,Implemented
+CBRT,FUNCTION,C runtime (MSVCRT),Implemented
+CBYT,FUNCTION,codegen builtin,Implemented
+CBYTE,FUNCTION,codegen builtin,Implemented
+CCUR,FUNCTION,codegen builtin,Implemented
+CCUX,FUNCTION,codegen builtin,Implemented
 CDBL,FUNCTION,codegen builtin,Implemented
+CDWD,FUNCTION,codegen builtin,Implemented
 CDWORD,FUNCTION,codegen builtin,Implemented
 CEIL,FUNCTION,LLVM intrinsic,Implemented
+CEXT,FUNCTION,codegen builtin,Implemented
 CFLT,FUNCTION,codegen builtin,Implemented
 CHDIR,STATEMENT,PB/Win + PB/CC,Implemented
 CHDRIVE,STATEMENT,PB/Win + PB/CC,Implemented
@@ -87,13 +88,15 @@ CHRTOOEM,FUNCTION,codegen builtin,Implemented
 CHRTOOEM$,FUNCTION,Win32,Implemented
 CHRTOUTF8,FUNCTION,codegen builtin,Implemented
 CHRTOUTF8$,FUNCTION,Win32,Implemented
+CINT,FUNCTION,codegen builtin,Implemented
 CLASS/END CLASS,BLOCK,PB/Win + PB/CC,Implemented
 CLIP,FUNCTION,codegen builtin,Implemented
 CLIP$,FUNCTION,Win32,Implemented
 CLIPBOARD,STATEMENT,PB/Win + PB/CC,Implemented
+CLNG,FUNCTION,codegen builtin,Implemented
 CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
-CLSID,FUNCTION,codegen builtin,Implemented
 CLS,STATEMENT,PB/CC only,Implemented
+CLSID,FUNCTION,codegen builtin,Implemented
 CODEPTR,FUNCTION,codegen builtin,Implemented
 COLOR,STATEMENT,PB/CC only,Implemented
 COMBOBOX ADD,STATEMENT,PB/Win only,Implemented
@@ -115,6 +118,7 @@ COMBOBOX UNSELECT,STATEMENT,PB/Win only,Implemented
 COMM,FUNCTION,Win32,Implemented
 COMM CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
 COMM LINE,STATEMENT,PB/Win + PB/CC,Implemented
+COMM LINE INPUT,STATEMENT,PB/Win,Implemented
 COMM OPEN,STATEMENT,PB/Win + PB/CC,Implemented
 COMM PRINT,STATEMENT,PB/Win + PB/CC,Implemented
 COMM RECV,STATEMENT,PB/Win + PB/CC,Implemented
@@ -190,6 +194,7 @@ COSH,FUNCTION,LLVM intrinsic,Implemented
 COT,FUNCTION,C runtime (MSVCRT),Implemented
 COTH,FUNCTION,C runtime (MSVCRT),Implemented
 CQUAD,FUNCTION,codegen builtin,Implemented
+CQUD,FUNCTION,codegen builtin,Implemented
 CSC,FUNCTION,C runtime (MSVCRT),Implemented
 CSCH,FUNCTION,C runtime (MSVCRT),Implemented
 CSET,STATEMENT,PB/Win + PB/CC,Implemented
@@ -201,18 +206,18 @@ CURDIR,FUNCTION,codegen builtin,Implemented
 CURDIR$,FUNCTION,Win32,Implemented
 CVBYT,FUNCTION,codegen builtin,Implemented
 CVCUR,FUNCTION,codegen builtin,Implemented
+CVCUX,FUNCTION,codegen builtin,Implemented
 CVD,FUNCTION,codegen builtin,Implemented
+CVDWD,FUNCTION,codegen builtin,Implemented
 CVE,FUNCTION,codegen builtin,Implemented
 CVI,FUNCTION,codegen builtin,Implemented
-CVS,FUNCTION,codegen builtin,Implemented
-CVWRD,FUNCTION,codegen builtin,Implemented
-CWRD,FUNCTION,codegen builtin,Implemented
-CVCUX,FUNCTION,codegen builtin,Implemented
-CVDWD,FUNCTION,codegen builtin,Implemented
 CVL,FUNCTION,codegen builtin,Implemented
 CVQ,FUNCTION,codegen builtin,Implemented
+CVS,FUNCTION,codegen builtin,Implemented
 CVW,FUNCTION,codegen builtin,Implemented
+CVWRD,FUNCTION,codegen builtin,Implemented
 CWORD,FUNCTION,codegen builtin,Implemented
+CWRD,FUNCTION,codegen builtin,Implemented
 DATA,STATEMENT,PB/Win + PB/CC,Implemented
 DATACOUNT,FUNCTION,codegen builtin,Implemented
 DAYNAME,FUNCTION,codegen builtin,Implemented
@@ -221,6 +226,7 @@ DEC,FUNCTION,codegen builtin,Implemented
 DEC$,FUNCTION,Win32,Implemented
 DECLARE,STATEMENT,PB/Win + PB/CC,Implemented
 DECR,STATEMENT,PB/Win + PB/CC,Implemented
+DEF,OPERATOR,PB/Win + PB/CC,Implemented
 DEFBYT,STATEMENT,PB/Win only,Implemented
 DEFCUR,STATEMENT,PB/Win only,Implemented
 DEFCUX,STATEMENT,PB/Win only,Implemented
@@ -237,6 +243,7 @@ DESKTOP GET CLIENT,STATEMENT,PB/Win + PB/CC,Implemented
 DESKTOP GET LOC,STATEMENT,PB/Win + PB/CC,Implemented
 DESKTOP GET PPI,STATEMENT,PB/Win + PB/CC,Implemented
 DESKTOP GET SIZE,STATEMENT,PB/Win + PB/CC,Implemented
+DIALOG CENTER,FORK EXTENSION,PB/Win only,Implemented
 DIALOG DEFAULT FONT,STATEMENT,PB/Win only,Implemented
 DIALOG DISABLE,STATEMENT,PB/Win only,Implemented
 DIALOG DOEVENTS,STATEMENT,PB/Win only,Implemented
@@ -271,6 +278,7 @@ DIALOG STABILIZE,STATEMENT,PB/Win only,Implemented
 DIALOG UNITS,STATEMENT,PB/Win only,Implemented
 DIM,STATEMENT,PB/Win + PB/CC,Implemented
 DIR,FUNCTION,codegen builtin,Implemented
+DIR CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
 DIR$,FUNCTION,PB/Win + PB/CC,Implemented
 DISKFREE,FUNCTION,codegen builtin,Implemented
 DISKSIZE,FUNCTION,codegen builtin,Implemented
@@ -324,12 +332,14 @@ FORMAT$,FUNCTION,Win32,Implemented
 FRAC,FUNCTION,codegen builtin,Implemented
 FRE,FUNCTION,codegen builtin,Implemented
 FREEFILE,FUNCTION,codegen builtin,Implemented
+FUNCNAME,FUNCTION,PB/Win + PB/CC,Implemented
 FUNCNAME$,FUNCTION,codegen builtin (current_fn_name),Implemented
 FUNCTION / END FUNCTION,STATEMENT,PB/Win + PB/CC,Implemented
 GET,STATEMENT,PB/Win + PB/CC,Implemented
 GET$,STATEMENT,PB/Win + PB/CC,Implemented
 GET$$,STATEMENT,PB/Win + PB/CC,Implemented
 GETATTR,FUNCTION,codegen builtin,Implemented
+GETCOM,STATEMENT,PB/Win only,Implemented
 GET_STR,FUNCTION,codegen builtin,Implemented
 GET_WSTR,FUNCTION,codegen builtin,Implemented
 GLOBAL,STATEMENT,PB/Win + PB/CC,Implemented
@@ -470,7 +480,6 @@ ISWIN,FUNCTION,Win32 (IsWindow/GetDlgItem),Implemented
 ITERATE,STATEMENT,PB/Win + PB/CC,Implemented
 JOIN$,FUNCTION,Win32,Implemented
 KILL,STATEMENT,PB/Win + PB/CC,Implemented
-#LINK,STATEMENT,PB/Win only,Implemented
 LCASE,FUNCTION,codegen builtin,Implemented
 LCASE$,FUNCTION,Win32,Implemented
 LEFT,FUNCTION,codegen builtin,Implemented
@@ -557,6 +566,7 @@ MACRO/END MACRO,BLOCK,PB/Win + PB/CC,Implemented
 MAK,FUNCTION,codegen builtin,Implemented
 MAT,STATEMENT,PB/Win + PB/CC,Implemented
 MAX,FUNCTION,codegen builtin,Implemented
+MCASE,FUNCTION,PB/Win + PB/CC,Implemented
 MCASE$,FUNCTION,runtime pb_mcase_string,Implemented
 MEMORY,STATEMENT,PB/Win + PB/CC,Implemented
 MEMORY_FILL,FUNCTION,codegen builtin,Implemented
@@ -602,6 +612,9 @@ MONTHNAME$,FUNCTION,Win32,Implemented
 MOUSEPTR,STATEMENT,PB/CC only,Implemented
 MSGBOX,STATEMENT,PB/Win only,Implemented
 NAME,STATEMENT,PB/Win + PB/CC,Implemented
+NEWCOM,STATEMENT,PB/Win only,Implemented
+NOT,OPERATOR,PB/Win + PB/CC,Implemented
+NUL,FUNCTION,PB/Win + PB/CC,Implemented
 NUL$,FUNCTION,Win32,Implemented
 OBJECT,STATEMENT,PB/Win + PB/CC,Implemented
 OCT,FUNCTION,codegen builtin,Implemented
@@ -614,6 +627,7 @@ ON GOSUB,STATEMENT,PB/Win + PB/CC,Implemented
 ON GOTO,STATEMENT,PB/Win + PB/CC,Implemented
 OPEN,STATEMENT,PB/Win + PB/CC,Implemented
 OPTION EXPLICIT,STATEMENT,PB/Win + PB/CC,Implemented
+OR,OPERATOR,PB/Win + PB/CC,Implemented
 PARSE,STATEMENT,PB/Win + PB/CC,Implemented
 PARSE$,FUNCTION,Win32,Implemented
 PARSECOUNT,FUNCTION,codegen builtin,Implemented
@@ -817,6 +831,7 @@ VAL,STATEMENT,PB/Win + PB/CC,Implemented
 VARPTR,FUNCTION,codegen builtin,Implemented
 VERIFY,FUNCTION,codegen builtin,Implemented
 WAITKEY,FUNCTION,codegen builtin,Implemented
+WAITKEY$,FUNCTION,PB/CC + console,Implemented
 WINDOW GET,STATEMENT,PB/Win only,Implemented
 WINDOW SET,STATEMENT,PB/Win only,Implemented
 WORD,FUNCTION,codegen builtin,Implemented
@@ -824,6 +839,7 @@ WRAP,FUNCTION,codegen builtin,Implemented
 WRAP$,FUNCTION,Win32,Implemented
 WRITE,FUNCTION,codegen builtin,Implemented
 WRITE#,STATEMENT,PB/Win + PB/CC,Implemented
+XOR,OPERATOR,PB/Win + PB/CC,Implemented
 XPRINT ARC,STATEMENT,PB/Win + PB/CC,Implemented
 XPRINT ATTACH,STATEMENT,PB/Win + PB/CC,Implemented
 XPRINT BOX,STATEMENT,PB/Win + PB/CC,Implemented
@@ -901,16 +917,3 @@ XPRINT TEXT SIZE,STATEMENT,PB/Win + PB/CC,Implemented
 XPRINT WIDTH,STATEMENT,PB/Win + PB/CC,Implemented
 XPRINT_GET_COLOR,FUNCTION,codegen builtin,Implemented
 XPRINT_SET_COLOR,FUNCTION,codegen builtin,Implemented
-AND,OPERATOR,PB/Win + PB/CC,Implemented
-NOT,OPERATOR,PB/Win + PB/CC,Implemented
-OR,OPERATOR,PB/Win + PB/CC,Implemented
-XOR,OPERATOR,PB/Win + PB/CC,Implemented
-DEF,OPERATOR,PB/Win + PB/CC,Implemented
-DIR CLOSE,STATEMENT,PB/Win + PB/CC,Implemented
-NUL,FUNCTION,PB/Win + PB/CC,Implemented
-ACODE,FUNCTION,PB/Win + PB/CC,Implemented
-FUNCNAME,FUNCTION,PB/Win + PB/CC,Implemented
-MCASE,FUNCTION,PB/Win + PB/CC,Implemented
-COMM LINE INPUT,STATEMENT,PB/Win,Implemented
-WAITKEY$,FUNCTION,PB/CC + console,Implemented
-DIALOG CENTER,FORK EXTENSION,PB/Win only,Implemented

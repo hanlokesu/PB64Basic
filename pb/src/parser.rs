@@ -15130,21 +15130,69 @@ impl Parser {
                     ))
                 }
             }
-            Token::Identifier(name) if name.eq_ignore_ascii_case("NEWCOM") => {
-                // NEWCOM "ProgID" — COM object instantiation (CHW
-                // Creating_a_DISPATCH_Object: `LET objvar = NEWCOM "ProgID"`,
-                // LET optional).  The ProgID must be a string literal.
-                self.advance();
-                if let Token::StringLiteral(progid) = self.peek().clone() {
-                    self.advance();
-                    Ok(Expr::NewCom(progid))
+            Token::Identifier(name)
+                if name.eq_ignore_ascii_case("NEWCOM")
+                    || name.eq_ignore_ascii_case("GETCOM")
+                    || name.eq_ignore_ascii_case("ANYCOM") =>
+            {
+                // NEWCOM / GETCOM / ANYCOM — external COM object instantiation
+                // (CHW How_do_you_create_an_object_):
+                //   NEWCOM "ProgID"
+                //   NEWCOM CLSID ClassID$            (16-byte GUID, no ProgID)
+                //   NEWCOM CLSID ClassID$ LIB DllPath$  (registry-free load)
+                // GETCOM opens an existing running instance (GetActiveObject);
+                // ANYCOM prefers an existing instance, else creates a new one.
+                // All IDs / paths are string literals (PBWin requires them).
+                let mode = if name.eq_ignore_ascii_case("GETCOM") {
+                    1
+                } else if name.eq_ignore_ascii_case("ANYCOM") {
+                    2
                 } else {
-                    Err(PbError::parser(
-                        "NEWCOM requires a ProgID string: NEWCOM \"ProgID\"".to_string(),
+                    0
+                };
+                self.advance();
+                let mut clsid: Option<Box<Expr>> = None;
+                let mut lib: Option<Box<Expr>> = None;
+                let progid: String;
+                if let Token::StringLiteral(s) = self.peek().clone() {
+                    self.advance();
+                    progid = s;
+                } else if let Token::Identifier(kw) = self.peek().clone() {
+                    if kw.eq_ignore_ascii_case("CLSID") {
+                        self.advance();
+                        // ClassID$ is an expression (a 16-byte binary GUID,
+                        // e.g. CLSID$("ProgID")); the parser accepts any
+                        // expression so string variables work exactly as CHW.
+                        clsid = Some(Box::new(self.parse_expression()?));
+                        if let Token::Identifier(libkw) = self.peek().clone() {
+                            if libkw.eq_ignore_ascii_case("LIB") {
+                                self.advance();
+                                lib = Some(Box::new(self.parse_expression()?));
+                            }
+                        }
+                        progid = String::new();
+                    } else {
+                        return Err(PbError::parser(
+                            "NEWCOM/GETCOM/ANYCOM requires a ProgID string: NEWCOM \"ProgID\""
+                                .to_string(),
+                            None,
+                            self.current_line(),
+                        ));
+                    }
+                } else {
+                    return Err(PbError::parser(
+                        "NEWCOM/GETCOM/ANYCOM requires a ProgID string: NEWCOM \"ProgID\""
+                            .to_string(),
                         None,
                         self.current_line(),
-                    ))
+                    ));
                 }
+                Ok(Expr::ComNew {
+                    mode,
+                    progid,
+                    clsid,
+                    lib,
+                })
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("COMM") => {
                 // COMM([#] hComm, Comfunc) - CHW comm_function.htm.  The #
