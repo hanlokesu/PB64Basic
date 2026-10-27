@@ -8188,7 +8188,7 @@ impl Compiler {
                 let parsed = if let Some(rest) = trimmed.strip_prefix('-') {
                     parse_asm_imm(rest).map(|v| -v)
                 } else {
-                    parse_asm_imm(&trimmed)
+                    parse_asm_imm(trimmed)
                 };
                 if let Some(v) = parsed {
                     ops.push(Op::Imm(v));
