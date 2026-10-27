@@ -57,10 +57,8 @@ fn main() {
                         sll_name = Some(name.to_string());
                     }
                     true
-                } else if t.starts_with("#COMPILE DLL") {
-                    true
                 } else {
-                    false
+                    t.starts_with("#COMPILE DLL")
                 }
             })
         })

@@ -28,7 +28,7 @@ impl Value {
             PbType::Integer => Value::Integer(0),
             PbType::Double => Value::Double(0.0),
             PbType::Single => Value::Single(0.0),
-            PbType::String | PbType::FixedString(_) => Value::Str(String::new()),
+            PbType::String | PbType::FixedString(_) | PbType::WString => Value::Str(String::new()),
             PbType::Quad => Value::Quad(0),
             PbType::Dword => Value::Dword(0),
             PbType::Ext => Value::Ext(0.0),

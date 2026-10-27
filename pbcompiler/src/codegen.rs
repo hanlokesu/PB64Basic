@@ -1570,10 +1570,10 @@ impl Compiler {
             if al > max_align {
                 max_align = al;
             }
-            offset = (offset + al - 1) / al * al;
+            offset = offset.div_ceil(al) * al;
             offset += Self::ir_size_bytes(t);
         }
-        (offset + max_align - 1) / max_align * max_align
+        offset.div_ceil(max_align) * max_align
     }
 
     /// IR type for a struct field → FixedString becomes [N x i8] instead of ptr
@@ -7647,9 +7647,11 @@ impl Compiler {
                                         members must be objects */
                     let (mname, _) = self.module.add_string_constant(&seg.name);
                     emit_object_call_args(
-                        self,
-                        fb,
-                        oc,
+                        ObjectEmitCtx {
+                            codegen: self,
+                            fb,
+                            oc,
+                        },
                         seg,
                         &mname,
                         cur,
@@ -7675,7 +7677,19 @@ impl Compiler {
                         )));
                     }
                 };
-                emit_object_call_args(self, fb, oc, last, &mname, cur, res_ptr, rtype, wflags)?;
+                emit_object_call_args(
+                    ObjectEmitCtx {
+                        codegen: self,
+                        fb,
+                        oc,
+                    },
+                    last,
+                    &mname,
+                    cur,
+                    res_ptr,
+                    rtype,
+                    wflags,
+                )?;
                 Ok(())
             }
             Statement::If(i) => self.compile_if(fb, i),
@@ -26069,17 +26083,22 @@ fn name_has_type_suffix(name: &str) -> bool {
 /// Emit one pb_com_invoke call for a single OBJECT member segment
 /// (intermediate or final).  Args are PB variables; each is marshalled by
 /// type code into a VARIANT array passed to the runtime.
+struct ObjectEmitCtx<'a> {
+    codegen: &'a mut Compiler,
+    fb: &'a mut FunctionBuilder,
+    oc: &'a ObjectCallStmt,
+}
+
 fn emit_object_call_args(
-    codegen: &mut Compiler,
-    fb: &mut FunctionBuilder,
-    oc: &ObjectCallStmt,
+    ctx: ObjectEmitCtx<'_>,
     seg: &ObjectMember,
-    mname: &String,
+    mname: &str,
     disp: Val,
     res_ptr: Val,
     rtype: i32,
     wflags: i32,
 ) -> PbResult<()> {
+    let ObjectEmitCtx { codegen, fb, oc } = ctx;
     let n = seg.args.len();
     let arr_ty = IrType::Array(n.max(1), Box::new(IrType::Ptr));
     let ty_ty = IrType::Array(n.max(1), Box::new(IrType::I32));
@@ -26108,7 +26127,7 @@ fn emit_object_call_args(
         "pb_com_invoke",
         &[
             disp,
-            Val::new(mname.clone(), IrType::Ptr),
+            Val::new(mname.to_string(), IrType::Ptr),
             arr_slot,
             ty_slot,
             fb.const_i32(n as i32),
