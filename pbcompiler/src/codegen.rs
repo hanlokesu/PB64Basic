@@ -1977,6 +1977,41 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_str_len", &IrType::I32, &[IrType::Ptr], false);
+        // batch 281: WSTRING (UTF-16 BSTR) string-function helpers
+        self.module
+            .declare_function("pb_wstr_len", &IrType::I32, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_wstr_asc",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module
+            .declare_function("pb_ansi_to_wide", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_wstr_left",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_wstr_right",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_wstr_mid",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::I64, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_wide_instr",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::Ptr, IrType::I64],
+            false,
+        );
         self.module
             .declare_function("pb_str_cstr_len", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -8216,6 +8251,36 @@ impl Compiler {
 
     // ========== Assign ==========
 
+    /// True when the expression statically evaluates to a WSTRING (UTF-16 BSTR):
+    /// a WSTRING variable, a `"..."$$` literal, a wide-returning string function
+    /// (MID$/LEFT$/RIGHT$ on a wide source), or a concat with a wide side
+    /// (batch 281: PBWin promotes STRING+WSTRING to WSTRING).
+    fn expr_is_wstring(&mut self, e: &Expr) -> bool {
+        match e {
+            Expr::Variable(name) => {
+                if let Some(info) = self.symbols.lookup(&normalize_name(name)) {
+                    info.pb_type == PbType::WString
+                } else {
+                    false
+                }
+            }
+            Expr::WideStringLit(_) => true,
+            Expr::FunctionCall(name, args) => {
+                let n = name.to_uppercase();
+                if n == "MID$" || n == "LEFT$" || n == "RIGHT$" {
+                    args.first()
+                        .map(|a| self.expr_is_wstring(a))
+                        .unwrap_or(false)
+                } else {
+                    // CHR$$ always returns a WSTRING (UTF-16 BSTR).
+                    n == "CHR$$"
+                }
+            }
+            Expr::BinaryOp(_, l, r) => self.expr_is_wstring(l) || self.expr_is_wstring(r),
+            _ => false,
+        }
+    }
+
     fn compile_assign(&mut self, fb: &mut FunctionBuilder, assign: &AssignStmt) -> PbResult<()> {
         let value = self.compile_expr(fb, &assign.value)?;
         match &assign.target {
@@ -8276,7 +8341,22 @@ impl Compiler {
                         let slen = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&src));
                         fb.call_void("pb_field_set", &[fv_ptr, src, slen]);
                     } else {
-                        let converted = self.convert_value(fb, &value, &target_ir, &target_pb);
+                        // WSTRING destination: a non-wide (ANSI STRING / literal)
+                        // value must be converted to UTF-16 first (batch 281;
+                        // PBWin auto-converts STRING -> WSTRING on assignment).
+                        let v = if matches!(target_pb, PbType::WString)
+                            && value.ty == IrType::Ptr
+                            && !self.expr_is_wstring(&assign.value)
+                        {
+                            fb.call(
+                                &IrType::Ptr,
+                                "pb_ansi_to_wide",
+                                std::slice::from_ref(&value),
+                            )
+                        } else {
+                            value
+                        };
+                        let converted = self.convert_value(fb, &v, &target_ir, &target_pb);
                         let ptr = Val::new(ptr_name, IrType::Ptr);
                         fb.store(&converted, &ptr);
                     }
@@ -21597,6 +21677,12 @@ impl Compiler {
             Expr::FunctionCall(name, args) => {
                 let raw_upper = name.to_uppercase();
                 let name = normalize_name(name);
+                // CHR$$(n...) returns a WSTRING (UTF-16 BSTR); each argument is
+                // truncated to the low 16 bits (PBWin probe: CHR$$(&H1F600) ->
+                // code 0xF600).  normalize_name would collapse it onto CHR$.
+                if raw_upper == "CHR$$" {
+                    return self.builtin_chr_wide(fb, args);
+                }
                 // BITS$(STRING, s$) copies string contents without conversion
                 // (CHW BITS$_function.htm).  normalize_name strips the trailing
                 // $, so the original spelling is checked here to keep BITS and
@@ -21879,7 +21965,12 @@ impl Compiler {
             Expr::BinaryOp(op, left, right) => {
                 let lhs = self.compile_expr(fb, left)?;
                 let rhs = self.compile_expr(fb, right)?;
-                self.compile_binary_op(fb, op, &lhs, &rhs)
+                // WSTRING (batch 281): a concat with a wide side promotes the
+                // whole result to WSTRING, so the wide flags must be known here
+                // (the Val layer has already lost the static PB types).
+                let lwide = self.expr_is_wstring(left);
+                let rwide = self.expr_is_wstring(right);
+                self.compile_binary_op(fb, op, &lhs, &rhs, lwide, rwide)
             }
         }
     }
@@ -21890,10 +21981,12 @@ impl Compiler {
         op: &BinaryOp,
         lhs: &Val,
         rhs: &Val,
+        lwide: bool,
+        rwide: bool,
     ) -> PbResult<Val> {
         // String operations
         if lhs.ty == IrType::Ptr || rhs.ty == IrType::Ptr {
-            return self.compile_string_binop(fb, op, lhs, rhs);
+            return self.compile_string_binop(fb, op, lhs, rhs, lwide, rwide);
         }
 
         // Float promotion if either side is float
@@ -21948,7 +22041,7 @@ impl Compiler {
                 // & on non-string operands: convert both to strings and concat
                 let ls = self.num_to_string(fb, &l);
                 let rs = self.num_to_string(fb, &r);
-                Ok(self.compile_str_concat(fb, &ls, &rs))
+                Ok(self.compile_str_concat(fb, &ls, &rs, false, false))
             }
         }
     }
@@ -21980,7 +22073,7 @@ impl Compiler {
             BinaryOp::StrConcat => {
                 let ls = self.num_to_string(fb, l);
                 let rs = self.num_to_string(fb, r);
-                Ok(self.compile_str_concat(fb, &ls, &rs))
+                Ok(self.compile_str_concat(fb, &ls, &rs, false, false))
             }
             _ => Ok(fb.const_f64(0.0)),
         }
@@ -22002,6 +22095,8 @@ impl Compiler {
         op: &BinaryOp,
         lhs: &Val,
         rhs: &Val,
+        lwide: bool,
+        rwide: bool,
     ) -> PbResult<Val> {
         // Null-guard both operands for all string operations.
         // A numeric operand in a string context must first be converted to
@@ -22011,10 +22106,10 @@ impl Compiler {
         let safe_l = self.stringify_operand(fb, lhs);
         let safe_r = self.stringify_operand(fb, rhs);
         match op {
-            BinaryOp::StrConcat => Ok(self.compile_str_concat(fb, &safe_l, &safe_r)),
+            BinaryOp::StrConcat => Ok(self.compile_str_concat(fb, &safe_l, &safe_r, lwide, rwide)),
             BinaryOp::Add => {
                 // "+" on strings acts as concat in some contexts
-                Ok(self.compile_str_concat(fb, &safe_l, &safe_r))
+                Ok(self.compile_str_concat(fb, &safe_l, &safe_r, lwide, rwide))
             }
             BinaryOp::Eq => {
                 let cmp = fb.call(&IrType::I32, "strcmp", &[safe_l, safe_r]);
@@ -22050,7 +22145,30 @@ impl Compiler {
         }
     }
 
-    fn compile_str_concat(&mut self, fb: &mut FunctionBuilder, a: &Val, b: &Val) -> Val {
+    fn compile_str_concat(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        a: &Val,
+        b: &Val,
+        lwide: bool,
+        rwide: bool,
+    ) -> Val {
+        // WSTRING (batch 281): PBWin promotes STRING+WSTRING to WSTRING; the
+        // ANSI side is converted to UTF-16 first so the byte concat is valid.
+        if lwide || rwide {
+            let aw = if lwide {
+                a.clone()
+            } else {
+                fb.call(&IrType::Ptr, "pb_ansi_to_wide", std::slice::from_ref(a))
+            };
+            let bw = if rwide {
+                b.clone()
+            } else {
+                fb.call(&IrType::Ptr, "pb_ansi_to_wide", std::slice::from_ref(b))
+            };
+            // Use null-safe runtime concat (handles null pointers from uninitialized strings)
+            return fb.call(&IrType::Ptr, "pb_str_concat", &[aw, bw]);
+        }
         // Use null-safe runtime concat (handles null pointers from uninitialized strings)
         fb.call(&IrType::Ptr, "pb_str_concat", &[a.clone(), b.clone()])
     }
@@ -24621,6 +24739,10 @@ impl Compiler {
             }
         }
         // Constants carry a BSTR prefix; runtime strings are BSTRs: byte-length prefix
+        // WSTRING: UTF-16 BSTR — LEN = code-unit count = byte prefix / 2 (batch 281).
+        if self.expr_is_wstring(&args[0]) {
+            return Ok(fb.call(&IrType::I32, "pb_wstr_len", &[s]));
+        }
         Ok(fb.call(&IrType::I32, "pb_str_len", &[s]))
     }
 
@@ -24678,9 +24800,41 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, len_val]))
     }
 
+    /// CHR$$(code& [, code& ...]) — WSTRING (UTF-16 BSTR).  Each argument is
+    /// truncated to the low 16 bits and emitted as one UTF-16LE code unit
+    /// (batch 281; PBWin probe: CHR$$(&H1F600) -> ASC = 0xF600).
+    fn builtin_chr_wide(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.is_empty() {
+            let tmp = fb.alloca(&IrType::I8);
+            let zero = fb.const_i32(0);
+            return Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[tmp, zero]));
+        }
+        let bytes = (args.len() * 2) as i32;
+        let bytes_val = fb.const_i32(bytes);
+        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&bytes_val));
+        let mask = fb.const_i32(0xFFFF);
+        let eight = fb.const_i32(8);
+        for (i, arg) in args.iter().enumerate() {
+            let code = self.compile_expr(fb, arg)?;
+            let code_i32 = self.to_i32(fb, &code);
+            let lo = fb.and(&code_i32, &mask);
+            let byte_lo = fb.trunc(&lo, &IrType::I8);
+            let off = fb.const_i32((i * 2) as i32);
+            let slot = fb.gep_byte(&buf, &off);
+            fb.store(&byte_lo, &slot);
+            let hi = fb.lshr(&lo, &eight);
+            let byte_hi = fb.trunc(&hi, &IrType::I8);
+            let off2 = fb.const_i32((i * 2 + 1) as i32);
+            let slot2 = fb.gep_byte(&buf, &off2);
+            fb.store(&byte_hi, &slot2);
+        }
+        Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, bytes_val]))
+    }
+
     fn builtin_asc(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         // ASC(s$ [, pos]) — pos 1-based, negative counts from the end; null /
         // 0 / out-of-range returns -1 (CHW + PBWin10).  pb_asc_get handles all.
+        // WSTRING: UTF-16 code-unit value (0..65535, batch 281).
         let s = self.compile_expr(fb, &args[0])?;
         let pos = if args.len() > 1 {
             let p = self.compile_expr(fb, &args[1])?;
@@ -24688,6 +24842,9 @@ impl Compiler {
         } else {
             fb.const_i64(1)
         };
+        if self.expr_is_wstring(&args[0]) {
+            return Ok(fb.call(&IrType::I64, "pb_wstr_asc", &[s, pos]));
+        }
         Ok(fb.call(&IrType::I64, "pb_asc_get", &[s, pos]))
     }
 
@@ -24930,6 +25087,12 @@ impl Compiler {
 
     fn builtin_left(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
+        // WSTRING: LEFT$ takes the first n UTF-16 code units (batch 281).
+        if self.expr_is_wstring(&args[0]) {
+            let n = self.compile_expr(fb, &args[1])?;
+            let n_i64 = self.to_i64(fb, &n);
+            return Ok(fb.call(&IrType::Ptr, "pb_wstr_left", &[s, n_i64]));
+        }
         let n = self.compile_expr(fb, &args[1])?;
         let n_i32 = self.to_i32(fb, &n);
         // SysAllocStringByteLen copies n bytes from src and null-terminates
@@ -24938,6 +25101,12 @@ impl Compiler {
 
     fn builtin_right(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
+        // WSTRING: RIGHT$ takes the last n UTF-16 code units (batch 281).
+        if self.expr_is_wstring(&args[0]) {
+            let n = self.compile_expr(fb, &args[1])?;
+            let n_i64 = self.to_i64(fb, &n);
+            return Ok(fb.call(&IrType::Ptr, "pb_wstr_right", &[s, n_i64]));
+        }
         let n = self.compile_expr(fb, &args[1])?;
         let n_i32 = self.to_i32(fb, &n);
         let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
@@ -25049,6 +25218,24 @@ impl Compiler {
         // MID$(s, start) or MID$(s, start, length)
         // PB MID$ is 1-based
         let s = self.compile_expr(fb, &args[0])?;
+        // WSTRING: slice by UTF-16 code unit; pb_wstr_mid implements the full
+        // PB start/count semantics (negative start/count, out-of-range -> empty).
+        if self.expr_is_wstring(&args[0]) {
+            let start = self.compile_expr(fb, &args[1])?;
+            let start_i64 = self.to_i64(fb, &start);
+            let has_count = fb.const_i32(if args.len() >= 3 { 1 } else { 0 });
+            let count = if args.len() >= 3 {
+                let c = self.compile_expr(fb, &args[2])?;
+                self.to_i64(fb, &c)
+            } else {
+                fb.const_i64(0)
+            };
+            return Ok(fb.call(
+                &IrType::Ptr,
+                "pb_wstr_mid",
+                &[s, start_i64, count, has_count],
+            ));
+        }
         let start = self.compile_expr(fb, &args[1])?;
         let start_i32 = self.to_i32(fb, &start);
         let one = fb.const_i32(1);
@@ -25071,6 +25258,48 @@ impl Compiler {
     fn builtin_instr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         // INSTR(haystack, needle) or INSTR(start, haystack, needle)
         // Returns 1-based position, or 0 if not found
+        // WSTRING (batch 281): search by UTF-16 code unit; an ANSI side is
+        // auto-converted to UTF-16 so both operands share one encoding.
+        let (main_is_wide, needle_is_wide) = if args.len() >= 3 {
+            (
+                self.expr_is_wstring(&args[1]),
+                self.expr_is_wstring(&args[2]),
+            )
+        } else {
+            (
+                self.expr_is_wstring(&args[0]),
+                self.expr_is_wstring(&args[1]),
+            )
+        };
+        if main_is_wide || needle_is_wide {
+            let start = if args.len() >= 3 {
+                let st = self.compile_expr(fb, &args[0])?;
+                self.to_i64(fb, &st)
+            } else {
+                fb.const_i64(1)
+            };
+            let main_v = self.compile_expr(fb, &args[if args.len() >= 3 { 1 } else { 0 }])?;
+            let needle_v = self.compile_expr(fb, &args[if args.len() >= 3 { 2 } else { 1 }])?;
+            let m = if main_is_wide {
+                main_v
+            } else {
+                fb.call(
+                    &IrType::Ptr,
+                    "pb_ansi_to_wide",
+                    std::slice::from_ref(&main_v),
+                )
+            };
+            let n = if needle_is_wide {
+                needle_v
+            } else {
+                fb.call(
+                    &IrType::Ptr,
+                    "pb_ansi_to_wide",
+                    std::slice::from_ref(&needle_v),
+                )
+            };
+            return Ok(fb.call(&IrType::I64, "pb_wide_instr", &[m, n, start]));
+        }
         let (base, search_start, needle) = if args.len() >= 3 {
             let start = self.compile_expr(fb, &args[0])?;
             let start_i32 = self.to_i32(fb, &start);
