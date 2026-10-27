@@ -1,6 +1,6 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 280 (v0.2.086)** — 2026-10-27. All statements through batch 280 are reflected in this matrix.
+> **Last updated from batch 282 (v0.2.087)** — 2026-10-27. All statements through batch 282 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
@@ -14,8 +14,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 780 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
-| ✅ Established | 126 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
+| ✅ Implemented (this project) | 893 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Established | 13 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **906** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
@@ -32,7 +32,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ACODE$ | FUNCTION | Win32 | Implemented |
 | ACOS | FUNCTION | LLVM intrinsic | Implemented |
 | ACOSH | FUNCTION | LLVM intrinsic | Implemented |
-| AND | OPERATOR | PB/Win + PB/CC | Established |
+| AND | OPERATOR | PB/Win + PB/CC | Implemented |
 | ARRAY ADD | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY ARRAYIX | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY ASSIGN | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -50,20 +50,20 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ARRAY TAGARRAY | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY TAGARRAY ERASE | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY UNIQUE | STATEMENT | PB/Win + PB/CC | Implemented |
-| ASC | STATEMENT | PB/Win + PB/CC | Established |
+| ASC | STATEMENT | PB/Win + PB/CC | Implemented |
 | ASIN | FUNCTION | LLVM intrinsic | Implemented |
 | ASINH | FUNCTION | LLVM intrinsic | Implemented |
-| ASM | STATEMENT | PB/Win + PB/CC | Established |
-| ASMDATA / END ASMDATA | BLOCK | PB/Win + PB/CC | Established |
+| ASM | STATEMENT | PB/Win + PB/CC | Implemented |
+| ASMDATA / END ASMDATA | BLOCK | PB/Win + PB/CC | Implemented |
 | ATANH | FUNCTION | LLVM intrinsic | Implemented |
 | ATN | FUNCTION | LLVM intrinsic | Implemented |
 | ATN2 | FUNCTION | codegen builtin | Implemented |
-| BEEP | STATEMENT | PB/Win + PB/CC | Established |
+| BEEP | STATEMENT | PB/Win + PB/CC | Implemented |
 | BGR | FUNCTION | codegen builtin | Implemented |
 | BIN | FUNCTION | codegen builtin | Implemented |
 | BIN$ | FUNCTION | Win32 | Implemented |
-| BIT | STATEMENT | PB/Win + PB/CC | Established |
-| BIT CALC | STATEMENT | PB/Win + PB/CC | Established |
+| BIT | STATEMENT | PB/Win + PB/CC | Implemented |
+| BIT CALC | STATEMENT | PB/Win + PB/CC | Implemented |
 | BITS | FUNCTION | codegen builtin | Implemented |
 | BITS$ | FUNCTION | Win32 | Implemented |
 | BITSE | FUNCTION | codegen builtin (lvalue test-and-set) | Implemented |
@@ -117,9 +117,9 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | CLIPBOARD | STATEMENT | PB/Win + PB/CC | Implemented |
 | CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | CLSID | FUNCTION | codegen builtin | Implemented |
-| CLS | STATEMENT | PB/CC only | Established |
+| CLS | STATEMENT | PB/CC only | Implemented |
 | CODEPTR | FUNCTION | codegen builtin | Implemented |
-| COLOR | STATEMENT | PB/CC only | Established |
+| COLOR | STATEMENT | PB/CC only | Implemented |
 | COMBOBOX ADD | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX DELETE | STATEMENT | PB/Win only | Implemented |
 | COMBOBOX FIND | STATEMENT | PB/Win only | Implemented |
@@ -245,7 +245,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DEC | FUNCTION | codegen builtin | Implemented |
 | DEC$ | FUNCTION | Win32 | Implemented |
 | DECLARE | STATEMENT | PB/Win + PB/CC | Implemented |
-| DECR | STATEMENT | PB/Win + PB/CC | Established |
+| DECR | STATEMENT | PB/Win + PB/CC | Implemented |
 | DEF | OPERATOR | PB/Win + PB/CC | Implemented |
 | DEFBYT | STATEMENT | PB/Win only | Implemented |
 | DEFCUR | STATEMENT | PB/Win only | Implemented |
@@ -259,10 +259,10 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DEFSNG | STATEMENT | PB/Win only | Implemented |
 | DEFSTR | STATEMENT | PB/Win only | Implemented |
 | DEFWRD | STATEMENT | PB/Win only | Implemented |
-| DESKTOP GET CLIENT | STATEMENT | PB/Win + PB/CC | Established |
-| DESKTOP GET LOC | STATEMENT | PB/Win + PB/CC | Established |
+| DESKTOP GET CLIENT | STATEMENT | PB/Win + PB/CC | Implemented |
+| DESKTOP GET LOC | STATEMENT | PB/Win + PB/CC | Implemented |
 | DESKTOP GET PPI | STATEMENT | PB/Win + PB/CC | Implemented |
-| DESKTOP GET SIZE | STATEMENT | PB/Win + PB/CC | Established |
+| DESKTOP GET SIZE | STATEMENT | PB/Win + PB/CC | Implemented |
 | DIALOG CENTER | FORK EXTENSION | PB/Win only | Implemented |
 | DIALOG DEFAULT FONT | STATEMENT | PB/Win only | Implemented |
 | DIALOG DISABLE | STATEMENT | PB/Win only | Implemented |
@@ -309,25 +309,25 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | DISPLAY SAVEFILE | STATEMENT | PB/Win only | Implemented |
 | DLLMAIN | FUNCTION | PB/Win only | Implemented |
 | DOUBLE | FUNCTION | codegen builtin | Implemented |
-| END | STATEMENT | PB/Win + PB/CC | Established |
+| END | STATEMENT | PB/Win + PB/CC | Implemented |
 | ENUM | BLOCK | PB/Win only | Implemented |
-| ENVIRON | STATEMENT | PB/Win + PB/CC | Established |
+| ENVIRON | STATEMENT | PB/Win + PB/CC | Implemented |
 | ENVIRON$ | FUNCTION | Win32 | Implemented |
 | EOF | FUNCTION | codegen builtin | Implemented |
 | EQV | FUNCTION | PB/Win + PB/CC | Implemented |
-| ERASE | STATEMENT | PB/Win + PB/CC | Established |
+| ERASE | STATEMENT | PB/Win + PB/CC | Implemented |
 | ERF | FUNCTION | C runtime (MSVCRT) | Implemented |
 | ERL | FUNCTION | codegen builtin | Implemented |
 | ERL$ | FUNCTION | Win32 | Implemented |
 | ERR | FUNCTION | codegen builtin | Implemented |
 | ERRCLEAR | FUNCTION | codegen builtin | Implemented |
-| ERROR | STATEMENT | PB/Win + PB/CC | Established |
+| ERROR | STATEMENT | PB/Win + PB/CC | Implemented |
 | ERROR$ | FUNCTION | Win32 | Implemented |
 | EVENT SOURCE | STATEMENT | PB/Win + PB/CC | Implemented |
 | EVENTS | STATEMENT | PB/Win + PB/CC | Implemented |
 | EXE | FUNCTION | codegen builtin | Implemented |
 | EXIST | FUNCTION | codegen builtin | Implemented |
-| EXIT | STATEMENT | PB/Win + PB/CC | Established |
+| EXIT | STATEMENT | PB/Win + PB/CC | Implemented |
 | EXP | FUNCTION | LLVM intrinsic | Implemented |
 | EXP10 | FUNCTION | LLVM intrinsic | Implemented |
 | EXP2 | FUNCTION | LLVM intrinsic | Implemented |
@@ -335,18 +335,18 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | EXPORT | STATEMENT | PB/Win only | Implemented |
 | EXTRACT | FUNCTION | codegen builtin | Implemented |
 | EXTRACT$ | FUNCTION | Win32 | Implemented |
-| FIELD | STATEMENT | PB/Win + PB/CC | Established |
+| FIELD | STATEMENT | PB/Win + PB/CC | Implemented |
 | FILEATTR | FUNCTION | codegen builtin | Implemented |
-| FILECOPY | STATEMENT | PB/Win + PB/CC | Established |
+| FILECOPY | STATEMENT | PB/Win + PB/CC | Implemented |
 | FILENAME | FUNCTION | codegen builtin | Implemented |
 | FILENAME$ | FUNCTION | Win32 | Implemented |
-| FILESCAN | STATEMENT | PB/Win + PB/CC | Established |
+| FILESCAN | STATEMENT | PB/Win + PB/CC | Implemented |
 | FIX | FUNCTION | codegen builtin | Implemented |
 | FLOOR | FUNCTION | LLVM intrinsic | Implemented |
-| FLUSH | STATEMENT | PB/Win + PB/CC | Established |
+| FLUSH | STATEMENT | PB/Win + PB/CC | Implemented |
 | FONT END | STATEMENT | PB/Win + PB/CC | Implemented |
 | FONT NEW | STATEMENT | PB/Win + PB/CC | Implemented |
-| FOR / NEXT | STATEMENT | PB/Win + PB/CC | Established |
+| FOR / NEXT | STATEMENT | PB/Win + PB/CC | Implemented |
 | FORMAT | FUNCTION | codegen builtin | Implemented |
 | FORMAT$ | FUNCTION | Win32 | Implemented |
 | FRAC | FUNCTION | codegen builtin | Implemented |
@@ -354,15 +354,15 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | FREEFILE | FUNCTION | codegen builtin | Implemented |
 | FUNCNAME | FUNCTION | PB/Win + PB/CC | Implemented |
 | FUNCNAME$ | FUNCTION | codegen builtin (current_fn_name) | Implemented |
-| FUNCTION / END FUNCTION | STATEMENT | PB/Win + PB/CC | Established |
+| FUNCTION / END FUNCTION | STATEMENT | PB/Win + PB/CC | Implemented |
 | GET | STATEMENT | PB/Win + PB/CC | Implemented |
 | GET$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | GET$$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | GETATTR | FUNCTION | codegen builtin | Implemented |
 | GET_STR | FUNCTION | codegen builtin | Implemented |
 | GET_WSTR | FUNCTION | codegen builtin | Implemented |
-| GLOBAL | STATEMENT | PB/Win + PB/CC | Established |
-| GLOBALMEM | STATEMENT | PB/Win + PB/CC | Established |
+| GLOBAL | STATEMENT | PB/Win + PB/CC | Implemented |
+| GLOBALMEM | STATEMENT | PB/Win + PB/CC | Implemented |
 | GRAPHIC ARC | STATEMENT | PB/Win + PB/CC | Implemented |
 | GRAPHIC ATTACH | STATEMENT | PB/Win + PB/CC | Implemented |
 | GRAPHIC BITMAP CAPTURE | FORK EXTENSION | PB/Win + PB/CC | Implemented |
@@ -460,11 +460,11 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | HEX$ | FUNCTION | Win32 | Implemented |
 | HI | FUNCTION | Win32 | Implemented |
 | HIWRD | FUNCTION | codegen builtin | Implemented |
-| HOST ADDR | STATEMENT | PB/Win + PB/CC | Established |
-| HOST NAME | STATEMENT | PB/Win + PB/CC | Established |
+| HOST ADDR | STATEMENT | PB/Win + PB/CC | Implemented |
+| HOST NAME | STATEMENT | PB/Win + PB/CC | Implemented |
 | HYPOT | FUNCTION | C runtime (MSVCRT) | Implemented |
-| IF | STATEMENT | PB/Win + PB/CC | Established |
-| IF/END IF | BLOCK | PB/Win + PB/CC | Established |
+| IF | STATEMENT | PB/Win + PB/CC | Implemented |
+| IF/END IF | BLOCK | PB/Win + PB/CC | Implemented |
 | IIF | FUNCTION | codegen builtin | Implemented |
 | IMAGELIST ADD BITMAP | STATEMENT | PB/Win only | Implemented |
 | IMAGELIST ADD ICON | STATEMENT | PB/Win only | Implemented |
@@ -477,9 +477,9 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | IMAGELIST_COUNT | FUNCTION | codegen builtin | Implemented |
 | IMAGELIST_NEW | FUNCTION | codegen builtin | Implemented |
 | IMP | FUNCTION | PB/Win + PB/CC | Implemented |
-| IMPORT | STATEMENT | PB/Win + PB/CC | Established |
-| INCR | STATEMENT | PB/Win + PB/CC | Established |
-| INPUT FLUSH | STATEMENT | PB/CC only | Established |
+| IMPORT | STATEMENT | PB/Win + PB/CC | Implemented |
+| INCR | STATEMENT | PB/Win + PB/CC | Implemented |
+| INPUT FLUSH | STATEMENT | PB/CC only | Implemented |
 | INPUT# | STATEMENT | PB/CC only | Implemented |
 | INSTANCE | STATEMENT | PB/Win + PB/CC | Implemented |
 | INSTR | FUNCTION | codegen builtin | Implemented |
@@ -496,17 +496,17 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ISODD | FUNCTION | codegen builtin | Implemented |
 | ISTRUE | FUNCTION | codegen builtin | Implemented |
 | ISWIN | FUNCTION | Win32 (IsWindow/GetDlgItem) | Implemented |
-| ITERATE | STATEMENT | PB/Win + PB/CC | Established |
+| ITERATE | STATEMENT | PB/Win + PB/CC | Implemented |
 | JOIN$ | FUNCTION | Win32 | Implemented |
-| KILL | STATEMENT | PB/Win + PB/CC | Established |
+| KILL | STATEMENT | PB/Win + PB/CC | Implemented |
 | LCASE | FUNCTION | codegen builtin | Implemented |
 | LCASE$ | FUNCTION | Win32 | Implemented |
 | LEFT | FUNCTION | codegen builtin | Implemented |
 | LEFT$ | FUNCTION | Win32 | Implemented |
 | LEN | FUNCTION | codegen builtin | Implemented |
-| LET | STATEMENT | PB/Win + PB/CC | Established |
+| LET | STATEMENT | PB/Win + PB/CC | Implemented |
 | LET *(WITH OBJECTS)* | STATEMENT | PB/Win + PB/CC | Implemented |
-| LET *(WITH TYPES)* | STATEMENT | PB/Win + PB/CC | Established |
+| LET *(WITH TYPES)* | STATEMENT | PB/Win + PB/CC | Implemented |
 | LET *(WITH VARIANTS)* | STATEMENT | PB/Win + PB/CC | Implemented |
 | LIBMAIN | FUNCTION | PB/Win only | Implemented |
 | LINE INPUT# | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -562,8 +562,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | LISTVIEW VISIBLE | STATEMENT | PB/Win only | Implemented |
 | LO | FUNCTION | codegen builtin | Implemented |
 | LOC | FUNCTION | Win32 | Implemented |
-| LOCAL | STATEMENT | PB/Win + PB/CC | Established |
-| LOCK | STATEMENT | PB/Win + PB/CC | Established |
+| LOCAL | STATEMENT | PB/Win + PB/CC | Implemented |
+| LOCK | STATEMENT | PB/Win + PB/CC | Implemented |
 | LOF | FUNCTION | Win32 | Implemented |
 | LOG | FUNCTION | LLVM intrinsic | Implemented |
 | LOG10 | FUNCTION | LLVM intrinsic | Implemented |
@@ -571,23 +571,23 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | LOG2 | FUNCTION | LLVM intrinsic | Implemented |
 | LONG | FUNCTION | codegen builtin | Implemented |
 | LOWRD | FUNCTION | codegen builtin | Implemented |
-| LPRINT | STATEMENT | PB/Win + PB/CC | Established |
-| LPRINT ATTACH | STATEMENT | PB/Win + PB/CC | Established |
-| LPRINT CLOSE | STATEMENT | PB/Win + PB/CC | Established |
-| LPRINT FLUSH | STATEMENT | PB/Win + PB/CC | Established |
-| LPRINT FORMFEED | STATEMENT | PB/Win + PB/CC | Established |
+| LPRINT | STATEMENT | PB/Win + PB/CC | Implemented |
+| LPRINT ATTACH | STATEMENT | PB/Win + PB/CC | Implemented |
+| LPRINT CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
+| LPRINT FLUSH | STATEMENT | PB/Win + PB/CC | Implemented |
+| LPRINT FORMFEED | STATEMENT | PB/Win + PB/CC | Implemented |
 | LPRINT$ | FUNCTION | Win32 | Implemented |
-| LSET | STATEMENT | PB/Win + PB/CC | Established |
+| LSET | STATEMENT | PB/Win + PB/CC | Implemented |
 | LSET$ | FUNCTION | Win32 | Implemented |
 | LTRIM | FUNCTION | codegen builtin | Implemented |
 | LTRIM$ | FUNCTION | Win32 | Implemented |
-| MACRO/END MACRO | BLOCK | PB/Win + PB/CC | Established |
+| MACRO/END MACRO | BLOCK | PB/Win + PB/CC | Implemented |
 | MAK | FUNCTION | codegen builtin | Implemented |
-| MAT | STATEMENT | PB/Win + PB/CC | Established |
+| MAT | STATEMENT | PB/Win + PB/CC | Implemented |
 | MAX | FUNCTION | codegen builtin | Implemented |
 | MCASE | FUNCTION | PB/Win + PB/CC | Implemented |
 | MCASE$ | FUNCTION | runtime pb_mcase_string | Implemented |
-| MEMORY | STATEMENT | PB/Win + PB/CC | Established |
+| MEMORY | STATEMENT | PB/Win + PB/CC | Implemented |
 | MEMORY_FILL | FUNCTION | codegen builtin | Implemented |
 | MEMORY_FILLS | FUNCTION | codegen builtin | Implemented |
 | MENU ADD POPUP | STATEMENT | PB/Win only | Implemented |
@@ -605,7 +605,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | METHOD / END METHOD | STATEMENT | PB/Win + PB/CC | Implemented |
 | METRICS | FUNCTION | Win32 | Implemented |
 | MID | FUNCTION | codegen builtin | Implemented |
-| MID$ | STATEMENT | PB/Win + PB/CC | Established |
+| MID$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | MIN | FUNCTION | codegen builtin | Implemented |
 | MKBYT | FUNCTION | codegen builtin | Implemented |
 | MKBYT$ | STATEMENT | PB/Win + PB/CC | Established |
@@ -613,7 +613,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MKCUX | FUNCTION | codegen builtin | Implemented |
 | MKCUX$ | STATEMENT | PB/Win + PB/CC | Established |
 | MKD$ | STATEMENT | PB/Win + PB/CC | Established |
-| MKDIR | STATEMENT | PB/Win + PB/CC | Established |
+| MKDIR | STATEMENT | PB/Win + PB/CC | Implemented |
 | MKDWD | FUNCTION | codegen builtin | Implemented |
 | MKDWD$ | STATEMENT | PB/Win + PB/CC | Established |
 | MKE | FUNCTION | codegen builtin | Implemented |
@@ -628,11 +628,11 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MOD | FUNCTION | codegen builtin | Implemented |
 | MONTHNAME | FUNCTION | codegen builtin | Implemented |
 | MONTHNAME$ | FUNCTION | Win32 | Implemented |
-| MOUSEPTR | STATEMENT | PB/CC only | Established |
-| MSGBOX | STATEMENT | PB/Win only | Established |
-| NAME | STATEMENT | PB/Win + PB/CC | Established |
-| NOT | OPERATOR | PB/Win + PB/CC | Established |
-| NUL | FUNCTION | PB/Win + PB/CC | Established |
+| MOUSEPTR | STATEMENT | PB/CC only | Implemented |
+| MSGBOX | STATEMENT | PB/Win only | Implemented |
+| NAME | STATEMENT | PB/Win + PB/CC | Implemented |
+| NOT | OPERATOR | PB/Win + PB/CC | Implemented |
+| NUL | FUNCTION | PB/Win + PB/CC | Implemented |
 | NUL$ | FUNCTION | Win32 | Implemented |
 | OBJECT | STATEMENT | PB/Win + PB/CC | Implemented |
 | OCT | FUNCTION | codegen builtin | Implemented |
@@ -640,13 +640,13 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | OEMTOCHR | FUNCTION | codegen builtin | Implemented |
 | OEMTOCHR$ | FUNCTION | Win32 | Implemented |
 | ON CALL | STATEMENT | PB/Win + PB/CC | Implemented |
-| ON ERROR | STATEMENT | PB/Win + PB/CC | Established |
+| ON ERROR | STATEMENT | PB/Win + PB/CC | Implemented |
 | ON GOSUB | STATEMENT | PB/Win + PB/CC | Implemented |
 | ON GOTO | STATEMENT | PB/Win + PB/CC | Implemented |
 | OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
-| OPTION EXPLICIT | STATEMENT | PB/Win + PB/CC | Established |
-| OR | OPERATOR | PB/Win + PB/CC | Established |
-| PARSE | STATEMENT | PB/Win + PB/CC | Established |
+| OPTION EXPLICIT | STATEMENT | PB/Win + PB/CC | Implemented |
+| OR | OPERATOR | PB/Win + PB/CC | Implemented |
+| PARSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | PARSE$ | FUNCTION | Win32 | Implemented |
 | PARSECOUNT | FUNCTION | codegen builtin | Implemented |
 | PATHNAME | FUNCTION | codegen builtin | Implemented |
@@ -656,15 +656,15 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | PEEK | FUNCTION | codegen builtin | Implemented |
 | PLAY | FUNCTION | Win32 | Implemented |
 | PLAY SOUND | STATEMENT | PB/Win + PB/CC | Implemented |
-| PLAY WAVE | STATEMENT | PB/Win + PB/CC | Established |
+| PLAY WAVE | STATEMENT | PB/Win + PB/CC | Implemented |
 | POKE | FUNCTION | codegen builtin | Implemented |
-| PREFIX | BLOCK | PB/Win + PB/CC | Established |
+| PREFIX | BLOCK | PB/Win + PB/CC | Implemented |
 | PRINT# | STATEMENT | PB/Win + PB/CC | Implemented |
 | PRINTER$ | FUNCTION | Win32 | Implemented |
 | PRINTERCOUNT | FUNCTION | codegen builtin | Implemented |
-| PROCESS GET PRIORITY | STATEMENT | PB/Win + PB/CC | Established |
-| PROCESS SET PRIORITY | STATEMENT | PB/Win + PB/CC | Established |
-| PROFILE | STATEMENT | PB/Win + PB/CC | Established |
+| PROCESS GET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
+| PROCESS SET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
+| PROFILE | STATEMENT | PB/Win + PB/CC | Implemented |
 | PROGRESSBAR GET POS | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR GET RANGE | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR SET POS | STATEMENT | PB/Win only | Implemented |
@@ -678,36 +678,36 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | PUT_WSTR | FUNCTION | codegen builtin | Implemented |
 | QUAD | FUNCTION | codegen builtin | Implemented |
 | RAISEEVENT | STATEMENT | PB/Win + PB/CC | Implemented |
-| RANDOMIZE | STATEMENT | PB/Win + PB/CC | Established |
+| RANDOMIZE | STATEMENT | PB/Win + PB/CC | Implemented |
 | READ | FUNCTION | codegen builtin | Implemented |
 | READ$ | FUNCTION | Win32 | Implemented |
 | REDIM | STATEMENT | PB/Win + PB/CC | Implemented |
-| REGEXPR | STATEMENT | PB/Win + PB/CC | Established |
-| REGISTER | STATEMENT | PB/Win + PB/CC | Established |
-| REGREPL | STATEMENT | PB/Win + PB/CC | Established |
-| REM | STATEMENT | PB/Win + PB/CC | Established |
+| REGEXPR | STATEMENT | PB/Win + PB/CC | Implemented |
+| REGISTER | STATEMENT | PB/Win + PB/CC | Implemented |
+| REGREPL | STATEMENT | PB/Win + PB/CC | Implemented |
+| REM | STATEMENT | PB/Win + PB/CC | Implemented |
 | REMAIN | FUNCTION | codegen builtin | Implemented |
 | REMAIN$ | FUNCTION | Win32 | Implemented |
 | REMOVE | FUNCTION | codegen builtin | Implemented |
 | REMOVE$ | FUNCTION | Win32 | Implemented |
 | REPEAT | FUNCTION | codegen builtin | Implemented |
 | REPEAT$ | FUNCTION | Win32 | Implemented |
-| REPLACE | STATEMENT | PB/Win + PB/CC | Established |
-| RESET | STATEMENT | PB/Win + PB/CC | Established |
+| REPLACE | STATEMENT | PB/Win + PB/CC | Implemented |
+| RESET | STATEMENT | PB/Win + PB/CC | Implemented |
 | RESOURCE SAVE FILE | STATEMENT | PB/Win + PB/CC | Implemented |
 | RESOURCE$ | FUNCTION | Win32 | Implemented |
-| RESUME | STATEMENT | PB/Win + PB/CC | Established |
+| RESUME | STATEMENT | PB/Win + PB/CC | Implemented |
 | RETAIN | FUNCTION | codegen builtin | Implemented |
 | RETAIN$ | FUNCTION | Win32 | Implemented |
-| RETURN | STATEMENT | PB/Win + PB/CC | Established |
+| RETURN | STATEMENT | PB/Win + PB/CC | Implemented |
 | RGB | FUNCTION | Win32 | Implemented |
 | RIGHT | FUNCTION | codegen builtin | Implemented |
 | RIGHT$ | FUNCTION | Win32 | Implemented |
-| RMDIR | STATEMENT | PB/Win + PB/CC | Established |
+| RMDIR | STATEMENT | PB/Win + PB/CC | Implemented |
 | RND | FUNCTION | codegen builtin | Implemented |
-| ROTATE | STATEMENT | PB/Win + PB/CC | Established |
+| ROTATE | STATEMENT | PB/Win + PB/CC | Implemented |
 | ROUND | FUNCTION | LLVM intrinsic | Implemented |
-| RSET | STATEMENT | PB/Win + PB/CC | Established |
+| RSET | STATEMENT | PB/Win + PB/CC | Implemented |
 | RSET$ | FUNCTION | Win32 | Implemented |
 | RTRIM | FUNCTION | codegen builtin | Implemented |
 | RTRIM$ | FUNCTION | Win32 | Implemented |
@@ -721,24 +721,24 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | SEC | FUNCTION | C runtime (MSVCRT) | Implemented |
 | SECH | FUNCTION | C runtime (MSVCRT) | Implemented |
 | SEEK | STATEMENT | PB/Win + PB/CC | Implemented |
-| SELECT CASE/END SELECT | BLOCK | PB/Win + PB/CC | Established |
-| SETATTR | STATEMENT | PB/Win + PB/CC | Established |
+| SELECT CASE/END SELECT | BLOCK | PB/Win + PB/CC | Implemented |
+| SETATTR | STATEMENT | PB/Win + PB/CC | Implemented |
 | SETEOF | STATEMENT | PB/Win + PB/CC | Implemented |
 | SGN | FUNCTION | codegen builtin | Implemented |
-| SHELL | STATEMENT | PB/Win + PB/CC | Established |
-| SHIFT | STATEMENT | PB/Win + PB/CC | Established |
+| SHELL | STATEMENT | PB/Win + PB/CC | Implemented |
+| SHIFT | STATEMENT | PB/Win + PB/CC | Implemented |
 | SHRINK | FUNCTION | codegen builtin | Implemented |
 | SHRINK$ | FUNCTION | Win32 | Implemented |
 | SIN | FUNCTION | LLVM intrinsic | Implemented |
 | SINGLE | FUNCTION | codegen builtin | Implemented |
 | SINH | FUNCTION | LLVM intrinsic | Implemented |
 | SIZEOF | FUNCTION | codegen builtin | Implemented |
-| SLEEP | STATEMENT | PB/Win + PB/CC | Established |
+| SLEEP | STATEMENT | PB/Win + PB/CC | Implemented |
 | SPACE | FUNCTION | codegen builtin | Implemented |
 | SPACE$ | FUNCTION | Win32 | Implemented |
-| SPLIT | STATEMENT | PB/Win + PB/CC | Established |
+| SPLIT | STATEMENT | PB/Win + PB/CC | Implemented |
 | SQR | FUNCTION | LLVM intrinsic | Implemented |
-| STATIC | STATEMENT | PB/Win + PB/CC | Established |
+| STATIC | STATEMENT | PB/Win + PB/CC | Implemented |
 | STATUSBAR SET PARTS | STATEMENT | PB/Win + PB/CC | Implemented |
 | STATUSBAR SET TEXT | STATEMENT | PB/Win + PB/CC | Implemented |
 | STR | FUNCTION | codegen builtin | Implemented |
@@ -751,7 +751,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | STRPTR | FUNCTION | codegen builtin | Implemented |
 | STRREVERSE | FUNCTION | codegen builtin | Implemented |
 | STRREVERSE$ | FUNCTION | Win32 | Implemented |
-| SWAP | STATEMENT | PB/Win + PB/CC | Established |
+| SWAP | STATEMENT | PB/Win + PB/CC | Implemented |
 | SWITCH | FUNCTION | Win32 | Implemented |
 | SWITCH$ | FUNCTION | codegen builtin | Implemented |
 | TAB DELETE | STATEMENT | PB/Win only | Implemented |
@@ -771,26 +771,26 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | TALLY | FUNCTION | codegen builtin | Implemented |
 | TAN | FUNCTION | LLVM intrinsic | Implemented |
 | TANH | FUNCTION | LLVM intrinsic | Implemented |
-| TCP ACCEPT | STATEMENT | PB/Win + PB/CC | Established |
-| TCP CLOSE | STATEMENT | PB/Win + PB/CC | Established |
-| TCP LINE INPUT | STATEMENT | PB/Win + PB/CC | Established |
+| TCP ACCEPT | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP LINE INPUT | STATEMENT | PB/Win + PB/CC | Implemented |
 | TCP NOTIFY | STATEMENT | PB/Win + PB/CC | Implemented |
-| TCP OPEN | STATEMENT | PB/Win + PB/CC | Established |
-| TCP PRINT | STATEMENT | PB/Win + PB/CC | Established |
-| TCP RECV | STATEMENT | PB/Win + PB/CC | Established |
-| TCP SEND | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD CLOSE | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD CREATE | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD GET PRIORITY | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD RESUME | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD SET PRIORITY | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD STATUS | STATEMENT | PB/Win + PB/CC | Established |
-| THREAD SUSPEND | STATEMENT | PB/Win + PB/CC | Established |
+| TCP OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP PRINT | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP RECV | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP SEND | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD CREATE | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD GET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD RESUME | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD SET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD STATUS | STATEMENT | PB/Win + PB/CC | Implemented |
+| THREAD SUSPEND | STATEMENT | PB/Win + PB/CC | Implemented |
 | THREADCOUNT | FUNCTION | codegen builtin | Implemented |
-| THREADED | STATEMENT | PB/Win + PB/CC | Established |
+| THREADED | STATEMENT | PB/Win + PB/CC | Implemented |
 | THREADID | FUNCTION | Win32 | Implemented |
 | TIMER | FUNCTION | codegen builtin | Implemented |
-| TIX | STATEMENT | PB/Win + PB/CC | Established |
+| TIX | STATEMENT | PB/Win + PB/CC | Implemented |
 | TOOLBAR ADD BUTTON | STATEMENT | PB/Win only | Implemented |
 | TOOLBAR ADD SEPARATOR | STATEMENT | PB/Win only | Implemented |
 | TOOLBAR DELETE BUTTON | STATEMENT | PB/Win only | Implemented |
@@ -798,7 +798,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | TOOLBAR GET STATE | STATEMENT | PB/Win only | Implemented |
 | TOOLBAR SET IMAGELIST | STATEMENT | PB/Win only | Implemented |
 | TOOLBAR SET STATE | STATEMENT | PB/Win only | Implemented |
-| TRACE | STATEMENT | PB/Win + PB/CC | Established |
+| TRACE | STATEMENT | PB/Win + PB/CC | Implemented |
 | TREEVIEW DELETE | STATEMENT | PB/Win only | Implemented |
 | TREEVIEW GET BOLD | STATEMENT | PB/Win only | Implemented |
 | TREEVIEW GET CHECK | STATEMENT | PB/Win only | Implemented |
@@ -825,39 +825,39 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | TRIM | FUNCTION | codegen builtin | Implemented |
 | TRIM$ | FUNCTION | Win32 | Implemented |
 | TRUNC | FUNCTION | LLVM intrinsic | Implemented |
-| TRY/END TRY | BLOCK | PB/Win + PB/CC | Established |
-| TYPE SET | STATEMENT | PB/Win + PB/CC | Established |
-| TYPE/END TYPE | BLOCK | PB/Win + PB/CC | Established |
+| TRY/END TRY | BLOCK | PB/Win + PB/CC | Implemented |
+| TYPE SET | STATEMENT | PB/Win + PB/CC | Implemented |
+| TYPE/END TYPE | BLOCK | PB/Win + PB/CC | Implemented |
 | UCASE | FUNCTION | codegen builtin | Implemented |
 | UCASE$ | FUNCTION | Win32 | Implemented |
 | UCODE$ | FUNCTION | Win32 | Implemented |
 | UCODEPAGE | STATEMENT | PB/Win + PB/CC | Implemented |
-| UDP CLOSE | STATEMENT | PB/Win + PB/CC | Established |
+| UDP CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | UDP NOTIFY | STATEMENT | PB/Win + PB/CC | Implemented |
-| UDP OPEN | STATEMENT | PB/Win + PB/CC | Established |
-| UDP RECV | STATEMENT | PB/Win + PB/CC | Established |
-| UDP SEND | STATEMENT | PB/Win + PB/CC | Established |
+| UDP OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
+| UDP RECV | STATEMENT | PB/Win + PB/CC | Implemented |
+| UDP SEND | STATEMENT | PB/Win + PB/CC | Implemented |
 | UNION | BLOCK | PB/Win only | Implemented |
-| UNLOCK | STATEMENT | PB/Win + PB/CC | Established |
+| UNLOCK | STATEMENT | PB/Win + PB/CC | Implemented |
 | UNWRAP | FUNCTION | codegen builtin | Implemented |
 | UNWRAP$ | FUNCTION | Win32 | Implemented |
 | USING | FUNCTION | codegen builtin | Implemented |
 | USING$ | FUNCTION | Win32 | Implemented |
 | UTF8TOCHR | FUNCTION | codegen builtin | Implemented |
 | UTF8TOCHR$ | FUNCTION | Win32 | Implemented |
-| VAL | STATEMENT | PB/Win + PB/CC | Established |
+| VAL | STATEMENT | PB/Win + PB/CC | Implemented |
 | VARPTR | FUNCTION | codegen builtin | Implemented |
 | VERIFY | FUNCTION | codegen builtin | Implemented |
 | WAITKEY | FUNCTION | codegen builtin | Implemented |
 | WAITKEY$ | FUNCTION | PB/CC + console | Implemented |
-| WINDOW GET | STATEMENT | PB/Win only | Established |
-| WINDOW SET | STATEMENT | PB/Win only | Established |
+| WINDOW GET | STATEMENT | PB/Win only | Implemented |
+| WINDOW SET | STATEMENT | PB/Win only | Implemented |
 | WORD | FUNCTION | codegen builtin | Implemented |
 | WRAP | FUNCTION | codegen builtin | Implemented |
 | WRAP$ | FUNCTION | Win32 | Implemented |
 | WRITE | FUNCTION | codegen builtin | Implemented |
 | WRITE# | STATEMENT | PB/Win + PB/CC | Implemented |
-| XOR | OPERATOR | PB/Win + PB/CC | Established |
+| XOR | OPERATOR | PB/Win + PB/CC | Implemented |
 | XPRINT ARC | STATEMENT | PB/Win + PB/CC | Implemented |
 | XPRINT ATTACH | STATEMENT | PB/Win + PB/CC | Implemented |
 | XPRINT BOX | STATEMENT | PB/Win + PB/CC | Implemented |
