@@ -15,6 +15,73 @@
 %JKCOMP_PB64    = %IDC_Userbase + 12
 %JKCOMP_PBXB64  = %IDC_Userbase + 13
 
+' ============ JKIDE.ini reader - HAN 2026-10-28 ============
+' Every compiler path comes from JKIDE.ini (the file next to userdll.dll),
+' so the addon works on any customer machine without recompiling.  The
+' JK-IDE setup.bat writes this file during installation.
+' NOTE: GetModuleHandleA / GetModuleFileNameA are already DECLAREd by
+' Win32API.inc (included by Userdll.bas) - do NOT re-declare them here
+' (PBWin Error 417).
+
+FUNCTION JK_IniFile$() AS STRING
+  LOCAL hMod AS DWORD
+  LOCAL buf AS ASCIIZ * 2048
+  LOCAL s AS STRING
+  LOCAL i AS LONG
+  hMod = GetModuleHandleA("userdll.dll")
+  IF hMod = 0 THEN hMod = GetModuleHandleA("userdll.DLL")
+  IF ISTRUE hMod THEN
+    IF GetModuleFileNameA(hMod, BYVAL VARPTR(buf), 2048) > 0 THEN
+      s = buf
+      i = LEN(s)
+      DO WHILE i > 0
+        IF MID$(s, i, 1) = "\" THEN EXIT LOOP
+        DECR i
+      LOOP
+      IF i > 0 THEN FUNCTION = LEFT$(s, i) + "JKIDE.ini"
+    END IF
+  END IF
+END FUNCTION
+
+FUNCTION JK_IniValue$(BYVAL cfgSection AS STRING, BYVAL cfgKey AS STRING) AS STRING
+  LOCAL iniFile AS STRING
+  LOCAL ff AS LONG
+  LOCAL iniLine AS STRING
+  LOCAL sect AS STRING
+  LOCAL k AS STRING
+  LOCAL v AS STRING
+  LOCAL eq AS LONG
+  iniFile = JK_IniFile$()
+  IF LEN(iniFile) = 0 THEN EXIT FUNCTION
+  IF ISFALSE ISFILE(iniFile) THEN EXIT FUNCTION
+  ff = FREEFILE
+  OPEN iniFile FOR INPUT AS #ff
+  WHILE NOT EOF(ff)
+    LINE INPUT #ff, iniLine
+    iniLine = TRIM$(iniLine)
+    IF LEN(iniLine) > 0 AND LEFT$(iniLine, 1) <> ";" THEN
+      IF LEFT$(iniLine, 1) = "[" THEN
+        IF RIGHT$(iniLine, 1) = "]" THEN sect = TRIM$(MID$(iniLine, 2, LEN(iniLine) - 2))
+      ELSE
+        eq = INSTR(iniLine, "=")
+        IF eq > 0 THEN
+          k = TRIM$(LEFT$(iniLine, eq - 1))
+          IF UCASE$(sect) = UCASE$(cfgSection) AND UCASE$(k) = UCASE$(cfgKey) THEN
+            v = TRIM$(MID$(iniLine, eq + 1))
+            IF LEN(v) >= 2 AND LEFT$(v, 1) = CHR$(34) AND RIGHT$(v, 1) = CHR$(34) THEN
+              v = MID$(v, 2, LEN(v) - 2)
+            END IF
+            CLOSE #ff
+            FUNCTION = v
+            EXIT FUNCTION
+          END IF
+        END IF
+      END IF
+    END IF
+  WEND
+  CLOSE #ff
+END FUNCTION
+
 ' ============ Output window protocol (JK-IDE VCS convention) ============
 %IDE_OUTPUT      = 104                                   'WM_COPYDATA dwData: send string to outputwindow
 
@@ -108,6 +175,7 @@ END SUB
 
 FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   LOCAL f AS STRING, exe AS STRING, wd AS STRING, args AS STRING
+  LOCAL runtime AS STRING
   LOCAL compname AS STRING
   LOCAL jbat AS STRING, jlog AS STRING, jcmd AS STRING, jlogtxt AS STRING
   LOCAL ff AS LONG
@@ -133,13 +201,25 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       EXIT FUNCTION
     CASE %JKCOMP_PB64
       compname = "PB64Basic"
-      exe = "C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc\target\release\PB64Basic.exe"
-      wd  = "C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc"
-      args = "build " + CHR$(34) + f + CHR$(34) + " --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj"
+      exe = JK_IniValue$("Compilers", "Pb64Exe")
+      wd  = JK_IniValue$("Compilers", "Pb64Cwd")
+      runtime = JK_IniValue$("Compilers", "Pb64Runtime")
+      IF LEN(exe) = 0 THEN
+        JK_SendOutput "Compilers: key Pb64Exe missing in " + JK_IniFile$() + ". Edit JKIDE.ini (or run setup.bat again), then restart JK-IDE.", &HFF4040
+        FUNCTION = 0
+        EXIT FUNCTION
+      END IF
+      IF LEN(runtime) = 0 THEN runtime = "pb_runtime_x64.obj"
+      args = "build " + CHR$(34) + f + CHR$(34) + " --exe --target x86_64-pc-windows-msvc --runtime-lib " + runtime
     CASE %JKCOMP_PBXB64
       compname = "PBXB64"
-      exe = "C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\PBXB64\V6\PBX-Editor\PBXB64\PBXB64.exe"
-      wd  = "C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\PBXB64\V6\PBX-Editor"
+      exe = JK_IniValue$("Compilers", "Pbxb64Exe")
+      wd  = JK_IniValue$("Compilers", "Pbxb64Cwd")
+      IF LEN(exe) = 0 THEN
+        JK_SendOutput "Compilers: key Pbxb64Exe missing in " + JK_IniFile$() + ". Edit JKIDE.ini (or run setup.bat again), then restart JK-IDE.", &HFF4040
+        FUNCTION = 0
+        EXIT FUNCTION
+      END IF
       args = "--gui -O3 -o " + CHR$(34) + LEFT$(f, LEN(f) - 4) + ".exe" + CHR$(34) + " " + CHR$(34) + f + CHR$(34)
     CASE ELSE
       FUNCTION = 0
