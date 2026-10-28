@@ -14,6 +14,7 @@
 %JKCOMP_PBWIN10 = %IDC_Userbase + 11
 %JKCOMP_PB64    = %IDC_Userbase + 12
 %JKCOMP_PBXB64  = %IDC_Userbase + 13
+%JKCOMP_JKINI   = %IDC_Userbase + 14   ' open JKIDE.ini for editing (HAN 2026-10-28)
 
 ' ============ JKIDE.ini reader - HAN 2026-10-28 ============
 ' Every compiler path comes from JKIDE.ini (the file next to userdll.dll),
@@ -81,6 +82,31 @@ FUNCTION JK_IniValue$(BYVAL cfgSection AS STRING, BYVAL cfgKey AS STRING) AS STR
   WEND
   CLOSE #ff
 END FUNCTION
+
+' ============ Open JKIDE.ini for editing (HAN 2026-10-28) ============
+' jk-ide.exe ignores command-line file arguments (restores last session),
+' so open the ini with its associated editor (usually Notepad) instead.
+SUB JK_OpenIni()
+  LOCAL iniFile AS STRING
+  LOCAL op AS ASCIIZ * 8
+  LOCAL nf AS ASCIIZ * 1024
+  LOCAL ip AS ASCIIZ * 4
+  LOCAL dir AS ASCIIZ * 4
+  iniFile = JK_IniFile$()
+  IF LEN(iniFile) = 0 THEN
+    JK_SendOutput "Compilers: cannot locate JKIDE.ini (userdll.dll folder).", &HFF4040
+    EXIT SUB
+  END IF
+  IF ISFALSE ISFILE(iniFile) THEN
+    JK_SendOutput "Compilers: " + iniFile + " not found - run setup.bat first.", &HFF4040
+    EXIT SUB
+  END IF
+  op = "open"
+  nf = iniFile
+  ip = ""
+  dir = ""
+  ShellExecute 0, op, nf, ip, dir, %SW_SHOWNORMAL
+END SUB
 
 ' ============ Output window protocol (JK-IDE VCS convention) ============
 %IDE_OUTPUT      = 104                                   'WM_COPYDATA dwData: send string to outputwindow

@@ -13,7 +13,7 @@
 ' they were added to separate "no change" areas (left for better readabilty) from areas for
 ' user code.
 
-' Don´t edit the lines with metastatements for conditional compiling (#if ..., #endif),
+' Donï¿½t edit the lines with metastatements for conditional compiling (#if ..., #endif),
 ' otherwise you will raise compile errors.
 '***********************************************************************************************
 
@@ -63,6 +63,9 @@ local ztext as asciiz * 260
 
     CASE %JKCOMP_PBWIN10, %JKCOMP_PB64, %JKCOMP_PBXB64
       JK_RunCompiler(cmd)
+
+    CASE %JKCOMP_JKINI
+      JK_OpenIni
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #if 0
   end select

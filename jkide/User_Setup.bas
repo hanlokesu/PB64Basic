@@ -21,6 +21,7 @@
       AppendMenu hcomp, %MF_STRING, %JKCOMP_PBXB64, "PBXB64"
       AppendMenu hcomp, %MF_SEPARATOR, 0, ""
       AppendMenu hcomp, %MF_STRING, %IDM_COMPILE, "Compile (default)"
+      AppendMenu hcomp, %MF_STRING, %JKCOMP_JKINI, "JKIDE.INI"
       InsertMenu hmenu, %ID_TOOLS, %MF_BYCOMMAND OR %MF_POPUP, hcomp, "Compilers"
       did = 1
     END IF
@@ -29,7 +30,7 @@
 ' they were added to separate "no change" areas (left for better readabilty) from areas for
 ' user code.
 
-' Don´t edit the lines with metastatements for conditional compiling (#if ..., #endif),
+' Donï¿½t edit the lines with metastatements for conditional compiling (#if ..., #endif),
 ' otherwise you will raise compile errors.
 '***********************************************************************************************
 
@@ -37,7 +38,7 @@
 function usersetup alias "usersetup" (byval hmenu as dword, haccel as dword, byval p as JK_Handles ptr) export as long
 '***********************************************************************************************
 ' setup a new accelerator table, if you want
-' you may modfiy the main menu using it´s handle (hmenu)
+' you may modfiy the main menu using itï¿½s handle (hmenu)
 '***********************************************************************************************
 
 
