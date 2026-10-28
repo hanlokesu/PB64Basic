@@ -770,6 +770,25 @@ exit code 0:
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.092 (2026-10-28) - JK-IDE addon: machine-independent paths + in-IDE config editing
+
+The JK-IDE "Compilers" menu addon no longer depends on this machine's folder
+layout and lets you edit its configuration right inside JK-IDE:
+
+- Compiler paths are now read from `JKIDE.ini` (the file next to
+  userdll.dll) at runtime instead of being hardcoded: PB64Basic and PBXB64
+  items resolve `Pb64Exe` / `Pb64Cwd` / `Pb64Runtime` / `Pbxb64Exe` /
+  `Pbxb64Cwd` from the `[Compilers]` section. This makes the menu work on
+  any customer machine - run setup.bat once and it writes the local paths
+  for you. A missing key prints a clear red hint in the Output Window
+  instead of failing silently.
+- New "JKIDE.INI" item at the bottom of the Compilers menu (separated by a
+  divider): it opens JKIDE.ini as a regular tab in the JK-IDE editor using
+  the IDE's own WM_COPYDATA file-open protocol (%IDE_Open), so you can
+  tweak the paths and save in place - no Notepad, no external tool. If the
+  ini is missing, a red hint explains what to do.
+- PBWin 10 item is unchanged (delegates to JK-IDE's native compile).
+
 ### v0.2.091 (2026-10-28) - batch 287: JK-IDE compile-error UX overhaul (native editor markers + error jump)
 
 The JK-IDE "Compilers" menu now reports compile errors the way the IDE
