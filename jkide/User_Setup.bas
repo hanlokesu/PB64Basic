@@ -21,6 +21,7 @@
       AppendMenu hcomp, %MF_STRING, %JKCOMP_PBXB64, "PBXB64"
       AppendMenu hcomp, %MF_SEPARATOR, 0, ""
       AppendMenu hcomp, %MF_STRING, %IDM_COMPILE, "Compile (default)"
+      AppendMenu hcomp, %MF_SEPARATOR, 0, ""
       AppendMenu hcomp, %MF_STRING, %JKCOMP_JKINI, "JKIDE.INI"
       InsertMenu hmenu, %ID_TOOLS, %MF_BYCOMMAND OR %MF_POPUP, hcomp, "Compilers"
       did = 1
