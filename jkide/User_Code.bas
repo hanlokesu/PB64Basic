@@ -15,6 +15,7 @@
 %JKCOMP_PB64    = %IDC_Userbase + 12
 %JKCOMP_PBXB64  = %IDC_Userbase + 13
 %JKCOMP_JKINI   = %IDC_Userbase + 14   ' open JKIDE.ini for editing (HAN 2026-10-28)
+%JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
 
 ' ============ JKIDE.ini reader - HAN 2026-10-28 ============
 ' Every compiler path comes from JKIDE.ini (the file next to userdll.dll),
@@ -83,15 +84,14 @@ FUNCTION JK_IniValue$(BYVAL cfgSection AS STRING, BYVAL cfgKey AS STRING) AS STR
   CLOSE #ff
 END FUNCTION
 
-' ============ Open JKIDE.ini for editing (HAN 2026-10-28) ============
-' jk-ide.exe ignores command-line file arguments (restores last session),
-' so open the ini with its associated editor (usually Notepad) instead.
+' ============ Open JKIDE.ini in JK-IDE itself (HAN 2026-10-28) ============
+' JK-IDE's VCS protocol (see Addon\VCS_Stub.bas): WM_COPYDATA with
+' dwData = %IDE_Open (101) and lpData = ASCIIZ file path opens/reopens
+' the file in the IDE editor. @hw.main is the IDE main window handle.
 SUB JK_OpenIni()
   LOCAL iniFile AS STRING
-  LOCAL op AS ASCIIZ * 8
-  LOCAL nf AS ASCIIZ * 1024
-  LOCAL ip AS ASCIIZ * 4
-  LOCAL dir AS ASCIIZ * 4
+  LOCAL cds AS COPYDATASTRUCT
+  LOCAL fp AS ASCIIZ * 1024
   iniFile = JK_IniFile$()
   IF LEN(iniFile) = 0 THEN
     JK_SendOutput "Compilers: cannot locate JKIDE.ini (userdll.dll folder).", &HFF4040
@@ -101,11 +101,15 @@ SUB JK_OpenIni()
     JK_SendOutput "Compilers: " + iniFile + " not found - run setup.bat first.", &HFF4040
     EXIT SUB
   END IF
-  op = "open"
-  nf = iniFile
-  ip = ""
-  dir = ""
-  ShellExecute 0, op, nf, ip, dir, %SW_SHOWNORMAL
+  IF @hw.main = 0 THEN
+    JK_SendOutput "Compilers: JK-IDE main window handle unavailable.", &HFF4040
+    EXIT SUB
+  END IF
+  fp = iniFile
+  cds.dwData = %JKIDE_Open
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
 END SUB
 
 ' ============ Output window protocol (JK-IDE VCS convention) ============
