@@ -1875,6 +1875,57 @@ void pb_input_file_str(int filenum, char** dest) {
     *dest = bstr_from_buf(result);
 }
 
+/* FixedString target for INPUT# / INPUT (file): read one comma/newline
+   delimited token, copy it into an inline [N x i8] buffer truncated to
+   N-1 chars with a trailing NUL (PBWin semantics), honouring WRITE#
+   double-quote CSV quoting.  This is the fixed-buffer sibling of
+   pb_input_file_str: the old path wrote a BSTR pointer into the inline
+   buffer, corrupting the struct (legacy #7). */
+/* FixedString inline [N x i8] buffer -> fresh COM BSTR (legacy #7 read
+   side).  Runtime functions such as pb_str_concat use SysStringByteLen on
+   Windows, which reads the 4-byte length header of a COM BSTR; an inline
+   buffer has no header, so passing it straight through reads garbage as the
+   length.  Materialise a real BSTR once at the read site instead. */
+char* pb_fixed_to_bstr(const char* buf) {
+    if (!buf) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc(buf, (unsigned int)strlen(buf));
+}
+
+void pb_input_file_fixed(int filenum, char* buf, long long n) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
+    if (!buf || n <= 0) return;
+    char tmp[4096];
+    int i = 0, ch;
+    while ((ch = fgetc(file_handles[filenum])) != EOF) {
+        if (ch == ',' || ch == '\n') break;
+        if (ch == '\r') continue;
+        if (i < (int)sizeof(tmp) - 1) tmp[i++] = (char)ch;
+    }
+    tmp[i] = '\0';
+    if (i >= 2 && tmp[0] == '"' && tmp[i - 1] == '"') {
+        char* unquoted = (char*)malloc(i - 1);
+        memcpy(unquoted, tmp + 1, i - 2);
+        unquoted[i - 2] = '\0';
+        strncpy(buf, unquoted, (size_t)n - 1);
+        free(unquoted);
+    } else {
+        strncpy(buf, tmp, (size_t)n - 1);
+    }
+    buf[n - 1] = '\0';
+}
+
+/* FixedString target for console INPUT / LINE INPUT / LINE INPUT#:
+   copy a freshly read BSTR into an inline [N x i8] buffer truncated to
+   N-1 chars with a trailing NUL (legacy #7).  The BSTR is NOT released
+   here: pb_line_input allocates with bstr_from_buf (malloc, not COM) so
+   pb_bstr_free (SysFreeString) would crash; this matches the existing
+   fork INPUT semantics, which never free the freshly read BSTR. */
+void pb_copy_bstr_to_fixed(char* buf, const char* src, long long n) {
+    if (!buf || n <= 0) return;
+    if (src) strncpy(buf, src, (size_t)n - 1);
+    buf[n - 1] = '\0';
+}
+
 void pb_input_file_int(int filenum, int* dest) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     char buf[64];

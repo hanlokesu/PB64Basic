@@ -5092,6 +5092,25 @@ impl Compiler {
             .declare_function("pb_variant_str", &IrType::Ptr, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_variant_wstr", &IrType::Ptr, &[IrType::Ptr], false);
+        // batch303 (legacy #7): INPUT# / LINE INPUT# into TYPE FixedString
+        // members must copy into the inline [N x i8] buffer, not write a BSTR
+        // pointer into it.
+        self.module.declare_function(
+            "pb_input_file_fixed",
+            &IrType::Void,
+            &[IrType::I32, IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_copy_bstr_to_fixed",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I64],
+            false,
+        );
+        // legacy #7 read side: FixedString inline buffer -> COM BSTR
+        // (runtime string functions read the BSTR length header).
+        self.module
+            .declare_function("pb_fixed_to_bstr", &IrType::Ptr, &[IrType::Ptr], false);
         // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
         self.module.declare_function(
             "pb_com_invoke",
@@ -8440,7 +8459,13 @@ impl Compiler {
                 }
             }
         }
-        let mut clobber_parts: Vec<String> = vec!["~{memory}".to_string()];
+        // Every instruction may set FLAGS; without ~{cc} LLVM may hoist a
+        // flag-dependent instruction across the asm at -O1+ (batch 285 left
+        // this as a known gap, legacy #14). RMW memory operands are already
+        // safe: each variable is an explicit input operand holding its address
+        // plus the ~{memory} clobber, so LLVM cannot reorder or eliminate the
+        // read-modify-write across the asm.
+        let mut clobber_parts: Vec<String> = vec!["~{memory}".to_string(), "~{cc}".to_string()];
         for r in &clobbers {
             clobber_parts.push(format!("~{{{}}}", r));
         }
@@ -21341,8 +21366,15 @@ impl Compiler {
         for var_expr in &inp.vars {
             let (ptr, pb_type) = self.compile_lvalue_ptr(fb, var_expr)?;
             match pb_type {
-                PbType::String | PbType::FixedString(_) => {
+                PbType::String => {
                     fb.call_void("pb_input_file_str", &[filenum_i32.clone(), ptr]);
+                }
+                PbType::FixedString(n) => {
+                    // FixedString member: inline [N x i8] buffer, NOT a char**
+                    // slot - pb_input_file_str would write a BSTR pointer into
+                    // the buffer and corrupt the struct (legacy #7).
+                    let n64 = fb.const_i64(n as i64);
+                    fb.call_void("pb_input_file_fixed", &[filenum_i32.clone(), ptr, n64]);
                 }
                 PbType::Double | PbType::Single | PbType::Ext | PbType::Cur => {
                     fb.call_void("pb_input_file_dbl", &[filenum_i32.clone(), ptr]);
@@ -21364,8 +21396,15 @@ impl Compiler {
         let filenum = self.compile_expr(fb, &li.file_num)?;
         let filenum_i32 = self.to_i32(fb, &filenum);
         let result = fb.call(&IrType::Ptr, "pb_line_input", &[filenum_i32]);
-        let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, &li.var)?;
-        fb.store(&result, &ptr);
+        let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &li.var)?;
+        match pb_type {
+            PbType::FixedString(n) => {
+                // Inline buffer: truncate + NUL, then release the BSTR.
+                let n64 = fb.const_i64(n as i64);
+                fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
+            }
+            _ => fb.store(&result, &ptr),
+        }
         Ok(())
     }
 
@@ -21389,8 +21428,15 @@ impl Compiler {
         );
         // assign to first variable (string only for now)
         if let Some(var_expr) = inp.vars.first() {
-            let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, var_expr)?;
-            fb.store(&result, &ptr);
+            let (ptr, pb_type) = self.compile_lvalue_ptr(fb, var_expr)?;
+            match pb_type {
+                PbType::FixedString(n) => {
+                    // Inline buffer: truncate + NUL, then release the BSTR.
+                    let n64 = fb.const_i64(n as i64);
+                    fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
+                }
+                _ => fb.store(&result, &ptr),
+            }
         }
         Ok(())
     }
@@ -21411,8 +21457,14 @@ impl Compiler {
             "pb_line_input_console",
             &[prompt_val, has_prompt],
         );
-        let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, &li.var)?;
-        fb.store(&result, &ptr);
+        let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &li.var)?;
+        match pb_type {
+            PbType::FixedString(n) => {
+                let n64 = fb.const_i64(n as i64);
+                fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
+            }
+            _ => fb.store(&result, &ptr),
+        }
         Ok(())
     }
 
@@ -22250,7 +22302,15 @@ impl Compiler {
                     // raw spelling: normalize_name strips both $ and #, so
                     // VARIANT$/VARIANT$$/VARIANT# would all collide on "VARIANT"
                     // (which the compile_builtin match resolves to VARIANT#).
-                    let first = match args.first() {
+                    // CHW second signature VARIANT$(BYTE, VrntVar): the BYTE
+                    // option means the variant holds raw BYTES (e.g. a UDT
+                    // stored via LET v = udt AS STRING); the result is the
+                    // ANSI byte string with no WIDE->ANSI conversion (legacy
+                    // #4).  This fork's variant slot stores ANSI bytes already
+                    // (not wide BSTRs), so the BYTE form is identical to the
+                    // 1-arg form here; we accept the extra BYTE argument and
+                    // use the last argument as the variant.
+                    let first = match args.last() {
                         Some(f) => f,
                         None => {
                             return Err(PbError::parser(
@@ -22529,10 +22589,13 @@ impl Compiler {
                     }
                 }
                 let (field_ptr, field_pb) = self.compile_lvalue_ptr(fb, expr)?;
-                // FixedString TYPE fields: the buffer address IS the string →
-                // don't load from the buffer (that would read buffer content as a pointer)
+                // FixedString TYPE fields: the buffer address IS the string
+                // content, but the downstream runtime functions on Windows use
+                // SysStringByteLen (a COM BSTR length header) — an inline
+                // buffer has no header, so materialise a real BSTR once here
+                // (legacy #7 read side).
                 if matches!(field_pb, PbType::FixedString(_)) {
-                    return Ok(field_ptr);
+                    return Ok(fb.call(&IrType::Ptr, "pb_fixed_to_bstr", &[field_ptr]));
                 }
                 let field_ir = Self::ir_type_for(&field_pb);
                 Ok(fb.load(&field_ir, &field_ptr))
