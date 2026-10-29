@@ -5355,6 +5355,113 @@ char* __stdcall pb_progid_get(const char* clsid) {
     return pb_bstr_alloc(valbuf, (unsigned int)strlen(valbuf));
 }
 
+/* GUID$() / GUIDTXT$() - CHW GUID_function.htm / GUIDTXT_function.htm
+   (batch 299).  GUID$ with no argument (or a null string) returns a NEW
+   unique 16-byte string GUID via CoCreateGuid; GUID$(guidtext$) parses a
+   38-byte "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}" text form back to the
+   same 16 binary bytes.  GUIDTXT$(guid16$) is the complement: 16 bytes ->
+   38-byte text.  The 16-byte layout is the COM GUID binary layout
+   (Data1..3 little-endian, Data4 raw), identical to the CLSID$/PROGID$
+   helpers above. */
+__declspec(dllimport) long __stdcall CoCreateGuid(void* pguid);
+
+char* __stdcall pb_guid_new(void) {
+    char g[16];
+    if (CoCreateGuid(g) != 0) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc(g, 16);
+}
+
+char* __stdcall pb_guid_fromtxt(const char* txt) {
+    unsigned char raw[16];
+    int idx = 0, half = 0;
+    unsigned char cur = 0;
+    const unsigned char* p;
+    if (!txt || !txt[0]) return pb_guid_new();   /* null/empty -> new GUID (CHW) */
+    p = (const unsigned char*)txt;
+    for (; *p && idx < 16; p++) {
+        int hv;
+        if (*p == '-' || *p == '{' || *p == '}') continue;
+        hv = pb_hexv((char)*p);
+        if (hv < 0) return pb_bstr_alloc("", 0);
+        if (half == 0) { cur = (unsigned char)(hv << 4); half = 1; }
+        else { cur |= (unsigned char)hv; raw[idx++] = cur; half = 0; }
+    }
+    if (idx != 16 || half != 0) return pb_bstr_alloc("", 0);
+    {
+        /* reorder to GUID binary layout (Data1..3 LE, Data4 raw) */
+        char bin[16];
+        bin[0] = (char)raw[3]; bin[1] = (char)raw[2];
+        bin[2] = (char)raw[1]; bin[3] = (char)raw[0];
+        bin[4] = (char)raw[5]; bin[5] = (char)raw[4];
+        bin[6] = (char)raw[7]; bin[7] = (char)raw[6];
+        memcpy(bin + 8, raw + 8, 8);
+        return pb_bstr_alloc(bin, 16);
+    }
+}
+
+char* __stdcall pb_guid_txt(const char* guid16) {
+    unsigned char b[16];
+    char guid[40];
+    if (!guid16) return pb_bstr_alloc("", 0);
+    {
+        unsigned int n = (unsigned int)((unsigned char)guid16[0] |
+                          ((unsigned char)guid16[1] << 8) |
+                          ((unsigned char)guid16[2] << 16) |
+                          ((unsigned char)guid16[3] << 24));
+        if (n < 16) return pb_bstr_alloc("", 0);
+    }
+    memcpy(b, guid16, 16);
+    sprintf(guid, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+            ((unsigned)b[3] << 24) | ((unsigned)b[2] << 16) | ((unsigned)b[1] << 8) | b[0],
+            ((unsigned)b[5] << 8) | b[4],
+            ((unsigned)b[7] << 8) | b[6],
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    return pb_bstr_alloc(guid, 38);
+}
+
+/* VARIANT$(vrnt) / VARIANT$$(vrnt) - CHW VARIANT_function1.htm (batch 299):
+   extract the dynamic string (VT_BSTR, code 8) held in a 16-byte PB Variant
+   variable.  VARIANT$ returns the ANSI (narrow) form, VARIANT$$ the WSTRING
+   (UTF-16 BSTR) form — both share the BSTR value union slot at +8.  Any other
+   VT type returns an empty string (ANSI "") / null wide pointer. */
+char* __stdcall pb_variant_str(const void* v) {
+    unsigned short vt;
+    const char* s;
+    if (!v) return pb_bstr_alloc("", 0);
+    vt = (unsigned short)(((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8));
+    if (vt != 8) return pb_bstr_alloc("", 0);
+    memcpy(&s, (const char*)v + 8, sizeof(s));
+    if (!s) return pb_bstr_alloc("", 0);
+    /* The fork's Variant stores the ANSI string pointer directly (batch293
+       emit_variant_store: IrType::Ptr -> VT_BSTR + raw char* in the +8 union
+       slot), not a COM BSTR.  VARIANT$ is therefore the string itself. */
+    return pb_bstr_alloc(s, (unsigned int)strlen(s));
+}
+
+/* VARIANT$$ returns the WSTRING form: the fork's WSTRING variables are UTF-16
+   BSTRs (batch 281), so convert the stored ANSI string to UTF-16 and hand back
+   a BSTR that the assignment stores directly.  Any other VT returns NULL. */
+const void* __stdcall pb_variant_wstr(const void* v) {
+    unsigned short vt;
+    const char* s;
+    int n;
+    wchar_t* w;
+    char* out;
+    if (!v) return NULL;
+    vt = (unsigned short)(((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8));
+    if (vt != 8) return NULL;
+    memcpy(&s, (const char*)v + 8, sizeof(s));
+    if (!s) return NULL;
+    n = MultiByteToWideChar(0 /* CP_ACP */, 0, s, -1, NULL, 0);
+    if (n <= 0) return NULL;
+    w = (wchar_t*)malloc((size_t)n * sizeof(wchar_t));
+    if (!w) return NULL;
+    MultiByteToWideChar(0 /* CP_ACP */, 0, s, -1, w, n);
+    out = (char*)pb_bstr_alloc((const char*)w, (unsigned int)(n - 1) * 2);
+    free(w);
+    return out;
+}
+
 /* VARIANTVT(vrntvar) - CHW VARIANTVT_function.htm: returns the internal VT
    data type code stored in a 16-byte PB Variant variable (equates: 0
    VT_EMPTY, 1 VT_NULL, 2 VT_I2, 3 VT_I4, 5 VT_R8, 8 VT_BSTR, ...).  Layout:

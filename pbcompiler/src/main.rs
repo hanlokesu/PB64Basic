@@ -118,6 +118,7 @@ fn main() {
         split_threshold,
         target,
         option_explicit: false,
+        stack_size: None,
     };
 
     match compile_file(file_path, &output, parse_only, &mut opts) {
@@ -242,6 +243,10 @@ fn compile_file(
     // #DIM ALL (official meta-directive) == OPTION EXPLICIT. The parser only
     // sees the OPTION EXPLICIT statement form; the preprocessor records #DIM ALL.
     opts.option_explicit = parser.option_explicit || preprocessor.dim_all();
+    // #STACK num_expr (batch 299): requested runtime stack size; the
+    // preprocessor rounds it up (64 Kb boundary, min 128 Kb). Passed through
+    // to the linker as /STACK:bytes in codegen::link_exe.
+    opts.stack_size = preprocessor.stack_size();
 
     if parse_only {
         eprintln!("[PB64Basic] Parse-only mode, skipping codegen");

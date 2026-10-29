@@ -1,9 +1,15 @@
-# Last updated from batch 298 (v0.2.094) - 2026-10-29,,,,
+# Last updated from batch 299 (v0.2.095) - 2026-10-30,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #COMPILE DLL,STATEMENT,PB/Win only,Implemented
 #COMPILE EXE,STATEMENT,PB/Win only,Implemented
 #COMPILE SLL,STATEMENT,PB/Win only,Implemented
+#DEBUG,STATEMENT,PB/Win only,Implemented
 #LINK,STATEMENT,PB/Win only,Implemented
+#MESSAGES,STATEMENT,PB/Win only,Implemented
+#OPTIMIZE,STATEMENT,PB/Win only,Implemented
+#STACK,STATEMENT,PB/Win only,Implemented
+#TOOLS,STATEMENT,PB/Win only,Implemented
+#UTILITY,STATEMENT,PB/Win only,Implemented
 Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
 ACCEL ATTACH,STATEMENT,PB/Win only,Implemented
@@ -30,6 +36,7 @@ ARRAY SWAP,STATEMENT,PB/Win + PB/CC,Implemented
 ARRAY TAGARRAY,STATEMENT,PB/Win + PB/CC,Implemented
 ARRAY TAGARRAY ERASE,STATEMENT,PB/Win + PB/CC,Implemented
 ARRAY UNIQUE,STATEMENT,PB/Win + PB/CC,Implemented
+ARRAYATTR,FUNCTION,PB/Win + PB/CC,Implemented
 ASC,STATEMENT,PB/Win + PB/CC,Implemented
 ASIN,FUNCTION,LLVM intrinsic,Implemented
 ASINH,FUNCTION,LLVM intrinsic,Implemented
@@ -436,6 +443,8 @@ GRAPHIC WINDOW NORMALIZE,STATEMENT,PB/Win + PB/CC,Implemented
 GRAPHIC WINDOW STABILIZE,STATEMENT,PB/Win + PB/CC,Implemented
 GRAPHIC_CIRCLE,FUNCTION,codegen builtin,Implemented
 GRAPHIC_SCALE_PIXELS,FUNCTION,codegen builtin,Implemented
+GUID,FUNCTION,codegen builtin,Implemented
+GUIDTXT,FUNCTION,codegen builtin,Implemented
 HEADER GET COUNT,STATEMENT,PB/Win only,Implemented
 HEADER GET ITEM,STATEMENT,PB/Win only,Implemented
 HEADER SEND,STATEMENT,PB/Win only,Implemented
@@ -574,6 +583,7 @@ MAT,STATEMENT,PB/Win + PB/CC,Implemented
 MAX,FUNCTION,codegen builtin,Implemented
 MCASE,FUNCTION,PB/Win + PB/CC,Implemented
 MCASE$,FUNCTION,runtime pb_mcase_string,Implemented
+ME,FUNCTION,PB/Win only,Implemented
 MEMORY,STATEMENT,PB/Win + PB/CC,Implemented
 MEMORY_FILL,FUNCTION,codegen builtin,Implemented
 MEMORY_FILLS,FUNCTION,codegen builtin,Implemented
@@ -617,6 +627,7 @@ MONTHNAME,FUNCTION,codegen builtin,Implemented
 MONTHNAME$,FUNCTION,Win32,Implemented
 MOUSEPTR,STATEMENT,PB/CC only,Implemented
 MSGBOX,STATEMENT,PB/Win only,Implemented
+MYBASE,FUNCTION,PB/Win only,Implemented
 NAME,STATEMENT,PB/Win + PB/CC,Implemented
 NEWCOM,STATEMENT,PB/Win only,Implemented
 NOT,OPERATOR,PB/Win + PB/CC,Implemented
@@ -844,6 +855,8 @@ USING$,FUNCTION,Win32,Implemented
 UTF8TOCHR,FUNCTION,codegen builtin,Implemented
 UTF8TOCHR$,FUNCTION,Win32,Implemented
 VAL,STATEMENT,PB/Win + PB/CC,Implemented
+VARIANT$,FUNCTION,PB/Win only,Implemented
+VARIANT$$,FUNCTION,PB/Win only,Implemented
 VARPTR,FUNCTION,codegen builtin,Implemented
 VARIANT#,FUNCTION,PB/Win only,Implemented
 VARIANTVT,FUNCTION,PB/Win only,Implemented

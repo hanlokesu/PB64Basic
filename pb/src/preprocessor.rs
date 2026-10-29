@@ -112,6 +112,10 @@ pub struct Preprocessor {
     /// Official PB: `#DIM ALL` == `OPTION EXPLICIT` (every variable must be
     /// declared). Recorded here so main.rs can enforce it at codegen time.
     dim_all: bool,
+    /// `#STACK num_expr` — requested runtime stack size in bytes (CHW
+    /// _STACK_metastatement.htm).  Recorded here (rounded up to the next
+    /// 64 Kb boundary, minimum 128 Kb) so main.rs can pass it to the linker.
+    stack_size: Option<u64>,
 }
 
 impl Default for Preprocessor {
@@ -131,6 +135,7 @@ impl Preprocessor {
             manifests: Vec::new(),
             version_info: VersionInfo::default(),
             dim_all: false,
+            stack_size: None,
         }
     }
 
@@ -347,6 +352,56 @@ impl Preprocessor {
 
             // #REGISTER — skip
             if upper_full.starts_with("#REGISTER") {
+                i += 1;
+                continue;
+            }
+
+            // #MESSAGES COMMAND / NOTIFY — CHW _MESSAGES_metastatement.htm:
+            // selects whether %WM_NOTIFY is also dispatched to Control Callback
+            // Functions.  The fork's callback dispatch already passes both
+            // message classes through (PBWin's NOTIFY is the default), so the
+            // directive is accepted and recorded as a no-op.
+            if upper_full.starts_with("#MESSAGES") {
+                i += 1;
+                continue;
+            }
+
+            // #OPTIMIZE CODE [ON|OFF] / {SIZE|SPEED} — CHW
+            // _OPTIMIZE_metastatement.htm: compiler optimization preference.
+            // The fork's LLVM backend drives optimization via -O flags, so the
+            // directive is accepted and ignored (SIZE/SPEED have no codegen
+            // equivalent here).
+            if upper_full.starts_with("#OPTIMIZE") {
+                i += 1;
+                continue;
+            }
+
+            // #STACK num_expr — CHW _STACK_metastatement.htm: requested runtime
+            // stack size in bytes, rounded up to the next 64 Kb boundary, minimum
+            // 128 Kb, default 1 Mb.  Recorded and passed to the linker as
+            // /STACK:bytes by main.rs.
+            if upper_full.starts_with("#STACK") {
+                let rest = trimmed_full[6..].trim();
+                if let Ok(n) = rest.parse::<u64>() {
+                    let mut n = n.max(128 * 1024);
+                    n = ((n + 65535) / 65536) * 65536;
+                    self.stack_size = Some(n);
+                }
+                i += 1;
+                continue;
+            }
+
+            // #TOOLS [ON|+|OFF|-] — CHW _TOOLS_metastatement.htm: disables the
+            // TRACE / PROFILE / CALLSTK instrumentation.  The fork generates no
+            // such instrumentation, so accept and ignore.
+            if upper_full.starts_with("#TOOLS") {
+                i += 1;
+                continue;
+            }
+
+            // #UTILITY "text" — CHW _UTILITY_metastatement.htm: "The entire
+            // line is ignored by the PowerBASIC compiler."  Swallow it.
+            if upper_full.starts_with("#UTILITY") {
                 i += 1;
                 continue;
             }
@@ -826,6 +881,10 @@ impl Preprocessor {
 
     pub fn dim_all(&self) -> bool {
         self.dim_all
+    }
+
+    pub fn stack_size(&self) -> Option<u64> {
+        self.stack_size
     }
 
     pub fn version_info(&self) -> &VersionInfo {

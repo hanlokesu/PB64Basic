@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 298 (v0.2.094)** — 2026-10-29. All statements through batch 298 are reflected in this matrix.
+> **Last updated from batch 299 (v0.2.095)** — 2026-10-30. All statements through batch 299 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **932** (14 BLOCK, 299 FUNCTION, 5 OPERATOR, 611 STATEMENT, 3 FORK EXTENSION).
-- **929** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **939** (14 BLOCK, 306 FUNCTION, 5 OPERATOR, 611 STATEMENT, 3 FORK EXTENSION).
+- **936** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 927 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 934 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **929** | Implemented + Established |
+| ✅ **Total available** | **936** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (932 rows)
+## All keywords (939 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -51,6 +51,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ARRAY TAGARRAY | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY TAGARRAY ERASE | STATEMENT | PB/Win + PB/CC | Implemented |
 | ARRAY UNIQUE | STATEMENT | PB/Win + PB/CC | Implemented |
+| ARRAYATTR | FUNCTION | PB/Win + PB/CC | Implemented |
 | ASC | STATEMENT | PB/Win + PB/CC | Implemented |
 | ASIN | FUNCTION | LLVM intrinsic | Implemented |
 | ASINH | FUNCTION | LLVM intrinsic | Implemented |
@@ -455,6 +456,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | GRAPHIC WINDOW STABILIZE | STATEMENT | PB/Win + PB/CC | Implemented |
 | GRAPHIC_CIRCLE | FUNCTION | codegen builtin | Implemented |
 | GRAPHIC_SCALE_PIXELS | FUNCTION | codegen builtin | Implemented |
+| GUID | FUNCTION | codegen builtin | Implemented |
+| GUIDTXT | FUNCTION | codegen builtin | Implemented |
 | HEADER GET COUNT | STATEMENT | PB/Win only | Implemented |
 | HEADER GET ITEM | STATEMENT | PB/Win only | Implemented |
 | HEADER SEND | STATEMENT | PB/Win only | Implemented |
@@ -590,6 +593,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MAX | FUNCTION | codegen builtin | Implemented |
 | MCASE | FUNCTION | PB/Win + PB/CC | Implemented |
 | MCASE$ | FUNCTION | runtime pb_mcase_string | Implemented |
+| ME | FUNCTION | PB/Win only | Implemented |
 | MEMORY | STATEMENT | PB/Win + PB/CC | Implemented |
 | MEMORY_FILL | FUNCTION | codegen builtin | Implemented |
 | MEMORY_FILLS | FUNCTION | codegen builtin | Implemented |
@@ -633,6 +637,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | MONTHNAME$ | FUNCTION | Win32 | Implemented |
 | MOUSEPTR | STATEMENT | PB/CC only | Implemented |
 | MSGBOX | STATEMENT | PB/Win only | Implemented |
+| MYBASE | FUNCTION | PB/Win only | Implemented |
 | NAME | STATEMENT | PB/Win + PB/CC | Implemented |
 | NEWCOM | STATEMENT | PB/Win only | Implemented |
 | NOT | OPERATOR | PB/Win + PB/CC | Implemented |
@@ -855,6 +860,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | UTF8TOCHR | FUNCTION | codegen builtin | Implemented |
 | UTF8TOCHR$ | FUNCTION | Win32 | Implemented |
 | VAL | STATEMENT | PB/Win + PB/CC | Implemented |
+| VARIANT$ | FUNCTION | PB/Win only | Implemented |
+| VARIANT$$ | FUNCTION | PB/Win only | Implemented |
 | VARPTR | FUNCTION | codegen builtin | Implemented |
 | VARIANT# | FUNCTION | PB/Win only | Implemented |
 | VARIANTVT | FUNCTION | PB/Win only | Implemented |

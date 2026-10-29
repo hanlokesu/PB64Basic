@@ -206,6 +206,9 @@ pub struct CompileOptions {
     pub target: String, // LLVM target triple (e.g. "i686-pc-windows-msvc", "x86_64-pc-windows-msvc")
     /// `OPTION EXPLICIT` is in effect: every variable must be declared.
     pub option_explicit: bool,
+    /// `#STACK num_expr` — requested runtime stack size in bytes (rounded up
+    /// to 64 Kb boundary, min 128 Kb).  Passed to the linker as /STACK:bytes.
+    pub stack_size: Option<u64>,
 }
 
 /// Compile a parsed PB program to LLVM IR, then optionally to object code via clang.
@@ -861,6 +864,14 @@ fn link_exe(
 
     // Use Windows GUI subsystem (no console window)
     args.push("-Wl,/SUBSYSTEM:WINDOWS,/ENTRY:mainCRTStartup".to_string());
+
+    // #STACK num_expr (batch 299): request a custom runtime stack reserve.
+    // CHW rounds up to the next 64 Kb boundary, minimum 128 Kb; the
+    // preprocessor already did that, so pass the byte count straight to the
+    // linker.  lld-link accepts /STACK:bytes (hex).
+    if let Some(stack) = opts.stack_size {
+        args.push(format!("-Wl,/STACK:0x{:X}", stack));
+    }
 
     // Link additional Windows libraries only when --lib-dir is provided
     if let Some(ref lib_dir) = opts.lib_dir {
@@ -5066,6 +5077,21 @@ impl Compiler {
             .declare_function("pb_variant_num", &IrType::Double, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_variant_vt", &IrType::I32, &[IrType::Ptr], false);
+        // batch299: GUID$()/GUID$(txt) + GUIDTXT$(guid16$) — 16-byte GUID
+        // strings <-> 38-byte "{XXXXXXXX-...}" text
+        self.module
+            .declare_function("pb_guid_new", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_guid_fromtxt", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_guid_txt", &IrType::Ptr, &[IrType::Ptr], false);
+        // batch300: VARIANT$(v) ANSI form / VARIANT$$(v) WSTRING (UTF-16) form
+        // of the dynamic string held in a PB Variant (VT_BSTR -> char* /
+        // BSTR pointer)
+        self.module
+            .declare_function("pb_variant_str", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_variant_wstr", &IrType::Ptr, &[IrType::Ptr], false);
         // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
         self.module.declare_function(
             "pb_com_invoke",
@@ -8459,7 +8485,10 @@ impl Compiler {
                         .unwrap_or(false)
                 } else {
                     // CHR$$ always returns a WSTRING (UTF-16 BSTR).
-                    n == "CHR$$"
+                    // VARIANT$$ (batch 300) returns the WSTRING form of a
+                    // Variant's dynamic string — already UTF-16, so a WSTRING
+                    // destination must store it as-is (no ANSI->WIDE pass).
+                    n == "CHR$$" || n == "VARIANT$$"
                 }
             }
             Expr::BinaryOp(_, l, r) => self.expr_is_wstring(l) || self.expr_is_wstring(r),
@@ -8824,6 +8853,17 @@ impl Compiler {
     fn struct_type_of_expr(&self, expr: &Expr) -> Option<String> {
         match expr {
             Expr::Variable(name) => {
+                // ME / MYBASE (batch 299): the receiver's TYPE is the one
+                // behind the implicit THIS parameter, exactly like a variable
+                // typed with the enclosing CLASS name.
+                if name.eq_ignore_ascii_case("ME") || name.eq_ignore_ascii_case("MYBASE") {
+                    if let Some(t) = self.symbols.lookup(&normalize_name("this")) {
+                        return match &t.pb_type {
+                            PbType::UserDefined(t) => Some(normalize_name(t)),
+                            _ => None,
+                        };
+                    }
+                }
                 let info = self.symbols.lookup(&normalize_name(name))?;
                 match &info.pb_type {
                     PbType::UserDefined(t) => Some(normalize_name(t)),
@@ -8884,6 +8924,16 @@ impl Compiler {
     ) -> PbResult<(Val, PbType)> {
         match expr {
             Expr::Variable(orig_name) => {
+                // ME / MYBASE inside a METHOD/PROPERTY (batch 299): resolve to
+                // the implicit BYREF receiver (THIS), the same rewrite as the
+                // expression form.  Without this, compile_lvalue_ptr would try
+                // to auto-declare "MYBASE" and fail with a DefType/516 error.
+                if (orig_name.eq_ignore_ascii_case("ME")
+                    || orig_name.eq_ignore_ascii_case("MYBASE"))
+                    && self.symbols.lookup(&normalize_name("this")).is_some()
+                {
+                    return self.compile_lvalue_ptr(fb, &Expr::Variable("this".to_string()));
+                }
                 let name = normalize_name(orig_name);
                 if let Some(info) = self.symbols.lookup(&name) {
                     Ok((
@@ -20273,6 +20323,18 @@ impl Compiler {
                     // BYREF: pass address
                     match inner_arg {
                         Expr::Variable(vname) => {
+                            // ME / MYBASE (batch 299): passing the current
+                            // object BYREF is the receiver address, exactly
+                            // like passing the implicit THIS parameter.
+                            if (vname.eq_ignore_ascii_case("ME")
+                                || vname.eq_ignore_ascii_case("MYBASE"))
+                                && self.symbols.lookup(&normalize_name("this")).is_some()
+                            {
+                                let (ptr, _pb) = self
+                                    .compile_lvalue_ptr(fb, &Expr::Variable("this".to_string()))?;
+                                compiled.push(ptr);
+                                continue;
+                            }
                             let norm = normalize_name(vname);
                             let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
                             compiled.push(Val::new(ptr_name, IrType::Ptr));
@@ -21989,6 +22051,22 @@ impl Compiler {
                     }
                 }
                 let name = normalize_name(orig_name);
+                // ME / MYBASE — CHW ME_pseudo-variable.htm /
+                // MYBASE_pseudo-variable.htm (batch 299): inside a CLASS
+                // METHOD/PROPERTY body these pseudo-variables refer to the
+                // current object (the implicit BYREF receiver, which the parser
+                // injects under the name THIS).  ME may also be assigned to an
+                // object variable / passed as an argument; MYBASE is the same
+                // object here (the fork has no INHERIT vtable chain yet, so the
+                // "original inherited object" degenerates to the receiver).
+                // Outside a METHOD/PROPERTY no THIS symbol exists and the name
+                // falls through to normal resolution (undeclared, as in PBWin).
+                if (orig_name.eq_ignore_ascii_case("ME")
+                    || orig_name.eq_ignore_ascii_case("MYBASE"))
+                    && self.symbols.lookup(&normalize_name("this")).is_some()
+                {
+                    return self.compile_expr(fb, &Expr::Variable("this".to_string()));
+                }
                 // System variables that are actually function calls
                 match name.as_str() {
                     "DATE" if orig_name.ends_with('$') => {
@@ -22150,6 +22228,33 @@ impl Compiler {
                     let idx_val = self.compile_expr(fb, &args[0])?;
                     let n = self.to_i64(fb, &idx_val);
                     Ok(fb.call(&IrType::Ptr, "pb_read_data_idx", &[n]))
+                } else if raw_upper == "VARIANT$" || raw_upper == "VARIANT$$" {
+                    // VARIANT$(vrnt) / VARIANT$$(vrnt) — CHW VARIANT_function1.htm
+                    // (batch 299): extract the dynamic string (VT_BSTR) held in a
+                    // Variant.  VARIANT$ returns the ANSI form, VARIANT$$ the
+                    // WSTRING (UTF-16 BSTR) form.  These must be checked on the
+                    // raw spelling: normalize_name strips both $ and #, so
+                    // VARIANT$/VARIANT$$/VARIANT# would all collide on "VARIANT"
+                    // (which the compile_builtin match resolves to VARIANT#).
+                    let first = match args.first() {
+                        Some(f) => f,
+                        None => {
+                            return Err(PbError::parser(
+                                format!(
+                                    "{} requires its argument: {}(vrntvar)",
+                                    raw_upper, raw_upper
+                                ),
+                                None,
+                                self.current_line,
+                            ))
+                        }
+                    };
+                    let (vptr, _vpb) = self.compile_lvalue_ptr(fb, first)?;
+                    if raw_upper == "VARIANT$" {
+                        Ok(fb.call(&IrType::Ptr, "pb_variant_str", &[vptr]))
+                    } else {
+                        Ok(fb.call(&IrType::Ptr, "pb_variant_wstr", &[vptr]))
+                    }
                 } else if let Some(result) = self.compile_builtin(fb, &name, args) {
                     result
                 } else if let Some(info) = self.functions.get(&name).cloned() {
@@ -22202,6 +22307,19 @@ impl Compiler {
                                 Ok(val)
                             }
                             Expr::Variable(vname) => {
+                                // ME / MYBASE (batch 299): passing the current
+                                // object BYREF is the receiver address, exactly
+                                // like passing the implicit THIS parameter.
+                                if (vname.eq_ignore_ascii_case("ME")
+                                    || vname.eq_ignore_ascii_case("MYBASE"))
+                                    && self.symbols.lookup(&normalize_name("this")).is_some()
+                                {
+                                    let (ptr, _pb) = self.compile_lvalue_ptr(
+                                        fb,
+                                        &Expr::Variable("this".to_string()),
+                                    )?;
+                                    return Ok(ptr);
+                                }
                                 let norm = normalize_name(vname);
                                 let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
                                 Ok(Val::new(ptr_name, IrType::Ptr))
@@ -23379,6 +23497,39 @@ impl Compiler {
                     )));
                 };
                 Some(Ok(fb.call(&IrType::I32, "pb_variant_vt", &[vptr])))
+            }
+            "GUID" => {
+                // GUID$ — CHW GUID_function.htm: GUID$() or GUID$(guidtext$).
+                // No argument (or a null/empty string) returns a NEW 16-byte
+                // unique GUID; a non-empty 38-byte text parses back to the
+                // same 16 binary bytes.  normalize_name strips the trailing $,
+                // so the dispatch key is GUID; the returned BSTR is 16 bytes.
+                match args.first() {
+                    None => Some(Ok(fb.call(&IrType::Ptr, "pb_guid_new", &[]))),
+                    Some(a) => match self.compile_expr(fb, a) {
+                        Ok(v) => Some(Ok(fb.call(&IrType::Ptr, "pb_guid_fromtxt", &[v]))),
+                        Err(e) => Some(Err(e)),
+                    },
+                }
+            }
+            "GUIDTXT" => {
+                // GUIDTXT$ — CHW GUIDTXT_function.htm: GUIDTXT$(guid16$) —
+                // 16-byte GUID string -> 38-byte "{XXXXXXXX-...}" text, the
+                // logical complement of GUID$.
+                let v = match args.first() {
+                    Some(a) => match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    },
+                    None => {
+                        return Some(Err(pb::error::PbError::parser(
+                            "GUIDTXT$ requires its argument: GUIDTXT$(guid16$)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                Some(Ok(fb.call(&IrType::Ptr, "pb_guid_txt", &[v])))
             }
             "COMM" => {
                 // COMM([#] hComm, Comfunc) — CHW comm_function.htm.  Returns a
