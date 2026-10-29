@@ -405,6 +405,15 @@ impl Interpreter {
             Statement::Call(c) => self.exec_call(c),
             Statement::If(i) => self.exec_if(i),
             Statement::For(f) => self.exec_for(f),
+            Statement::ForEach(_) => {
+                // FOR EACH/NEXT runs through the collection protocol and is
+                // codegen-only here, like FIELD below.
+                Ok(Flow::Normal)
+            }
+            Statement::ExitLoop => {
+                // EXIT LOOP only targets codegen-only FOR EACH/NEXT loops.
+                Ok(Flow::Normal)
+            }
             Statement::DoLoop(d) => self.exec_do_loop(d),
             Statement::WhileWend(w) => self.exec_while_wend(w),
             Statement::SelectCase(s) => self.exec_select_case(s),

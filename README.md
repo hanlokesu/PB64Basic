@@ -260,6 +260,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **2** official keywords are not implemented yet (ISINTERFACE, ISMISSING); **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 300 (v0.2.096). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> batch 300 (v0.2.096) - A/B/C re-audit closes real gaps: BIT CALC reset no-op, ISNULL/ISNOTNULL/ISNOTHING, FASTPROC (END FASTPROC = expr), six # meta-directives accepted; CSV +13 rows (945, 938 implemented); verify 35/35; compile-all 340/340.
 > Re-audit of the historical A/B/C batches (ARRAY ASSIGN, BIT family, CHOOSE and
 the other keyword pages shipped before the D batch) is complete. Using the
 corrected enumeration (underscore normalization) over all 1275 CHW pages, every

@@ -384,7 +384,7 @@ impl Preprocessor {
                 let rest = trimmed_full[6..].trim();
                 if let Ok(n) = rest.parse::<u64>() {
                     let mut n = n.max(128 * 1024);
-                    n = ((n + 65535) / 65536) * 65536;
+                    n = n.div_ceil(65536) * 65536;
                     self.stack_size = Some(n);
                 }
                 i += 1;

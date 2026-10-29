@@ -8553,11 +8553,11 @@ impl Compiler {
                 // fall through to symbol storage.  Behavior-level probing is
                 // forbidden here - it changes the real system time.
                 if name == "DATE" && orig_name.ends_with('$') {
-                    fb.call_void("pb_set_date", &[value.clone()]);
+                    fb.call_void("pb_set_date", std::slice::from_ref(&value));
                     return Ok(());
                 }
                 if name == "TIME" && orig_name.ends_with('$') {
-                    fb.call_void("pb_set_time", &[value.clone()]);
+                    fb.call_void("pb_set_time", std::slice::from_ref(&value));
                     return Ok(());
                 }
                 // batch 249: CALLBACK FUNCTION/SUB synthetic slots — evaluate
