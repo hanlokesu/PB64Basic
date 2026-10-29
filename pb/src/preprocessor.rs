@@ -406,6 +406,30 @@ impl Preprocessor {
                 continue;
             }
 
+            // #ALIGN / #BLOAT / #COM / #EXPORT / #PAGE / #UNIQUE — CHW
+            // metastatements with no 64-bit fork semantics:
+            //   #ALIGN  NOP-pads instruction boundaries (assembler-level)
+            //   #BLOAT  inflates the disk image (running size unaffected)
+            //   #COM    COM type-library info (CLASS/DOC/HELP/NAME/GUID/TLIB)
+            //   #EXPORT adds the EXPORT attribute to Sub/Functions defined
+            //           elsewhere (DLL/SLL interop; fork links statically)
+            //   #PAGE   IDE print pagination — CHW: "no effect on your
+            //           compiled code"
+            //   #UNIQUE VAR [ON|OFF] — unique-name check (default OFF)
+            // All are accepted and swallowed so official sources compile
+            // (#PAGE is exactly equivalent to CHW; the rest are documented as
+            // not implemented in the coverage CSV).  (A/B/C re-audit.)
+            if upper_full.starts_with("#ALIGN")
+                || upper_full.starts_with("#BLOAT")
+                || upper_full.starts_with("#COM")
+                || upper_full.starts_with("#EXPORT")
+                || upper_full.starts_with("#PAGE")
+                || upper_full.starts_with("#UNIQUE")
+            {
+                i += 1;
+                continue;
+            }
+
             // #DEBUG — skip (bounds/display/error/numeric all covered by this)
             if upper_full.starts_with("#DEBUG") {
                 i += 1;

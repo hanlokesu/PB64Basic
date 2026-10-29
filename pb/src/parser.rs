@@ -45,6 +45,7 @@ enum BodyEnd {
     EndMethod,
     EndSub,
     EndFunction,
+    EndFastProc,
     EndProperty,
     EndIf,
     Else,
@@ -363,6 +364,20 @@ impl Parser {
             }
             Token::Function => {
                 let fd = self.parse_function_decl()?;
+                Ok(Some(TopLevel::FunctionDecl(fd)))
+            }
+            Token::FastProc => {
+                // CHW FASTPROC_END_FASTPROC_statements.htm: `FASTPROC
+                // ProcName([args]) [THREADSAFE] [AS LONG] ... END FASTPROC
+                // [= RetVal]`.  Parsed exactly like a FUNCTION (argument /
+                // return-type syntax is the same); the body terminator is END
+                // FASTPROC (END FUNCTION also accepted).  The FastProc
+                // register/no-stack-frame execution model is not reproduced on
+                // LLVM -- a normal function is emitted, so behaviour matches
+                // and the official syntax is accepted.  (Added in the A/B/C
+                // re-audit.)
+                self.advance(); // FASTPROC
+                let fd = self.parse_fastproc_decl()?;
                 Ok(Some(TopLevel::FunctionDecl(fd)))
             }
             Token::Callback => {
@@ -1805,6 +1820,86 @@ impl Parser {
         })
     }
 
+    fn parse_fastproc_decl(&mut self) -> PbResult<FunctionDecl> {
+        let line = self.current_line();
+        // FASTPROC already consumed by the caller.  CHW
+        // FASTPROC_END_FASTPROC_statements.htm: the header syntax (name,
+        // optional THREADSAFE, optional AS LONG return) matches FUNCTION, so
+        // reuse the FUNCTION header parser after peeling the FASTPROC keyword
+        // (the CALLBACK/THREAD peel pattern).  Body terminator: END FASTPROC
+        // (END FUNCTION accepted too).
+        let name = self.consume_identifier()?;
+
+        while matches!(self.peek(), Token::Identifier(ref s) if {
+            let u = s.to_uppercase();
+            u == "CDECL" || u == "STDCALL" || u == "BDECL"
+        }) {
+            self.advance();
+        }
+
+        // Optional THREADSAFE descriptor (CHW FASTPROC header)
+        while matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE"))
+        {
+            self.advance();
+        }
+
+        let alias = if self.peek() == &Token::Alias {
+            self.advance();
+            match self.peek().clone() {
+                Token::StringLiteral(s) => {
+                    self.advance();
+                    Some(s)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let params = if self.peek() == &Token::LParen {
+            self.advance();
+            let p = if self.peek() == &Token::RParen {
+                Vec::new()
+            } else {
+                self.parse_params()?
+            };
+            self.expect(&Token::RParen)?;
+            p
+        } else {
+            Vec::new()
+        };
+
+        let mut export = false;
+        while matches!(self.peek(), Token::Common | Token::Export) {
+            if self.peek() == &Token::Export {
+                export = true;
+            }
+            self.advance();
+        }
+
+        let return_type = if self.peek() == &Token::As {
+            self.advance();
+            self.parse_type()?
+        } else {
+            type_from_suffix(&name)
+        };
+
+        self.consume_to_eol();
+        self.current_function_name = Some(name.to_uppercase());
+        let body = self.parse_body(&[BodyEnd::EndFastProc, BodyEnd::EndFunction])?;
+        self.current_function_name = None;
+
+        Ok(FunctionDecl {
+            name,
+            params,
+            return_type,
+            body,
+            alias,
+            export,
+            line,
+        })
+    }
+
     fn parse_function_decl(&mut self) -> PbResult<FunctionDecl> {
         let line = self.current_line();
         self.advance(); // FUNCTION
@@ -2069,7 +2164,9 @@ impl Parser {
 
             // Check for terminators
             if let Some(t) = self.which_terminator(terminators) {
-                self.consume_terminator(terminators);
+                if let Some(ret) = self.consume_terminator(terminators) {
+                    stmts.push(ret);
+                }
                 matched_terminator = Some(t);
                 break;
             }
@@ -2079,7 +2176,9 @@ impl Parser {
                 break;
             }
             if let Some(t) = self.which_terminator(terminators) {
-                self.consume_terminator(terminators);
+                if let Some(ret) = self.consume_terminator(terminators) {
+                    stmts.push(ret);
+                }
                 matched_terminator = Some(t);
                 break;
             }
@@ -2089,10 +2188,13 @@ impl Parser {
             // body encountering the enclosing function's END SUB).
             if self.peek() == &Token::End {
                 match self.peek_at(1) {
-                    Some(&Token::Sub) | Some(&Token::Function)
-                        if !terminators
-                            .iter()
-                            .any(|t| matches!(t, BodyEnd::EndSub | BodyEnd::EndFunction)) =>
+                    Some(&Token::Sub) | Some(&Token::Function) | Some(&Token::FastProc)
+                        if !terminators.iter().any(|t| {
+                            matches!(
+                                t,
+                                BodyEnd::EndSub | BodyEnd::EndFunction | BodyEnd::EndFastProc
+                            )
+                        }) =>
                     {
                         break; // don't consume, let parent handle it
                     }
@@ -2142,6 +2244,10 @@ impl Parser {
                     _ => false,
                 }
             }
+            Token::FastProc => {
+                // FASTPROC followed by identifier = new fastproc declaration
+                matches!(self.peek_at(1), Some(Token::Identifier(_)))
+            }
             Token::Declare => true,
             Token::Type => {
                 // TYPE at start of line (new type decl, not inside body).
@@ -2176,6 +2282,9 @@ impl Parser {
             BodyEnd::EndFunction => {
                 self.peek() == &Token::End && self.peek_at(1) == Some(&Token::Function)
             }
+            BodyEnd::EndFastProc => {
+                self.peek() == &Token::End && self.peek_at(1) == Some(&Token::FastProc)
+            }
             BodyEnd::EndProperty => {
                 self.peek() == &Token::End
                     && matches!(self.peek_at(1), Some(Token::Identifier(w))
@@ -2197,7 +2306,7 @@ impl Parser {
         }
     }
 
-    fn consume_terminator(&mut self, terminators: &[BodyEnd]) {
+    fn consume_terminator(&mut self, terminators: &[BodyEnd]) -> Option<Statement> {
         for t in terminators {
             if self.matches_terminator(t) {
                 match t {
@@ -2209,6 +2318,28 @@ impl Parser {
                         self.advance(); // END
                         self.advance(); // SUB/FUNCTION/IF/METHOD/PROPERTY
                         self.consume_to_eol();
+                        return None;
+                    }
+                    BodyEnd::EndFastProc => {
+                        self.advance(); // END
+                        self.advance(); // FASTPROC
+                                        // CHW FASTPROC_END_FASTPROC_statements.htm: the return
+                                        // value of a FastProc is given by
+                                        // `END FASTPROC [= ReturnValue]` (NOT by assigning the
+                                        // procedure name in the body, which PBWin rejects with
+                                        // error 466).  Parse `= expr` into a FunctionReturn.
+                        let line = self.current_line();
+                        if self.peek() == &Token::Eq {
+                            self.advance();
+                            let value = self.parse_expression().ok()?;
+                            self.consume_to_eol();
+                            return Some(Statement::FunctionReturn(FunctionReturnStmt {
+                                value,
+                                line,
+                            }));
+                        }
+                        self.consume_to_eol();
+                        return None;
                     }
                     BodyEnd::EndSelect
                     | BodyEnd::Else
@@ -2221,9 +2352,10 @@ impl Parser {
                         // Don't consume — caller needs to see it
                     }
                 }
-                return;
+                return None;
             }
         }
+        None
     }
 
     fn peek_at(&self, offset: usize) -> Option<&Token> {

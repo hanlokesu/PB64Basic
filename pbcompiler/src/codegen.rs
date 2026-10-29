@@ -12064,14 +12064,24 @@ impl Compiler {
                             // BIT CALC: the value derived from bit zero of
                             // calcexpr (calcexpr AND 1) determines set/reset
                             // (CHW BIT_CALC_statement.htm) - not "nonzero".
+                            // bit0==1 -> SET (OR mask); bit0==0 -> RESET
+                            // (AND NOT mask).  (Fixed in the A/B/C re-audit:
+                            // the previous code only OR-ed, so a reset was a
+                            // silent no-op, e.g. BIT CALC b,0,0 kept b=9.)
                             if let Some(expr) = call.args.get(2) {
                                 let ev = self.compile_expr(fb, expr)?;
                                 let ei = self.to_i64(fb, &ev);
                                 let bit0 = fb.and(&ei, &one);
                                 let z = fb.const_i64(0);
-                                let is_nonzero = fb.icmp("ne", &bit0, &z);
-                                let m = fb.select(&is_nonzero, &mask, &z);
-                                fb.or(&vi, &m)
+                                let is_one = fb.icmp("ne", &bit0, &z);
+                                let to_set = fb.select(&is_one, &mask, &z);
+                                let all = fb.const_i64(-1);
+                                let not_mask = fb.xor(&mask, &all);
+                                // keep all bits when setting; clear the target
+                                // bit when resetting
+                                let to_clr = fb.select(&is_one, &all, &not_mask);
+                                let cleared = fb.and(&vi, &to_clr);
+                                fb.or(&cleared, &to_set)
                             } else {
                                 return Ok(());
                             }
@@ -23163,6 +23173,42 @@ impl Compiler {
             "REPEAT" => Some(self.builtin_repeat(fb, args)),
             "FRAC" => Some(self.builtin_frac(fb, args)),
             "ISFOLDER" => Some(self.builtin_isfolder(fb, args)),
+            "ISNULL" | "ISNOTNULL" => Some(self.builtin_isnull(fb, args, name)),
+            "ISNOTHING" => {
+                // ISNOTHING(objvar) — CHW ISNOTHING_function.htm: TRUE (-1)
+                // when the object variable holds nothing, FALSE (0) when it
+                // holds a valid reference.  Complement of ISOBJECT; the fork
+                // object is a plain heap pointer, so "nothing" is NULL.
+                // (Added in the A/B/C re-audit; previously an undefined
+                // external symbol.)  Mirrors ISOBJECT's -1/0 convention.
+                let first = match args.first() {
+                    Some(f) => f,
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "ISNOTHING requires one argument: ISNOTHING(objvar)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                let v = match self.compile_expr(fb, first) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                // CHW ISNOTHING_function.htm: TRUE (-1) when the object
+                // variable holds nothing, FALSE (0) otherwise.  The fork
+                // object is a 32-bit handle (or a NEWCOM pointer); "nothing"
+                // is a zero of the SAME type as v (A/B/C re-audit: the first
+                // version compared against a null PTR, which failed with
+                // "null must be a pointer type" when v was i32).
+                let z = match v.ty {
+                    IrType::I64 => fb.const_i64(0),
+                    IrType::I32 | IrType::I16 | IrType::I8 | IrType::I1 => fb.const_i32(0),
+                    _ => fb.const_null_ptr(),
+                };
+                let c = fb.icmp("eq", &v, &z);
+                Some(Ok(fb.select(&c, &fb.const_i32(-1), &fb.const_i32(0))))
+            }
             "EXP2" | "EXP10" | "LOG2" | "LOG10" => Some(self.builtin_math1(fb, args, name)),
             "IIF" => Some(self.builtin_iif(fb, args)),
             "CHOOSE" | "CHOOSE:BIT" | "CHOOSE:BITS" | "CHOOSE:ELSE" | "CHOOSE:BIT:ELSE"
@@ -23291,10 +23337,17 @@ impl Compiler {
                 };
                 // CHW ISOBJECT_function.htm: returns TRUE (-1) when the
                 // object variable holds a valid object reference, FALSE (0)
-                // otherwise.  The fork object is a plain heap pointer, so
-                // validity is a non-NULL test, and the result must be the
-                // official -1/0, never a raw 0/1 (batch 264).
-                let c = fb.icmp("ne", &v, &Val::new("null", IrType::Ptr));
+                // otherwise.  The fork object is a plain heap pointer (or a
+                // 32-bit handle), so validity is a non-NULL test, and the
+                // result must be the official -1/0, never a raw 0/1
+                // (batch 264).  The zero is of the SAME type as v (A/B/C
+                // re-audit: a null PTR literal failed when v was i32).
+                let z = match v.ty {
+                    IrType::I64 => fb.const_i64(0),
+                    IrType::I32 | IrType::I16 | IrType::I8 | IrType::I1 => fb.const_i32(0),
+                    _ => fb.const_null_ptr(),
+                };
+                let c = fb.icmp("ne", &v, &z);
                 Some(Ok(fb.select(&c, &fb.const_i32(-1), &fb.const_i32(0))))
             }
             // batch271: OBJRESULT — most recent COM operation HRESULT
@@ -25589,12 +25642,11 @@ impl Compiler {
     // ========== String builtins ==========
 
     fn builtin_len(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        let s = self.compile_expr(fb, &args[0])?;
-        // FixedString variables are raw buffers (no BSTR prefix): LEN must
-        // return the FIXED BUFFER LENGTH (CHW LEN function: "If target is a
-        // fixed-length string, the length of the fixed buffer is returned"),
-        // not strlen of the contents (a NUL inside the buffer must not shrink
-        // the reported length).
+        let s = self.compile_expr(fb, &args[0])?; // FixedString variables are raw buffers (no BSTR prefix): LEN must
+                                                  // return the FIXED BUFFER LENGTH (CHW LEN function: "If target is a
+                                                  // fixed-length string, the length of the fixed buffer is returned"),
+                                                  // not strlen of the contents (a NUL inside the buffer must not shrink
+                                                  // the reported length).
         if let Expr::Variable(name) = &args[0] {
             let nn = normalize_name(name);
             if let Some(info) = self.symbols.lookup(&nn) {
@@ -25618,6 +25670,36 @@ impl Compiler {
             return Ok(fb.call(&IrType::I32, "pb_wstr_len", &[s]));
         }
         Ok(fb.call(&IrType::I32, "pb_str_len", &[s]))
+    }
+
+    fn builtin_isnull(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        name: &str,
+    ) -> PbResult<Val> {
+        // ISNULL(strg) / ISNOTNULL(strg) — CHW ISNULL_function.htm: TRUE (-1)
+        // when the string is null (zero length), FALSE (0) otherwise;
+        // ISNOTNULL is the complement.  (Added in the A/B/C re-audit;
+        // previously these were undefined external symbols.)  Uses the same
+        // length semantics as LEN (BSTR byte prefix / WSTRING code units /
+        // fixed-string buffer length) so the -1/0 result is official.
+        if args.is_empty() {
+            return Err(PbError::parser(
+                format!("{} requires one argument: {}(strgexpr)", name, name),
+                None,
+                self.current_line,
+            ));
+        }
+        let v = self.builtin_len(fb, args)?;
+        let z = fb.const_i32(0);
+        let is_zero = fb.icmp("eq", &v, &z);
+        let is_one = if name == "ISNULL" {
+            is_zero
+        } else {
+            fb.icmp("ne", &v, &z)
+        };
+        Ok(fb.select(&is_one, &fb.const_i32(-1), &fb.const_i32(0)))
     }
 
     fn builtin_chr_range(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

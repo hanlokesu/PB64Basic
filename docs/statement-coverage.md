@@ -1,30 +1,29 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 299 (v0.2.095)** — 2026-10-30. All statements through batch 299 are reflected in this matrix.
+> **Last updated from batch 300 (v0.2.096)** — 2026-10-30. All statements through batch 300 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **939** (14 BLOCK, 306 FUNCTION, 5 OPERATOR, 611 STATEMENT, 3 FORK EXTENSION).
-- **936** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
-- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
+- Rows in this matrix: **945** (14 BLOCK, 311 FUNCTION, 5 OPERATOR, 612 STATEMENT, 3 FORK EXTENSION).
+- **940** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- **2** documented keywords still not implemented (ISINTERFACE, ISMISSING); **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 934 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 938 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **936** | Implemented + Established |
-| ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
+| ✅ **Total available** | **940** | Implemented + Established |
+| ❌ Not implemented | 2 | Official PB keywords this project does not implement yet (ISINTERFACE, ISMISSING) |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (939 rows)
+## All keywords (945 rows)
 
-| Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
 | ABS | FUNCTION | LLVM intrinsic | Implemented |
 | ACCEL ATTACH | STATEMENT | PB/Win only | Implemented |
@@ -337,6 +336,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | EXPORT | STATEMENT | PB/Win only | Implemented |
 | EXTRACT | FUNCTION | codegen builtin | Implemented |
 | EXTRACT$ | FUNCTION | Win32 | Implemented |
+| FASTPROC | STATEMENT | PB/Win only | Implemented |
 | FIELD | STATEMENT | PB/Win + PB/CC | Implemented |
 | FILEATTR | FUNCTION | codegen builtin | Implemented |
 | FILECOPY | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -349,8 +349,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | FONT END | STATEMENT | PB/Win + PB/CC | Implemented |
 | FONT NEW | STATEMENT | PB/Win + PB/CC | Implemented |
 | FOR / NEXT | STATEMENT | PB/Win + PB/CC | Implemented |
-| FORMAT | FUNCTION | codegen builtin | Implemented |
 | FOR EACH / NEXT | STATEMENT | PB/Win only | Implemented |
+| FORMAT | FUNCTION | codegen builtin | Implemented |
 | FORMAT$ | FUNCTION | Win32 | Implemented |
 | FRAC | FUNCTION | codegen builtin | Implemented |
 | FRE | FUNCTION | codegen builtin | Implemented |
@@ -498,13 +498,19 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ISFILE | FUNCTION | codegen builtin | Implemented |
 | ISFOLDER | FUNCTION | codegen builtin | Implemented |
 | ISINFINITE | STATEMENT | PB/Win + PB/CC | Implemented |
+| ISINTERFACE | FUNCTION | codegen builtin | Not implemented |
+| ISMISSING | FUNCTION | codegen builtin | Not implemented |
 | ISNORMAL | STATEMENT | PB/Win + PB/CC | Implemented |
+| ISNOTHING | FUNCTION | codegen builtin | Implemented |
+| ISNOTNULL | FUNCTION | codegen builtin | Implemented |
+| ISNULL | FUNCTION | codegen builtin | Implemented |
 | ISODD | FUNCTION | codegen builtin | Implemented |
 | ISTRUE | FUNCTION | codegen builtin | Implemented |
 | ISWIN | FUNCTION | Win32 (IsWindow/GetDlgItem) | Implemented |
 | ITERATE | STATEMENT | PB/Win + PB/CC | Implemented |
 | JOIN$ | FUNCTION | Win32 | Implemented |
 | KILL | STATEMENT | PB/Win + PB/CC | Implemented |
+| Keyword | Kind | Platform | Status |
 | LCASE | FUNCTION | codegen builtin | Implemented |
 | LCASE$ | FUNCTION | Win32 | Implemented |
 | LEFT | FUNCTION | codegen builtin | Implemented |
@@ -643,10 +649,10 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | NOT | OPERATOR | PB/Win + PB/CC | Implemented |
 | NUL | FUNCTION | PB/Win + PB/CC | Implemented |
 | NUL$ | FUNCTION | Win32 | Implemented |
-| OBJECT | STATEMENT | PB/Win + PB/CC | Implemented |
 | OBJACTIVE | FUNCTION | PB/Win only | Implemented |
-| OCT | FUNCTION | codegen builtin | Implemented |
+| OBJECT | STATEMENT | PB/Win + PB/CC | Implemented |
 | OBJEQUAL | FUNCTION | PB/Win only | Implemented |
+| OCT | FUNCTION | codegen builtin | Implemented |
 | OCT$ | FUNCTION | Win32 | Implemented |
 | OEMTOCHR | FUNCTION | codegen builtin | Implemented |
 | OEMTOCHR$ | FUNCTION | Win32 | Implemented |
@@ -664,8 +670,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | PATHNAME$ | FUNCTION | Win32 | Implemented |
 | PATHSCAN | FUNCTION | codegen builtin | Implemented |
 | PATHSCAN$ | FUNCTION | Win32 | Implemented |
-| PEEK | FUNCTION | codegen builtin | Implemented |
 | PBLIBMAIN | FUNCTION | PB/Win only | Implemented |
+| PEEK | FUNCTION | codegen builtin | Implemented |
 | PLAY | FUNCTION | Win32 | Implemented |
 | PLAY SOUND | STATEMENT | PB/Win + PB/CC | Implemented |
 | PLAY WAVE | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -677,15 +683,15 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | PROCESS GET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
 | PROCESS SET PRIORITY | STATEMENT | PB/Win + PB/CC | Implemented |
 | PROFILE | STATEMENT | PB/Win + PB/CC | Implemented |
-| PROGRESSBAR GET POS | STATEMENT | PB/Win only | Implemented |
 | PROGID$ | FUNCTION | PB/Win only | Implemented |
+| PROGRESSBAR GET POS | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR GET RANGE | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR SET POS | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR SET RANGE | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR SET STEP | STATEMENT | PB/Win only | Implemented |
 | PROGRESSBAR STEP | STATEMENT | PB/Win only | Implemented |
-| PUT | STATEMENT | PB/Win + PB/CC | Implemented |
 | PROPERTY GET / SET / END PROPERTY | STATEMENT | PB/Win only | Implemented |
+| PUT | STATEMENT | PB/Win + PB/CC | Implemented |
 | PUT$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | PUT$$ | STATEMENT | PB/Win + PB/CC | Implemented |
 | PUT_STR | FUNCTION | codegen builtin | Implemented |
@@ -860,18 +866,18 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | UTF8TOCHR | FUNCTION | codegen builtin | Implemented |
 | UTF8TOCHR$ | FUNCTION | Win32 | Implemented |
 | VAL | STATEMENT | PB/Win + PB/CC | Implemented |
+| VARIANT# | FUNCTION | PB/Win only | Implemented |
 | VARIANT$ | FUNCTION | PB/Win only | Implemented |
 | VARIANT$$ | FUNCTION | PB/Win only | Implemented |
-| VARPTR | FUNCTION | codegen builtin | Implemented |
-| VARIANT# | FUNCTION | PB/Win only | Implemented |
 | VARIANTVT | FUNCTION | PB/Win only | Implemented |
+| VARPTR | FUNCTION | codegen builtin | Implemented |
 | VERIFY | FUNCTION | codegen builtin | Implemented |
 | WAITKEY | FUNCTION | codegen builtin | Implemented |
 | WAITKEY$ | FUNCTION | PB/CC + console | Implemented |
 | WINDOW GET | STATEMENT | PB/Win only | Implemented |
 | WINDOW SET | STATEMENT | PB/Win only | Implemented |
-| WORD | FUNCTION | codegen builtin | Implemented |
 | WINMAIN | FUNCTION | PB/Win only | Implemented |
+| WORD | FUNCTION | codegen builtin | Implemented |
 | WRAP | FUNCTION | codegen builtin | Implemented |
 | WRAP$ | FUNCTION | Win32 | Implemented |
 | WRITE | FUNCTION | codegen builtin | Implemented |
