@@ -3,3 +3,11 @@
 # refuses to run a script whose shebang line ends in CR.
 .githooks/** text eol=lf
 *.sh text eol=lf
+
+# Generated coverage docs have strict per-file line-ending contracts
+# enforced by verify_coverage_docs.py:
+#   - CSV is the single source of truth  -> must stay LF-only (sync/verify)
+#   - MD / README are rendered docs      -> must stay CRLF-only (verify)
+docs/statement-coverage.csv  text eol=lf
+docs/statement-coverage.md   text eol=crlf
+README.md                    text eol=crlf
