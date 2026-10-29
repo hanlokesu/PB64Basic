@@ -1,0 +1,21 @@
+[batch289_bound_test] fork build rc=477
+  fork stderr: [PB64Basic] Auto-detected Windows SDK lib dir: C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64
+[PB64Basic] Preprocessed 17 lines (0.0s)
+[PB64Basic] Lexed 155 tokens (0.0s)
+[PB64Basic] Parsed 1 top-level items (0.0s)
+Codegen warning: FUNCTION PBMAIN → Parse error at line 9: LBOUND: array reference expected
+[PB64Basic] 1 codegen errors (functions skipped)
+Error: Parse error at line 9: LBOUND: array reference expected
+
+[batch289_bound_test] pbwin rc=519
+  out file: C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc\examples\b289b_out.txt exists=False
+[batch289_clsid_test] fork build rc=0
+[batch289_clsid_test] fork run rc=0
+[batch289_clsid_test] pbwin rc=0
+[batch289_clsid_test] pbwin run rc=0
+  out file: C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc\examples\b289c_out.txt exists=True
+[batch289_loop_test] fork build rc=0
+[batch289_loop_test] fork run rc=0
+[batch289_loop_test] pbwin rc=0
+[batch289_loop_test] pbwin run rc=0
+  out file: C:\Users\HANLO\Doubao\chats\2026-09-05\new-chat\powerbasilisk_test\pbsrc\examples\b289l_out.txt exists=True

@@ -1,0 +1,6 @@
+clsid_len= 16 
+b1= 1 b2= 254 
+bad_len= 0 
+isobj=-1 
+hasptr= 1 
+objres= 0 

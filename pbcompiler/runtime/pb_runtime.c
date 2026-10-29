@@ -2076,6 +2076,7 @@ typedef struct {
     unsigned short wMilliseconds;
 } PB_SYSTEMTIME;
 
+__declspec(dllimport) int __stdcall SetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 __declspec(dllimport) void __stdcall GetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 #endif
 
@@ -2103,6 +2104,56 @@ char* pb_time(void) {
     strcpy(buf, "00:00:00");
 #endif
     return pb_bstr_alloc(buf, (int)strlen(buf));
+}
+
+/* DATE$ = s$ - CHW: set the local system date.  Accepted formats:
+   MM-DD-YY / MM-DD-YYYY / MM/DD/YY / MM/DD/YYYY (2-digit years mapped
+   with the standard Windows rule: 00-69 -> 2000-2069, 70-99 -> 1970-1999).
+   Invalid format or a failed SetLocalTime -> ERR = 5, clock untouched.
+   CAUTION: side effect on the real system clock; never run behavior probes. */
+void pb_set_date(const char* s) {
+#ifdef _WIN32
+    int m = 0, d = 0, y = 0, n = 0;
+    char c1 = 0, c2 = 0;
+    n = sscanf(s, "%d%c%d%c%d", &m, &c1, &d, &c2, &y);
+    if (n == 5 && (c1 == '-' || c1 == '/') && (c2 == '-' || c2 == '/')) {
+        if (y < 100) { if (y < 70) y += 2000; else y += 1900; }
+        if (m >= 1 && m <= 12 && d >= 1 && d <= 31 && y >= 1601 && y <= 30827) {
+            PB_SYSTEMTIME st;
+            GetLocalTime(&st);
+            st.wYear = (unsigned short)y;
+            st.wMonth = (unsigned short)m;
+            st.wDay = (unsigned short)d;
+            if (SetLocalTime(&st)) return;
+        }
+    }
+    pb_err_var = pb_err = 5;
+#else
+    pb_err_var = pb_err = 5;
+#endif
+}
+
+/* TIME$ = s$ - CHW: set the local system time.  Accepted: HH:MM[:SS].
+   Invalid format or a failed SetLocalTime -> ERR = 5. */
+void pb_set_time(const char* s) {
+#ifdef _WIN32
+    int h = 0, m = 0, sec = 0, n = 0;
+    n = sscanf(s, "%d:%d:%d", &h, &m, &sec);
+    if (n == 2 || n == 3) {
+        if (h >= 0 && h <= 23 && m >= 0 && m <= 59 && sec >= 0 && sec <= 59) {
+            PB_SYSTEMTIME st;
+            GetLocalTime(&st);
+            st.wHour = (unsigned short)h;
+            st.wMinute = (unsigned short)m;
+            st.wSecond = (unsigned short)sec;
+            st.wMilliseconds = 0;
+            if (SetLocalTime(&st)) return;
+        }
+    }
+    pb_err_var = pb_err = 5;
+#else
+    pb_err_var = pb_err = 5;
+#endif
 }
 
 /* WAITKEY$ — waits for one key press (console), returns the key as a 1-char string.

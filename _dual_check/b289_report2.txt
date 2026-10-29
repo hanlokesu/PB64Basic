@@ -1,0 +1,15 @@
+[batch289_bound_test] fork build rc=0
+[batch289_bound_test] fork run rc=0
+[batch289_bound_test] pbwin rc=0
+[batch289_bound_test] pbwin run rc=0
+[batch289_bound_test] DIFF IDENTICAL (fk=69 B pb=69 B)
+[batch289_clsid_test] fork build rc=0
+[batch289_clsid_test] fork run rc=0
+[batch289_clsid_test] pbwin rc=0
+[batch289_clsid_test] pbwin run rc=0
+[batch289_clsid_test] DIFF IDENTICAL (fk=80 B pb=80 B)
+[batch289_loop_test] fork build rc=0
+[batch289_loop_test] fork run rc=0
+[batch289_loop_test] pbwin rc=0
+[batch289_loop_test] pbwin run rc=0
+[batch289_loop_test] DIFF IDENTICAL (fk=48 B pb=48 B)

@@ -44,3 +44,6 @@ _bak*/
 
 # batch283 probe temp output (evidence lives in _dual_check/b283_fk/)
 /out283.txt
+
+# Static link library build artifacts
+*.sll

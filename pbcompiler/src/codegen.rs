@@ -2188,6 +2188,12 @@ impl Compiler {
             .declare_function("pb_date", &IrType::Ptr, &[], false);
         self.module
             .declare_function("pb_time", &IrType::Ptr, &[], false);
+        // DATE$ = s$ / TIME$ = s$ write side (CHW).  Void, one string arg.
+        // NEVER run behavior probes for these: they set the real system clock.
+        self.module
+            .declare_function("pb_set_date", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_set_time", &IrType::Void, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_waitkey", &IrType::Ptr, &[], false);
         self.module
@@ -7803,7 +7809,7 @@ impl Compiler {
                 // so this is effectively a no-op (control goes to end of select)
                 Ok(())
             }
-            Statement::ExitFor | Statement::ExitDo => {
+            Statement::ExitFor | Statement::ExitDo | Statement::ExitLoop => {
                 if let Some(info) = self.loop_stack.last() {
                     let exit = info.exit_label.clone();
                     fb.br(&exit);
@@ -8386,6 +8392,19 @@ impl Compiler {
         match &assign.target {
             Expr::Variable(orig_name) => {
                 let name = normalize_name(orig_name);
+                // CHW: DATE$ = s$ / TIME$ = s$ set the local system clock
+                // (PowerBASIC Help "DATE$"/"TIME$" statements).  The read side
+                // is a function call (pb_date/pb_time); the write side must not
+                // fall through to symbol storage.  Behavior-level probing is
+                // forbidden here - it changes the real system time.
+                if name == "DATE" && orig_name.ends_with('$') {
+                    fb.call_void("pb_set_date", &[value.clone()]);
+                    return Ok(());
+                }
+                if name == "TIME" && orig_name.ends_with('$') {
+                    fb.call_void("pb_set_time", &[value.clone()]);
+                    return Ok(());
+                }
                 // batch 249: CALLBACK FUNCTION/SUB synthetic slots — evaluate
                 // and discard (the callback dispatcher returns 0).  Bypasses
                 // symbol lookup so #DIM ALL never rejects the pseudo-name.
@@ -8993,6 +9012,33 @@ impl Compiler {
     fn compile_dim(&mut self, fb: &mut FunctionBuilder, dim: &DimStatement) -> PbResult<()> {
         let name = normalize_name(&dim.name);
 
+        // CHW `DIM x() AS type`: undimensioned (dynamic) array. Metadata-only
+        // registration so LBOUND returns 0 / UBOUND returns -1 until REDIM
+        // assigns real bounds (batch289 A-class audit). Previously this fell
+        // through to the scalar path and lookup_array failed with
+        // "array not declared".
+        if dim.is_array
+            && dim.bounds.is_empty()
+            && !dim.is_redim
+            && !self.symbols.lookup_array(&name).is_some()
+        {
+            let elem_ir = Self::ir_type_for(&dim.pb_type);
+            let ptr = fb.alloca(&IrType::Ptr);
+            fb.store(&Val::new("null", IrType::Ptr), &ptr);
+            self.symbols.insert_local_array(
+                name.clone(),
+                ArrayInfo {
+                    ptr_name: ptr.name.clone(),
+                    array_ir_type: IrType::Array(0, Box::new(elem_ir.clone())),
+                    elem_ir_type: elem_ir.clone(),
+                    pb_type: dim.pb_type.clone(),
+                    dims: Vec::new(),
+                    total_elements: 0,
+                },
+            );
+            return Ok(());
+        }
+
         if !dim.bounds.is_empty() {
             // Check if this is a pending global array (GLOBAL arr() + DIM arr(bounds) inside fn)
             if self.pending_global_arrays.contains_key(&name) {
@@ -9026,7 +9072,10 @@ impl Compiler {
                 // array (HEX of redim_test: PB prints a(1)=0 after re-REDIM and
                 // fails its own assertion). So clear the whole max-size buffer
                 // before updating metadata.
-                if dim.is_redim {
+                if dim.is_redim && !prev.dims.is_empty() {
+                    // Dynamic arrays (DIM x() AS type) have dims == [] and no
+                    // backing buffer yet; skip the [0 x T] zeroinitializer
+                    // store, which would produce invalid LLVM IR.
                     fb.store(
                         &Val::new("zeroinitializer", prev.array_ir_type.clone()),
                         &Val::new(prev.ptr_name.clone(), IrType::Ptr),
@@ -22727,8 +22776,13 @@ impl Compiler {
             "LBOUND" => Some(self.builtin_bound(fb, args, false)),
             "UBOUND" => Some(self.builtin_bound(fb, args, true)),
             "ARRAYATTR" => Some(self.builtin_arrayattr(fb, args)),
-            "JOIN$" => Some(self.builtin_join(fb, args)),
-            "INPUTBOX$" => Some(self.builtin_inputbox(fb, args)),
+            "JOIN" | "JOIN$" => Some(self.builtin_join(fb, args)),
+            // CHW INPUTBOX$ has 5 parameters: (prompt$, [title$], [default$],
+            // [xpos%], [ypos%]).  The console fallback accepts the extra
+            // parameters syntactically (GUI modal input is headless-unverifiable);
+            // the call name arrives here WITHOUT the $ suffix (normalize strips
+            // it), so both spellings must map to the same builtin.
+            "INPUTBOX" | "INPUTBOX$" => Some(self.builtin_inputbox(fb, args)),
             "MSGBOX" => Some(self.builtin_msgbox(fb, args)),
             "TAB" => Some(self.builtin_tab(fb, args)),
             "RND" => Some(self.builtin_rnd(fb, args)),
@@ -23558,6 +23612,24 @@ impl Compiler {
         }
     }
 
+    /// CHW LBOUND/UBOUND first-argument forms (batch289 A-class audit):
+    ///   LBOUND(arr)        -> (name, None)          bare array name
+    ///   LBOUND(arr())      -> (name, None)          empty parens
+    ///   LBOUND(arr(dim))   -> (name, Some(dim))     bracket dimension = comma dim
+    ///   LBOUND(arr, dim)   -> (name, None)          comma dim handled by caller
+    fn array_ref_and_dim<'a>(&self, expr: &'a Expr) -> Option<(String, Option<&'a Expr>)> {
+        match expr {
+            Expr::Variable(n) => Some((normalize_name(n), None)),
+            Expr::FunctionCall(n, idxs) | Expr::ArrayAccess(n, idxs) if idxs.is_empty() => {
+                Some((normalize_name(n), None))
+            }
+            Expr::FunctionCall(n, idxs) | Expr::ArrayAccess(n, idxs) if idxs.len() == 1 => {
+                Some((normalize_name(n), Some(&idxs[0])))
+            }
+            _ => None,
+        }
+    }
+
     /// VARCLASS equate for ARRAYATTR AttrNum=1 (CHW ARRAYATTR_function.htm).
     fn varclass_of(t: &PbType) -> i64 {
         match t {
@@ -23610,7 +23682,7 @@ impl Compiler {
                 self.current_line,
             )
         })?;
-        let arr_name = self.array_ref_name(first).ok_or_else(|| {
+        let (arr_name, bracket_dim) = self.array_ref_and_dim(first).ok_or_else(|| {
             PbError::parser(
                 format!("{}: array reference expected", fname),
                 None,
@@ -23628,7 +23700,14 @@ impl Compiler {
                     self.current_line,
                 )
             })?;
-        let dim = if args.len() >= 2 {
+        // CHW: LBOUND of an undimensioned array returns 0, UBOUND returns -1,
+        // so that UBOUND(arr) - LBOUND(arr) + 1 yields zero.
+        if info.dims.is_empty() {
+            return Ok(fb.const_i64(if upper { -1 } else { 0 }));
+        }
+        let dim = if let Some(d) = bracket_dim {
+            Self::eval_const_expr(d).unwrap_or(1) as usize
+        } else if args.len() >= 2 {
             Self::eval_const_expr(&args[1]).unwrap_or(1) as usize
         } else {
             1

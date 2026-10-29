@@ -107,6 +107,10 @@ pub struct DimStatement {
     pub bounds: Vec<DimBound>, // one per dimension
     pub line: usize,
     pub is_redim: bool,
+    /// True when the name was declared with parens (`x()`, `x(1 TO 3)`),
+    /// i.e. an array, even if bounds is empty (dynamic array). Distinguishes
+    /// `DIM x() AS LONG` from a scalar `DIM x AS LONG` (batch289 A-class).
+    pub is_array: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +273,9 @@ pub enum Statement {
     ExitFor,
     ExitDo,
     ExitSelect,
+    // CHW "EXIT Statement": EXIT LOOP exits the current WHILE/WEND or DO/LOOP
+    // (batch289 A-class audit; previously fell through to ExitSub).
+    ExitLoop,
     FunctionReturn(FunctionReturnStmt),
     GoSub(String),
     Return,

@@ -999,7 +999,9 @@ impl Parser {
 
             // Array bounds
             let mut bounds = Vec::new();
+            let mut is_array = false;
             if self.peek() == &Token::LParen {
+                is_array = true;
                 self.advance();
                 if self.peek() != &Token::RParen {
                     bounds = self.parse_dim_bounds()?;
@@ -1032,6 +1034,7 @@ impl Parser {
                 bounds,
                 line,
                 is_redim: false,
+                is_array,
             });
 
             if self.peek() == &Token::Comma {
@@ -1052,7 +1055,9 @@ impl Parser {
         let name = self.consume_identifier()?;
 
         let mut bounds = Vec::new();
+        let mut is_array = false;
         if self.peek() == &Token::LParen {
+            is_array = true;
             self.advance();
             if self.peek() != &Token::RParen {
                 bounds = self.parse_dim_bounds()?;
@@ -1083,6 +1088,7 @@ impl Parser {
             bounds,
             line,
             is_redim: true,
+            is_array,
         })
     }
 
@@ -3376,6 +3382,13 @@ impl Parser {
                     Token::Identifier(ref kw) if kw.eq_ignore_ascii_case("TRY") => {
                         self.advance();
                         Statement::ExitTry
+                    }
+                    // CHW: EXIT LOOP is the generic loop-exit for both WHILE/WEND
+                    // and DO/LOOP (PowerBASIC Help "EXIT Statement"). Previously the
+                    // fallback treated EXIT LOOP as EXIT SUB (silent early return).
+                    Token::Loop => {
+                        self.advance();
+                        Statement::ExitLoop
                     }
                     _ => Statement::ExitSub,
                 };
@@ -12690,7 +12703,9 @@ impl Parser {
             let name = self.consume_identifier()?;
 
             let mut bounds = Vec::new();
+            let mut is_array = false;
             if self.peek() == &Token::LParen {
+                is_array = true;
                 self.advance();
                 if self.peek() != &Token::RParen {
                     bounds = self.parse_dim_bounds()?;
@@ -12724,6 +12739,7 @@ impl Parser {
                 bounds,
                 line,
                 is_redim: false,
+                is_array,
             });
 
             if self.peek() == &Token::Comma {
