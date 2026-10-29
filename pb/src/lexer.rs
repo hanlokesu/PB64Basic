@@ -186,8 +186,25 @@ impl Lexer {
                             start_col,
                         ));
                     }
+                    // ENUM member compound names (CHW: `%EnumName.Member`):
+                    // if a '.' is followed by an identifier char, fold it into
+                    // the constant name so the lookup key matches
+                    // register_enum's "%NAME.MEMBER".  Plain equates (%X)
+                    // never have a '.' after them, so this cannot mis-lex.
+                    let mut full = name;
+                    while self.peek() == Some('.') {
+                        let saved = self.pos;
+                        self.advance(); // consume '.'
+                        let member = self.read_word();
+                        if member.is_empty() {
+                            self.pos = saved; // not a member - leave '.' alone
+                            break;
+                        }
+                        full.push('.');
+                        full.push_str(&member);
+                    }
                     tokens.push(self.make_located(
-                        Token::PercentConstant(format!("%{}", name.to_uppercase())),
+                        Token::PercentConstant(format!("%{}", full.to_uppercase())),
                         start_line,
                         start_col,
                     ));

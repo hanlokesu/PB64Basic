@@ -6967,30 +6967,36 @@ impl Compiler {
 
     fn register_enum(&mut self, ed: &EnumDecl) {
         let name = normalize_name(&ed.name);
-        let mut next: i64 = if ed.bits { 1 } else { 0 };
+        // CHW: non-BITS members auto-assign 0,1,2,... ; BITS members
+        // auto-assign 0,1,2,4,8,... (the FIRST member is 0, then powers of
+        // two).  An explicit value re-seeds the sequence: the members that
+        // follow continue from the next value (v+1 for normal, v*2 for
+        // BITS - CHW example: direction=1, count=8, scope=16).
+        let mut next: i64 = 0;
         let mut first = true;
         for it in &ed.items {
             let member = normalize_name(&it.name).trim_start_matches('%').to_string();
             let v = if let Some(expr) = &it.value {
-                let cv = Self::eval_const_expr(expr).unwrap_or(0);
-                if ed.bits && cv == 0 {
-                    next = 0;
-                    next
-                } else {
-                    cv
-                }
+                Self::eval_const_expr(expr).unwrap_or(0)
             } else if ed.bits {
                 if first {
-                    next = 0;
-                } else if next <= 1 {
-                    next = 1;
+                    0
                 } else {
-                    next *= 2;
+                    next
                 }
-                next
             } else {
                 next
             };
+            next = if ed.bits {
+                if v <= 0 {
+                    1
+                } else {
+                    v * 2
+                }
+            } else {
+                v + 1
+            };
+            first = false;
             // CHW: non-SINGULAR members are `%Name.member`, SINGULAR ones are
             // plain `%member`. PBWin also accepts the bare member everywhere,
             // so register both spellings.
@@ -7002,8 +7008,6 @@ impl Compiler {
             self.enum_constants.insert(key.to_uppercase(), v);
             self.enum_constants
                 .insert(format!("%{}", member).to_uppercase(), v);
-            next = v + 1;
-            first = false;
         }
     }
 
@@ -25519,7 +25523,25 @@ impl Compiler {
                     str_args.push(e);
                 }
             } else if str_args.is_empty() && start_expr.is_none() {
-                start_expr = Some(e);
+                // CHW: ([start,] MainStr, [ANY] MatchStr).  The first
+                // non-string argument is `start` ONLY when the call has
+                // 3+ positional arguments and the second one is not ANY
+                // (EXTRACT$(MainStr, ANY, MatchStr) vs EXTRACT$(start,
+                // MainStr, MatchStr)).  With exactly 2 arguments the first
+                // is MainStr - treating a string variable there as `start`
+                // was a real bug (batch 301 probe: EXTRACT$(s$, "|")).
+                let is_start = if args.len() == 2 {
+                    false
+                } else if args.len() >= 4 {
+                    true
+                } else {
+                    !matches!(args.get(1), Some(Expr::StringLit(s)) if s == "__ANY__")
+                };
+                if is_start {
+                    start_expr = Some(e);
+                } else {
+                    str_args.push(e);
+                }
             } else {
                 str_args.push(e);
             }
