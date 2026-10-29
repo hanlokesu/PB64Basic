@@ -1,10 +1,10 @@
-# Last updated from batch 288 (v0.2.092) - 2026-10-28,,,,
+# Last updated from batch 291 (v0.2.093) - 2026-10-29,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
-Keyword,Kind,Platform,Status
 #COMPILE DLL,STATEMENT,PB/Win only,Implemented
 #COMPILE EXE,STATEMENT,PB/Win only,Implemented
 #COMPILE SLL,STATEMENT,PB/Win only,Implemented
 #LINK,STATEMENT,PB/Win only,Implemented
+Keyword,Kind,Platform,Status
 ABS,FUNCTION,LLVM intrinsic,Implemented
 ACCEL ATTACH,STATEMENT,PB/Win only,Implemented
 ACODE,FUNCTION,PB/Win + PB/CC,Implemented
@@ -220,6 +220,7 @@ CWORD,FUNCTION,codegen builtin,Implemented
 CWRD,FUNCTION,codegen builtin,Implemented
 DATA,STATEMENT,PB/Win + PB/CC,Implemented
 DATACOUNT,FUNCTION,codegen builtin,Implemented
+DATE,FUNCTION,PB/Win + PB/CC,Implemented
 DAYNAME,FUNCTION,codegen builtin,Implemented
 DAYNAME$,FUNCTION,Win32,Implemented
 DEC,FUNCTION,codegen builtin,Implemented
@@ -288,6 +289,7 @@ DISPLAY FONT,STATEMENT,PB/Win only,Implemented
 DISPLAY OPENFILE,STATEMENT,PB/Win only,Implemented
 DISPLAY SAVEFILE,STATEMENT,PB/Win only,Implemented
 DLLMAIN,FUNCTION,PB/Win only,Implemented
+DO_LOOP,BLOCK,PB/Win + PB/CC,Implemented
 DOUBLE,FUNCTION,codegen builtin,Implemented
 END,STATEMENT,PB/Win + PB/CC,Implemented
 ENUM,BLOCK,PB/Win only,Implemented
@@ -462,6 +464,7 @@ IMPORT,STATEMENT,PB/Win + PB/CC,Implemented
 INCR,STATEMENT,PB/Win + PB/CC,Implemented
 INPUT FLUSH,STATEMENT,PB/CC only,Implemented
 INPUT#,STATEMENT,PB/CC only,Implemented
+INPUTBOX$,FUNCTION,PB/Win only,Implemented
 INSTANCE,STATEMENT,PB/Win + PB/CC,Implemented
 INSTR,FUNCTION,codegen builtin,Implemented
 INT,FUNCTION,codegen builtin,Implemented
@@ -474,12 +477,14 @@ ISFILE,FUNCTION,codegen builtin,Implemented
 ISFOLDER,FUNCTION,codegen builtin,Implemented
 ISINFINITE,STATEMENT,PB/Win + PB/CC,Implemented
 ISNORMAL,STATEMENT,PB/Win + PB/CC,Implemented
+ISOBJECT,FUNCTION,codegen builtin,Implemented
 ISODD,FUNCTION,codegen builtin,Implemented
 ISTRUE,FUNCTION,codegen builtin,Implemented
 ISWIN,FUNCTION,Win32 (IsWindow/GetDlgItem),Implemented
 ITERATE,STATEMENT,PB/Win + PB/CC,Implemented
 JOIN$,FUNCTION,Win32,Implemented
 KILL,STATEMENT,PB/Win + PB/CC,Implemented
+LBOUND,FUNCTION,PB/Win + PB/CC,Implemented
 LCASE,FUNCTION,codegen builtin,Implemented
 LCASE$,FUNCTION,Win32,Implemented
 LEFT,FUNCTION,codegen builtin,Implemented
@@ -617,6 +622,8 @@ NOT,OPERATOR,PB/Win + PB/CC,Implemented
 NUL,FUNCTION,PB/Win + PB/CC,Implemented
 NUL$,FUNCTION,Win32,Implemented
 OBJECT,STATEMENT,PB/Win + PB/CC,Implemented
+OBJPTR,FUNCTION,codegen builtin,Implemented
+OBJRESULT,FUNCTION,codegen builtin,Implemented
 OCT,FUNCTION,codegen builtin,Implemented
 OCT$,FUNCTION,Win32,Implemented
 OEMTOCHR,FUNCTION,codegen builtin,Implemented
@@ -635,6 +642,7 @@ PATHNAME,FUNCTION,codegen builtin,Implemented
 PATHNAME$,FUNCTION,Win32,Implemented
 PATHSCAN,FUNCTION,codegen builtin,Implemented
 PATHSCAN$,FUNCTION,Win32,Implemented
+PBMAIN,FUNCTION,PB/Win + PB/CC,Implemented
 PEEK,FUNCTION,codegen builtin,Implemented
 PLAY,FUNCTION,Win32,Implemented
 PLAY SOUND,STATEMENT,PB/Win + PB/CC,Implemented
@@ -771,6 +779,7 @@ THREAD SUSPEND,STATEMENT,PB/Win + PB/CC,Implemented
 THREADCOUNT,FUNCTION,codegen builtin,Implemented
 THREADED,STATEMENT,PB/Win + PB/CC,Implemented
 THREADID,FUNCTION,Win32,Implemented
+TIME,FUNCTION,PB/Win + PB/CC,Implemented
 TIMER,FUNCTION,codegen builtin,Implemented
 TIX,STATEMENT,PB/Win + PB/CC,Implemented
 TOOLBAR ADD BUTTON,STATEMENT,PB/Win only,Implemented
@@ -810,6 +819,7 @@ TRUNC,FUNCTION,LLVM intrinsic,Implemented
 TRY/END TRY,BLOCK,PB/Win + PB/CC,Implemented
 TYPE SET,STATEMENT,PB/Win + PB/CC,Implemented
 TYPE/END TYPE,BLOCK,PB/Win + PB/CC,Implemented
+UBOUND,FUNCTION,PB/Win + PB/CC,Implemented
 UCASE,FUNCTION,codegen builtin,Implemented
 UCASE$,FUNCTION,Win32,Implemented
 UCODE$,FUNCTION,Win32,Implemented
@@ -832,6 +842,7 @@ VARPTR,FUNCTION,codegen builtin,Implemented
 VERIFY,FUNCTION,codegen builtin,Implemented
 WAITKEY,FUNCTION,codegen builtin,Implemented
 WAITKEY$,FUNCTION,PB/CC + console,Implemented
+WHILE_WEND,BLOCK,PB/Win + PB/CC,Implemented
 WINDOW GET,STATEMENT,PB/Win only,Implemented
 WINDOW SET,STATEMENT,PB/Win only,Implemented
 WORD,FUNCTION,codegen builtin,Implemented

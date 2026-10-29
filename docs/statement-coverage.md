@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 288 (v0.2.092)** — 2026-10-28. All statements through batch 288 are reflected in this matrix.
+> **Last updated from batch 291 (v0.2.093)** — 2026-10-29. All statements through batch 291 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **912** (12 BLOCK, 283 FUNCTION, 5 OPERATOR, 609 STATEMENT, 3 FORK EXTENSION).
-- **909** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **923** (14 BLOCK, 292 FUNCTION, 5 OPERATOR, 609 STATEMENT, 3 FORK EXTENSION).
+- **920** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 907 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 918 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **909** | Implemented + Established |
+| ✅ **Total available** | **920** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (912 rows)
+## All keywords (923 rows)
 
 | Keyword | Kind | Platform | Status |
 |---------|------|----------|--------|
@@ -938,3 +938,15 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | XPRINT WIDTH | STATEMENT | PB/Win + PB/CC | Implemented |
 | XPRINT_GET_COLOR | FUNCTION | codegen builtin | Implemented |
 | XPRINT_SET_COLOR | FUNCTION | codegen builtin | Implemented |
+
+| DATE | FUNCTION | PB/Win + PB/CC | Implemented |
+| DO_LOOP | BLOCK | PB/Win + PB/CC | Implemented |
+| INPUTBOX$ | FUNCTION | PB/Win only | Implemented |
+| ISOBJECT | FUNCTION | codegen builtin | Implemented |
+| LBOUND | FUNCTION | PB/Win + PB/CC | Implemented |
+| OBJPTR | FUNCTION | codegen builtin | Implemented |
+| OBJRESULT | FUNCTION | codegen builtin | Implemented |
+| PBMAIN | FUNCTION | PB/Win + PB/CC | Implemented |
+| TIME | FUNCTION | PB/Win + PB/CC | Implemented |
+| UBOUND | FUNCTION | PB/Win + PB/CC | Implemented |
+| WHILE_WEND | BLOCK | PB/Win + PB/CC | Implemented |
