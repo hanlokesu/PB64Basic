@@ -1,0 +1,42 @@
+' batch302f2_test.bas - PBWin PRINT # float-format boundary probe (no E literals;
+' big/small magnitudes built by division so both sides run before the lexer fix)
+#COMPILE EXE
+FUNCTION PBMAIN() AS LONG
+    OPEN "batch302f2_out.txt" FOR OUTPUT AS #1
+    PRINT #1, 0.5
+    PRINT #1, 0.25
+    PRINT #1, 0.05
+    PRINT #1, 0.005
+    PRINT #1, 0.0005
+    PRINT #1, 0.00005
+    PRINT #1, 0.000005
+    PRINT #1, 0.0000005
+    PRINT #1, 100000.0
+    PRINT #1, 1000000.0
+    PRINT #1, 10000000.0
+    PRINT #1, 100000000.0
+    PRINT #1, 1000000000000000.0
+    PRINT #1, 10000000000000000.0
+    PRINT #1, 1.0 / 100000.0
+    PRINT #1, 1.0 / 1000000.0
+    PRINT #1, 1.0 / 10000000.0
+    PRINT #1, 123456.789
+    PRINT #1, 12345.6789
+    PRINT #1, 1234567.89
+    PRINT #1, 0.123456789
+    PRINT #1, 1.23456789
+    PRINT #1, 12.3456789
+    PRINT #1, 123456789012345678.0
+    PRINT #1, 2.718281828459045
+    PRINT #1, -0.25
+    PRINT #1, -10000000000.0
+    PRINT #1, 0.000123456789
+    PRINT #1, 9999999.0
+    PRINT #1, 0.9999999
+    PRINT #1, 3.0 / 2.0
+    PRINT #1, 1.0 / 3.0
+    PRINT #1, 2.0 / 3.0
+    PRINT #1, 7.0 / 8.0
+    CLOSE #1
+    FUNCTION = 0
+END FUNCTION

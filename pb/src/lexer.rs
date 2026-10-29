@@ -606,6 +606,34 @@ impl Lexer {
             }
         }
 
+        // Scientific notation: 1.5E-9 / 1E5 / 1.0E+20 (CHW numeric literals).
+        // Only consume when an exponent actually follows (e/E + optional sign
+        // + digits), so "1.0E" followed by an identifier is left untouched.
+        if let Some('e') | Some('E') = self.peek() {
+            let after = self.peek_ahead(1);
+            let after2 = match after {
+                Some('+') | Some('-') => self.peek_ahead(2),
+                other => other,
+            };
+            if after2.is_some_and(|c| c.is_ascii_digit()) {
+                is_float = true;
+                num_str.push(self.peek().unwrap());
+                self.advance();
+                if matches!(self.peek(), Some('+') | Some('-')) {
+                    num_str.push(self.peek().unwrap());
+                    self.advance();
+                }
+                while let Some(ch) = self.peek() {
+                    if ch.is_ascii_digit() {
+                        num_str.push(ch);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
         // Consume type suffix
         self.consume_numeric_suffix();
 

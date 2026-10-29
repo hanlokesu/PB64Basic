@@ -26043,14 +26043,10 @@ impl Compiler {
             }
         } else {
             let f64_val = self.to_f64(fb, val);
-            let (fmt_name, _) = self.module.add_string_constant("% g");
-            let fmt_ptr = Val::new(fmt_name, IrType::Ptr);
-            fb.call_variadic_with_sig(
-                &IrType::I32,
-                "snprintf",
-                &[buf.clone(), buf_size, fmt_ptr, f64_val],
-                &[IrType::Ptr, IrType::I32, IrType::Ptr],
-            );
+            // pb_str_dbl returns a ready BSTR with PBWin float formatting
+            // (same routine STR$ uses: leading blank, no leading zero on the
+            //  fraction, 15 significant digits, PBWin scientific thresholds).
+            return fb.call(&IrType::Ptr, "pb_str_dbl", std::slice::from_ref(&f64_val));
         }
         let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&buf));
         let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf.clone(), len]);

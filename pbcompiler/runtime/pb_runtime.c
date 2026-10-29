@@ -769,28 +769,100 @@ char* pb_dec(long long v) {
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 
+/* PBWin keeps fixed notation while %.15g switches to scientific earlier:
+   decimal exponent -5 prints as "1e-05" via %g but PBWin prints " .00001".
+   Rebuild the fixed form (also trims trailing zeros of the fraction). */
+static void pb_expand_fixed(char* buf, int* n) {
+    char* epos = strchr(buf, 'e');
+    if (epos == NULL) return;
+    int exp = atoi(epos + 1);
+    if (exp < -15 || exp >= 15) return;     /* PBWin keeps scientific here */
+    int sig = (buf[0] == ' ' || buf[0] == '-') ? 1 : 0;
+    char m[40];
+    int ml = 0;
+    for (char* p = buf + sig; p < epos; p++) {
+        if (*p != '.') m[ml++] = *p;
+    }
+    m[ml] = '\0';
+    int point = 1 + exp;                    /* integer digits in fixed form */
+    char out[40];
+    int k = 0;
+    for (int i = 0; i < sig; i++) out[k++] = buf[i];
+    if (point <= 0) {
+        out[k++] = '0';
+        out[k++] = '.';
+        for (int i = point; i < 0; i++) out[k++] = '0';
+        for (int i = 0; i < ml; i++) out[k++] = m[i];
+    } else if (point >= ml) {
+        for (int i = 0; i < ml; i++) out[k++] = m[i];
+        for (int i = ml; i < point; i++) out[k++] = '0';
+    } else {
+        for (int i = 0; i < point; i++) out[k++] = m[i];
+        out[k++] = '.';
+        for (int i = point; i < ml; i++) out[k++] = m[i];
+    }
+    out[k] = '\0';
+    char* dot = strchr(out + sig, '.');
+    if (dot != NULL) {
+        char* q = out + k - 1;
+        while (q > dot && *q == '0') { *q = '\0'; k--; q--; }
+        if (q == dot) { *q = '\0'; k--; }
+    }
+    memcpy(buf, out, (size_t)k + 1);
+    *n = k;
+}
+
 /* STR$(double) — PBWin10 measured formatting:
    - leading space for positive values, '-' (no space) for negative
    - no leading zero for |v| < 1: " .5", "-.125"
-   - full double precision (15 significant digits) with trailing zeros removed.
-   Implemented as %.15g, then: trailing-zero strip, "-0.x" -> "-.x", " 0.x" -> " .x". */
+   - full double precision (15 significant digits) with trailing zeros removed
+   - scientific for |v| >= 1E15 or 0 < |v| < 1E-15, uppercase E, no exponent
+     leading zero: " 1E+15", " 1.23456789012346E+17", " 1E-16", " 1.5E-9"
+     (measured on PBWin: 1E-15 prints fixed ".000000000000001", 1E-16 prints
+     "1E-16")
+   Implemented as %.15g, then: uppercase-E + exponent-zero strip (scientific),
+   or expand %g's premature scientific back to fixed, then trailing-zero strip,
+   "-0.x" -> "-.x", " 0.x" -> " .x". */
 char* pb_str_dbl(double v) {
     char buf[64];
-    int n = snprintf(buf, sizeof(buf), "% .15g", v);
-    /* strip trailing zeros in the fraction (never strip the final zero of "0") */
-    char* dot = strchr(buf, '.');
-    if (dot != NULL) {
-        char* p = buf + n - 1;
-        while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
-        if (p == dot) { *p = '\0'; n--; }   /* "12." -> "12" */
+    int n;
+    if (v == 0.0) {
+        return pb_bstr_alloc(" 0", 2);
     }
-    /* PBWin: no leading zero on the fraction: "-0.5" -> "-.5", " 0.5" -> " .5" */
-    if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
-        memmove(buf + 1, buf + 2, (size_t)(n - 1));
-        n--;
-    } else if (buf[0] == ' ' && buf[1] == '0' && buf[2] == '.') {
-        memmove(buf + 1, buf + 2, (size_t)(n - 1));
-        n--;
+    double ax = fabs(v);
+    int e = (int)floor(log10(ax));          /* decimal exponent */
+    if (e >= 15 || e < -15) {
+        n = snprintf(buf, sizeof(buf), "% .15g", v);   /* " 1e+15" / " 1.5e-09" */
+        char* ep = strchr(buf, 'e');
+        if (ep != NULL) {
+            *ep = 'E';
+            char* d = ep + 1;
+            if ((*d == '+' || *d == '-') && d[1] == '0') {
+                memmove(d + 1, d + 2, strlen(d + 2) + 1);   /* "E-09" -> "E-9" */
+                n--;
+            }
+        }
+    } else {
+        n = snprintf(buf, sizeof(buf), "% .15g", v);
+        if (strchr(buf, 'e') != NULL) {
+            pb_expand_fixed(buf, &n);       /* "1e-05" -> "0.00001" (with trim) */
+        } else {
+            /* strip trailing zeros in the fraction (never the final zero of "0") */
+            char* dot = strchr(buf, '.');
+            if (dot != NULL) {
+                char* p = buf + n - 1;
+                while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
+                if (p == dot) { *p = '\0'; n--; }   /* "12." -> "12" */
+            }
+        }
+        /* PBWin: no leading zero on the fraction: "-0.5" -> "-.5", " 0.5" -> " .5" */
+        if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
+            memmove(buf + 1, buf + 2, (size_t)(n - 1));
+            n--;
+        } else if (buf[0] == ' ' && buf[1] == '0' && buf[2] == '.') {
+            memmove(buf + 1, buf + 2, (size_t)(n - 1));
+            n--;
+        }
     }
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
