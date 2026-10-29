@@ -1,0 +1,40 @@
+B-class batch 292-298 completion report (2026-10-29)
+====================================================
+
+Implementation (all 7 B-class groups, CHW syntax-directed):
+  1. FOR EACH / NEXT            - COUNT/ITEM collection protocol enumeration (batch296)
+  2. CB.* callback family       - CB.CTL/CB.CTLMSG/CB.HNDL/CB.LPARAM/CB.MSG/CB.WPARAM (batch292)
+  3. OBJACTIVE / OBJEQUAL       - COM object comparison functions (batch294)
+  4. VARIANT# / VARIANTVT       - variant type helpers (batch295)
+  5. PROGID$                    - CLSID -> ProgID reverse lookup (batch293)
+  6. PBLIBMAIN / WINMAIN        - DLL/EXE alternate entry points (batch297)
+  7. PROPERTY GET/SET/END PROPERTY - CLASS property accessors (batch298)
+
+PROPERTY SET interception fix (the 11 regression failures):
+  - compile_assign intercepted `o.field = x` for ANY dotted target
+    (Expr::TypeMember) before checking whether a <Class>_<Field>_SET
+    procedure exists; ordinary TYPE field writes were routed to a
+    nonexistent setter and rejected.
+  - Fix: look up <Class>_<Prop>_SET; only when it exists lower to the
+    setter call.  Otherwise fall through to the ordinary storage path
+    (TYPE field write, incl. FixedString inline-buffer handling).
+
+Verification:
+  - full compile regression : 336/336 compile OK, FAIL=0
+    (327 pre-existing examples + 9 new B-class probes; includes the
+     11 examples previously broken by the PROPERTY SET interception)
+  - headless run (--all-headless): 192 ran OK; 3 DLL examples now
+    SKIP-NO-EXE (run_examples.py fix: a #COMPILE DLL/SLL artifact has no
+    .exe entry point - previously raised WinError 2); all 9 B-class
+    probes exit 0 at runtime.
+  - pre-existing headless-run failures (10), confirmed by control
+    experiment (git stash -> rebuild pre-B-class compiler -> identical
+    failures, same crash address 0xC0000005 / same assert codes):
+    batch167 (PROGRESSBAR FAILURES 6), batch245/248/249/249_test
+    (CONTROL ADD GUI crash), batch252 (FAILURES 2), batch257/258/258c
+    (assert exits), redim_test (REDIM FAIL 103).  NOT caused by B-class;
+    tracked separately (GUI teardown path).
+  - coverage docs: 35/35 verify PASS; rows 923 -> 932, impl 918 -> 927,
+    not-implemented stays 0 (9 new rows: FOR EACH/NEXT, OBJACTIVE,
+    OBJEQUAL, VARIANT#, VARIANTVT, PROGID$, PBLIBMAIN, WINMAIN,
+    PROPERTY GET/SET/END PROPERTY; CB.* rows already present).

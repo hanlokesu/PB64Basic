@@ -5300,6 +5300,99 @@ char* __stdcall pb_clsid_get(const char* progid) {
         }
     }
 }
+
+/* PROGID$(ClassID$) - batch292 B batch, CHW PROGID$ function (the complement
+   of CLSID$): takes the 16-byte binary class ID (typically a CLSID$ output
+   BSTR, or a fixed string / GUID of >= 16 bytes), formats it as
+   "{XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}", looks up HKCR\CLSID\{...}\ProgID
+   default value and returns the alphanumeric ProgID string.  Returns an empty
+   string (and does NOT set ERR) when the CLSID is not found or any error
+   occurs.  The 4-byte BSTR length prefix is used so embedded NULs in the
+   16-byte GUID are preserved; inputs shorter than 16 bytes return "". */
+char* __stdcall pb_progid_get(const char* clsid) {
+    unsigned char b[16];
+    char guid[40], key[80], valbuf[256];
+    unsigned long type = 1;                 /* REG_SZ */
+    unsigned long size = sizeof(valbuf);
+    HKEY_PB hkey = 0, sub = 0;
+    if (!clsid) return pb_bstr_alloc("", 0);
+    {
+        unsigned int n = (unsigned int)((unsigned char)clsid[0] |
+                          ((unsigned char)clsid[1] << 8) |
+                          ((unsigned char)clsid[2] << 16) |
+                          ((unsigned char)clsid[3] << 24));
+        if (n < 16) return pb_bstr_alloc("", 0);
+    }
+    memcpy(b, clsid, 16);
+    sprintf(guid, "{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+            ((unsigned)b[3] << 24) | ((unsigned)b[2] << 16) | ((unsigned)b[1] << 8) | b[0],
+            ((unsigned)b[5] << 8) | b[4],
+            ((unsigned)b[7] << 8) | b[6],
+            b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    memcpy(key, "CLSID\\", 6);
+    {
+        int i = 0;
+        while (guid[i] && i < (int)sizeof(key) - 7) { key[6 + i] = guid[i]; i++; }
+        key[6 + i] = '\0';
+    }
+    if (RegOpenKeyExA((HKEY_PB)0x80000000L, key, 0, 0x20019L, &hkey) != 0)
+        return pb_bstr_alloc("", 0);
+    /* The ProgID lives in a SUBKEY named "ProgID" (its default value), not as
+       a named value of the CLSID key — open the subkey, then read "" default. */
+    if (RegOpenKeyExA(hkey, "ProgID", 0, 0x20019L, &sub) != 0) {
+        RegCloseKey(hkey);
+        return pb_bstr_alloc("", 0);
+    }
+    if (RegQueryValueExA(sub, "", 0, &type, (unsigned char*)valbuf, &size) != 0
+        || type != 1) {
+        RegCloseKey(sub);
+        RegCloseKey(hkey);
+        return pb_bstr_alloc("", 0);
+    }
+    RegCloseKey(sub);
+    RegCloseKey(hkey);
+    valbuf[255] = '\0';
+    return pb_bstr_alloc(valbuf, (unsigned int)strlen(valbuf));
+}
+
+/* VARIANTVT(vrntvar) - CHW VARIANTVT_function.htm: returns the internal VT
+   data type code stored in a 16-byte PB Variant variable (equates: 0
+   VT_EMPTY, 1 VT_NULL, 2 VT_I2, 3 VT_I4, 5 VT_R8, 8 VT_BSTR, ...).  Layout:
+   word VT code at +0, reserved words +2..+7, 8-byte value union at +8. */
+long __stdcall pb_variant_vt(const void* v) {
+    if (!v) return 0;
+    return ((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8);
+}
+
+/* VARIANT#(vrntvar) - CHW VARIANT_function.htm: returns the numeric value
+   contained in a Variant, whatever its internal numeric representation
+   (BYTE..QUAD / CURRENCY / DOUBLE).  Non-numeric contents (BSTR, objects,
+   arrays) and empty/null variants return 0.  The result is a DOUBLE, so the
+   caller's destination type performs the final conversion (CHW itself warns
+   that QUAD/CURRENCY can exceed DOUBLE precision). */
+double __stdcall pb_variant_num(const void* v) {
+    unsigned short vt;
+    double d;
+    long long i;
+    unsigned long long u;
+    if (!v) return 0.0;
+    vt = (unsigned short)(((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8));
+    switch (vt) {
+        case 2:  /* VT_I2  */ { short x; memcpy(&x, (const char*)v + 8, 2); return (double)x; }
+        case 3:  /* VT_I4  */ { int x; memcpy(&x, (const char*)v + 8, 4); return (double)x; }
+        case 4:  /* VT_R4  */ { float x; memcpy(&x, (const char*)v + 8, 4); return (double)x; }
+        case 5:  /* VT_R8  */ { double x; memcpy(&x, (const char*)v + 8, 8); return x; }
+        case 6:  /* VT_CY  */ { long long x; memcpy(&x, (const char*)v + 8, 8); return (double)x; }
+        case 7:  /* VT_DATE*/ { double x; memcpy(&x, (const char*)v + 8, 8); return x; }
+        case 11: /* VT_BOOL*/ { short x; memcpy(&x, (const char*)v + 8, 2); return x ? -1.0 : 0.0; }
+        case 17: /* VT_UI1 */ { unsigned char x = ((const unsigned char*)v)[8]; return (double)x; }
+        case 18: /* VT_UI2 */ { unsigned short x; memcpy(&x, (const char*)v + 8, 2); return (double)x; }
+        case 19: /* VT_UI4 */ { unsigned long x; memcpy(&x, (const char*)v + 8, 4); return (double)x; }
+        case 20: /* VT_I8  */ { long long x; memcpy(&x, (const char*)v + 8, 8); return (double)x; }
+        case 21: /* VT_UI8 */ { unsigned long long x; memcpy(&x, (const char*)v + 8, 8); return (double)x; }
+        default: return 0.0;   /* VT_EMPTY / VT_NULL / VT_BSTR / arrays / objects */
+    }
+}
 __declspec(dllimport) int __stdcall SetConsoleTitleA(const char* lpConsoleTitle);
 __declspec(dllimport) unsigned long __stdcall GetConsoleTitleA(char* lpConsoleTitle, unsigned long nSize);
 #endif
@@ -7673,6 +7766,30 @@ void pb_com_init(void) {
         CoInitializeEx(NULL, 0x2 /*COINIT_APARTMENTTHREADED*/);
         pb_com_inited = 1;
     }
+}
+
+/* OBJACTIVE(progid$) - CHW OBJACTIVE_function.htm: TRUE (-1) if an EXE-based
+   COM object for the registered program ID is currently running (an active
+   instance can be obtained via GetActiveObject), FALSE (0) otherwise.
+   DLL/OCX-based servers always return FALSE because GetActiveObject has no
+   running EXE instance to find.  The acquired active-object reference is
+   released before returning. */
+long __stdcall pb_objactive(const char* progid) {
+    PB_GUID cg;
+    wchar_t wbuf[256];
+    void* obj = NULL;
+    if (!progid) return 0;
+    pb_com_init();
+    MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
+    if (CLSIDFromProgID(wbuf, &cg) != 0) return 0;
+    if (GetActiveObject(&cg, NULL, &obj) != 0 || !obj) return 0;
+    /* release the active-object reference we acquired */
+    {
+        typedef unsigned long (__stdcall* RELEASE_FN)(void*);
+        RELEASE_FN rel = (RELEASE_FN)((void***)obj)[0][2];
+        rel(obj);
+    }
+    return -1;  /* TRUE */
 }
 
 /* Registry-free COM: load the DLL, resolve DllGetClassObject, ask it for the

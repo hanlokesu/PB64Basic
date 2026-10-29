@@ -45,6 +45,7 @@ enum BodyEnd {
     EndMethod,
     EndSub,
     EndFunction,
+    EndProperty,
     EndIf,
     Else,
     ElseIf,
@@ -536,6 +537,20 @@ impl Parser {
                                                if k.eq_ignore_ascii_case("METHOD"));
                     if is_method {
                         let item = self.parse_method_decl(Some(&name))?;
+                        self.pending.push_back(item);
+                        self.skip_eol();
+                        continue;
+                    }
+                    // PROPERTY GET|SET name ... END PROPERTY — property procedures
+                    // inside a CLASS (batch 298, CHW PROPERTY/END PROPERTY).  Compiled
+                    // as <Class>_<Name>_Get / <Class>_<Name>_Set free functions, the
+                    // same lowering METHOD uses, so codegen needs no new machinery.
+                    let is_property = matches!(self.peek(), Token::Identifier(k)
+                                                if k.eq_ignore_ascii_case("PROPERTY"))
+                        && matches!(self.peek_at(1), Some(Token::Identifier(k2))
+                                    if k2.eq_ignore_ascii_case("GET") || k2.eq_ignore_ascii_case("SET"));
+                    if is_property {
+                        let item = self.parse_property_decl(Some(&name))?;
                         self.pending.push_back(item);
                         self.skip_eol();
                         continue;
@@ -1156,6 +1171,13 @@ impl Parser {
                 self.advance();
                 Ok(PbType::WString) // UTF-16 wide string (batch280)
             }
+            // batch294: WSTRINGZ is a pointer to a NUL-terminated wide string
+            // (WINMAIN's lpszCmdLine parameter); the fork stores wide strings
+            // as UTF-16 BSTR pointers, so the same representation applies.
+            Token::Identifier(w) if w.eq_ignore_ascii_case("WSTRINGZ") => {
+                self.advance();
+                Ok(PbType::WString)
+            }
             Token::Integer => {
                 self.advance();
                 Ok(PbType::Integer)
@@ -1226,6 +1248,12 @@ impl Parser {
                     "FIELD" => {
                         self.advance();
                         Ok(PbType::Field)
+                    }
+                    // batch293: VARIANT is a real PB type (16-byte container),
+                    // not a user-defined type name.
+                    "VARIANT" => {
+                        self.advance();
+                        Ok(PbType::Variant)
                     }
                     _ => {
                         let name = s.clone();
@@ -1591,6 +1619,94 @@ impl Parser {
                 body,
                 alias: None,
                 export,
+                line,
+            }),
+        })
+    }
+
+    /// A PROPERTY block inside a CLASS (CHW PROPERTY/END PROPERTY): both forms
+    /// are lowered like METHOD — an ordinary SUB/FUNCTION with the class-name
+    /// prefix and the implicit BYREF receiver — so codegen needs no new
+    /// machinery.  The GET form keeps a return type and is compiled as
+    /// `<Class>_<Name>_Get`; the SET form (no return type) is compiled as
+    /// `<Class>_<Name>_Set`.  The caller's syntax picks which one runs:
+    /// `x = o.Prop(...)` resolves to the Get, `o.Prop(...) = expr` to the Set.
+    fn parse_property_decl(&mut self, prefix: Option<&str>) -> PbResult<TopLevel> {
+        let line = self.current_line();
+        self.advance(); // PROPERTY
+        let is_get = matches!(self.peek(), Token::Identifier(k) if k.eq_ignore_ascii_case("GET"));
+        self.advance(); // GET / SET
+        let pname = self.consume_identifier()?;
+
+        let params = if self.peek() == &Token::LParen {
+            self.advance();
+            let p = self.parse_params()?;
+            self.expect(&Token::RParen)?;
+            p
+        } else {
+            Vec::new()
+        };
+
+        // THREADSAFE decoration (ignored, same as the METHOD form).
+        while matches!(self.peek(), Token::Identifier(ref s) if {
+            let u = s.to_uppercase();
+            u == "THREADSAFE"
+        }) {
+            self.advance();
+        }
+
+        let mut params = params;
+        if let Some(cls) = prefix {
+            params.insert(
+                0,
+                Param {
+                    name: "this".to_string(),
+                    pb_type: PbType::UserDefined(cls.to_string()),
+                    is_byval: false,
+                    is_optional: false,
+                    is_array: false,
+                },
+            );
+        }
+
+        let return_type = if self.peek() == &Token::As {
+            self.advance();
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+
+        self.consume_to_eol();
+        let (body, prop_end) =
+            self.parse_body_with_terminator(&[BodyEnd::EndProperty, BodyEnd::EndSub])?;
+        if prop_end.is_none() {
+            eprintln!(
+                "Error: PROPERTY block starting on line {} has no END PROPERTY terminator",
+                line
+            );
+            self.error_count += 1;
+        }
+        let name = match prefix {
+            Some(p) => format!("{}_{}_{}", p, pname, if is_get { "Get" } else { "Set" }),
+            None => format!("{}_{}", pname, if is_get { "Get" } else { "Set" }),
+        };
+
+        Ok(match return_type {
+            Some(rt) => TopLevel::FunctionDecl(FunctionDecl {
+                name,
+                params,
+                return_type: rt,
+                body,
+                alias: None,
+                export: false,
+                line,
+            }),
+            None => TopLevel::SubDecl(SubDecl {
+                name,
+                params,
+                body,
+                alias: None,
+                export: false,
                 line,
             }),
         })
@@ -2060,6 +2176,11 @@ impl Parser {
             BodyEnd::EndFunction => {
                 self.peek() == &Token::End && self.peek_at(1) == Some(&Token::Function)
             }
+            BodyEnd::EndProperty => {
+                self.peek() == &Token::End
+                    && matches!(self.peek_at(1), Some(Token::Identifier(w))
+                                if w.eq_ignore_ascii_case("PROPERTY"))
+            }
             BodyEnd::EndIf => self.peek() == &Token::End && self.peek_at(1) == Some(&Token::If),
             BodyEnd::Else => self.peek() == &Token::Else,
             BodyEnd::ElseIf => self.peek() == &Token::ElseIf,
@@ -2083,9 +2204,10 @@ impl Parser {
                     BodyEnd::EndSub
                     | BodyEnd::EndFunction
                     | BodyEnd::EndIf
-                    | BodyEnd::EndMethod => {
+                    | BodyEnd::EndMethod
+                    | BodyEnd::EndProperty => {
                         self.advance(); // END
-                        self.advance(); // SUB/FUNCTION/IF
+                        self.advance(); // SUB/FUNCTION/IF/METHOD/PROPERTY
                         self.consume_to_eol();
                     }
                     BodyEnd::EndSelect
@@ -3867,6 +3989,21 @@ impl Parser {
             }
             Token::Identifier(ref name) => {
                 let name_upper = name.to_uppercase();
+
+                // PROPERTY = expr — return value inside a PROPERTY GET body
+                // (CHW PROPERTY/END PROPERTY).  "PROPERTY" is otherwise not a
+                // declared name, so this must be intercepted before the generic
+                // assignment path rejects it.
+                if name_upper == "PROPERTY" && self.peek_at(1) == Some(&Token::Eq) {
+                    self.advance(); // PROPERTY
+                    self.advance(); // =
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::FunctionReturn(FunctionReturnStmt {
+                        value,
+                        line,
+                    }));
+                }
 
                 // OBJECT CALL/GET/LET/SET obj.member [(args)] [TO result] —
                 // DISPATCH access with VARIANT marshalling (batch278-74).
@@ -12918,6 +13055,46 @@ impl Parser {
 
     fn parse_for_statement(&mut self) -> PbResult<Statement> {
         let line = self.current_line();
+        // batch296: FOR EACH var IN collection ... NEXT — enumeration of a
+        // PowerCollection / LinkListCollection object (CHW
+        // FOR_EACH_NEXT_statements).  The header form is
+        //   FOR EACH VariantVar IN CollectionObjectVar
+        // and the loop ends with an optional `NEXT [VariantVar]`.
+        if matches!(self.peek_at(1), Some(Token::Identifier(k))
+                            if k.eq_ignore_ascii_case("EACH"))
+        {
+            self.advance(); // FOR
+            self.advance(); // EACH
+            let var = self.consume_identifier()?;
+            let in_kw = self.consume_identifier()?;
+            if !in_kw.eq_ignore_ascii_case("IN") {
+                return Err(PbError::parser(
+                    "FOR EACH expects `IN CollectionObjectVar` after the loop variable",
+                    self.current_file(),
+                    self.current_line(),
+                ));
+            }
+            let collection = self.parse_expression()?;
+            self.consume_to_eol();
+
+            let body = self.parse_body(&[BodyEnd::Next])?;
+
+            // NEXT [var]
+            if self.peek() == &Token::Next {
+                self.advance();
+                if let Token::Identifier(_) = self.peek() {
+                    self.advance();
+                }
+                self.consume_to_eol();
+            }
+
+            return Ok(Statement::ForEach(ForEachStmt {
+                var,
+                collection,
+                body,
+                line,
+            }));
+        }
         self.advance(); // FOR
         let var = self.consume_identifier()?;
         self.expect(&Token::Eq)?;

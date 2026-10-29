@@ -1530,7 +1530,10 @@ impl Compiler {
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
             PbType::Interface(_) => IrType::Ptr, // object reference (batch 264)
-            PbType::Variant => IrType::I32,      // default to LONG
+            // batch293: PB Variant variables are 16-byte containers
+            // (word VT code at +0, 8-byte value union at +8), matching the
+            // runtime PB_VARIANT layout used by COM marshalling.
+            PbType::Variant => IrType::Array(16, Box::new(IrType::I8)),
         }
     }
 
@@ -5050,6 +5053,19 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_com_result", &IrType::I32, &[], false);
+        // batch292: PROGID$(ClassID$) — CLSID$ complement (16-byte GUID ->
+        // HKCR\CLSID\{...}\ProgID alphanumeric ProgID string)
+        self.module
+            .declare_function("pb_progid_get", &IrType::Ptr, &[IrType::Ptr], false);
+        // batch292: OBJACTIVE(progid$) — TRUE if an EXE-based COM object is running
+        self.module
+            .declare_function("pb_objactive", &IrType::I32, &[IrType::Ptr], false);
+        // batch293: VARIANT#(vrntvar) / VARIANTVT(vrntvar) — read a 16-byte
+        // PB Variant (vt word + value union)
+        self.module
+            .declare_function("pb_variant_num", &IrType::Double, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_variant_vt", &IrType::I32, &[IrType::Ptr], false);
         // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
         self.module.declare_function(
             "pb_com_invoke",
@@ -6268,6 +6284,8 @@ impl Compiler {
         self.module
             .declare_dllimport("GetCommandLineA", &IrType::Ptr, &[]);
         self.module
+            .declare_dllimport("GetModuleHandleA", &IrType::I32, &[IrType::Ptr]);
+        self.module
             .declare_dllimport("GetSystemMetrics", &IrType::I32, &[IrType::I32]);
         self.module.declare_dllimport(
             "MessageBoxA",
@@ -6606,16 +6624,24 @@ impl Compiler {
                 .functions
                 .get("LIBMAIN")
                 .or_else(|| self.functions.get("DLLMAIN"))
+                .or_else(|| self.functions.get("PBLIBMAIN"))
                 .cloned();
             if let Some(lm) = libmain {
-                // LIBMAIN(BYVAL hInstance AS DWORD, BYVAL lReason AS LONG,
-                // BYVAL lReserved AS LONG) AS LONG — truncate the 64-bit
-                // handles to the 32-bit parameter slots (x64 ABI: upper half
-                // of the register is ignored by the callee).
-                let h32 = fb.trunc(&hinst, &IrType::I32);
-                let rv32 = fb.trunc(&reserved, &IrType::I32);
-                let ret = fb.call(&IrType::I32, &lm.ir_name, &[h32, reason, rv32]);
-                fb.ret(&ret);
+                if lm.params.is_empty() {
+                    // PBLIBMAIN: takes no parameters (CHW pblibmain_function.htm).
+                    // Called by Windows each time the DLL is loaded/unloaded.
+                    let ret = fb.call(&IrType::I32, &lm.ir_name, &[]);
+                    fb.ret(&ret);
+                } else {
+                    // LIBMAIN(BYVAL hInstance AS DWORD, BYVAL lReason AS LONG,
+                    // BYVAL lReserved AS LONG) AS LONG — truncate the 64-bit
+                    // handles to the 32-bit parameter slots (x64 ABI: upper half
+                    // of the register is ignored by the callee).
+                    let h32 = fb.trunc(&hinst, &IrType::I32);
+                    let rv32 = fb.trunc(&reserved, &IrType::I32);
+                    let ret = fb.call(&IrType::I32, &lm.ir_name, &[h32, reason, rv32]);
+                    fb.ret(&ret);
+                }
             } else {
                 fb.ret(&Val::new("1".to_string(), IrType::I32));
             }
@@ -6642,6 +6668,55 @@ impl Compiler {
                 );
             }
             let ret = fb.call(&IrType::I32, &pbmain_ir_name, &[]);
+            fb.ret(&ret);
+            self.module.add_function_body(fb.finish());
+        } else if let Some(winmain) = self
+            .functions
+            .get("WINMAIN")
+            .or_else(|| self.functions.get("MAIN"))
+            .cloned()
+        {
+            // batch294: WINMAIN(BYVAL hInstance AS DWORD, BYVAL hPrevInst AS
+            // DWORD, BYVAL lpszCmdLine AS WSTRINGZ PTR, BYVAL nCmdShow AS LONG)
+            // AS LONG — the classic GUI entry point (synonym MAIN). main()
+            // synthesizes the four arguments:
+            //   hInstance  = GetModuleHandleA(NULL)
+            //   hPrevInst  = 0 (always zero in 32-bit applications)
+            //   lpszCmdLine= command-line trailer, COMMAND$-like semantics
+            //   nCmdShow   = 0 (the real value comes from Windows; fork cannot
+            //                observe it, so SW_HIDE=0 is the deterministic stand-in)
+            let winmain_ir_name = winmain.ir_name.clone();
+            let mut fb = self
+                .module
+                .create_function_builder("main", &IrType::I32, &[]);
+            fb.call_void("pb_install_crash_handler", &[]);
+            fb.call_void("pb_profile_enable", &[]);
+            if self.debug_mode {
+                let (cat, _) = self.module.add_string_constant("BUILD");
+                let (msg, _) = self
+                    .module
+                    .add_string_constant("Debug mode enabled → modal and state logging active");
+                fb.call_void(
+                    "pb_debug_log_msg",
+                    &[Val::new(cat, IrType::Ptr), Val::new(msg, IrType::Ptr)],
+                );
+            }
+            let hinst = fb.call(
+                &IrType::I32,
+                "GetModuleHandleA",
+                &[Val::new("null".to_string(), IrType::Ptr)],
+            );
+            let hprev = fb.const_i32(0);
+            let zero64 = fb.next_reg();
+            fb.raw_line(&format!("  {} = add i64 0, 0", zero64));
+            let cmd = fb.call(
+                &IrType::Ptr,
+                "pb_command_arg",
+                &[Val::new(zero64, IrType::I64)],
+            );
+            let wide = fb.call(&IrType::Ptr, "pb_ansi_to_wide", &[cmd]);
+            let nshow = fb.const_i32(0);
+            let ret = fb.call(&IrType::I32, &winmain_ir_name, &[hinst, hprev, wide, nshow]);
             fb.ret(&ret);
             self.module.add_function_body(fb.finish());
         } else {
@@ -7518,6 +7593,9 @@ impl Compiler {
                 Statement::For(for_stmt) => {
                     Self::collect_labels_recursive(&for_stmt.body, labels, gosub_targets);
                 }
+                Statement::ForEach(fe) => {
+                    Self::collect_labels_recursive(&fe.body, labels, gosub_targets);
+                }
                 Statement::DoLoop(do_stmt) => {
                     Self::collect_labels_recursive(&do_stmt.body, labels, gosub_targets);
                 }
@@ -7640,6 +7718,7 @@ impl Compiler {
             Statement::Call(c) => c.line,
             Statement::If(i) => i.line,
             Statement::For(f) => f.line,
+            Statement::ForEach(fe) => fe.line,
             Statement::DoLoop(d) => d.line,
             Statement::SelectCase(s) => s.line,
             Statement::Dim(d) => d.line,
@@ -7775,6 +7854,7 @@ impl Compiler {
             }
             Statement::If(i) => self.compile_if(fb, i),
             Statement::For(f) => self.compile_for(fb, f),
+            Statement::ForEach(fe) => self.compile_for_each(fb, fe),
             Statement::DoLoop(d) => self.compile_do_loop(fb, d),
             Statement::WhileWend(w) => self.compile_while_wend(fb, w),
             Statement::SelectCase(s) => self.compile_select_case(fb, s),
@@ -8388,6 +8468,52 @@ impl Compiler {
     }
 
     fn compile_assign(&mut self, fb: &mut FunctionBuilder, assign: &AssignStmt) -> PbResult<()> {
+        // batch298: PROPERTY SET — `o.Prop(...) = expr` / `o.Prop = expr` is
+        // not a storage write.  It lowers to the <Class>_<Prop>_Set procedure
+        // with the receiver, the explicit args and the assigned value in that
+        // order (CHW PROPERTY/END PROPERTY, syntax-directed).  Intercepted
+        // before the value is compiled so the expression is emitted exactly
+        // once.  The dotted target arrives as Expr::MethodCall when there are
+        // parentheses and Expr::TypeMember when there are none.
+        let set_target: Option<(&Expr, &String, Vec<Expr>)> = match &assign.target {
+            Expr::MethodCall { base, name, args } => Some((base, name, args.clone())),
+            Expr::TypeMember(base, name) => Some((base, name, Vec::new())),
+            _ => None,
+        };
+        if let Some((base, name, args)) = set_target {
+            if let Some(c) = self.struct_type_of_expr(base) {
+                let mut class = c;
+                if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
+                    class = impl_class.clone();
+                }
+                let set_name = format!("{}_{}_SET", class, normalize_name(name));
+                let set_info = self
+                    .subs
+                    .get(&set_name)
+                    .cloned()
+                    .or_else(|| self.functions.get(&set_name).cloned());
+                if let Some(set_info) = set_info {
+                    let mut call_args = Vec::with_capacity(args.len() + 2);
+                    if self.receiver_is_interface(base) {
+                        call_args.push(Expr::ByvalOverride(Box::new((*base).clone())));
+                    } else {
+                        call_args.push((*base).clone());
+                    }
+                    call_args.extend(args.iter().cloned());
+                    call_args.push(assign.value.clone());
+                    let compiled = self.compile_call_args(fb, &call_args, &set_info)?;
+                    if set_info.is_stdcall {
+                        fb.call_void_stdcall(&set_info.ir_name, &compiled);
+                    } else {
+                        fb.call_void(&set_info.ir_name, &compiled);
+                    }
+                    return Ok(());
+                }
+                // No <Class>_<Prop>_Set procedure was compiled: this is an
+                // ordinary TYPE field write, not a CLASS property — fall
+                // through to the storage path below.
+            }
+        }
         let value = self.compile_expr(fb, &assign.value)?;
         match &assign.target {
             Expr::Variable(orig_name) => {
@@ -8459,6 +8585,13 @@ impl Compiler {
                         let src = self.compile_expr(fb, &assign.value)?;
                         let slen = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&src));
                         fb.call_void("pb_field_set", &[fv_ptr, src, slen]);
+                    } else if matches!(target_pb, PbType::Variant) {
+                        // batch293: LET v = <value> stores the 16-byte PB Variant
+                        // (vt word at +0, value union at +8).  SINGLE is promoted
+                        // to R8 (PBWin stores VT_R8 for both — batch295 measured);
+                        // STRING is VT_BSTR.
+                        let ptr = Val::new(ptr_name, IrType::Ptr);
+                        self.emit_variant_store(fb, &ptr, &value);
                     } else {
                         // WSTRING destination: a non-wide (ANSI STRING / literal)
                         // value must be converted to UTF-16 first (batch 281;
@@ -20331,6 +20464,133 @@ impl Compiler {
         Ok(())
     }
 
+    /// FOR EACH var IN collection ... NEXT — enumeration of a
+    /// PowerCollection / LinkListCollection object (CHW FOR_EACH_NEXT_statements).
+    /// Lowered to the official enumeration pattern (CHW Enumerating_Collections):
+    /// a COUNT member call, then a 1-based loop retrieving ITEM(Index) into the
+    /// loop variable.  The collection is a local CLASS instance whose METHODs
+    /// supply the protocol (the fork has no PowerBASIC collection ProgIDs, so
+    /// PBWin's own semantics are not measurable on this machine; the lowering
+    /// follows the CHW example exactly).
+    fn compile_for_each(&mut self, fb: &mut FunctionBuilder, fe: &ForEachStmt) -> PbResult<()> {
+        let var_name = normalize_name(&fe.var);
+        let var_ptr_name = self.ensure_variable_ptr(fb, &var_name, &fe.var)?;
+        let var_pb = self
+            .symbols
+            .lookup(&var_name)
+            .map(|i| i.pb_type.clone())
+            .unwrap_or(PbType::Long);
+
+        let mut class = self.struct_type_of_expr(&fe.collection).ok_or_else(|| {
+            PbError::runtime("FOR EACH IN: collection is not a TYPE instance".to_string())
+        })?;
+        if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
+            class = impl_class.clone();
+        }
+
+        // COUNT — go through the dotted-call machinery so both a METHOD and a
+        // PROPERTY GET (batch 298) satisfy the protocol.
+        let count_val = self.compile_expr(
+            fb,
+            &Expr::MethodCall {
+                base: Box::new(fe.collection.clone()),
+                name: "Count".to_string(),
+                args: Vec::new(),
+            },
+        )?;
+        let count_i32 = self.to_i32(fb, &count_val);
+
+        // ITEM — called directly with (receiver, index) so the loop counter
+        // (an LLVM slot, not a source symbol) can be passed without fabricating
+        // an Expr for it.
+        let item_name = format!("{}_{}", class, "ITEM");
+        let item_info = match self
+            .functions
+            .get(&item_name)
+            .cloned()
+            .or_else(|| self.subs.get(&item_name).cloned())
+        {
+            Some(inf) => inf,
+            None => {
+                return Err(PbError::runtime(format!(
+                    "FOR EACH IN: collection has no `ITEM` member (`{}` not found)",
+                    item_name
+                )))
+            }
+        };
+
+        // Hidden index counter / cached count (LLVM slots, never source symbols).
+        let idx_ptr = fb.alloca(&IrType::I32);
+        fb.store(&fb.const_i32(1), &idx_ptr);
+        let cnt_ptr = fb.alloca(&IrType::I32);
+        fb.store(&count_i32, &cnt_ptr);
+
+        let cond_label = fb.next_label("fe.cond");
+        let body_label = fb.next_label("fe.body");
+        let incr_label = fb.next_label("fe.incr");
+        let exit_label = fb.next_label("fe.exit");
+        fb.br(&cond_label);
+
+        fb.label(&cond_label);
+        let idx = fb.load(&IrType::I32, &idx_ptr);
+        let cnt = fb.load(&IrType::I32, &cnt_ptr);
+        let more = fb.icmp("sle", &idx, &cnt);
+        fb.condbr(&more, &body_label, &exit_label);
+
+        fb.label(&body_label);
+        // var = collection.Item(idx) — receiver BYREF (implicit `this`), then the
+        // index in the declared parameter mode.  The receiver goes through the
+        // same Variable→ptr rule as the dotted-call machinery (a CLASS instance
+        // must be passed as its object address, never its struct value).
+        let recv = if let Expr::Variable(vname) = &fe.collection {
+            let norm = normalize_name(vname);
+            let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
+            Val::new(ptr_name, IrType::Ptr)
+        } else {
+            let val = self.compile_expr(fb, &fe.collection)?;
+            let tmp = fb.alloca(&val.ty);
+            fb.store(&val, &tmp);
+            tmp
+        };
+        let idx_arg = if item_info.params.get(1).map(|p| p.is_byval).unwrap_or(true) {
+            idx
+        } else {
+            let tmp = fb.alloca(&IrType::I32);
+            fb.store(&idx, &tmp);
+            tmp
+        };
+        let item_args = vec![recv, idx_arg];
+        let item_val = if item_info.is_stdcall {
+            fb.call_stdcall(&item_info.ret_type, &item_info.ir_name, &item_args)
+        } else {
+            fb.call(&item_info.ret_type, &item_info.ir_name, &item_args)
+        };
+        let var_ir = Self::ir_type_for(&var_pb);
+        let var_ptr = Val::new(var_ptr_name.clone(), IrType::Ptr);
+        let converted = self.convert_value(fb, &item_val, &var_ir, &var_pb);
+        fb.store(&converted, &var_ptr);
+
+        self.loop_stack.push(LoopInfo {
+            continue_label: incr_label.clone(),
+            exit_label: exit_label.clone(),
+            is_for: true,
+        });
+        self.compile_body(fb, &fe.body)?;
+        self.loop_stack.pop();
+        if !fb.is_terminated() {
+            fb.br(&incr_label);
+        }
+
+        fb.label(&incr_label);
+        let idx2 = fb.load(&IrType::I32, &idx_ptr);
+        let nxt = fb.add(&idx2, &fb.const_i32(1));
+        fb.store(&nxt, &idx_ptr);
+        fb.br(&cond_label);
+
+        fb.label(&exit_label);
+        Ok(())
+    }
+
     // ========== DO/LOOP ==========
 
     fn compile_do_loop(&mut self, fb: &mut FunctionBuilder, do_stmt: &DoLoopStmt) -> PbResult<()> {
@@ -21799,6 +22059,14 @@ impl Compiler {
                     let fv_ptr = Val::new(ptr_name, IrType::Ptr);
                     return Ok(fb.call(&IrType::Ptr, "pb_field_get", &[fv_ptr]));
                 }
+                // batch293: a Variant used as a scalar expression reads its
+                // numeric content (VARIANT# semantics).  BSTR/object/array
+                // contents are not directly usable in expressions in PBWin
+                // either, so they resolve to 0.
+                if matches!(info.pb_type, PbType::Variant) {
+                    let vv_ptr = Val::new(ptr_name, IrType::Ptr);
+                    return Ok(fb.call(&IrType::Double, "pb_variant_num", &[vv_ptr]));
+                }
                 let ptr = Val::new(ptr_name, IrType::Ptr);
                 let ir_type = info.ir_type.clone();
                 let val = fb.load(&ir_type, &ptr);
@@ -22060,14 +22328,23 @@ impl Compiler {
                 if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
                     class = impl_class.clone();
                 }
-                let qualified = format!("{}_{}", class, normalize_name(name));
+                let mut qualified = format!("{}_{}", class, normalize_name(name));
                 if !self.functions.contains_key(&qualified) {
-                    return Err(PbError::runtime(format!(
-                        "unknown method `{}.{}` - no procedure `{}` was compiled",
-                        class,
-                        normalize_name(name),
-                        qualified
-                    )));
+                    // batch298: PROPERTY GET — a bare `o.Prop` / `o.Prop(i)`
+                    // resolves to the <Class>_<Prop>_Get procedure when no
+                    // METHOD of that name exists (syntax-directed access,
+                    // CHW PROPERTY/END PROPERTY).
+                    let get_name = format!("{}_{}_GET", class, normalize_name(name));
+                    if self.functions.contains_key(&get_name) {
+                        qualified = get_name;
+                    } else {
+                        return Err(PbError::runtime(format!(
+                            "unknown method `{}.{}` - no procedure `{}` was compiled",
+                            class,
+                            normalize_name(name),
+                            qualified
+                        )));
+                    }
                 }
                 let mut call_args = Vec::with_capacity(args.len() + 1);
                 // An interface-typed receiver holds a *pointer* to the heap
@@ -22094,6 +22371,29 @@ impl Compiler {
                     }
                     if bn == "EXE" && (mn == "NAME" || mn == "FULL") {
                         return Ok(fb.call(&IrType::Ptr, "pb_exe_name", &[]));
+                    }
+                }
+                // batch298: parenthesless property GET — `x = o.Prop` resolves
+                // to <Class>_<Prop>_Get when the member is not a struct field.
+                if let Some(class) = self.struct_type_of_expr(base_expr) {
+                    let mn = normalize_name(member);
+                    let not_a_field = !self
+                        .type_layouts
+                        .get(&class)
+                        .map(|l| l.field_map.contains_key(&mn))
+                        .unwrap_or(true);
+                    if not_a_field {
+                        let get_name = format!("{}_{}_GET", class, mn);
+                        if self.functions.contains_key(&get_name) {
+                            return self.compile_expr(
+                                fb,
+                                &Expr::MethodCall {
+                                    base: base_expr.clone(),
+                                    name: member.clone(),
+                                    args: Vec::new(),
+                                },
+                            );
+                        }
                     }
                 }
                 let (field_ptr, field_pb) = self.compile_lvalue_ptr(fb, expr)?;
@@ -22499,7 +22799,10 @@ impl Compiler {
     fn to_i32(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         match &val.ty {
             IrType::I32 => val.clone(),
-            IrType::I1 => fb.zext(val, &IrType::I32),
+            // batch297: comparison results are i1; PBWin represents boolean
+            // TRUE as -1 (all bits set), not 1 — map via select so printing,
+            // arithmetic and array indexing match PBWin exactly.
+            IrType::I1 => fb.select(val, &fb.const_i32(-1), &fb.const_i32(0)),
             // BYTE is unsigned; without this arm the catch-all below
             // returns the value unchanged and callers that truncate to
             // i8 emit an illegal `trunc i8 to i8` (batch 171).  WORD (I16)
@@ -22520,8 +22823,44 @@ impl Compiler {
             IrType::Float => fb.fpext(val, &IrType::Double),
             // WORD (I16) is unsigned in PB: widen via uitofp (batch 285)
             IrType::I16 => fb.uitofp(val, &IrType::Double),
-            IrType::I1 | IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
+            // batch297: boolean TRUE is -1 in PBWin, so I1 must map through
+            // an i32 select before sitofp (a direct sitofp would give 1.0).
+            IrType::I1 => {
+                let i32v = fb.select(val, &fb.const_i32(-1), &fb.const_i32(0));
+                fb.sitofp(&i32v, &IrType::Double)
+            }
+            IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
             _ => val.clone(),
+        }
+    }
+
+    /// batch293: store a scalar or string value into a 16-byte PB Variant
+    /// slot.  Layout matches the runtime PB_VARIANT (word VT code at +0,
+    /// 8-byte value union at +8).  SINGLE and CURRENCY are promoted to VT_R8
+    /// (PBWin stores VT_R8 for SINGLE — batch295 measured); STRING is
+    /// VT_BSTR; integers map to their official VT codes.
+    fn emit_variant_store(&mut self, fb: &mut FunctionBuilder, ptr: &Val, value: &Val) {
+        let (vt, store_val): (i16, Val) = match value.ty {
+            IrType::Ptr => (8, value.clone()),                // VT_BSTR
+            IrType::Float => (5, self.to_f64(fb, value)),     // VT_R8 (promote)
+            IrType::Double => (5, value.clone()),             // VT_R8
+            IrType::I64 => (20, value.clone()),               // VT_I8 (QUAD)
+            IrType::I32 => (3, value.clone()),                // VT_I4 (LONG/DWORD)
+            IrType::I16 => (2, value.clone()),                // VT_I2 (INTEGER)
+            IrType::I8 => (17, value.clone()),                // VT_UI1 (BYTE)
+            _ => (0, Val::new("0".to_string(), IrType::I32)), // VT_EMPTY
+        };
+        let vt_ptr = fb.gep_byte(ptr, &fb.const_i32(0));
+        fb.store(&fb.const_i16(vt), &vt_ptr);
+        let u_ptr = fb.gep_byte(ptr, &fb.const_i32(8));
+        match store_val.ty {
+            IrType::I32 | IrType::I16 | IrType::I8 => {
+                let v32 = self.to_i32(fb, &store_val);
+                fb.store(&v32, &u_ptr);
+            }
+            _ => {
+                fb.store(&store_val, &u_ptr);
+            }
         }
     }
 
@@ -22862,6 +23201,64 @@ impl Compiler {
                     Err(e) => Some(Err(e)),
                 }
             }
+            "OBJEQUAL" => {
+                // OBJEQUAL(ObjectVar1, ObjectVar2) — CHW OBJEQUAL_function.htm:
+                // TRUE (-1) if both object variables refer to the same object
+                // or both refer to NOTHING; FALSE (0) otherwise.  Fork object
+                // variables are plain interface pointers, so equality is a
+                // pointer compare.
+                let a = match args.first() {
+                    Some(f) => match self.compile_expr(fb, f) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    },
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "OBJEQUAL requires two arguments: OBJEQUAL(ObjectVar1, ObjectVar2)"
+                                .to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                let b = match args.get(1) {
+                    Some(f) => match self.compile_expr(fb, f) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    },
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "OBJEQUAL requires two arguments: OBJEQUAL(ObjectVar1, ObjectVar2)"
+                                .to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                let c = fb.icmp("eq", &a, &b);
+                Some(Ok(fb.select(&c, &fb.const_i32(-1), &fb.const_i32(0))))
+            }
+            "OBJACTIVE" => {
+                // OBJACTIVE(progid$) — CHW OBJACTIVE_function.htm: TRUE (-1) if
+                // an EXE-based COM object for the ProgID is running (an active
+                // instance can be obtained), FALSE (0) otherwise (incl. any
+                // DLL/OCX server).
+                let first = match args.first() {
+                    Some(f) => f,
+                    None => {
+                        return Some(Err(PbError::parser(
+                            "OBJACTIVE requires one argument: OBJACTIVE(prgid$)".to_string(),
+                            None,
+                            self.current_line,
+                        )))
+                    }
+                };
+                let v = match self.compile_expr(fb, first) {
+                    Ok(v) => v,
+                    Err(e) => return Some(Err(e)),
+                };
+                Some(Ok(fb.call(&IrType::I32, "pb_objactive", &[v])))
+            }
             "PB_GET_CB_MSG" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_msg", &[]))),
             "PB_GET_CB_HNDL" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_hwnd", &[]))),
             "PB_GET_CB_CTL" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_ctl", &[]))),
@@ -22926,6 +23323,62 @@ impl Compiler {
                     Val::new("null".to_string(), IrType::Ptr)
                 };
                 Some(Ok(fb.call(&IrType::Ptr, "pb_clsid_get", &[progid])))
+            }
+            "PROGID" => {
+                // PROGID$(ClassID$) — complement of CLSID$ (CHW PROGID$
+                // function): the 16-byte binary GUID from CLSID$ is formatted
+                // as {XXXXXXXX-...} and looked up in HKCR\CLSID\{...}\ProgID;
+                // the alphanumeric ProgID string is returned, or "" on any
+                // failure with ERR NOT set.  (normalize_name strips the
+                // trailing $, so the dispatch key is PROGID.)
+                let clsid = if let Some(a) = args.first() {
+                    match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    Val::new("null".to_string(), IrType::Ptr)
+                };
+                Some(Ok(fb.call(&IrType::Ptr, "pb_progid_get", &[clsid])))
+            }
+            "VARIANT" => {
+                // VARIANT#(vrntvar) — CHW VARIANT_function.htm: the numeric
+                // value held in a Variant, whatever its internal numeric
+                // representation.  Returns DOUBLE (SINGLE is stored as R8 by
+                // PBWin — batch295 measured); the caller's convert_value does
+                // the final narrowing.  normalize_name strips the trailing #,
+                // so the dispatch key is VARIANT.
+                let (vptr, _vpb) = if let Some(a) = args.first() {
+                    match self.compile_lvalue_ptr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    return Some(Err(pb::error::PbError::parser(
+                        "VARIANT# requires its argument: VARIANT#(vrntvar)".to_string(),
+                        None,
+                        self.current_line,
+                    )));
+                };
+                Some(Ok(fb.call(&IrType::Double, "pb_variant_num", &[vptr])))
+            }
+            "VARIANTVT" => {
+                // VARIANTVT(vrntvar) — CHW VARIANTVT_function.htm: the internal
+                // VT data type code (0 VT_EMPTY, 1 VT_NULL, 2 VT_I2, 3 VT_I4,
+                // 5 VT_R8, 8 VT_BSTR, ...).
+                let (vptr, _vpb) = if let Some(a) = args.first() {
+                    match self.compile_lvalue_ptr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    }
+                } else {
+                    return Some(Err(pb::error::PbError::parser(
+                        "VARIANTVT requires its argument: VARIANTVT(vrntvar)".to_string(),
+                        None,
+                        self.current_line,
+                    )));
+                };
+                Some(Ok(fb.call(&IrType::I32, "pb_variant_vt", &[vptr])))
             }
             "COMM" => {
                 // COMM([#] hComm, Comfunc) — CHW comm_function.htm.  Returns a
@@ -26113,7 +26566,11 @@ impl Compiler {
     fn to_i64(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         match &val.ty {
             IrType::I64 => val.clone(),
-            IrType::I1 => fb.zext(val, &IrType::I64),
+            // batch297: boolean TRUE is -1 in PBWin, not 1
+            IrType::I1 => {
+                let i32v = fb.select(val, &fb.const_i32(-1), &fb.const_i32(0));
+                fb.sext(&i32v, &IrType::I64)
+            }
             IrType::I16 | IrType::I32 => fb.sext(val, &IrType::I64),
             IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I64),
             _ => val.clone(),
@@ -26250,6 +26707,7 @@ impl Compiler {
                     }
                 }
                 Statement::For(for_stmt) => self.scan_body_for_global_dims(&for_stmt.body),
+                Statement::ForEach(fe) => self.scan_body_for_global_dims(&fe.body),
                 Statement::DoLoop(do_stmt) => self.scan_body_for_global_dims(&do_stmt.body),
                 Statement::WhileWend(w) => self.scan_body_for_global_dims(&w.body),
                 Statement::SelectCase(sel) => {

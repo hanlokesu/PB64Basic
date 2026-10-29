@@ -255,6 +255,7 @@ pub enum Statement {
     Call(CallStmt),
     If(IfStmt),
     For(ForStmt),
+    ForEach(ForEachStmt),
     DoLoop(DoLoopStmt),
     WhileWend(WhileWendStmt),
     SelectCase(SelectCaseStmt),
@@ -432,6 +433,18 @@ pub struct ForStmt {
     pub start: Expr,
     pub end: Expr,
     pub step: Option<Expr>,
+    pub body: Vec<Statement>,
+    pub line: usize,
+}
+
+/// FOR EACH var IN collection ... NEXT — enumeration of a PowerCollection /
+/// LinkListCollection object (CHW FOR_EACH_NEXT_statements).  Lowered by codegen
+/// to the official enumeration pattern (Enumerating_Collections.htm): a COUNT
+/// call followed by a 1-based ITEM(Index) loop.
+#[derive(Debug, Clone)]
+pub struct ForEachStmt {
+    pub var: String,
+    pub collection: Expr,
     pub body: Vec<Statement>,
     pub line: usize,
 }
