@@ -1,4 +1,4 @@
-# PB64Basic - One-click dependency setup and build
+﻿# PB64Basic - One-click dependency setup and build
 #
 # Checks / installs (via winget when missing):
 #   1. Rust toolchain        (Rustlang.Rustup)
@@ -21,6 +21,19 @@ function Write-Warn($msg)  { Write-Host "   [!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg)  { Write-Host "   [X] $msg" -ForegroundColor Red }
 
 $changed = $false
+
+# ---------- 0. Check winget (App Installer) ----------
+Write-Step "检查 winget（用于自动安装依赖）..."
+$winget = Get-Command winget -ErrorAction SilentlyContinue
+if ($winget) {
+    Write-Ok "winget 可用 - Rust / LLVM / Windows SDK 可自动安装。"
+} else {
+    Write-Warn "未找到 winget：下面 3 个依赖若缺失将无法自动安装，需要手动处理："
+    Write-Warn "   Rust:        https://rustup.rs"
+    Write-Warn "   LLVM:        https://releases.llvm.org"
+    Write-Warn "   Windows SDK: https://developer.microsoft.com/windows/downloads/windows-sdk/"
+    Write-Warn "（Windows 10 2004+/Windows 11 自带 winget；旧系统可从 Microsoft Store 安装 App Installer 后重跑本脚本）"
+}
 
 # ---------- 1. Rust toolchain ----------
 Write-Step "Checking Rust toolchain..."
