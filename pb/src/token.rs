@@ -213,6 +213,7 @@ impl Token {
             "ON" => Some(Token::On),
             "OPEN" => Some(Token::Open),
             "OPTIONAL" => Some(Token::Optional),
+            "OPT" => Some(Token::Optional),
             "OR" => Some(Token::Or),
             "OUTPUT" => Some(Token::Output),
             "APPEND" => Some(Token::Append),

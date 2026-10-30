@@ -1975,6 +1975,10 @@ impl Parser {
 
     fn parse_params(&mut self) -> PbResult<Vec<Param>> {
         let mut params = Vec::new();
+        // CHW SUB/END SUB: "When a parameter is declared optional, all
+        // subsequent parameters in the declaration are optional as well,
+        // whether or not they specify an explicit OPTIONAL or OPT directive."
+        let mut following_optional = false;
         loop {
             if self.peek() == &Token::RParen || self.at_end() {
                 break;
@@ -1999,6 +2003,13 @@ impl Parser {
                     }
                     _ => break,
                 }
+            }
+
+            // once a parameter is OPTIONAL, every following parameter is
+            // optional too, even without its own OPTIONAL marker
+            let is_optional = is_optional || following_optional;
+            if is_optional {
+                following_optional = true;
             }
 
             let name = self.consume_identifier()?;

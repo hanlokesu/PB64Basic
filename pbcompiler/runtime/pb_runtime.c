@@ -5623,6 +5623,34 @@ double __stdcall pb_variant_num(const void* v) {
         default: return 0.0;   /* VT_EMPTY / VT_NULL / VT_BSTR / arrays / objects */
     }
 }
+
+/* batch304 - ISMISSING optional-parameter support (CHW ISMISSING_function.htm):
+   a VARIANT parameter is considered missing when it has a type of %VT_ERROR
+   (10) and an error value of %DISP_E_PARAMNOTFOUND (0x80020004).  A NULL
+   pointer is treated as missing too (defensive - a caller that skipped a
+   BYREF variant argument passes the marker below, never NULL). */
+long __stdcall pb_variant_missing(const void* v) {
+    unsigned short vt;
+    unsigned int sc;
+    if (!v) return -1;
+    vt = (unsigned short)(((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8));
+    if (vt != 10) return 0;   /* not VT_ERROR */
+    memcpy(&sc, (const char*)v + 8, 4);
+    return (sc == 0x80020004u) ? -1 : 0;
+}
+
+/* Initialise a 16-byte PB Variant container to the "missing" marker:
+   VT_ERROR at +0, DISP_E_PARAMNOTFOUND in the +8 union slot.  The call side
+   uses this for an omitted optional VARIANT argument. */
+void __stdcall pb_variant_missing_init(void* v) {
+    unsigned char* b = (unsigned char*)v;
+    unsigned int sc = 0x80020004u;
+    b[0] = 10; b[1] = 0;              /* VT_ERROR */
+    b[2] = 0; b[3] = 0;               /* reserved */
+    b[4] = 0; b[5] = 0; b[6] = 0; b[7] = 0;
+    memcpy(b + 8, &sc, 4);            /* scode DISP_E_PARAMNOTFOUND */
+    b[12] = 0; b[13] = 0; b[14] = 0; b[15] = 0;
+}
 __declspec(dllimport) int __stdcall SetConsoleTitleA(const char* lpConsoleTitle);
 __declspec(dllimport) unsigned long __stdcall GetConsoleTitleA(char* lpConsoleTitle, unsigned long nSize);
 #endif

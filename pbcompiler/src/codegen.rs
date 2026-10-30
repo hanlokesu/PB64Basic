@@ -1269,6 +1269,11 @@ struct Compiler {
     current_fn_name: Option<String>,
     current_fn_return_type: Option<(PbType, IrType)>,
     current_fn_retval_ptr: Option<Val>,
+    /// Parameter table of the procedure currently being compiled
+    /// (normalized name, is_byval, is_optional, pb_type) - batch304: ISMISSING
+    /// may only test a parameter of the current procedure, and needs its
+    /// BYVAL/BYREF kind and type.
+    current_fn_params: Option<Vec<(String, bool, bool, PbType)>>,
 
     // Loop control: stack of (continue_label, exit_label, is_for)
     loop_stack: Vec<LoopInfo>,
@@ -1350,6 +1355,11 @@ struct Compiler {
     // CLASS that implements it.  `LOCAL o AS Iface` + `o.M(a)` resolves the
     // method through this map to the compiled <Class>_<Method> function.
     interface_classes: std::collections::HashMap<String, String>,
+    /// Reverse map: CLASS name (uppercase) -> interface names it implements
+    /// (uppercase).  Batch304: ISINTERFACE(obj, iface) resolves the object's
+    /// CLASS and checks this set at compile time (the fork has no runtime
+    /// vtable query; CLASS objects are statically typed structs).
+    class_ifaces: std::collections::HashMap<String, Vec<String>>,
 
     // String variables bound via FIELD dyn$ — their assignments must copy
     // into a fresh mutable buffer (a plain store would point at a read-only
@@ -1521,6 +1531,8 @@ impl Compiler {
             event_sources: std::collections::HashMap::new(),
             event_method_ids: std::collections::HashMap::new(),
             interface_classes: std::collections::HashMap::new(),
+            class_ifaces: std::collections::HashMap::new(),
+            current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
         }
@@ -5111,6 +5123,18 @@ impl Compiler {
         // (runtime string functions read the BSTR length header).
         self.module
             .declare_function("pb_fixed_to_bstr", &IrType::Ptr, &[IrType::Ptr], false);
+        // batch304: ISMISSING / omitted optional VARIANT parameters - a
+        // Variant is "missing" when it holds VT_ERROR + DISP_E_PARAMNOTFOUND
+        // (0x80020004); the call side initialises that marker for an omitted
+        // optional VARIANT argument.
+        self.module
+            .declare_function("pb_variant_missing", &IrType::I32, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_variant_missing_init",
+            &IrType::Void,
+            &[IrType::Ptr],
+            false,
+        );
         // batch278-74: OBJECT CALL/GET — DISPATCH invocation with VARIANT marshalling
         self.module.declare_function(
             "pb_com_invoke",
@@ -6981,6 +7005,10 @@ impl Compiler {
         for iface in &td.interfaces {
             self.interface_classes
                 .insert(iface.to_uppercase(), name.clone());
+            self.class_ifaces
+                .entry(name.clone())
+                .or_default()
+                .push(iface.to_uppercase());
         }
     }
 
@@ -7382,6 +7410,19 @@ impl Compiler {
         self.current_fn_name = Some(name.clone());
         let ret_ir = Self::ir_type_for(&fd.return_type);
         self.current_fn_return_type = Some((fd.return_type.clone(), ret_ir.clone()));
+        self.current_fn_params = Some(
+            fd.params
+                .iter()
+                .map(|p| {
+                    (
+                        normalize_name(&p.name),
+                        p.is_byval,
+                        p.is_optional,
+                        p.pb_type.clone(),
+                    )
+                })
+                .collect(),
+        );
         self.symbols.clear_locals();
 
         // Allocate return value storage
@@ -7427,6 +7468,7 @@ impl Compiler {
         self.current_fn_name = None;
         self.current_fn_return_type = None;
         self.current_fn_retval_ptr = None;
+        self.current_fn_params = None;
         self.gosub_context = None;
         self.onerror_handler = None;
         self.onerror_checkpoints.clear();
@@ -7475,6 +7517,19 @@ impl Compiler {
         self.current_fn_name = Some(name.clone());
         self.current_fn_return_type = None;
         self.current_fn_retval_ptr = None;
+        self.current_fn_params = Some(
+            sd.params
+                .iter()
+                .map(|p| {
+                    (
+                        normalize_name(&p.name),
+                        p.is_byval,
+                        p.is_optional,
+                        p.pb_type.clone(),
+                    )
+                })
+                .collect(),
+        );
         self.symbols.clear_locals();
 
         // Bind parameters
@@ -7498,6 +7553,7 @@ impl Compiler {
         }
 
         self.current_fn_name = None;
+        self.current_fn_params = None;
         self.gosub_context = None;
         self.onerror_handler = None;
         self.onerror_checkpoints.clear();
@@ -7532,6 +7588,38 @@ impl Compiler {
         }
     }
 
+    /// Load `ptr` of type `ty`, returning `zero` instead when the pointer is
+    /// NULL.  A plain select would still execute the load (batch304 crash:
+    /// an omitted OPTIONAL BYREF parameter arrives as NULL and the CALLSTK
+    /// snapshot dereferenced it), so this uses a cond-branch + phi.
+    fn null_safe_load(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        ty: &IrType,
+        ptr: &Val,
+        zero: &Val,
+    ) -> Val {
+        let is_null = fb.icmp("eq", ptr, &Val::new("null".to_string(), IrType::Ptr));
+        let l_null = fb.next_label("cs.null");
+        let l_load = fb.next_label("cs.load");
+        let l_merge = fb.next_label("cs.merge");
+        fb.condbr(&is_null, &l_null, &l_load);
+        fb.label(&l_null);
+        fb.br(&l_merge);
+        fb.label(&l_load);
+        let v = fb.load(ty, ptr);
+        fb.br(&l_merge);
+        fb.label(&l_merge);
+        let r = fb.next_reg();
+        // next_reg already returns "%rN" and next_label returns a bare name;
+        // v.name likewise already carries its "%" prefix.
+        fb.raw_line(&format!(
+            "{} = phi {} [ {}, %{} ], [ {}, %{} ]",
+            r, ty, zero.name, l_null, v.name, l_load
+        ));
+        Val::new(r, ty.clone())
+    }
+
     /// batch258d: parameter snapshot for CALLSTK$/CALLSTK, generated right
     /// after bind_params (still the entry block).  PBWin format (measured):
     /// numeric scalars → decimal value (BYVAL or BYREF — PBWin shows the
@@ -7547,13 +7635,19 @@ impl Compiler {
         let mut joined: Option<Val> = None;
         for p in params {
             let pv = Val::new(format!("%{}", p.name), p.ir_type.clone());
+            // batch304: an omitted OPTIONAL BYREF parameter arrives as a NULL
+            // pointer.  The CALLSTK snapshot must not dereference it (that
+            // was a 0xC0000005 crash the moment a missing-argument call
+            // entered its procedure); a missing argument is shown as its
+            // zero / empty-string equivalent instead.
             let f = match &p.pb_type {
                 PbType::String | PbType::FixedString(_) => {
                     // string content: byval → pv is the BSTR ptr; byref → load it
                     let sp = if p.is_byval {
                         pv
                     } else {
-                        fb.load(&IrType::Ptr, &pv)
+                        let empty = Val::new(self.empty_string_name.clone(), IrType::Ptr);
+                        self.null_safe_load(fb, &IrType::Ptr, &pv, &empty)
                     };
                     fb.call(&IrType::Ptr, "pb_callstk_quote", &[sp])
                 }
@@ -7561,14 +7655,18 @@ impl Compiler {
                     let val = if p.is_byval {
                         pv
                     } else {
-                        fb.load(&Self::ir_type_for(&p.pb_type), &pv)
+                        let ty = Self::ir_type_for(&p.pb_type);
+                        let zero = Val::new(ty.zero_literal(), ty.clone());
+                        self.null_safe_load(fb, &ty, &pv, &zero)
                     };
                     let f64 = self.to_f64(fb, &val);
                     fb.call(&IrType::Ptr, "pb_str_dbl", &[f64])
                 }
                 PbType::UserDefined(_) | PbType::Variant | PbType::Field => {
                     let addr = if pv.ty == IrType::Ptr {
-                        fb.ptrtoint(&pv)
+                        let zero = Val::new("null".to_string(), IrType::Ptr);
+                        let loaded = self.null_safe_load(fb, &IrType::Ptr, &pv, &zero);
+                        fb.ptrtoint(&loaded)
                     } else {
                         self.to_i64(fb, &pv)
                     };
@@ -7579,7 +7677,9 @@ impl Compiler {
                     let val = if p.is_byval {
                         pv
                     } else {
-                        fb.load(&Self::ir_type_for(&p.pb_type), &pv)
+                        let ty = Self::ir_type_for(&p.pb_type);
+                        let zero = Val::new(ty.zero_literal(), ty.clone());
+                        self.null_safe_load(fb, &ty, &pv, &zero)
                     };
                     let i64 = self.to_i64(fb, &val);
                     fb.call(&IrType::Ptr, "pb_dec", &[i64])
@@ -20336,6 +20436,31 @@ impl Compiler {
                     _ => (false, arg),
                 };
                 if param.is_byval || is_byval_override {
+                    // BYVAL VARIANT: the whole 16-byte container goes by value.
+                    // compile_expr on a VARIANT variable yields its numeric
+                    // conversion (double), which does NOT match the callee's
+                    // [16 x i8] parameter slot - an ABI mismatch crash
+                    // (batch304: OPTMIX(double, ptr) vs ([16 x i8], ptr)).
+                    if matches!(param.pb_type, PbType::Variant) {
+                        match inner_arg {
+                            Expr::Variable(vn) => {
+                                let (slot, _pb) =
+                                    self.compile_lvalue_ptr(fb, &Expr::Variable(vn.clone()))?;
+                                let container =
+                                    fb.load(&IrType::Array(16, Box::new(IrType::I8)), &slot);
+                                compiled.push(container);
+                            }
+                            _ => {
+                                return Err(PbError::parser(
+                                    "BYVAL VARIANT arguments must be a Variant variable (expression conversion to a Variant container is not implemented)"
+                                        .to_string(),
+                                    None,
+                                    self.current_line,
+                                ));
+                            }
+                        }
+                        continue;
+                    }
                     let val = self.compile_expr(fb, inner_arg)?;
                     // BOOLEAN (i1) values must be widened to a real 4-byte
                     // value before being passed.  A bare i1 leaves 3 garbage
@@ -20401,25 +20526,42 @@ impl Compiler {
             }
         }
 
-        // Fill in default values for missing OPTIONAL parameters
+        // Fill in default values for missing OPTIONAL parameters.
+        // CHW semantics (ISMISSING_function.htm): a BYREF parameter that the
+        // caller omitted arrives as a NULL pointer (ISMISSING == -1); an
+        // omitted VARIANT parameter arrives as VT_ERROR + DISP_E_PARAMNOTFOUND
+        // (0x80020004).  Only BYVAL non-VARIANT parameters get a plain default
+        // value (0 / empty string) - ISMISSING is a compile error 579 for them.
         for i in args.len()..func_info.params.len() {
             let param = &func_info.params[i];
             if !param.is_optional {
                 break; // Non-optional param missing → stop (caller error, handled at runtime)
             }
-            let default_val = if Self::is_string_pb(&param.pb_type) {
-                Val::new(self.empty_string_name.clone(), IrType::Ptr)
-            } else {
-                let ir_type = Self::ir_type_for(&param.pb_type);
-                Val::new(ir_type.zero_literal(), ir_type)
-            };
-            if param.is_byval {
+            if matches!(param.pb_type, PbType::Variant) {
+                // omitted VARIANT: a 16-byte Variant marked VT_ERROR +
+                // DISP_E_PARAMNOTFOUND (ISMISSING detects it by VT slot).
+                // BYVAL passes the 16-byte container by value, BYREF passes
+                // its address.
+                let ir = Self::ir_type_for(&param.pb_type);
+                let tmp = fb.alloca(&ir);
+                fb.call_void("pb_variant_missing_init", std::slice::from_ref(&tmp));
+                if param.is_byval {
+                    compiled.push(fb.load(&ir, &tmp));
+                } else {
+                    compiled.push(tmp);
+                }
+            } else if param.is_byval {
+                let default_val = if Self::is_string_pb(&param.pb_type) {
+                    Val::new(self.empty_string_name.clone(), IrType::Ptr)
+                } else {
+                    let ir_type = Self::ir_type_for(&param.pb_type);
+                    Val::new(ir_type.zero_literal(), ir_type)
+                };
                 compiled.push(default_val);
             } else {
-                // BYREF: allocate temp with default value and pass its address
-                let tmp = fb.alloca(&default_val.ty);
-                fb.store(&default_val, &tmp);
-                compiled.push(tmp);
+                // BYREF (non-VARIANT) missing: pass a NULL pointer so the
+                // callee's ISMISSING() sees the parameter as missing.
+                compiled.push(Val::new("null".to_string(), IrType::Ptr));
             }
         }
 
@@ -23241,6 +23383,8 @@ impl Compiler {
             "FRAC" => Some(self.builtin_frac(fb, args)),
             "ISFOLDER" => Some(self.builtin_isfolder(fb, args)),
             "ISNULL" | "ISNOTNULL" => Some(self.builtin_isnull(fb, args, name)),
+            "ISMISSING" => Some(self.builtin_ismissing(fb, args)),
+            "ISINTERFACE" => Some(self.builtin_isinterface(fb, args)),
             "ISNOTHING" => {
                 // ISNOTHING(objvar) — CHW ISNOTHING_function.htm: TRUE (-1)
                 // when the object variable holds nothing, FALSE (0) when it
@@ -25785,6 +25929,148 @@ impl Compiler {
             fb.icmp("ne", &v, &z)
         };
         Ok(fb.select(&is_one, &fb.const_i32(-1), &fb.const_i32(0)))
+    }
+
+    /// ISMISSING(paramvar) — CHW ISMISSING_function.htm (batch304): TRUE (-1)
+    /// when an optional parameter of the CURRENT procedure was not passed,
+    /// FALSE (0) otherwise.
+    ///
+    /// CHW semantics:
+    ///   * a BYREF parameter is missing when its pointer is 0;
+    ///   * a VARIANT parameter (BYVAL or BYREF) is missing when it holds
+    ///     %VT_ERROR (10) with error value %DISP_E_PARAMNOTFOUND (0x80020004);
+    ///   * testing a BYVAL non-VARIANT parameter is compile error 579
+    ///     ("BYREF variable or BYVAL/BYREF variant expected");
+    ///   * ISMISSING may only be used inside the procedure that declares the
+    ///     optional parameter.
+    fn builtin_ismissing(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() != 1 {
+            return Err(PbError::parser(
+                "ISMISSING requires one argument: ISMISSING(ParamVar)".to_string(),
+                None,
+                self.current_line,
+            ));
+        }
+        let vname = match &args[0] {
+            Expr::Variable(n) => n.clone(),
+            _ => {
+                return Err(PbError::parser(
+                    "ISMISSING argument must be a parameter name of the current procedure"
+                        .to_string(),
+                    None,
+                    self.current_line,
+                ));
+            }
+        };
+        let norm = normalize_name(&vname);
+        let pinfo = self
+            .current_fn_params
+            .as_ref()
+            .and_then(|ps| ps.iter().find(|p| p.0 == norm))
+            .cloned();
+        let (_, is_byval, _is_optional, pb_type) = match pinfo {
+            Some(p) => p,
+            None => {
+                return Err(PbError::parser(
+                    format!(
+                        "ISMISSING may only test an optional parameter of the current procedure (`{}` is not one)",
+                        vname
+                    ),
+                    None,
+                    self.current_line,
+                ));
+            }
+        };
+        if is_byval && !matches!(pb_type, PbType::Variant) {
+            // CHW: Error 579 - BYREF variable or BYVAL/BYREF variant expected
+            return Err(PbError::parser(
+                format!(
+                    "ISMISSING error 579: BYREF variable or BYVAL/BYREF variant expected (parameter `{}` is BYVAL and not a VARIANT)",
+                    vname
+                ),
+                None,
+                self.current_line,
+            ));
+        }
+        let ptr = Val::new(self.ensure_variable_ptr(fb, &norm, &vname)?, IrType::Ptr);
+        if matches!(pb_type, PbType::Variant) {
+            // missing = VT_ERROR + DISP_E_PARAMNOTFOUND; NULL pointer counts
+            // as missing too (defensive)
+            Ok(fb.call(&IrType::I32, "pb_variant_missing", &[ptr]))
+        } else {
+            // BYREF parameter: the symbol IS the pointer; missing = null
+            let is_null = fb.icmp("eq", &ptr, &Val::new("null".to_string(), IrType::Ptr));
+            Ok(fb.select(&is_null, &fb.const_i32(-1), &fb.const_i32(0)))
+        }
+    }
+
+    /// ISINTERFACE(ObjectVar, InterfaceName) — CHW ISINTERFACE_Function.htm
+    /// (batch304): TRUE (-1) when the object supports the named interface,
+    /// FALSE (0) otherwise.
+    ///
+    /// The fork's CLASS objects are statically typed structs (no runtime
+    /// vtable / COM QueryInterface); the interface set each CLASS implements
+    /// is recorded at compile time from its INTERFACE blocks (batch264), so
+    /// this resolves at compile time: ObjectVar's CLASS must list
+    /// InterfaceName among its implemented interfaces.
+    fn builtin_isinterface(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() != 2 {
+            return Err(PbError::parser(
+                "ISINTERFACE requires two arguments: ISINTERFACE(ObjectVar, InterfaceName)"
+                    .to_string(),
+                None,
+                self.current_line,
+            ));
+        }
+        let obj_name = match &args[0] {
+            Expr::Variable(n) => n.clone(),
+            _ => {
+                return Err(PbError::parser(
+                    "ISINTERFACE first argument must be an object variable".to_string(),
+                    None,
+                    self.current_line,
+                ));
+            }
+        };
+        let iface_name = match &args[1] {
+            Expr::Variable(n) => n.clone(),
+            _ => {
+                return Err(PbError::parser(
+                    "ISINTERFACE second argument must be an interface name".to_string(),
+                    None,
+                    self.current_line,
+                ));
+            }
+        };
+        let norm_obj = normalize_name(&obj_name);
+        let obj_pb = self
+            .symbols
+            .lookup(&norm_obj)
+            .map(|info| info.pb_type.clone());
+        let class = match &obj_pb {
+            Some(PbType::UserDefined(c)) | Some(PbType::Interface(c)) => c.to_uppercase(),
+            _ => {
+                // not a CLASS/interface-typed object: the interface cannot be
+                // supported
+                return Ok(fb.const_i32(0));
+            }
+        };
+        let iface = iface_name.to_uppercase();
+        // batch304: the object variable may be declared AS an interface name
+        // (PBWin-official model, `LOCAL o AS IBox304`), not as the class name.
+        // An interface-typed variable supports that interface itself; whether
+        // it supports any other interface is not knowable at compile time here,
+        // so it reports 0 unless the interface is its own declared type.
+        let obj_is_iface = self.class_ifaces.values().any(|v| v.contains(&class));
+        let supported = if obj_is_iface {
+            class == iface
+        } else {
+            self.class_ifaces
+                .get(&class)
+                .map(|v| v.contains(&iface))
+                .unwrap_or(false)
+        };
+        Ok(fb.const_i32(if supported { -1 } else { 0 }))
     }
 
     fn builtin_chr_range(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
