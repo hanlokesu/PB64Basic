@@ -1,0 +1,41 @@
+#COMPILE EXE
+#DIM ALL
+CLASS CBoxA
+  INSTANCE vv AS LONG
+  INTERFACE IBox304
+    INHERIT IUNKNOWN
+    METHOD SetV(x AS LONG)
+      vv = x
+    END METHOD
+    METHOD GetV() AS LONG
+      METHOD = vv
+    END METHOD
+  END INTERFACE
+END CLASS
+CLASS CBoxB
+  INSTANCE vv AS LONG
+  INTERFACE IBox304
+    INHERIT IUNKNOWN
+    METHOD SetV(x AS LONG)
+      vv = x + 1000
+    END METHOD
+    METHOD GetV() AS LONG
+      METHOD = vv
+    END METHOD
+  END INTERFACE
+END CLASS
+FUNCTION PBMAIN() AS LONG
+    LOCAL oo AS IBox304
+    LOCAL g1 AS LONG
+    LOCAL g2 AS LONG
+    oo = CLASS "CBoxA"
+    oo.SetV(42)
+    g1 = oo.GetV()
+    oo = CLASS "CBoxB"
+    oo.SetV(42)
+    g2 = oo.GetV()
+    OPEN "batch305_out.txt" FOR OUTPUT AS #9
+    PRINT #9, "g1=" & STR$(g1) & " g2=" & STR$(g2)
+    CLOSE #9
+    FUNCTION = 0
+END FUNCTION

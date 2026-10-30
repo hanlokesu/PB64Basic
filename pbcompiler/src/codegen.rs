@@ -1351,10 +1351,16 @@ struct Compiler {
     event_sources: std::collections::HashMap<String, Vec<String>>,
     event_method_ids: std::collections::HashMap<String, i32>,
 
-    // CLASS interface model (batch 264): interface name (uppercase) -> the
-    // CLASS that implements it.  `LOCAL o AS Iface` + `o.M(a)` resolves the
-    // method through this map to the compiled <Class>_<Method> function.
-    interface_classes: std::collections::HashMap<String, String>,
+    // CLASS interface model (batch 264; batch 305 made it multi-valued):
+    // interface name (uppercase) -> the CLASSes (in registration order) that
+    // implement it.  `LOCAL o AS Iface` + `o.M(a)` resolves the method through
+    // this map; with more than one implementing class the call site dispatches
+    // on the object's runtime class-id header (official vtable semantics).
+    interface_impls: std::collections::HashMap<String, Vec<String>>,
+    /// Runtime class ids (batch 305): CLASS name (uppercase) -> a stable
+    /// integer written into the object header at instantiation, so interface
+    /// call sites can dispatch to the right <Class>_<Method> implementation.
+    class_ids: std::collections::HashMap<String, i64>,
     /// Reverse map: CLASS name (uppercase) -> interface names it implements
     /// (uppercase).  Batch304: ISINTERFACE(obj, iface) resolves the object's
     /// CLASS and checks this set at compile time (the fork has no runtime
@@ -1530,7 +1536,8 @@ impl Compiler {
             xprint_dc: None,
             event_sources: std::collections::HashMap::new(),
             event_method_ids: std::collections::HashMap::new(),
-            interface_classes: std::collections::HashMap::new(),
+            interface_impls: std::collections::HashMap::new(),
+            class_ids: std::collections::HashMap::new(),
             class_ifaces: std::collections::HashMap::new(),
             current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
@@ -6912,6 +6919,21 @@ impl Compiler {
         // defined structure name embeds that TYPE/UNION; members flatten into
         // this structure (X.H works directly, per the CHW example).
         let mut idx = 0usize;
+        if td.is_class {
+            // Official CLASS object model (batch 305, legacy #2): the object
+            // layout carries a hidden class-id header at offset 0 so an
+            // interface-typed receiver can dispatch METHOD calls to the
+            // implementing class that was actually instantiated at run time.
+            // The INSTANCE fields follow at offset 1.., so every member index
+            // below is shifted by one for CLASS blocks only.
+            ir_types.push(IrType::I64);
+            fields.push(FieldInfo {
+                name: "__cls_id".to_string(),
+                pb_type: PbType::Long,
+                ir_type: IrType::I64,
+            });
+            idx = 1;
+        }
         for field in td.fields.iter() {
             if let Some(nested_name) = &field.nested {
                 let sub = match self.type_layouts.get(nested_name) {
@@ -6998,17 +7020,29 @@ impl Compiler {
             self.event_sources.insert(name.clone(), ifaces);
         }
 
-        // Interfaces implemented by this CLASS (batch 264).  Each INTERFACE
-        // block inside the CLASS names an interface this class implements;
-        // record interface name -> class name so `LOCAL o AS Iface` method
-        // calls can be lowered to this class's compiled METHOD functions.
+        // Interfaces implemented by this CLASS (batch 264; batch 305 made the
+        // map multi-valued so two CLASSes can implement the same INTERFACE and
+        // interface call sites dispatch on the runtime class id).  Each
+        // INTERFACE block inside the CLASS names an interface this class
+        // implements; `LOCAL o AS Iface` method calls are lowered to the
+        // compiled <Class>_<Method> functions of the class that was
+        // instantiated.
         for iface in &td.interfaces {
-            self.interface_classes
-                .insert(iface.to_uppercase(), name.clone());
+            self.interface_impls
+                .entry(iface.to_uppercase())
+                .or_default()
+                .push(name.clone());
             self.class_ifaces
                 .entry(name.clone())
                 .or_default()
                 .push(iface.to_uppercase());
+        }
+        if td.is_class && !self.class_ids.contains_key(&name) {
+            // Stable runtime class id = registration order of the CLASS
+            // blocks (batch 305).  Written into the object header by
+            // Expr::ClassNew; interface call sites switch on it.
+            self.class_ids
+                .insert(name.clone(), self.class_ids.len() as i64);
         }
     }
 
@@ -8640,10 +8674,40 @@ impl Compiler {
         };
         if let Some((base, name, args)) = set_target {
             if let Some(c) = self.struct_type_of_expr(base) {
-                let mut class = c;
-                if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
-                    class = impl_class.clone();
+                // Legacy #2 (batch 305): an interface-typed receiver means
+                // PROPERTY SET is a virtual call too — dispatch on the
+                // runtime class id, exactly like a METHOD call.
+                if self.receiver_is_interface(base) {
+                    let iface = c.to_uppercase();
+                    let first = self
+                        .interface_impls
+                        .get(&iface)
+                        .and_then(|v| v.first())
+                        .cloned()
+                        .ok_or_else(|| {
+                            PbError::runtime(format!(
+                                "PROPERTY SET `.{}(...)`: no CLASS implements interface `{}`",
+                                name, iface
+                            ))
+                        })?;
+                    let set_name = format!("{}_{}_SET", first, normalize_name(name));
+                    let set_info = self
+                        .subs
+                        .get(&set_name)
+                        .cloned()
+                        .or_else(|| self.functions.get(&set_name).cloned());
+                    if let Some(set_info) = set_info {
+                        let mut all_args = args.clone();
+                        all_args.push(assign.value.clone());
+                        let _ = self.compile_interface_dispatch(
+                            fb, &iface, name, "_SET", base, &all_args, &set_info,
+                        )?;
+                        return Ok(());
+                    }
+                    // No <Class>_<Prop>_Set compiled: not a CLASS property —
+                    // fall through to the storage path below.
                 }
+                let class = c;
                 let set_name = format!("{}_{}_SET", class, normalize_name(name));
                 let set_info = self
                     .subs
@@ -8998,7 +9062,8 @@ impl Compiler {
                     PbType::UserDefined(t) => Some(normalize_name(t)),
                     // an interface-typed object variable: the receiver type is
                     // the interface name (batch 264); method resolution maps it
-                    // to the implementing CLASS via interface_classes.
+                    // to the implementing CLASSes via interface_impls (batch
+                    // 305, multi-valued for virtual dispatch).
                     PbType::Interface(t) => Some(normalize_name(t)),
                     _ => None,
                 }
@@ -20328,14 +20393,46 @@ impl Compiler {
         if let Some(method) = name.strip_prefix('.') {
             if let Some(receiver) = call.args.first() {
                 match self.struct_type_of_expr(receiver) {
-                    Some(mut class) => {
-                        // An interface-typed receiver resolves the method
-                        // against the CLASS that implements the interface
-                        // (batch 264), same rule as the expression form.
-                        if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase())
-                        {
-                            class = impl_class.clone();
+                    Some(c) => {
+                        // An interface-typed receiver is a virtual call (legacy
+                        // #2, batch 305): dispatch on the runtime class id, same
+                        // rule as the expression form.
+                        if self.receiver_is_interface(receiver) {
+                            let iface = c.to_uppercase();
+                            let first = self
+                                .interface_impls
+                                .get(&iface)
+                                .and_then(|v| v.first())
+                                .cloned()
+                                .ok_or_else(|| {
+                                    PbError::runtime(format!(
+                                        "method call `.{}(...)`: no CLASS implements interface `{}`",
+                                        method, iface
+                                    ))
+                                })?;
+                            let qualified = format!("{}_{}", first, method);
+                            let info = self
+                                .functions
+                                .get(&qualified)
+                                .cloned()
+                                .or_else(|| self.subs.get(&qualified).cloned());
+                            if let Some(info) = info {
+                                let rest: Vec<Expr> = call.args.iter().skip(1).cloned().collect();
+                                let _ = self.compile_interface_dispatch(
+                                    fb, &iface, method, "", receiver, &rest, &info,
+                                )?;
+                                return Ok(());
+                            }
+                            return Err(pb::error::PbError::parser(
+                                format!(
+                                    "Unknown method `{}.{}` - no procedure `{}` was compiled",
+                                    first, method, qualified
+                                ),
+                                None,
+                                call.line,
+                            ));
                         }
+                        let class = c;
                         let qualified = format!("{}_{}", class, method);
                         let info = self
                             .functions
@@ -20727,8 +20824,26 @@ impl Compiler {
         let mut class = self.struct_type_of_expr(&fe.collection).ok_or_else(|| {
             PbError::runtime("FOR EACH IN: collection is not a TYPE instance".to_string())
         })?;
-        if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
-            class = impl_class.clone();
+        if self.receiver_is_interface(&fe.collection) {
+            // Interface-typed collection (legacy #2, batch 305): resolve ITEM
+            // against the first CLASS that implements the interface.  (The
+            // ITEM call itself stays direct — the index lives in an LLVM slot,
+            // not a source Expr — so a multi-implementer runtime dispatch for
+            // the enumeration protocol is not lowered here; the fork's
+            // collection protocol is a local CLASS extension, not measurable
+            // against PBWin.)
+            let iface = class.to_uppercase();
+            class = self
+                .interface_impls
+                .get(&iface)
+                .and_then(|v| v.first())
+                .cloned()
+                .ok_or_else(|| {
+                    PbError::runtime(format!(
+                        "FOR EACH IN: no CLASS implements interface `{}`",
+                        iface
+                    ))
+                })?;
         }
 
         // COUNT — go through the dotted-call machinery so both a METHOD and a
@@ -22219,6 +22334,120 @@ impl Compiler {
 
     // ========== Expression compilation ==========
 
+    /// Legacy #2 (batch 305): virtual METHOD dispatch on an interface-typed
+    /// receiver.  The runtime object header (offset 0, i64 class id) selects
+    /// the CLASS that was actually instantiated; with more than one
+    /// implementing class the call site switches on that id and calls the
+    /// right `<Class>_<Method><Suffix>` free function through a
+    /// phi-selected function pointer.  A single implementer keeps a direct
+    /// call (the common case, zero overhead).  `receiver` + `args` are
+    /// compiled exactly once against `want` (the first implementer's
+    /// signature, which the official model requires every implementation to
+    /// match — CHW INTERFACE (Direct)): the receiver object pointer is
+    /// passed BY VALUE as the implicit `this`.
+    ///
+    /// `suffix` is empty for a plain METHOD and "_GET"/"_SET" for a
+    /// property procedure, so the per-implementer name is
+    /// `<Class>_<Method><Suffix>`.
+    #[allow(clippy::too_many_arguments)]
+    fn compile_interface_dispatch(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        iface: &str,
+        method: &str,
+        suffix: &str,
+        receiver: &Expr,
+        args: &[Expr],
+        want: &FuncInfo,
+    ) -> PbResult<Val> {
+        let impls = self.interface_impls.get(iface).cloned().unwrap_or_default();
+        if impls.is_empty() {
+            return Err(PbError::runtime(format!(
+                "method call `.{}(...)`: no CLASS implements interface `{}`",
+                method, iface
+            )));
+        }
+        // Compile receiver + args once, against the first implementer's
+        // parameter signature (all implementers must match it).
+        let mut call_exprs = Vec::with_capacity(args.len() + 1);
+        call_exprs.push(Expr::ByvalOverride(Box::new(receiver.clone())));
+        call_exprs.extend(args.iter().cloned());
+        let compiled = self.compile_call_args(fb, &call_exprs, want)?;
+
+        let mn = format!("{}{}", normalize_name(method), suffix);
+        if impls.len() == 1 {
+            // Fast path: a single implementing class — direct call, exactly
+            // the pre-batch305 lowering.
+            let fname = format!("{}_{}", impls[0], mn);
+            return if want.ret_type == IrType::Void {
+                fb.call_void(&fname, &compiled);
+                Ok(Val::new("void".to_string(), IrType::Void))
+            } else {
+                Ok(fb.call(&want.ret_type, &fname, &compiled))
+            };
+        }
+
+        // Multi-implementer: dispatch on the object header class id.
+        let obj = compiled[0].clone();
+        let id_reg = fb.next_reg();
+        fb.raw_line(&format!("  {} = load i64, ptr {}", id_reg, obj.name));
+        let sel = fb.next_label("vsel");
+        let def = fb.next_label("vdef");
+        let b_labels: Vec<String> = (0..impls.len()).map(|_| fb.next_label("vb")).collect();
+        let cases: Vec<String> = impls
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                format!(
+                    "i64 {}, label %{}",
+                    self.class_ids.get(c).copied().unwrap_or(0),
+                    b_labels[i]
+                )
+            })
+            .collect();
+        // LLVM `switch` case list is whitespace/newline separated — NO commas
+        // (the LangRef's comma notation is misleading; clang rejects commas
+        // between cases, unlike the phi incoming list which needs them).
+        fb.raw_line(&format!("  switch i64 {}, label %{} [", id_reg, def));
+        for case in &cases {
+            fb.raw_line(&format!("    {}", case));
+        }
+        fb.raw_line("  ]");
+        for bl in &b_labels {
+            fb.raw_line(&format!("{}:", bl));
+            fb.raw_line(&format!("  br label %{}", sel));
+        }
+        // Unknown class id: defensive fallback to the first implementer
+        // (cannot normally happen — the assigner guarantees type matches).
+        fb.raw_line(&format!("{}:", def));
+        fb.raw_line(&format!("  br label %{}", sel));
+        // The phi that selects the function pointer lives in the merge block.
+        fb.raw_line(&format!("{}:", sel));
+        let fn_reg = fb.next_reg();
+        let f0 = format!("{}_{}", impls[0], mn);
+        // Function symbols are already `ptr`-typed values: the phi incoming
+        // is `@<fn>` with NO leading `ptr` (LLVM rejects `ptr @fn`).
+        let incoming: Vec<String> = impls
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("[ @{}_{}, %{} ]", c, mn, b_labels[i]))
+            .collect();
+        fb.raw_line(&format!(
+            "  {} = phi ptr [ @{}, %{} ], {}",
+            fn_reg,
+            f0,
+            def,
+            incoming.join(", ")
+        ));
+        let target = Val::new(fn_reg, IrType::Ptr);
+        if want.ret_type == IrType::Void {
+            fb.call_indirect_void(&target, &compiled);
+            Ok(Val::new("void".to_string(), IrType::Void))
+        } else {
+            Ok(fb.call_indirect(&want.ret_type, &target, &compiled))
+        }
+    }
+
     fn compile_expr(&mut self, fb: &mut FunctionBuilder, expr: &Expr) -> PbResult<Val> {
         match expr {
             Expr::IntegerLit(n) => {
@@ -22609,7 +22838,19 @@ impl Compiler {
                 ));
                 let sz_reg = fb.next_reg();
                 fb.raw_line(&format!("  {} = ptrtoint ptr {} to i64", sz_reg, gep_reg));
-                Ok(fb.call(&IrType::Ptr, "pb_obj_new", &[Val::new(sz_reg, IrType::I64)]))
+                let obj = fb.call(&IrType::Ptr, "pb_obj_new", &[Val::new(sz_reg, IrType::I64)]);
+                // Write the class id into the hidden object header (offset 0,
+                // batch 305).  Interface call sites read it to dispatch the
+                // METHOD to the class that was actually instantiated.
+                if let Some(cid) = self.class_ids.get(&name) {
+                    let idp = fb.next_reg();
+                    fb.raw_line(&format!(
+                        "  {} = getelementptr %{}, ptr {}, i32 0, i32 0",
+                        idp, name, obj.name
+                    ));
+                    fb.raw_line(&format!("  store i64 {}, ptr {}", cid, idp));
+                }
+                Ok(obj)
             }
             Expr::ComNew {
                 mode,
@@ -22649,19 +22890,62 @@ impl Compiler {
                 //
                 // Loud on every failure path on purpose: an unresolvable receiver
                 // or method must stop the build, never produce a silent value.
-                let mut class = self.struct_type_of_expr(base).ok_or_else(|| {
+                let class = self.struct_type_of_expr(base).ok_or_else(|| {
                     PbError::runtime(format!(
                         "method call `.{}(...)`: receiver is not a TYPE instance",
                         name
                     ))
                 })?;
+                // An interface-typed receiver is the virtual-dispatch case
+                // (legacy #2, batch 305): dispatch on the runtime class id to
+                // whichever CLASS actually implements the interface.
+                if self.receiver_is_interface(base) {
+                    let iface = class.to_uppercase();
+                    let first = self
+                        .interface_impls
+                        .get(&iface)
+                        .and_then(|v| v.first())
+                        .cloned()
+                        .ok_or_else(|| {
+                            PbError::runtime(format!(
+                                "method call `.{}(...)`: no CLASS implements interface `{}`",
+                                name, iface
+                            ))
+                        })?;
+                    let mut qualified = format!("{}_{}", first, normalize_name(name));
+                    let mut is_get = false;
+                    let want = self
+                        .functions
+                        .get(&qualified)
+                        .cloned()
+                        .or_else(|| self.subs.get(&qualified).cloned())
+                        .or_else(|| {
+                            // batch298: PROPERTY GET — `o.Prop` / `o.Prop(i)`
+                            // resolves to <Class>_<Prop>_Get when no METHOD of
+                            // that name exists (syntax-directed, CHW PROPERTY).
+                            let get_name = format!("{}_{}_GET", first, normalize_name(name));
+                            let g = self.functions.get(&get_name).cloned();
+                            if g.is_some() {
+                                qualified = get_name;
+                                is_get = true;
+                            }
+                            g
+                        })
+                        .ok_or_else(|| {
+                            PbError::runtime(format!(
+                                "unknown method `{}.{}` - no procedure was compiled",
+                                first,
+                                normalize_name(name)
+                            ))
+                        })?;
+                    let suffix = if is_get { "_GET" } else { "" };
+                    return self
+                        .compile_interface_dispatch(fb, &iface, name, suffix, base, args, &want);
+                }
                 // An object variable declared `AS SomeInterface` resolves the
                 // method against the CLASS that implements that interface
                 // (batch 264): the METHOD was compiled as <Class>_<Method>, so
                 // the mangle must use the class name, not the interface name.
-                if let Some(impl_class) = self.interface_classes.get(&class.to_uppercase()) {
-                    class = impl_class.clone();
-                }
                 let mut qualified = format!("{}_{}", class, normalize_name(name));
                 if !self.functions.contains_key(&qualified) {
                     // batch298: PROPERTY GET — a bare `o.Prop` / `o.Prop(i)`

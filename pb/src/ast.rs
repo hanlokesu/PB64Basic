@@ -154,6 +154,11 @@ pub struct TypeDecl {
     /// member. LLVM has no union type, so codegen lays the struct out as
     /// `[<max-size> x i8]` and member access becomes offset-0 bitcast.
     pub is_union: bool,
+    /// True when this block was declared as `CLASS name ... END CLASS`
+    /// (batch 305): the object layout gets a hidden class-id header field at
+    /// offset 0 and every object variable is a reference to a heap object,
+    /// matching the official PowerBASIC object model (CHW CLASS/END CLASS).
+    pub is_class: bool,
     /// EVENT SOURCE interfaces advertised by this class (batch 222).
     pub event_sources: Vec<String>,
     /// Interface blocks implemented by this CLASS (batch 264).  Each entry is

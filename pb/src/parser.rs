@@ -620,6 +620,7 @@ impl Parser {
                         fields,
                         line,
                         is_union: false,
+                        is_class: true,
                         event_sources,
                         interfaces,
                     })))
@@ -1390,6 +1391,7 @@ impl Parser {
             fields,
             line,
             is_union: false,
+            is_class: false,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
         })
@@ -1455,6 +1457,7 @@ impl Parser {
             fields,
             line,
             is_union: true,
+            is_class: false,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
         })
