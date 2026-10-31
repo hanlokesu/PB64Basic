@@ -64,6 +64,9 @@ local ztext as asciiz * 260
     CASE %JKCOMP_PBWIN10, %JKCOMP_PB64, %JKCOMP_PBXB64
       JK_RunCompiler(cmd)
 
+    CASE %JKCOMP_RUN_PBWIN10, %JKCOMP_RUN_PB64, %JKCOMP_RUN_PBXB64, %JKCOMP_RUN_DEFAULT
+      JK_CompileAndRun(cmd)
+
     CASE %JKCOMP_JKINI
       JK_OpenIni
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

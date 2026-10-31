@@ -15,6 +15,10 @@
 %JKCOMP_PB64    = %IDC_Userbase + 12
 %JKCOMP_PBXB64  = %IDC_Userbase + 13
 %JKCOMP_JKINI   = %IDC_Userbase + 14   ' open JKIDE.ini for editing (HAN 2026-10-28)
+%JKCOMP_RUN_PBWIN10 = %IDC_Userbase + 15   ' compile (sync) then run - PBWin 10 (HAN 2026-11-01)
+%JKCOMP_RUN_PB64    = %IDC_Userbase + 16   ' compile then run - PB64Basic
+%JKCOMP_RUN_PBXB64  = %IDC_Userbase + 17   ' compile then run - PBXB64
+%JKCOMP_RUN_DEFAULT = %IDC_Userbase + 18   ' compile (sync, default compiler) then run
 %JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
 
 ' ============ JKIDE.ini reader - HAN 2026-10-28 ============
@@ -214,6 +218,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   LOCAL exitcode AS LONG
   LOCAL cnt_err AS LONG
   LOCAL last_ln AS LONG
+  LOCAL prepath AS STRING
   f = JK_ActiveFile$()
   IF LEN(f) = 0 THEN
     JK_SendOutput "Compilers: no active file with a full path. Save the file first, then retry.", &H00C040
@@ -227,7 +232,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       ' marks the offending line in the editor + jumps to it, exactly like the
       ' original compile button. No external SHELL needed.
       SendMessage FindWindow("PBWindowClass:0", ""), %WM_COMMAND, 1501, 0   'IDM_COMPILE
-      FUNCTION = 1
+      FUNCTION = -2   ' asynchronous native pipeline - result not knowable here
       EXIT FUNCTION
     CASE %JKCOMP_PB64
       compname = "PB64Basic"
@@ -240,6 +245,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
         EXIT FUNCTION
       END IF
       IF LEN(runtime) = 0 THEN runtime = "pb_runtime_x64.obj"
+      prepath = "set PATH=C:\Program Files\LLVM\bin;%PATH%" + $CRLF   ' clang must be findable by the LLVM backend
       args = "build " + CHR$(34) + f + CHR$(34) + " --exe --target x86_64-pc-windows-msvc --runtime-lib " + runtime
     CASE %JKCOMP_PBXB64
       compname = "PBXB64"
@@ -257,7 +263,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   END SELECT
   jbat = ENVIRON$("TEMP") + "\jk_comp.bat"
   jlog = ENVIRON$("TEMP") + "\jk_comp.log"
-  jcmd = "@echo off" + $CRLF + "cd /d " + CHR$(34) + wd + CHR$(34) + $CRLF + CHR$(34) + exe + CHR$(34) + " " + args + " > " + CHR$(34) + jlog + CHR$(34) + " 2>&1" + $CRLF + "echo EXITCODE=%errorlevel% >> " + CHR$(34) + jlog + CHR$(34)
+  jcmd = "@echo off" + $CRLF + prepath + "cd /d " + CHR$(34) + wd + CHR$(34) + $CRLF + CHR$(34) + exe + CHR$(34) + " " + args + " > " + CHR$(34) + jlog + CHR$(34) + " 2>&1" + $CRLF + "echo EXITCODE=%errorlevel% >> " + CHR$(34) + jlog + CHR$(34)
   ff = FREEFILE
   OPEN jbat FOR OUTPUT AS #ff
   PRINT #ff, jcmd
@@ -329,10 +335,201 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   ' ---- verdict line ----
   IF cnt_err = 0 AND exitcode = 0 THEN
     JK_SendOutput "Compile OK (EXITCODE=0)", &H00A040
+    FUNCTION = 0
   ELSE
     JK_SendOutput "Compile FAILED - EXITCODE=" + TRIM$(STR$(exitcode)) + " (" + TRIM$(STR$(cnt_err)) + " error line(s))", &HFF4040
+    FUNCTION = exitcode
+  END IF
+END FUNCTION
+
+' ============ Compile & Run entries (HAN 2026-11-01) ============
+' The four new "- Run" menu items compile the ACTIVE file synchronously
+' (so the result is known), and only when the compile succeeded do they
+' start the produced executable.  PBWin's SHELL statement waits for the
+' child to terminate, so the program is launched via "cmd /c start"
+' which returns immediately and detaches the executable.
+
+SUB JK_RunCompiledExe(BYVAL exePath AS STRING)
+  IF ISFILE(exePath) THEN
+    JK_SendOutput "Compile OK - starting: " + exePath, &H00A040
+    SHELL "cmd.exe /c start """" " + CHR$(34) + exePath + CHR$(34)
+  ELSE
+    JK_SendOutput "Compile OK but executable not found: " + exePath, &HFF4040
+  END IF
+END SUB
+
+FUNCTION JK_CompilePBWinSync() AS LONG
+' Synchronous PBWin 10 command-line compile: writes the same bat+log
+' mechanism as JK_RunCompiler and returns the compile EXITCODE (0 = OK).
+' The produced .exe lands in the compiler cwd (PbwinCwd from JKIDE.ini).
+  LOCAL f AS STRING, exe AS STRING, wd AS STRING, inc AS STRING
+  LOCAL jbat AS STRING, jlog AS STRING, jcmd AS STRING, jlogtxt AS STRING
+  LOCAL ff AS LONG, i AS LONG, j AS LONG, exitcode AS LONG
+  LOCAL outline AS STRING
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Compilers: no active file with a full path. Save the file first, then retry.", &H00C040
+    FUNCTION = -1
+    EXIT FUNCTION
+  END IF
+  exe = JK_IniValue$("Compilers", "PbwinExe")
+  wd  = JK_IniValue$("Compilers", "PbwinCwd")
+  inc = JK_IniValue$("Compilers", "PbwinInc")
+  IF LEN(exe) = 0 THEN
+    JK_SendOutput "Compilers: key PbwinExe missing in " + JK_IniFile$() + ". Edit JKIDE.ini (or run setup.bat again), then restart JK-IDE.", &HFF4040
+    FUNCTION = -1
+    EXIT FUNCTION
+  END IF
+  IF LEN(wd) = 0 THEN wd = "C:\PBWin10\bin"
+  IF LEN(inc) = 0 THEN inc = "C:\PBWin10\WINAPI"
+  jbat = ENVIRON$("TEMP") + "\jk_pbwin_run.bat"
+  jlog = ENVIRON$("TEMP") + "\jk_pbwin_run.log"
+  jcmd = "@echo off" + $CRLF + "cd /d " + CHR$(34) + wd + CHR$(34) + $CRLF _
+       + CHR$(34) + exe + CHR$(34) + " /I" + inc + " /L /Q " + CHR$(34) + f + CHR$(34) _
+       + " > " + CHR$(34) + jlog + CHR$(34) + " 2>&1" + $CRLF _
+       + "echo EXITCODE=%errorlevel% >> " + CHR$(34) + jlog + CHR$(34)
+  ff = FREEFILE
+  OPEN jbat FOR OUTPUT AS #ff
+  PRINT #ff, jcmd
+  CLOSE #ff
+  SHELL CHR$(34) + jbat + CHR$(34)
+  jlogtxt = ""
+  IF ISFILE(jlog) THEN
+    ff = FREEFILE
+    OPEN jlog FOR BINARY AS #ff
+    jlogtxt = SPACE$(LOF(ff))
+    IF LEN(jlogtxt) THEN GET$ #ff, LOF(ff), jlogtxt
+    CLOSE #ff
+  END IF
+  KILL jbat
+  KILL jlog
+  exitcode = -1
+  i = INSTR(jlogtxt, "EXITCODE=")
+  IF i > 0 THEN
+    exitcode = VAL(MID$(jlogtxt, i + 9))
+    IF i > 1 THEN jlogtxt = LEFT$(jlogtxt, i - 1)
+  END IF
+  JK_SendOutput "==== PBWin 10 (sync) - " + f + " ====", &H808080
+  i = 1
+  DO WHILE i <= LEN(jlogtxt)
+    j = INSTR(i, jlogtxt, $CRLF)
+    IF j = 0 THEN j = INSTR(i, jlogtxt, $LF)
+    IF j = 0 THEN
+      outline = MID$(jlogtxt, i)
+      i = LEN(jlogtxt) + 1
+    ELSE
+      outline = MID$(jlogtxt, i, j - i)
+      IF MID$(jlogtxt, j, 2) = $CRLF THEN i = j + 2 ELSE i = j + 1
+    END IF
+    IF LEN(outline) = 0 THEN ITERATE DO
+    IF INSTR(outline, "Error") > 0 OR INSTR(outline, "error") > 0 THEN
+      JK_SendOutput outline, &HFF4040
+    ELSEIF INSTR(outline, "warning") > 0 OR INSTR(outline, "Warning") > 0 THEN
+      JK_SendOutput outline, &H0096C8
+    ELSE
+      JK_SendOutput outline, &H808080
+    END IF
+  LOOP
+  FUNCTION = exitcode
+END FUNCTION
+
+FUNCTION JK_CompileAndRun(BYVAL which AS LONG) AS LONG
+' Dispatch for the four "- Run" menu items: compile synchronously, and
+' only on success start the executable produced by that compiler.
+  LOCAL rc AS LONG
+  LOCAL f AS STRING, stem AS STRING, exePath AS STRING, wd AS STRING
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Compilers: no active file with a full path. Save the file first, then retry.", &H00C040
+    FUNCTION = 0
+    EXIT FUNCTION
+  END IF
+  SELECT CASE which
+    CASE %JKCOMP_RUN_PBWIN10, %JKCOMP_RUN_DEFAULT
+      wd = JK_IniValue$("Compilers", "PbwinCwd")
+      IF LEN(wd) = 0 THEN wd = "C:\PBWin10\bin"
+      stem = f
+      DO WHILE INSTR(stem, "\") > 0
+        stem = MID$(stem, INSTR(stem, "\") + 1)
+      LOOP
+      IF INSTR(stem, ".") > 0 THEN stem = LEFT$(stem, INSTR(stem, ".") - 1)
+      exePath = wd + "\" + stem + ".exe"
+      IF JK_DeleteStaleExe(exePath, stem) = 0 THEN
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      rc = JK_CompilePBWinSync()
+      IF rc = 0 THEN
+        JK_RunCompiledExe exePath
+      ELSE
+        JK_DeleteStaleExe exePath, stem
+        JK_SendOutput "PBWin 10 compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF4040
+      END IF
+    CASE %JKCOMP_RUN_PB64
+      exePath = LEFT$(f, LEN(f) - 4) + ".exe"
+      stem = f
+      DO WHILE INSTR(stem, "\") > 0
+        stem = MID$(stem, INSTR(stem, "\") + 1)
+      LOOP
+      IF INSTR(stem, ".") > 0 THEN stem = LEFT$(stem, INSTR(stem, ".") - 1)
+      IF JK_DeleteStaleExe(exePath, stem) = 0 THEN
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      rc = JK_RunCompiler(%JKCOMP_PB64)
+      IF rc = 0 THEN
+        JK_RunCompiledExe exePath
+      ELSE
+        JK_DeleteStaleExe exePath, stem
+        JK_SendOutput "PB64Basic compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF4040
+      END IF
+    CASE %JKCOMP_RUN_PBXB64
+      exePath = LEFT$(f, LEN(f) - 4) + ".exe"
+      stem = f
+      DO WHILE INSTR(stem, "\") > 0
+        stem = MID$(stem, INSTR(stem, "\") + 1)
+      LOOP
+      IF INSTR(stem, ".") > 0 THEN stem = LEFT$(stem, INSTR(stem, ".") - 1)
+      IF JK_DeleteStaleExe(exePath, stem) = 0 THEN
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      rc = JK_RunCompiler(%JKCOMP_PBXB64)
+      IF rc = 0 THEN
+        JK_RunCompiledExe exePath
+      ELSE
+        JK_DeleteStaleExe exePath, stem
+        JK_SendOutput "PBXB64 compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF4040
+      END IF
+  END SELECT
+  FUNCTION = 1
+END FUNCTION
+
+FUNCTION JK_DeleteStaleExe(BYVAL exePath AS STRING, BYVAL stem AS STRING) AS LONG
+' KILL-FIRST user rule: the stale product EXE must be GONE before compiling,
+' so a failed compile leaves no EXE and can never run the old binary.
+' Returns TRUE when the exe is gone (deleted or never existed).
+  IF ISFILE(exePath) THEN
+    ON ERROR GOTO KillFail
+    KILL exePath
+    ON ERROR GOTO 0
+  END IF
+  IF ISFILE(exePath) THEN
+    ' locked by a still-running process -> force-kill it, then retry delete
+    SHELL "cmd.exe /c taskkill /F /IM " + stem + ".exe >nul 2>&1"
+    ON ERROR GOTO KillFail
+    KILL exePath
+    ON ERROR GOTO 0
+  END IF
+  IF ISFILE(exePath) THEN
+    JK_SendOutput "Run: cannot delete stale EXE (still locked by a running process?). Close it and retry: " + exePath, &HFF4040
+    FUNCTION = 0
+    EXIT FUNCTION
   END IF
   FUNCTION = 1
+  EXIT FUNCTION
+KillFail:
+  RESUME NEXT
 END FUNCTION
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 ' they were added to separate "no change" areas (left for better readabilty) from areas for

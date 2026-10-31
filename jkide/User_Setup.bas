@@ -11,16 +11,29 @@
 #utility begin usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
   ' ===== Compilers submenu (HAN 2026-10-27, startup install) =====
-  LOCAL hcomp AS DWORD
+  ' Each compiler entry is now a popup submenu holding "Compile" and "Run"
+  ' (HAN 2026-11-01): clicking the entry opens { Compile, Run }.
+  LOCAL hcomp AS DWORD, hsub1 AS DWORD, hsub2 AS DWORD, hsub3 AS DWORD, hsub4 AS DWORD
   STATIC did AS LONG
   IF did = 0 THEN
     hcomp = CreatePopupMenu()
     IF hcomp THEN
-      AppendMenu hcomp, %MF_STRING, %JKCOMP_PBWIN10, "PBWin 10"
-      AppendMenu hcomp, %MF_STRING, %JKCOMP_PB64, "PB64Basic"
-      AppendMenu hcomp, %MF_STRING, %JKCOMP_PBXB64, "PBXB64"
-      AppendMenu hcomp, %MF_SEPARATOR, 0, ""
-      AppendMenu hcomp, %MF_STRING, %IDM_COMPILE, "Compile (default)"
+      hsub1 = CreatePopupMenu()                       ' PBWin 10
+      AppendMenu hsub1, %MF_STRING, %JKCOMP_PBWIN10, "Compile"
+      AppendMenu hsub1, %MF_STRING, %JKCOMP_RUN_PBWIN10, "Run"
+      hsub2 = CreatePopupMenu()                       ' PB64Basic
+      AppendMenu hsub2, %MF_STRING, %JKCOMP_PB64, "Compile"
+      AppendMenu hsub2, %MF_STRING, %JKCOMP_RUN_PB64, "Run"
+      hsub3 = CreatePopupMenu()                       ' PBXB64
+      AppendMenu hsub3, %MF_STRING, %JKCOMP_PBXB64, "Compile"
+      AppendMenu hsub3, %MF_STRING, %JKCOMP_RUN_PBXB64, "Run"
+      hsub4 = CreatePopupMenu()                       ' Compile (default)
+      AppendMenu hsub4, %MF_STRING, %IDM_COMPILE, "Compile"
+      AppendMenu hsub4, %MF_STRING, %JKCOMP_RUN_DEFAULT, "Run"
+      AppendMenu hcomp, %MF_POPUP, hsub1, "PBWin 10"
+      AppendMenu hcomp, %MF_POPUP, hsub2, "PB64Basic"
+      AppendMenu hcomp, %MF_POPUP, hsub3, "PBXB64"
+      AppendMenu hcomp, %MF_POPUP, hsub4, "Compile (default)"
       AppendMenu hcomp, %MF_SEPARATOR, 0, ""
       AppendMenu hcomp, %MF_STRING, %JKCOMP_JKINI, "JKIDE.INI"
       InsertMenu hmenu, %ID_TOOLS, %MF_BYCOMMAND OR %MF_POPUP, hcomp, "Compilers"
