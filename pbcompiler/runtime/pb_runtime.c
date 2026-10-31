@@ -1329,110 +1329,607 @@ static char* bstr_from_buf(char* buf) {
     return bstr;
 }
 
+char* pb_format_digits(double val, int digits);   /* forward decl */
+
 /* ============================================================
- * FORMAT$ � Simplified PB number formatting
+ * FORMAT$  -  full CHW mask engine (batch 308)
  *
- * PB FORMAT$ uses picture strings like "#,###.##", "0.00", etc.
- * This implementation covers the most common patterns:
- *   - "#" = digit or space
- *   - "0" = digit or zero
- *   - "." = decimal point
- *   - "," = thousands separator (if before ".")
- *   - "$" = dollar sign
- *   - "%" = percent (multiply by 100)
- *   - Any other characters are passed through literally
+ * Two entry forms (selected in codegen by the 2nd argument type):
+ *   pb_format_digits(val, digits)   digits& = 1..18 significant digits
+ *   pb_format(val, fmt)             fmt$   = full mask system
+ *
+ * Mask characters (CHW FORMAT$ function):
+ *   0        mandatory digit placeholder (zero-fill)
+ *   #        optional digit placeholder (omitted, or filled by *x)
+ *   *x       fill spec: two '#' fields; fill char x when no digit
+ *   .        decimal placeholder
+ *   ,        thousands separator (must follow a digit placeholder)
+ *   %        multiply by 100, trailing percent
+ *   E-/e-/E+/e+  scientific notation (between two digit placeholders)
+ *   "..."    quoted literal
+ *   \x       escaped literal
+ *   $()+-    space: pass-through literals (no escape needed)
+ *   ;        mask delimiter (1/2/3 masks: positive/negative/zero)
+ *
+ * Rounding: banker's rounding (IEEE ties-to-even) obtained from snprintf
+ * under the default FE_TONEAREST rounding mode.
+ *
+ * Mask rule set (measured against PBWin10, batch308f probe, 40+ cases):
+ *   digits form:  scientific when int-digit-count > digits, or |v|<0.1;
+ *                 fixed otherwise, rounded to `digits` significant digits;
+ *                 leading integer zero omitted, trailing fractional zeros
+ *                 stripped; exponent has no leading zeros, non-negative
+ *                 exponent carries '+'.
+ *   mask form:    integer digits right-aligned into integer slots; '0' slots
+ *                 zero-fill, '#' slots fill (when a *x spec exists) or
+ *                 omit; fraction digits left-aligned, trailing '#' zeros
+ *                 omitted/filled; overflow is displayed without truncation;
+ *                 negative sign is prepended to the number when the mask
+ *                 carries no literal '-'.
  * ============================================================ */
-char* pb_format(double val, const char* fmt) {
-    char buf[256];
 
-    if (fmt == NULL || fmt[0] == '\0') {
-        /* No format string � use default */
-        snprintf(buf, sizeof(buf), "%g", val);
-        char* result = (char*)malloc(strlen(buf) + 1);
-        strcpy(result, buf);
-        return bstr_from_buf(result);
-    }
+#define FMT_MAX_SLOTS 128
 
-    /* Count decimal places from format string */
-    int decimals = -1;
-    int has_comma = 0;
-    int has_dollar = 0;
-    int has_percent = 0;
-    const char* dot_pos = strchr(fmt, '.');
+typedef struct {
+    char  tok[FMT_MAX_SLOTS];   /* '0' '#' 'F' 'L' 'D' 'C' 'P' 'S' */
+    char  lit[FMT_MAX_SLOTS];   /* literal / fill / sci-case char */
+    int   n;
+    int   int_slots, frac_slots;
+    int   has_dot, comma, percent, sci;
+    char  sci_case;             /* 'E' or 'e' */
+    char  sci_sign;             /* '+' or '-' */
+    int   exp_slots;
+    int   has_fill;
+    char  fillch;
+    int   has_neg_lit;          /* mask contains a literal '-' */
+} fmt_mask_t;
 
-    if (dot_pos) {
-        decimals = 0;
-        for (const char* p = dot_pos + 1; *p == '#' || *p == '0'; p++) {
-            decimals++;
-        }
-    }
-
-    for (const char* p = fmt; *p; p++) {
-        if (*p == ',') has_comma = 1;
-        if (*p == '$') has_dollar = 1;
-        if (*p == '%') has_percent = 1;
-    }
-
-    if (has_percent) val *= 100.0;
-
-    /* Format the number */
-    if (decimals >= 0) {
-        snprintf(buf, sizeof(buf), "%.*f", decimals, val);
-    } else {
-        snprintf(buf, sizeof(buf), "%.0f", val);
-    }
-
-    if (has_comma) {
-        /* Insert thousands separators */
-        char formatted[256];
-        char* src = buf;
-        char* dst = formatted;
-        int is_neg = 0;
-
-        if (*src == '-') {
-            *dst++ = *src++;
-            is_neg = 1;
-        }
-
-        /* Find decimal point in formatted number */
-        char* num_dot = strchr(src, '.');
-        int int_len = num_dot ? (int)(num_dot - src) : (int)strlen(src);
-
-        /* Copy integer part with commas */
-        for (int i = 0; i < int_len; i++) {
-            int remaining = int_len - i;
-            if (i > 0 && remaining % 3 == 0) {
-                *dst++ = ',';
+/* Scan one mask (up to ';' or NUL). Returns chars consumed. */
+static int fmt_scan_mask(const char* m, fmt_mask_t* fm) {
+    memset(fm, 0, sizeof(*fm));
+    int i = 0, n = 0;
+    fm->fillch = ' ';
+    while (m[i] && m[i] != ';') {
+        char c = m[i];
+        if (c == '"') {
+            i++;
+            while (m[i] && m[i] != '"' && n < FMT_MAX_SLOTS) {
+                fm->tok[n] = 'L'; fm->lit[n] = m[i]; n++; i++;
             }
-            *dst++ = src[i];
+            if (m[i] == '"') i++;
+            continue;
         }
-
-        /* Copy decimal part */
-        if (num_dot) {
-            strcpy(dst, num_dot);
-        } else {
-            *dst = '\0';
+        if (c == '\\') {
+            if (m[i + 1] && n < FMT_MAX_SLOTS) {
+                fm->tok[n] = 'L'; fm->lit[n] = m[i + 1]; n++; i += 2;
+            } else i++;
+            continue;
         }
-
-        strcpy(buf, formatted);
+        if (c == '0' || c == '#') {
+            if (n < FMT_MAX_SLOTS) {
+                fm->tok[n] = c; n++;
+                if (fm->has_dot) fm->frac_slots++; else fm->int_slots++;
+            }
+            i++;
+            continue;
+        }
+        if (c == '*') {
+            char f = m[i + 1] ? m[i + 1] : ' ';
+            if (n + 1 < FMT_MAX_SLOTS) {
+                fm->tok[n] = 'F'; fm->lit[n] = f; n++;
+                fm->tok[n] = 'F'; fm->lit[n] = f; n++;
+            }
+            fm->has_fill = 1; fm->fillch = f;
+            if (fm->has_dot) fm->frac_slots += 2; else fm->int_slots += 2;
+            i += 2;
+            continue;
+        }
+        if (c == '.') {
+            if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'D'; n++; }
+            fm->has_dot = 1; i++;
+            continue;
+        }
+        if (c == ',') {
+            if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'C'; n++; }
+            fm->comma = 1; i++;
+            continue;
+        }
+        if (c == '%') {
+            if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'P'; n++; }
+            fm->percent = 1; i++;
+            continue;
+        }
+        if ((c == 'E' || c == 'e') && (m[i + 1] == '+' || m[i + 1] == '-')) {
+            if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'S'; fm->lit[n] = c; n++; }
+            fm->sci = 1; fm->sci_case = c; fm->sci_sign = m[i + 1];
+            i += 2;
+            continue;
+        }
+        if (c == '$' || c == '(' || c == ')' || c == '+' || c == '-' || c == ' ') {
+            if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'L'; fm->lit[n] = c; n++; }
+            if (c == '-') fm->has_neg_lit = 1;
+            i++;
+            continue;
+        }
+        /* unknown literal: pass through (CHW requires escaping; tolerated) */
+        if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'L'; fm->lit[n] = c; n++; }
+        i++;
     }
-
-    /* Build final result */
-    int prefix_len = has_dollar ? 1 : 0;
-    int suffix_len = has_percent ? 1 : 0;
-    int buf_len = (int)strlen(buf);
-    char* result = (char*)malloc(prefix_len + buf_len + suffix_len + 1);
-    char* out = result;
-
-    if (has_dollar) *out++ = '$';
-    memcpy(out, buf, buf_len);
-    out += buf_len;
-    if (has_percent) *out++ = '%';
-    *out = '\0';
-
-    return bstr_from_buf(result);
+    fm->n = n;
+    return i;
 }
 
+/* Append a slot char: digit, '0' zero-fill, '#/F' fill, '#' omit. */
+static void fmt_slot_char(char kind, const fmt_mask_t* fm, int has_digit,
+                          char d, char* out, int* oi, int cap) {
+    if (has_digit) {
+        if (*oi < cap - 1) out[(*oi)++] = d;
+        return;
+    }
+    if (kind == '0') {
+        if (*oi < cap - 1) out[(*oi)++] = '0';
+        return;
+    }
+    if (kind == 'F' || fm->has_fill) {
+        if (*oi < cap - 1) out[(*oi)++] = fm->fillch;
+        return;
+    }
+    /* '#' without fill: omit */
+}
+
+/* Insert thousands separators into a plain digit string (right-to-left 3s). */
+static void fmt_thousands(const char* in, char* out, int cap) {
+    int len = (int)strlen(in);
+    int ncom = (len - 1) / 3;
+    int olen = len + ncom;
+    if (olen >= cap) olen = cap - 1;
+    int oi = olen;
+    out[oi] = 0;
+    int cnt = 0;
+    for (int i = len - 1; i >= 0; i--) {
+        if (cnt == 3 && oi > 0) {
+            out[--oi] = ',';
+            cnt = 0;
+        }
+        if (oi > 0) out[--oi] = in[i];
+        cnt++;
+    }
+    if (oi > 0) memmove(out, out + oi, olen - oi + 1);
+}
+
+/* Fraction digits with trailing '#'-slot zeros trimmed ('0' slots keep). */
+static void fmt_frac_trim(char* frac, const fmt_mask_t* fm) {
+    int i = fm->frac_slots - 1;
+    while (i >= 0 && frac[i] == '0') {
+        /* find kind of frac slot i */
+        int slotidx = 0, seen_dot = 0;
+        for (int t = 0; t < fm->n; t++) {
+            char k = fm->tok[t];
+            if (k == 'D') { seen_dot = 1; continue; }
+            if (!seen_dot || (k != '0' && k != '#' && k != 'F')) continue;
+            if (slotidx == i) {
+                if (k != '0' && k != 'F') frac[i] = 0;  /* trim '#' zero */
+                break;
+            }
+            slotidx++;
+        }
+        i--;
+    }
+}
+
+/* Return the mask kind of the idx'th integer-region digit slot. */
+static char fmt_int_kind(const fmt_mask_t* fm, int idx) {
+    int c = 0;
+    for (int t = 0; t < fm->n; t++) {
+        char k = fm->tok[t];
+        if (k == 'D' || k == 'S') break;
+        if (k == '0' || k == '#' || k == 'F') {
+            if (c == idx) return k;
+            c++;
+        }
+    }
+    return '#';
+}
+
+/* Build per-slot display chars for the integer region (digits right-aligned,
+ * '0' zero-fill, '#' omit, 'F'/has-fill fill).  Returns the overflow digit
+ * count (leading digits that do not fit in the slots); the caller emits the
+ * overflow run (digits[0..ovf) + slot chars) as one grouped string. */
+static int fmt_int_slots(const fmt_mask_t* fm, const char* digits, char* slots, int cap) {
+    int n = fm->int_slots;
+    int j = (int)strlen(digits) - 1;
+    for (int e = n - 1; e >= 0; e--) {
+        if (j >= 0) {
+            slots[e] = digits[j--];
+        } else {
+            char k = fmt_int_kind(fm, e);
+            if (k == '0') slots[e] = '0';
+            else if (k == 'F' || fm->has_fill) slots[e] = fm->fillch;
+            else slots[e] = 0;
+        }
+    }
+    int ovf = j + 1;
+    if (ovf > 0 && ovf + n > cap) ovf = cap - n;
+    return ovf;
+}
+
+/* Emit the integer region as one run: overflow digits first, then the
+ * non-fill slot chars.  With comma=1 the whole digit run is thousands-
+ * grouped (fill characters never participate in grouping). */
+static void fmt_emit_int_run(const fmt_mask_t* fm, const char* digits, int ovf,
+                             const char* islots, int ilen,
+                             char* out, int* oi) {
+    char run[FMT_MAX_SLOTS * 2 + 64];
+    int rn = 0;
+    for (int i = 0; i < ovf; i++) run[rn++] = digits[i];
+    for (int e = 0; e < ilen; e++) {
+        char c = islots[e];
+        if (!c) continue;
+        char kk = fmt_int_kind(fm, e);
+        if (kk == 'F' || (kk == '#' && fm->has_fill)) {
+            if (c == fm->fillch) continue;   /* fill stays out of the digit run */
+        }
+        run[rn++] = c;
+    }
+    run[rn] = 0;
+    if (fm->comma) {
+        char gbuf[600];
+        fmt_thousands(run, gbuf, (int)sizeof(gbuf));
+        for (int i = 0; gbuf[i]; i++) out[(*oi)++] = gbuf[i];
+    } else {
+        for (int i = 0; i < rn; i++) out[(*oi)++] = run[i];
+    }
+}
+
+/* Build per-slot display chars for the fraction region (left-aligned). */
+static int fmt_frac_slots(const fmt_mask_t* fm, const char* frac_digits,
+                          char* slots, int cap) {
+    int n = fm->frac_slots;
+    int flen = (int)strlen(frac_digits);
+    int fi = 0;
+    for (int e = 0; e < n; e++) {
+        if (fi < flen) {
+            slots[e] = frac_digits[fi++];
+        } else {
+            /* find kind of frac slot e */
+            int idx = 0, seen_dot = 0;
+            int done = 0;
+            for (int t = 0; t < fm->n; t++) {
+                char k = fm->tok[t];
+                if (k == 'D') { seen_dot = 1; continue; }
+                if (k == 'S') break;
+                if (!seen_dot || (k != '0' && k != '#' && k != 'F')) continue;
+                if (idx == e) {
+                    if (k == '0') { slots[e] = '0'; }
+                    else if (k == 'F' || fm->has_fill) { slots[e] = fm->fillch; }
+                    else slots[e] = 0;
+                    done = 1;
+                    break;
+                }
+                idx++;
+            }
+            if (!done) slots[e] = 0;
+        }
+    }
+    return n;
+}
+
+/* build the formatted string for one mask */
+static char* fmt_apply(const fmt_mask_t* fm, double val) {
+    char out[FMT_MAX_SLOTS * 2 + 64];
+    int oi = 0;
+    int neg = val < 0;
+    double av = val < 0 ? -val : val;
+    if (fm->percent) av *= 100.0;
+
+    char fixed[1024];
+    if (fm->sci) {
+        int sig = fm->int_slots + fm->frac_slots;
+        if (sig < 1) sig = 1;
+        char ebuf[160];
+        snprintf(ebuf, sizeof(ebuf), "%.*e", sig - 1, av);
+        char mant[96]; char esign; int expo;
+        sscanf(ebuf, "%95[^e]e%c%d", mant, &esign, &expo);
+        char mdig[96]; int md = 0;
+        for (int k = 0; mant[k]; k++) if (mant[k] != '.') mdig[md++] = mant[k];
+        mdig[md] = 0;
+        /* integer slots: mantissa int digit (1) right-aligned */
+        char islots[FMT_MAX_SLOTS];
+        char idig[2] = { mdig[0], 0 };
+        int ovf = fmt_int_slots(fm, idig, islots, (int)sizeof(islots));
+        int ilen = fm->int_slots;
+        /* fraction slots: mantissa digits mdig[1..] */
+        char fslots[FMT_MAX_SLOTS];
+        int flen = 0;
+        {
+            int mj = 1;
+            int e = 0, idx = 0, seen_dot = 0;
+            for (int t = 0; t < fm->n; t++) {
+                char k = fm->tok[t];
+                if (k == 'D') { seen_dot = 1; continue; }
+                if (k == 'S') break;
+                if (!seen_dot || (k != '0' && k != '#' && k != 'F')) continue;
+                if (mj < md) { fslots[e] = mdig[mj++]; flen++; }
+                else {
+                    if (k == '0') { fslots[e] = '0'; flen++; }
+                    else if (k == 'F' || fm->has_fill) { fslots[e] = fm->fillch; flen++; }
+                    else fslots[e] = 0;
+                }
+                e++;
+            }
+        }
+        /* exponent slots: right-aligned */
+        char expo_str[32];
+        int ea = expo < 0 ? -expo : expo;
+        snprintf(expo_str, sizeof(expo_str), "%d", ea);
+        char eslots[FMT_MAX_SLOTS];
+        int elen = fm->exp_slots;   /* right-aligned: count ALL slots (omit slots included) */
+        {
+            int ej = (int)strlen(expo_str) - 1;
+            int e = fm->exp_slots - 1;
+            while (e >= 0) {
+                if (ej >= 0) { eslots[e] = expo_str[ej--]; }
+                else {
+                    /* exp slots are '#'-like (omit) or '0' (fill): find kind */
+                    int idx = 0, seen_s = 0;
+                    for (int t = 0; t < fm->n; t++) {
+                        char k = fm->tok[t];
+                        if (k == 'S') { seen_s = 1; continue; }
+                        if (!seen_s || (k != '0' && k != '#' && k != 'F')) continue;
+                        if (idx == e) {
+                            if (k == '0') { eslots[e] = '0'; }
+                            else if (k == 'F' || fm->has_fill) { eslots[e] = fm->fillch; }
+                            else eslots[e] = 0;
+                            break;
+                        }
+                        idx++;
+                    }
+                }
+                e--;
+            }
+        }
+        /* assemble */
+        int neg_out = 0;
+        int ii = 0, ff = 0, ee = 0, phase = 0;   /* 0 int, 1 frac, 2 exp */
+        for (int t = 0; t < fm->n; t++) {
+            char k = fm->tok[t];
+            if (k == 'L') out[oi++] = fm->lit[t];
+            else if (k == 'D') {
+                if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+                out[oi++] = '.'; phase = 1;
+            }
+            else if (k == 'S') {
+                if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+                phase = 2;
+                out[oi++] = fm->sci_case;
+                if (esign == '-') out[oi++] = '-';      /* %e sign char, exponent value non-negative */
+                else if (fm->sci_sign == '+') out[oi++] = '+';  /* E+/e+ adds '+' on non-negative */
+            }
+            else if (k == 'P') out[oi++] = '%';
+            else if (k == '0' || k == '#' || k == 'F') {
+                if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+                if (phase == 0) {
+                    if (ii < ilen) {
+                        char c = islots[ii];
+                        ii++;
+                        if (c) out[oi++] = c;
+                    }
+                }
+                else if (phase == 1) {
+                    if (ff < flen) {
+                        if (fslots[ff]) out[oi++] = fslots[ff];
+                        ff++;
+                    }
+                }
+                else if (phase == 2) {
+                    if (ee < elen && eslots[ee]) out[oi++] = eslots[ee++];
+                    else ee++;
+                }
+            }
+        }
+        out[oi] = 0;
+        {
+            char* r = (char*)malloc(oi + 1);
+            memcpy(r, out, oi + 1);
+            return bstr_from_buf(r);
+        }
+    }
+
+    /* ---- fixed point ---- */
+    int nfrac = fm->frac_slots;
+    snprintf(fixed, sizeof(fixed), "%.*f", nfrac, av);
+    char int_raw[512], frac_raw[512];
+    {
+        char* dot = strchr(fixed, '.');
+        if (dot) {
+            size_t il = (size_t)(dot - fixed);
+            memcpy(int_raw, fixed, il); int_raw[il] = 0;
+            strcpy(frac_raw, dot + 1);
+        } else {
+            strcpy(int_raw, fixed);
+            frac_raw[0] = 0;
+        }
+    }
+    if (fm->frac_slots > 0) fmt_frac_trim(frac_raw, fm);
+
+    char islots[FMT_MAX_SLOTS];
+    int ovf = fmt_int_slots(fm, int_raw, islots, (int)sizeof(islots));
+    int ilen = fm->int_slots;
+    char fslots[FMT_MAX_SLOTS];
+    int flen = fmt_frac_slots(fm, frac_raw, fslots, (int)sizeof(fslots));
+
+    int ii = 0, ff = 0, phase = 0;   /* 0 int, 1 frac */
+    char dbuf[FMT_MAX_SLOTS * 2 + 64];
+    int dn = 0;
+    int ovf_emitted = 0;
+    int neg_out = 0;
+    for (int t = 0; t < fm->n; t++) {
+        char k = fm->tok[t];
+        if (k == 'L') out[oi++] = fm->lit[t];
+        else if (k == 'D') {
+            if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+            if (fm->comma && dn > 0) {
+                dbuf[dn] = 0;
+                char gbuf[600];
+                fmt_thousands(dbuf, gbuf, (int)sizeof(gbuf));
+                for (int i = 0; gbuf[i]; i++) out[oi++] = gbuf[i];
+                dn = 0;
+            }
+            out[oi++] = '.'; phase = 1;
+        }
+        else if (k == 'P') out[oi++] = '%';
+        else if (k == 'C') {
+            if (!ovf_emitted && ovf > 0) {
+                fmt_emit_int_run(fm, int_raw, ovf, islots, ilen, out, &oi);
+                ovf_emitted = 1;
+                ii = ilen;
+            }
+        }
+        else if (k == '0' || k == '#' || k == 'F') {
+            if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+            if (phase == 0) {
+                if (!ovf_emitted && ovf > 0) {
+                    fmt_emit_int_run(fm, int_raw, ovf, islots, ilen, out, &oi);
+                    ovf_emitted = 1;
+                    ii = ilen;
+                } else if (ii < ilen) {
+                    char c = islots[ii];
+                    char kk = fmt_int_kind(fm, ii);
+                    ii++;
+                    if (!c) { /* '#' omit: nothing */ }
+                    else if ((kk == 'F' || (kk == '#' && fm->has_fill)) && c == fm->fillch) {
+                        out[oi++] = c;              /* fill stays out of the digit run */
+                    }
+                    else if (fm->comma) dbuf[dn++] = c;
+                    else out[oi++] = c;
+                }
+            } else {
+                if (ff < flen) {
+                    if (fslots[ff]) out[oi++] = fslots[ff];
+                    ff++;
+                }
+            }
+        }
+    }
+    if (fm->comma && dn > 0) {
+        dbuf[dn] = 0;
+        char gbuf[600];
+        fmt_thousands(dbuf, gbuf, (int)sizeof(gbuf));
+        for (int i = 0; gbuf[i]; i++) out[oi++] = gbuf[i];
+    }
+    out[oi] = 0;
+    {
+        char* r = (char*)malloc(oi + 1);
+        memcpy(r, out, oi + 1);
+        return bstr_from_buf(r);
+    }
+}
+
+char* pb_format(double val, const char* fmt) {
+    if (fmt == NULL || fmt[0] == '\0') {
+        return pb_format_digits(val, 0);   /* default significant digits */
+    }
+    /* split masks at top-level ';' (quotes/escapes protected) */
+    const char* m[3] = { fmt, NULL, NULL };
+    int nm = 1;
+    {
+        int inq = 0;
+        for (const char* p = fmt; *p; p++) {
+            if (*p == '\\' && p[1]) { p++; continue; }
+            if (*p == '"') { inq = !inq; continue; }
+            if (*p == ';' && !inq && nm < 3) { m[nm++] = p + 1; }
+        }
+    }
+    fmt_mask_t fm[3];
+    for (int k = 0; k < nm; k++) {
+        fmt_scan_mask(m[k], &fm[k]);
+        fm[k].exp_slots = 0;
+        int seen_s = 0;
+        for (int t = 0; t < fm[k].n; t++) {
+            if (fm[k].tok[t] == 'S') seen_s = 1;
+            else if (seen_s && (fm[k].tok[t] == '0' || fm[k].tok[t] == '#' || fm[k].tok[t] == 'F')) {
+                fm[k].exp_slots++;
+            }
+        }
+    }
+    const fmt_mask_t* use = &fm[0];
+    if (val < 0 && nm >= 2) use = &fm[1];
+    if (val == 0 && nm >= 3) use = &fm[2];
+    return fmt_apply(use, val);
+}
+
+/* digits form: 1..18 significant digits (default 16 for fork's double) */
+char* pb_format_digits(double val, int digits) {
+    if (digits < 1) digits = 16;      /* CHW default 7 single / 16 precise */
+    if (digits > 18) digits = 18;
+    if (val == 0) {
+        char* r = (char*)malloc(2);
+        r[0] = '0'; r[1] = 0;
+        return bstr_from_buf(r);
+    }
+    int neg = val < 0;
+    double av = val < 0 ? -val : val;
+    /* scientific threshold (PBWin measured):
+     *   large: integer digit count > digits
+     *   small: at least one leading zero after the decimal point, and
+     *          the decimal exponent e satisfies e <= 1-digits
+     *     e.g. 0.0123 digits=3 -> e=-2 <= -2 -> sci "1.2E-2"
+     *          0.0123 digits=4 -> e=-2 <= -3 false -> fixed ".0123"
+     *          0.123  digits=3 -> z=0 -> fixed ".123" */
+    int sci = 0;
+    int ip = (int)floor(log10(av)) + 1;   /* integer digit count (>=1) */
+    if (ip > digits) {
+        sci = 1;
+    } else if (av > 0 && av < 1.0) {
+        int e = (int)floor(log10(av));
+        /* at least one leading zero (e <= -2) and e <= 1-digits */
+        if (e <= -2 && e <= 1 - digits) sci = 1;
+    }
+    char buf[512];
+    if (sci) {
+        snprintf(buf, sizeof(buf), "%.*e", digits - 1, av);
+        char mant[64], esign;
+        int expo;
+        sscanf(buf, "%63[^e]e%c%d", mant, &esign, &expo);
+        /* strip trailing zeros of mantissa */
+        int ml = (int)strlen(mant);
+        while (ml > 0 && mant[ml - 1] == '0') ml--;
+        if (ml > 0 && mant[ml - 1] == '.') ml--;
+        mant[ml] = 0;
+        char ebuf[24];
+        snprintf(ebuf, sizeof(ebuf), "%c%d", esign, expo);   /* keep %e's sign char */
+        char* r = (char*)malloc(2 + strlen(mant) + 1 + strlen(ebuf) + 2);
+        char* o = r;
+        if (neg) *o++ = '-';
+        memcpy(o, mant, strlen(mant)); o += strlen(mant);
+        *o++ = 'E';
+        memcpy(o, ebuf, strlen(ebuf)); o += strlen(ebuf);
+        *o = 0;
+        return bstr_from_buf(r);
+    }
+    /* fixed: digits significant digits (C %g; sci already handled above) */
+    int n = snprintf(buf, sizeof(buf), "%.*g", digits, av);
+    if (strchr(buf, 'e') != NULL || strchr(buf, 'E') != NULL) {
+        pb_expand_fixed(buf, &n);           /* "1e+06" -> "1000000" (boundary) */
+        buf[n] = 0;
+    }
+    /* strip trailing zeros in the fraction only (integers keep theirs) */
+    char* dot2 = strchr(buf, '.');
+    if (dot2) {
+        char* p = buf + strlen(buf) - 1;
+        while (p > dot2 && *p == '0') { *p = 0; p--; }
+        if (p == dot2) *p = 0;   /* drop the dot too */
+    }
+    /* strip leading integer zero: 0.xx -> .xx (CHW: no leading space) */
+    if (buf[0] == '0' && (buf[1] == '.' || buf[1] == 0)) {
+        memmove(buf, buf + 1, strlen(buf));
+    }
+    char* r = (char*)malloc(strlen(buf) + 2);
+    char* o = r;
+    if (neg) *o++ = '-';
+    memcpy(o, buf, strlen(buf) + 1);
+    return bstr_from_buf(r);
+}
 /* ============================================================
  * PARSE$ � Split string by delimiter, extract Nth field (1-based)
  *
@@ -1867,6 +2364,10 @@ void pb_input_file_str(int filenum, char** dest) {
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
         if (ch == ',' || ch == '\n') break;
         if (ch == '\r') continue;
+        /* batch 308 (I): a string item ignores leading spaces (PBWin INPUT#
+           semantics).  Only the first char is subject to the skip; spaces
+           after the first char are content ("hello world" stays intact). */
+        if (i == 0 && ch == ' ') continue;
         if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
     }
     buf[i] = '\0';
@@ -1940,7 +2441,11 @@ void pb_input_file_int(int filenum, int* dest) {
     int i = 0;
     int ch;
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
-        if (ch == ',' || ch == '\n') break;
+        /* batch 308 (I): a numeric item also terminates on a space, not just
+           ',' or '\n' - "42 hello" reads 42 and leaves "hello" for the next
+           item (PBWin INPUT# semantics).  atoi/atof skip leading blanks, so
+           the extra space before the next item is harmless. */
+        if (ch == ',' || ch == '\n' || ch == ' ') break;
         if (ch == '\r') continue;
         if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
     }
@@ -1954,7 +2459,7 @@ void pb_input_file_dbl(int filenum, double* dest) {
     int i = 0;
     int ch;
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
-        if (ch == ',' || ch == '\n') break;
+        if (ch == ',' || ch == '\n' || ch == ' ') break;
         if (ch == '\r') continue;
         if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
     }

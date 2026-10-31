@@ -1404,6 +1404,9 @@ struct GosubContext {
     label_blocks: HashMap<String, String>,
     /// Map from GOSUB site ID → (return-point label name)
     return_points: Vec<String>,
+    /// Labels that are GOSUB targets (must never be fallen into from a
+    /// return point - batch 308 direct-GOSUB infinite loop fix).
+    gosub_targets: HashSet<String>,
     /// Alloca for the gosub return address (i32)
     ret_addr_ptr: Val,
     /// Labels already emitted (to prevent duplicate LLVM blocks)
@@ -1979,6 +1982,12 @@ impl Compiler {
             "pb_format",
             &IrType::Ptr,
             &[IrType::Double, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_format_digits",
+            &IrType::Ptr,
+            &[IrType::Double, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -7881,6 +7890,7 @@ impl Compiler {
         self.gosub_context = Some(GosubContext {
             label_blocks,
             return_points: Vec::new(),
+            gosub_targets,
             ret_addr_ptr,
             emitted_labels: HashSet::new(),
         });
@@ -22190,8 +22200,24 @@ impl Compiler {
                 }
                 ctx.emitted_labels.insert(name.to_string());
                 let block_name = block_name.clone();
-                // Fallthrough: unconditional branch to the label block
-                fb.br(&block_name);
+                // batch 308 (G): a direct GOSUB return point must never fall
+                // through into a GOSUB-target label. The old code always
+                // emitted `br label` here, so the return-point block
+                // (GOSUB's following statements) branched back into the
+                // subroutine: RETURN -> return point -> label -> ... forever
+                // (the probe hung; ON GOSUB was unaffected because its return
+                // points end in an explicit `br after`). Terminate the
+                // return-point block on the function's normal exit instead.
+                let is_gosub_target = ctx.gosub_targets.contains(name);
+                let in_return_point = ctx.return_points.contains(&fb.current_label);
+                if in_return_point && is_gosub_target {
+                    fb.br("gosub.bad");
+                } else if !fb.is_terminated() {
+                    // Fallthrough: unconditional branch to the label block
+                    // (skipped when the current block already terminated, so
+                    // dead code after GOTO/GOSUB cannot spin back into it).
+                    fb.br(&block_name);
+                }
                 fb.label(&block_name);
             }
         }
@@ -22515,8 +22541,10 @@ impl Compiler {
             .map(|(i, label)| ((i + 1) as i32, label.clone()))
             .collect();
 
-        // Create a "bad return" label (should never be reached)
-        let bad_label = fb.next_label("gosub.bad");
+        // Create a "bad return" label (should never be reached).  Literal
+        // name: batch 308 return-point blocks that end on a GOSUB-target
+        // label terminate on `br label %gosub.bad` and must match this.
+        let bad_label = "gosub.bad".to_string();
 
         // Emit the dispatch block
         fb.br("gosub.dispatch");
@@ -24636,7 +24664,10 @@ impl Compiler {
                 let v = self.compile_expr(fb, &args[0]);
                 Some(v.map(|v| {
                     let v32 = self.to_i32(fb, &v);
-                    let mask = fb.const_i32(0xFF);
+                    // batch 308 (H): LOBYT = low 8 bits, LOWRD = low 16 bits
+                    // (the old shared branch masked everything to 0xFF, so
+                    // LOWRD(&H12345678) returned 0x56 instead of 0x5678).
+                    let mask = fb.const_i32(if name == "LOWRD" { 0xFFFF } else { 0xFF });
                     fb.and(&v32, &mask)
                 }))
             }
@@ -24644,9 +24675,15 @@ impl Compiler {
                 let v = self.compile_expr(fb, &args[0]);
                 Some(v.map(|v| {
                     let v32 = self.to_i32(fb, &v);
+                    // batch 308 (H): HIBYT = byte 2 (bits 15..8), HIWRD =
+                    // word 2 (bits 31..16).  The old shared branch always
+                    // shifted by 8 and masked 0xFF, so HIWRD(&H12345678)
+                    // returned 86 (0x56) instead of 4660 (0x1234).
                     let eight = fb.const_i32(8);
-                    let shifted = fb.lshr(&v32, &eight);
-                    let mask = fb.const_i32(0xFF);
+                    let sixteen = fb.const_i32(16);
+                    let shift = if name == "HIWRD" { sixteen } else { eight };
+                    let shifted = fb.lshr(&v32, &shift);
+                    let mask = fb.const_i32(if name == "HIWRD" { 0xFFFF } else { 0xFF });
                     fb.and(&shifted, &mask)
                 }))
             }
@@ -27576,15 +27613,26 @@ impl Compiler {
     // ========== PB Runtime builtins ==========
 
     fn builtin_format(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // FORMAT$(number, format_string)
+        // FORMAT$(number [, [digits& | fmt$]])
+        // digits& -> pb_format_digits (significant digits, CHW: 1-18)
+        // fmt$    -> pb_format      (full mask system)
         let val = self.compile_expr(fb, &args[0])?;
         let f64_val = self.to_f64(fb, &val);
-        let fmt = if args.len() >= 2 {
-            self.compile_expr(fb, &args[1])?
+        if args.len() < 2 {
+            // no second arg: default formatting (STR$ without leading space)
+            let (n, _) = self.module.add_string_constant("");
+            let fmt = Val::new(n, IrType::Ptr);
+            return Ok(fb.call(&IrType::Ptr, "pb_format", &[f64_val, fmt]));
+        }
+        let v1 = self.compile_expr(fb, &args[1])?;
+        if v1.ty == IrType::Ptr {
+            // string expression -> mask
+            Ok(fb.call(&IrType::Ptr, "pb_format", &[f64_val, v1]))
         } else {
-            Val::new(self.empty_string_name.clone(), IrType::Ptr)
-        };
-        Ok(fb.call(&IrType::Ptr, "pb_format", &[f64_val, fmt]))
+            // numeric expression -> significant digits
+            let di = self.to_i32(fb, &v1);
+            Ok(fb.call(&IrType::Ptr, "pb_format_digits", &[f64_val, di]))
+        }
     }
 
     fn builtin_parse(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

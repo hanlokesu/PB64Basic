@@ -16351,10 +16351,14 @@ impl Parser {
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())
-                } else if name.eq_ignore_ascii_case("ISTRUE") {
+                } else if name.eq_ignore_ascii_case("ISTRUE")
+                    || name.eq_ignore_ascii_case("ISFALSE")
+                {
                     // Bracketless single-argument builtin: `(ISTRUE fCheck)` in
-                    // the official ListView_SetCheckState macro (batch306).
-                    Expr::FunctionCall("ISTRUE".to_string(), vec![self.parse_expression()?])
+                    // the official ListView_SetCheckState macro (batch306);
+                    // batch 308 (I) adds the symmetric bare ISFALSE form,
+                    // which previously fell through to a variable reference.
+                    Expr::FunctionCall(name.to_uppercase(), vec![self.parse_expression()?])
                 } else {
                     Expr::Variable(name)
                 };

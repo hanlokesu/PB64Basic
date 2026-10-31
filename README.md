@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **2** official keywords are not implemented yet (ISINTERFACE, ISMISSING); **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 307 (v0.2.098). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> Updated through batch 308 (v0.2.099). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> batch 308 (v0.2.099) - F/G/H/I family CHW audit; fixed GOSUB return-point loop, HIWRD/HIBYT/LOWRD/LOBYT masks, bare ISFALSE, INPUT# space delimiting; dual-run probes byte-identical, compile-all 358/358.
 > batch 307 (v0.2.098) - legacy backlog cleared to zero: 10 headless run FAIL fixed, TYPE multi-dim read side aligned, DECLARE-#IF closed, CLIPBOARD/COMM/#BLOAT/OBJECT dispositioned (environment limits documented), FASTPROC and batch029 confirmed closed.
 > batch 301 (v0.2.097) - E-project audit and fixes: `%EnumName.Member` constant references now lex correctly; ENUM BITS auto-values follow 0,1,2,4,8; the two-argument EXTRACT$(MainStr, MatchStr) form is disambiguated from the start-index form. All verified dual-compile vs PBWin 10, output identical.
 > batch 300 (v0.2.096) - A/B/C re-audit closes real gaps: BIT CALC reset no-op, ISNULL/ISNOTNULL/ISNOTHING, FASTPROC (END FASTPROC = expr), six # meta-directives accepted; CSV +13 rows (945, 938 implemented); verify 35/35; compile-all 340/340.
@@ -805,6 +806,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.099 (2026-11-01)
+
+* F/G/H/I keyword family audit against the CHW reference documentation (batch 308).
+* Fixed: GOSUB return point fell through back into the GOSUB target, looping forever (codegen).
+* Fixed: HIWRD/HIBYT/LOWRD/LOBYT took the wrong byte/word of the argument (codegen).
+* Fixed: bare ISFALSE operand form failed to parse (parser).
+* Fixed: INPUT# numeric items did not stop at a space and string items kept leading spaces (runtime).
+* Dual-run probes (fork + PowerBASIC 10) are byte-identical across the F/G/H/I families; compile-all regression 358/358.
+
 ### v0.2.098 (2026-11-01)
 
 - Legacy backlog cleared to zero: all 18 tracked gaps are closed or dispositioned. Hardware / environment limits are documented, not deferred.
