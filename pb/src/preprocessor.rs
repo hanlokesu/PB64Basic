@@ -51,6 +51,40 @@ fn strip_trailing_comment(line: &str) -> &str {
     line
 }
 
+/// Find a standalone `_` (not part of an identifier) that is followed by
+/// non-blank content on the same line.  PBWin's continuation rule ignores
+/// that trailing text (official ObjBase.inc: `AS ANY, _ IStorage PTR` /
+/// `AS ANY _ FAR * LPVOID`); the underscore itself still continues the line.
+/// Returns the byte index of the underscore, or None.
+fn standalone_underscore_with_tail(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut in_string = false;
+    for i in 0..bytes.len() {
+        let b = bytes[i];
+        if b == b'"' {
+            in_string = !in_string;
+            continue;
+        }
+        if b != b'_' || in_string {
+            continue;
+        }
+        let prev_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        if !prev_ok {
+            continue;
+        }
+        // Skip blank after the underscore; a bare trailing `_` (line
+        // continuation) has nothing after it and is not this case.
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+            j += 1;
+        }
+        if j < bytes.len() && bytes[j] != b'\r' && bytes[j] != b'\n' {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// Replace every occurrence of `$NAME` (or `$$NAME`) in `text` with `value`,
 /// guarding against matching a longer identifier (`$NAME_EXTRA` stays intact).
 fn substitute_equate_text(text: &str, name: &str, value: &str) -> String {
@@ -103,6 +137,25 @@ pub struct Preprocessor {
     /// text-substituted where the equate name appears later in the source.
     string_constants: HashMap<String, String>,
     included: HashSet<PathBuf>,
+    /// Second-pass include set: the macro-collection pass (batch 306) walks
+    /// the include graph with its own cycle set so the emit pass can inline
+    /// the same files again (with the now-complete macro table).
+    collect_included: HashSet<PathBuf>,
+    /// True while running the first (macro-collection) pass over the source.
+    /// Regular lines are skipped; only MACRO definitions, %/$ constants,
+    /// #IF stacks and #INCLUDE expansion run, so the macro table is complete
+    /// before any line is expanded (PBWin semantics: WindowsX.inc defines
+    /// ListBox_GetCurSel AFTER the function that calls it).
+    collect_only: bool,
+    /// Constants defined *during this pass* (plus the built-in SDK defaults),
+    /// consulted by `%DEF(name)` in #IF guards.  The two-pass preprocess (batch
+    /// 306) must NOT let the collection pass's definitions leak into the emit
+    /// pass: official headers guard their defaults with
+    /// `#IF NOT %DEF(%ANY_SIZE)` / `#IF NOT %DEF(%WIN32_WINNT)` — if the emit
+    /// pass sees them as already defined, the `%ANY_SIZE = 1` line is skipped
+    /// and the parser never registers it, so TYPE members like
+    /// `table(%ANY_SIZE-1)` fail constant evaluation (38 parse errors, build44).
+    defined_this_pass: HashSet<String>,
     macros: HashMap<String, MacroDef>,
     pub resources: Vec<(u32, PathBuf)>,
     /// #RESOURCE MANIFEST, id, "file.xml" — embedded as RT_MANIFEST so the
@@ -127,9 +180,28 @@ impl Default for Preprocessor {
 impl Preprocessor {
     pub fn new() -> Self {
         Preprocessor {
-            constants: HashMap::new(),
+            constants: HashMap::from([
+                // Batch 306: SDK version constants supplied before the official
+                // headers run.  Note: the official includes DO define
+                // %WIN32_WINNT themselves when unset — Win32Api.inc defaults
+                // it to 0x0500, ObjBase.inc/ObjIdl.inc to 0x0600 via
+                // `#IF (%NTDDI_VERSION >= ... AND NOT %DEF(%WIN32_WINNT))`.
+                // Pre-defining 0x0600 keeps ws2def.inc's SOCKADDR_STORAGE on
+                // the LongHorn alias path, which the recursive boolean
+                // evaluator now reproduces faithfully.
+                ("%WIN32_WINNT".to_string(), 0x0600),
+                ("%WINVER".to_string(), 0x0600),
+                ("%WIN32_IE".to_string(), 0x0700),
+            ]),
             string_constants: HashMap::new(),
             included: HashSet::new(),
+            collect_included: HashSet::new(),
+            collect_only: false,
+            defined_this_pass: HashSet::from([
+                "%WIN32_WINNT".to_string(),
+                "%WINVER".to_string(),
+                "%WIN32_IE".to_string(),
+            ]),
             macros: HashMap::new(),
             resources: Vec::new(),
             manifests: Vec::new(),
@@ -139,15 +211,49 @@ impl Preprocessor {
         }
     }
 
+    /// Run the full two-pass preprocess (batch 306).  Pass 1 walks the source
+    /// and include graph collecting every MACRO definition (with the correct
+    /// #IF/constant state); pass 2 re-runs the same walk with the complete
+    /// macro table so "use before macro definition" (WindowsX.inc:
+    /// ListBox_GetCurSel) expands exactly like PBWin.
+    pub fn preprocess(&mut self, path: &Path) -> PbResult<Vec<SourceLine>> {
+        // Each pass sees a fresh "defined this pass" set: the guarded
+        // `#IF NOT %DEF(%ANY_SIZE)` definition lines must be emitted to the
+        // parser in BOTH passes (collection pass builds the macro/constant
+        // state; emit pass re-emits the same lines so the parser registers
+        // them), exactly like a single PBWin pass.
+        self.collect_only = true;
+        self.collect_included.clear();
+        self.macros.clear();
+        self.reset_defined_this_pass();
+        let _ = self.process_file(path)?;
+        self.collect_only = false;
+        self.reset_defined_this_pass();
+        self.process_file(path)
+    }
+
+    /// Restore `defined_this_pass` to just the built-in SDK defaults.
+    fn reset_defined_this_pass(&mut self) {
+        self.defined_this_pass.clear();
+        for k in ["%WIN32_WINNT", "%WINVER", "%WIN32_IE"] {
+            self.defined_this_pass.insert(k.to_string());
+        }
+    }
+
     /// Process a source file, returning all resolved lines (with includes inlined).
     pub fn process_file(&mut self, path: &Path) -> PbResult<Vec<SourceLine>> {
         let canonical = std::fs::canonicalize(path)
             .map_err(|e| PbError::io(format!("Cannot resolve path {}: {}", path.display(), e)))?;
 
-        if self.included.contains(&canonical) {
+        let included_set = if self.collect_only {
+            &mut self.collect_included
+        } else {
+            &mut self.included
+        };
+        if included_set.contains(&canonical) {
             return Ok(Vec::new()); // cycle detection
         }
-        self.included.insert(canonical.clone());
+        included_set.insert(canonical.clone());
 
         // PB sources are often ANSI/GBK (not UTF-8). Try UTF-8 first; on
         // failure fall back to lossy decode (comments/strings may show
@@ -168,6 +274,7 @@ impl Preprocessor {
         let mut i = 0;
         let mut if_stack: Vec<bool> = Vec::new(); // stack of "are we in an active block?"
         let mut prefix: Option<String> = None; // active PREFIX "source code" (batch 26)
+        let mut struct_depth: usize = 0; // TYPE/UNION nesting (batch 306)
 
         while i < raw_lines.len() {
             let line_num = i + 1;
@@ -189,7 +296,11 @@ impl Preprocessor {
                 i += 1;
                 continue;
             }
-            if upper == "#ELSE" {
+            if upper == "#ELSE"
+                || upper.starts_with("#ELSE ")
+                || upper.starts_with("#ELSE\t")
+                || upper.starts_with("#ELSE'")
+            {
                 let len = if_stack.len();
                 let parent_active = if len > 1 {
                     if_stack[..len - 1].iter().all(|&b| b)
@@ -224,7 +335,11 @@ impl Preprocessor {
                 i += 1;
                 continue;
             }
-            if upper == "#ENDIF" {
+            if upper == "#ENDIF"
+                || upper.starts_with("#ENDIF ")
+                || upper.starts_with("#ENDIF\t")
+                || upper.starts_with("#ENDIF'")
+            {
                 if_stack.pop();
                 i += 1;
                 continue;
@@ -242,8 +357,20 @@ impl Preprocessor {
             //           OR Z=3 THEN
             let mut full_line = raw.to_string();
             loop {
-                let code_part = strip_trailing_comment(&full_line);
-                let trimmed_code = code_part.trim_end();
+                let mut code_owned = strip_trailing_comment(&full_line).to_string();
+                // Batch 306: PBWin's continuation rule allows a standalone `_`
+                // to be followed by text on the same line — the official
+                // ObjBase.inc writes `AS ANY, _ IStorage PTR` (L1245) and
+                // `AS ANY _ FAR * LPVOID` (BindMoniker, L1346) where the text
+                // after the underscore is a documentation hint, not a real
+                // continuation.  PBWin ignores everything after the underscore
+                // (to end of line); the underscore itself still continues the
+                // line into the next physical row.  Strip that trailing text so
+                // the emitted line never carries a mid-line underscore.
+                if let Some(pos) = standalone_underscore_with_tail(&code_owned) {
+                    code_owned.truncate(pos + 1);
+                }
+                let trimmed_code = code_owned.trim_end();
                 if !trimmed_code.ends_with('_') || trimmed_code.len() <= 1 {
                     break;
                 }
@@ -252,8 +379,19 @@ impl Preprocessor {
                 full_line = before_underscore.to_string();
                 i += 1;
                 if i < raw_lines.len() {
+                    let nxt = raw_lines[i].trim();
+                    // Batch 306: an official include (WinDNS.inc) places a
+                    // #IF / #ELSE / #ENDIF directive INSIDE a continued
+                    // DECLARE parameter list (`... AS DNS_FREE_TYPE _` followed
+                    // by a lone `_` then `#ENDIF ' ...`).  The directive line
+                    // must NOT be glued onto the continued statement — it has
+                    // to stay a standalone preprocessor line so the #IF stack
+                    // stays balanced (PBWin treats directives the same way).
+                    if nxt.starts_with('#') {
+                        break;
+                    }
                     full_line.push(' ');
-                    full_line.push_str(raw_lines[i].trim());
+                    full_line.push_str(nxt);
                 }
             }
 
@@ -610,6 +748,7 @@ impl Preprocessor {
                     let val_str = strip_comment(val_str);
                     let value = self.parse_constant_value(&val_str);
                     self.constants.insert(name.to_string(), value);
+                    self.defined_this_pass.insert(name.to_string());
                 }
                 // Emit the line anyway so the parser can also see it
                 lines.push(SourceLine {
@@ -621,13 +760,47 @@ impl Preprocessor {
                 continue;
             }
 
+            // Macro-collection pass (batch 306): every directive handler above
+            // (MACRO collect, #IF stack, %/$ constants, #INCLUDE expansion) has
+            // run; ordinary lines are skipped entirely so the macro table is
+            // complete before the emit pass expands any line.  PBWin semantics:
+            // WindowsX.inc defines ListBox_GetCurSel AFTER the function that
+            // calls it, and official headers do this 237 files wide.
+            if self.collect_only {
+                i += 1;
+                continue;
+            }
+
             // Regular line — emit it (prepend active PREFIX source code, batch 26)
             // DATA rewrite (batch 275): the lexer uppercases bare identifiers,
             // which corrupts unquoted DATA items (CHW: unquoted items are trimmed
             // of leading/trailing spaces but keep their text).  Rewrite unquoted
             // items as quoted string literals so the lexer keeps them verbatim.
+            // TYPE/UNION block nesting (batch 306): inside a structure block
+            // "DATA AS SomeType" is a MEMBER name (WinDNS.inc unions use DATA as
+            // a field name), not the DATA statement — suppress the rewrite there
+            // or the member line gets corrupted into quoted string literals.
+            if struct_depth == 0 {
+                if upper_full == "TYPE"
+                    || upper_full.starts_with("TYPE ")
+                    || upper_full == "UNION"
+                    || upper_full.starts_with("UNION ")
+                {
+                    struct_depth += 1;
+                }
+            } else {
+                if upper_full == "END TYPE"
+                    || upper_full.starts_with("END TYPE ")
+                    || upper_full.starts_with("END TYPE'")
+                    || upper_full == "END UNION"
+                    || upper_full.starts_with("END UNION ")
+                    || upper_full.starts_with("END UNION'")
+                {
+                    struct_depth -= 1;
+                }
+            }
             let data_rewritten: Option<String> =
-                if upper_full.starts_with("DATA ") || upper_full == "DATA" {
+                if struct_depth == 0 && (upper_full.starts_with("DATA ") || upper_full == "DATA") {
                     Some(rewrite_data_line(trimmed_full))
                 } else {
                     None
@@ -776,48 +949,147 @@ impl Preprocessor {
                 }
             }
         }
-        // Single-line macros: anywhere in the line.
+        // Single-line macros: anywhere in the line.  Macro bodies may alias
+        // other macros (NtDdndis.inc: NDIS_802_11_ENCRYPTION_STATUS_enum =
+        // NDIS_802_11_WEP_STATUS_enum = LONG), so replacement is iterated to
+        // a fixpoint (batch306 #5) — PBWin resolves the full alias chain.
         let mut result = full.to_string();
-        for (name, def) in &self.macros {
-            if def.body.len() == 1 {
-                result = replace_macro_refs(&result, name, def);
+        for _ in 0..8 {
+            let mut changed = false;
+            for (name, def) in &self.macros {
+                if def.body.len() == 1 {
+                    let before = result.clone();
+                    result = replace_macro_refs(&result, name, def);
+                    if result != before {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
             }
         }
         result
     }
 
+    /// Evaluate a #IF / #ELSEIF condition.
+    ///
+    /// Batch 306 rewrite: full recursive boolean evaluation.  The old
+    /// implementation handled only `NOT expr`, one bare comparison operator
+    /// and `%DEF(x)` as an entire line, so official guards such as
+    ///
+    ///   #IF (%NTDDI_VERSION >= %NTDDI_VISTA AND NOT %DEF(%WIN32_WINNT))
+    ///   #IF %DEF(%STATUS_SUCCESS) OR (%WIN32_WINNT > &H0500)
+    ///
+    /// were mis-evaluated: ObjBase.inc's four conditional `%WIN32_WINNT =`
+    /// defaults all fired (the right operand `... AND NOT %DEF(...)` parsed as
+    /// 0, so `0 >= 0` was true), the last one overwrote the constant with
+    /// &H0500, and ws2def.inc's `MACRO SOCKADDR_STORAGE=` alias was never
+    /// defined -> clang "use of undefined type named 'SOCKADDR_STORAGE'".
     fn evaluate_if_condition(&self, condition: &str) -> bool {
-        let cond = condition.trim().to_uppercase();
+        let cond = strip_comment(condition.trim()).to_uppercase();
+        self.eval_bool_expr(&cond)
+    }
 
-        // Handle NOT %DEF(%WINAPI) etc.
-        if let Some(stripped) = cond.strip_prefix("NOT ") {
-            return !self.evaluate_if_condition(stripped);
+    /// Recursive boolean expression evaluator over an upper-cased condition.
+    /// Grammar: expr ::= expr OR expr | expr AND expr | NOT expr
+    ///                | '(' expr ')' | %DEF(name) | cmp | atom
+    /// where cmp ::= operand (' = ' | ' <> ' | ' >= ' | ' <= ' | ' > ' | ' < ') operand.
+    /// AND/OR are only split at paren depth 0, so `(A AND B) = C` keeps its
+    /// inner AND inside the operand (handled by eval_operand).
+    fn eval_bool_expr(&self, s: &str) -> bool {
+        let s = s.trim();
+        if s.is_empty() {
+            return false;
         }
+        // Strip fully balanced outer parentheses (repeat).
+        let mut stripped = s.to_string();
+        loop {
+            if stripped.starts_with('(') && stripped.ends_with(')') {
+                let inner = &stripped[1..stripped.len() - 1];
+                let mut depth = 0i32;
+                let mut ok = true;
+                for b in inner.bytes() {
+                    match b {
+                        b'(' => depth += 1,
+                        b')' => {
+                            depth -= 1;
+                            if depth < 0 {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if ok && depth == 0 {
+                    stripped = inner.to_string();
+                    continue;
+                }
+            }
+            break;
+        }
+        let s = stripped.as_str();
 
-        // Comparison forms: "%CONST = 0", "%CONST <> 5", "(X AND Y) = &H1000".
-        // (batch 229: without these the %MY_PBVER discriminator blocks evaluate
-        // "0 = 0" as the bare-constant truth test "is the %CONST non-zero?" ->
-        // false, silently dropping every fork-only statement inside the block,
-        // e.g. WINDOW SET/GET TEXT, ARRAY ASSIGN, TYPE SET.)
-        if let Some(eq) = cond.find(" = ") {
-            return self.eval_operand(&cond[..eq]) == self.eval_operand(&cond[eq + 3..]);
+        // OR binds loosest.
+        if let Some(parts) = split_top_level(s, " OR ") {
+            if parts.len() > 1 {
+                return parts.iter().any(|p| self.eval_bool_expr(p));
+            }
         }
-        if let Some(ne) = cond.find(" <> ") {
-            return self.eval_operand(&cond[..ne]) != self.eval_operand(&cond[ne + 4..]);
+        // AND binds tighter than OR.
+        if let Some(parts) = split_top_level(s, " AND ") {
+            if parts.len() > 1 {
+                return parts.iter().all(|p| self.eval_bool_expr(p));
+            }
         }
-
-        // Handle %DEF(%CONSTANT)
-        if cond.starts_with("%DEF(") {
-            if let Some(end) = cond.find(')') {
-                let const_name = cond[5..end].trim().to_string();
-                return self.constants.contains_key(&const_name);
+        // NOT prefix.
+        if let Some(stripped) = s.strip_prefix("NOT ") {
+            return !self.eval_bool_expr(stripped);
+        }
+        // %DEF(%CONSTANT) — defined *in this pass* (plus the built-in SDK
+        // defaults).  Matching normalises the leading '%' so keys stored as
+        // "%ANY_SIZE" and lookups written "%ANY_SIZE" / "ANY_SIZE" agree.
+        // Batch 306: must NOT consult the cross-pass `constants` table, or the
+        // collection pass's definitions would suppress the emit pass's
+        // guarded `%ANY_SIZE = 1` / `%WIN32_WINNT = ...` definition lines and
+        // the parser would never register them (38 parse errors, build44).
+        if s.starts_with("%DEF(") {
+            if let Some(end) = s.find(')') {
+                let const_name = s[5..end].trim().to_string();
+                let bare = const_name.trim_start_matches('%');
+                return self
+                    .defined_this_pass
+                    .iter()
+                    .any(|k| k.trim_start_matches('%').eq_ignore_ascii_case(bare));
             }
             return false;
         }
+        // Comparison forms: "%CONST = 0", "%CONST <> 5", "(X AND Y) = &H1000",
+        // ">= " / "<= " / "> " / "< " relational guards.
+        // (batch 229: without "= " the %MY_PBVER discriminator blocks evaluate
+        // "0 = 0" as the bare-constant truth test "is the %CONST non-zero?" ->
+        // false, silently dropping every fork-only statement inside the block,
+        // e.g. WINDOW SET/GET TEXT, ARRAY ASSIGN, TYPE SET.)
+        for (op, cmp) in [
+            (" <> ", (|a: i64, b: i64| a != b) as fn(i64, i64) -> bool),
+            (" = ", (|a: i64, b: i64| a == b) as fn(i64, i64) -> bool),
+            (" >= ", (|a: i64, b: i64| a >= b) as fn(i64, i64) -> bool),
+            (" <= ", (|a: i64, b: i64| a <= b) as fn(i64, i64) -> bool),
+            (" > ", (|a: i64, b: i64| a > b) as fn(i64, i64) -> bool),
+            (" < ", (|a: i64, b: i64| a < b) as fn(i64, i64) -> bool),
+        ] {
+            if let Some(pos) = find_top_level(s, op) {
+                return cmp(
+                    self.eval_operand(&s[..pos]),
+                    self.eval_operand(&s[pos + op.len()..]),
+                );
+            }
+        }
 
         // Handle bare %CONSTANT (true if non-zero)
-        if cond.starts_with('%') {
-            if let Some(&val) = self.constants.get(&cond) {
+        if s.starts_with('%') {
+            if let Some(&val) = self.constants.get(s) {
                 return val != 0;
             }
             return false;
@@ -863,6 +1135,19 @@ impl Preprocessor {
             }
             return self.eval_operand(inner);
         }
+        // Strip unmatched leading '(' / trailing ')' — a comparison split like
+        // `(%WIN32_IE >= &H0300)` yields operands "(%WIN32_IE" and "&H0300)"
+        // (batch306).  Also normalises `(X) = Y` style operands.
+        let bytes = s.as_bytes();
+        let mut start = 0usize;
+        let mut end = s.len();
+        while start < end && bytes[start] == b'(' {
+            start += 1;
+        }
+        while end > start && bytes[end - 1] == b')' {
+            end -= 1;
+        }
+        s = &s[start..end];
         self.parse_constant_value(s)
     }
 
@@ -1063,6 +1348,56 @@ fn replace_word(body: &str, param: &str, arg: &str) -> String {
     out
 }
 
+/// Split `s` at top-level (paren depth 0) occurrences of `sep`, returning the
+/// pieces when at least one split happened.  Parentheses (including %DEF(...))
+/// keep their interiors from being split.
+fn split_top_level<'a>(s: &'a str, sep: &str) -> Option<Vec<&'a str>> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut starts: Vec<usize> = vec![0];
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {
+                if depth == 0 && s[i..].starts_with(sep) {
+                    starts.push(i + sep.len());
+                    i += sep.len();
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    if starts.len() < 2 {
+        return None;
+    }
+    starts.push(s.len());
+    Some(starts.windows(2).map(|w| &s[w[0]..w[1]]).collect())
+}
+
+/// Find `needle` at top-level (paren depth 0).  Used to locate comparison
+/// operators without splitting inside nested parentheses.
+fn find_top_level(s: &str, needle: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {
+                if depth == 0 && s[i..].starts_with(needle) {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Substitute macro parameters into a body line.
 fn substitute_params(body: &str, params: &[String], args: &[String]) -> String {
     if params.is_empty() {
@@ -1124,17 +1459,24 @@ fn replace_macro_refs(line: &str, name: &str, def: &MacroDef) -> String {
 fn resolve_include_path(current_file: &Path, include_path: &str) -> PathBuf {
     // Convert backslashes to forward slashes for cross-platform
     let normalized = include_path.replace('\\', "/");
+    // Absolute path or drive-qualified path: use it directly.
+    if include_path.contains(':') || Path::new(&normalized).is_absolute() {
+        return PathBuf::from(&normalized);
+    }
     let parent = current_file.parent().unwrap_or_else(|| Path::new("."));
-    let local = parent.join(&normalized);
-    if local.exists() {
-        return local;
+    // A name containing a directory separator is a project-relative path:
+    // resolve it against the including file's directory.
+    if normalized.contains('/') {
+        return parent.join(&normalized);
     }
     // CHW #INCLUDE: "The compiler scans the search path for each #INCLUDE
     // file before checking the current (default) directory."  Batch 276:
     // official samples do `#INCLUDE ONCE "Win32api.inc"`; the file lives in
     // the PBWin10 WINAPI folder, not next to the source.  Auto-detect the
     // installed PBWin include directory (same spirit as the Windows SDK lib
-    // auto-detection) and fall back to it so official samples compile as-is.
+    // auto-detection) and search it BEFORE the local directory, so a
+    // same-named local file (e.g. the repo's 70-byte win32api.inc stub)
+    // cannot hijack the official SDK header (batch 306).
     for cand in [
         "C:\\PBWin10\\WINAPI",
         "C:\\PBWin10\\WINAPI\\INC",
@@ -1145,7 +1487,7 @@ fn resolve_include_path(current_file: &Path, include_path: &str) -> PathBuf {
             return p;
         }
     }
-    local
+    parent.join(&normalized)
 }
 
 fn strip_comment(s: &str) -> String {

@@ -27,6 +27,10 @@ pub enum PbType {
     /// (CHW object model, batch 264).  The variable holds a heap object
     /// reference (a pointer), so it maps to IrType::Ptr, never to a struct.
     Interface(String),
+    /// `X PTR` — a typed pointer (CHW PTR data type, batch306).  x64 pointers
+    /// are 8 bytes; the inner type is kept so `@ptr.member` can resolve the
+    /// member layout.  Before batch306 PTR collapsed to Quad (64-bit int).
+    Pointer(Box<PbType>),
     Variant, // untyped / default
     Field,   // FIELD variable (16-byte: {ptr, len, pad})
 }
@@ -195,6 +199,11 @@ pub struct TypeField {
     /// Members are flattened into the outer type (X.H works, not only
     /// X.ABCD2.ABCD1.H). Some(name) = nested embed; name/pb_type are empty.
     pub nested: Option<String>,
+    /// TYPE member array element count (legacy #8, batch306): `fd_array(63)`
+    /// stores 64 elements, so this is Some(64).  None = scalar field.  The
+    /// official WinAPI headers rely on member arrays (WinSock2.inc fd_set,
+    /// MIB_IF_ROW2, IP_ADAPTER_INFO ...).
+    pub array_dim: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -664,6 +673,9 @@ pub enum Expr {
     Variable(String),
     ArrayAccess(String, Vec<Expr>),
     TypeMember(Box<Expr>, String),
+    /// `@expr` — pointer dereference (CHW @ operator, batch306).  The operand
+    /// must be a PTR variable; the value is the pointed-to storage.
+    Deref(Box<Expr>),
     FunctionCall(String, Vec<Expr>),
     /// `o.M(a, b)` — a method call written with a dot on a TYPE instance
     /// (the batch 216/217 sugar). `base` is the receiver expression on the

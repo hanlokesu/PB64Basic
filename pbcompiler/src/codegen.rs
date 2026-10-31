@@ -804,43 +804,44 @@ fn link_exe(
             }
         }
         if !found {
-            // No .lib anywhere. lld-link cannot take a bare .dll as input
-            // ("bad file type. Did you specify a DLL instead of an import
-            // library?"), so surface a clear error instead of a dead link
-            // attempt. The official PBWin DLL samples ship DLL-only; the fix
-            // is to produce an import library (e.g. compile the DLL with this
-            // compiler, which emits the .lib, or llvm-dlltool on a .def).
-            let dll_spec = lib_spec.replace(".lib", ".dll").replace(".LIB", ".DLL");
-            let d = std::path::Path::new(&dll_spec);
-            let d2 = exe_path.parent().map(|p| p.join(&dll_spec));
-            if d.exists() || d2.as_ref().is_some_and(|p| p.exists()) {
-                return Err(PbError::preprocessor(
-                    format!(
-                        "Import library {} not found but {} exists. lld-link needs an \
-                         import library, not a raw DLL. Build the DLL with PB64Basic \
-                         (it emits the .lib next to the .dll) or generate one from a \
-                         .def with llvm-dlltool.",
-                        lib_spec, dll_spec
-                    ),
-                    None,
-                    0,
-                ));
+            // Fall back to the Windows SDK import library directory (batch 306):
+            // system DLLs like MSIMG32 or WINSPOOL.DRV have their .lib in the
+            // SDK `um\x64` dir, not next to the source.  The declared name may
+            // carry the driver-style extension (WINSPOOL.DRV -> winspool.lib),
+            // so strip it and look for <stem>.lib in the SDK lib dir.
+            if let Some(ref lib_dir) = opts.lib_dir {
+                let stem = lib_spec
+                    .strip_suffix(".lib")
+                    .or_else(|| lib_spec.strip_suffix(".LIB"))
+                    .unwrap_or(lib_spec);
+                let bare = stem
+                    .trim_end_matches(".DRV")
+                    .trim_end_matches(".drv")
+                    .trim_end_matches(".DLL")
+                    .trim_end_matches(".dll")
+                    .trim_end_matches(".SYS")
+                    .trim_end_matches(".sys");
+                let cand = std::path::Path::new(lib_dir).join(format!("{}.lib", bare));
+                if cand.exists() {
+                    args.push(cand.to_string_lossy().to_string());
+                    found = true;
+                }
             }
-            // Neither the import library nor the DLL exists anywhere we look.
-            // Silently letting the link proceed produced only a confusing
-            // "undefined symbol: __declspec(dllimport) ..." from lld (batch
-            // 276c); name the missing file instead.
-            return Err(PbError::preprocessor(
-                format!(
-                    "Import library {} not found (and {} not found either). \
-                     Build the DLL first with PB64Basic (it emits the .lib next \
-                     to the .dll) or place the import library next to the source \
-                     file / EXE.",
-                    lib_spec, dll_spec
-                ),
-                None,
-                0,
-            ));
+        }
+        if !found {
+            // No import library anywhere (batch 306).  A system DLL such as
+            // SoftPub.dll ships no .lib in the Windows SDK at all.  lld-link
+            // only demands the import library when a dllimport symbol is
+            // actually referenced from the object files, so leaving the DLL
+            // out of the link is safe: unused DECLAREs link fine, and a real
+            // call to such a function surfaces as a clear "undefined symbol"
+            // from lld, at which point the fix is to generate the import
+            // library (llvm-dlltool on a .def).
+            eprintln!(
+                "[PB64Basic] Warning: import library {} not found; skipping. \
+                 (dllimport symbols are only resolved if referenced.)",
+                lib_spec
+            );
         }
     }
 
@@ -1468,8 +1469,14 @@ impl Compiler {
 
     /// Returns true if the DLL name is a known Win32 API library that uses stdcall calling convention.
     fn is_win32_stdcall_dll(lib_name: &str) -> bool {
-        // Strip .DLL extension if present
-        let name = lib_name.trim_end_matches(".DLL").trim_end_matches(".dll");
+        // Strip extension: DLL, DRV (WINSPOOL.DRV, COMM.DRV etc.), SYS.
+        let name = lib_name
+            .trim_end_matches(".DLL")
+            .trim_end_matches(".dll")
+            .trim_end_matches(".DRV")
+            .trim_end_matches(".drv")
+            .trim_end_matches(".SYS")
+            .trim_end_matches(".sys");
         matches!(
             name,
             "KERNEL32"
@@ -1560,6 +1567,9 @@ impl Compiler {
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
             PbType::Interface(_) => IrType::Ptr, // object reference (batch 264)
+            // X PTR — typed pointer, 8 bytes on x64 (batch306).  The pointed-to
+            // type is kept so @ptr.member can resolve member layouts.
+            PbType::Pointer(_) => IrType::Ptr,
             // batch293: PB Variant variables are 16-byte containers
             // (word VT code at +0, 8-byte value union at +8), matching the
             // runtime PB_VARIANT layout used by COM marshalling.
@@ -3915,6 +3925,8 @@ impl Compiler {
             &[IrType::I64, IrType::Ptr],
             false,
         );
+        self.module
+            .declare_function("pb_nul_str", &IrType::Ptr, &[IrType::I64], false);
         self.module
             .declare_function("pb_frac", &IrType::Double, &[IrType::Double], false);
         self.module
@@ -6886,7 +6898,12 @@ impl Compiler {
                         continue;
                     }
                 }
-                let ir_type = Self::ir_type_for_field(&field.pb_type);
+                let elem_ir = Self::ir_type_for_field(&field.pb_type);
+                let ir_type = if let Some(n) = field.array_dim {
+                    IrType::Array(n, Box::new(elem_ir))
+                } else {
+                    elem_ir
+                };
                 let sz = Self::ir_size_bytes(&ir_type);
                 if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
                     largest = Some((ir_type.clone(), sz));
@@ -6901,7 +6918,13 @@ impl Compiler {
             }
             let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
             let single = largest.map(|(t, _)| t).unwrap_or(IrType::I8);
-            self.module.define_struct_type(&name, &[single]);
+            // Official headers may re-declare a TYPE/UNION name (later
+            // definition wins in PBWin); LLVM forbids a second %name = type,
+            // so emit only the first definition while the layout map keeps
+            // being updated to the latest (batch306).
+            if !self.type_layouts.contains_key(&name) {
+                self.module.define_struct_type(&name, &[single]);
+            }
             self.type_layouts.insert(
                 name.clone(),
                 TypeLayout {
@@ -6990,7 +7013,14 @@ impl Compiler {
                 }
             } else {
                 let field_name = normalize_name(&field.name);
-                let ir_type = Self::ir_type_for_field(&field.pb_type);
+                let elem_ir = Self::ir_type_for_field(&field.pb_type);
+                // TYPE member array (legacy #8, batch306): `fd_array(63)` lays
+                // out as `[64 x elem]`, matching the official WinAPI headers.
+                let ir_type = if let Some(n) = field.array_dim {
+                    IrType::Array(n, Box::new(elem_ir))
+                } else {
+                    elem_ir
+                };
                 ir_types.push(ir_type.clone());
                 field_map.insert(field_name.clone(), idx);
                 fields.push(FieldInfo {
@@ -7002,7 +7032,9 @@ impl Compiler {
             }
         }
 
-        self.module.define_struct_type(&name, &ir_types);
+        if !self.type_layouts.contains_key(&name) {
+            self.module.define_struct_type(&name, &ir_types);
+        }
         self.type_layouts.insert(
             name.clone(),
             TypeLayout {
@@ -7264,14 +7296,14 @@ impl Compiler {
         // - Win32 API DLLs: dllimport + stdcall on 32-bit
         // - Stubbed DLLs: regular extern (stubs provided in pb_runtime.c)
         // - Other DLLs: dllimport + cdecl
-        let lib_name = ds.lib.as_deref().unwrap_or("").to_uppercase();
+        let lib_name = ds.lib.as_deref().unwrap_or("").trim().to_uppercase();
         let is_stdcall = self.module.is_32bit() && Self::is_win32_stdcall_dll(&lib_name);
         let is_stubbed = Self::is_stubbed_dll(&lib_name);
         // User DLL import (batch 276): record the .lib so the link step can
         // resolve the dllimport symbols.  System DLLs are already covered by
         // `-lkernel32`/`-luser32`/... in link_exe/link_dll.
         if ds.lib.is_some() && !is_stubbed && !Self::is_win32_stdcall_dll(&lib_name) {
-            let raw = ds.lib.as_deref().unwrap_or("");
+            let raw = ds.lib.as_deref().unwrap_or("").trim();
             let stem = raw
                 .strip_suffix(".dll")
                 .or_else(|| raw.strip_suffix(".DLL"))
@@ -9004,6 +9036,47 @@ impl Compiler {
                     fb.store(&converted, &field_ptr);
                 }
             }
+            Expr::MethodCall { base, name, args } => {
+                // batch306 (legacy #8): indexed TYPE member array write
+                // `@p.arr(i) = expr` (WinSock2.inc FD_CLR shifts the
+                // fd_set.fd_array slots).  GEP to the slot, index it, store.
+                if let Some(class) = self.struct_type_of_expr(base) {
+                    let mn = normalize_name(name);
+                    // Snapshot the field layout first so the immutable borrow
+                    // of self.type_layouts ends before compile_lvalue_ptr (a
+                    // &mut self call) runs below.
+                    let member = self.type_layouts.get(&class).and_then(|layout| {
+                        layout.field_map.get(&mn).and_then(|&fidx| {
+                            match &layout.fields[fidx].ir_type {
+                                IrType::Array(n, elem) => Some((
+                                    fidx,
+                                    *n,
+                                    (**elem).clone(),
+                                    layout.fields[fidx].pb_type.clone(),
+                                )),
+                                _ => None,
+                            }
+                        })
+                    });
+                    if let Some((fidx, n, elem, field_pb)) = member {
+                        if args.len() == 1 {
+                            let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
+                            let slot = fb.gep_struct(&class, &base_ptr, fidx);
+                            let idx = self.compile_expr(fb, &args[0])?;
+                            let array_ty = IrType::Array(n, Box::new(elem.clone()));
+                            let ptr = fb.gep_array(&array_ty, &slot, &idx);
+                            let converted = self.convert_value(fb, &value, &elem, &field_pb);
+                            fb.store(&converted, &ptr);
+                        } else {
+                            return Err(PbError::runtime(format!(
+                                "indexed TYPE member `{}.{}(...)` write: \
+                                 expected exactly 1 index",
+                                class, name
+                            )));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -9076,6 +9149,24 @@ impl Compiler {
                     PbType::UserDefined(f) => Some(normalize_name(f)),
                     PbType::Interface(f) => Some(normalize_name(f)),
                     _ => None,
+                }
+            }
+            Expr::Deref(inner) => {
+                // `@ptr` on a TYPE pointer (batch306): the pointed-to struct's
+                // type.  Only the simple variable/parameter form is resolved
+                // here (WinSock2.inc FD_CLR's `@fdset.fd_count` etc); deeper
+                // deref chains fall back to None and the caller reports.
+                if let Expr::Variable(name) = inner.as_ref() {
+                    let info = self.symbols.lookup(&normalize_name(name))?;
+                    match &info.pb_type {
+                        PbType::Pointer(inner_ty) => match inner_ty.as_ref() {
+                            PbType::UserDefined(t) => Some(normalize_name(t)),
+                            _ => None,
+                        },
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
             }
             _ => None,
@@ -9170,6 +9261,26 @@ impl Compiler {
                     Ok((elem_ptr, arr_info.pb_type.clone()))
                 } else {
                     Err(PbError::runtime(format!("Unknown array: {}", name)))
+                }
+            }
+            Expr::Deref(inner) => {
+                // `@ptr` — in LVALUE context the dereference address is the
+                // PTR variable's VALUE (the storage it points to).  The PTR
+                // variable's own slot is its address, so the value must be
+                // LOADED from it (batch306 fix: without the load the slot
+                // itself was treated as the pointed-to struct — the FD_CLR
+                // probe wrote into `p` instead of the struct `p` pointed to).
+                let (slot, slot_pb) = self.compile_lvalue_ptr(fb, inner)?;
+                match &slot_pb {
+                    PbType::Pointer(target) => {
+                        let ptr_ty = Self::ir_type_for(&slot_pb);
+                        let ptr_val = fb.load(&ptr_ty, &slot);
+                        Ok((ptr_val, (**target).clone()))
+                    }
+                    _ => Err(PbError::runtime(format!(
+                        "Dereference (@) of non-PTR expression: {:?}",
+                        inner
+                    ))),
                 }
             }
             Expr::TypeMember(base_expr, member) => {
@@ -21781,7 +21892,28 @@ impl Compiler {
                     fb.store(&converted, &elem_ptr);
                 }
             }
-            _ => {}
+            target => {
+                // Generic lvalue path (batch306): WinSock2.inc FD_CLR uses
+                // `DECR @fdset.fd_count` (TypeMember(Deref(PTR))) which fell
+                // through silently before.  Resolve the target as an lvalue
+                // address, load-modify-store through it.
+                let (ptr, pb) = self.compile_lvalue_ptr(fb, target)?;
+                let ir = Self::ir_type_for(&pb);
+                let current = fb.load(&ir, &ptr);
+                let amount = if let Some(ref amt) = stmt.amount {
+                    let v = self.compile_expr(fb, amt)?;
+                    self.to_i32(fb, &v)
+                } else {
+                    fb.const_i32(1)
+                };
+                let result = if is_incr {
+                    fb.add(&current, &amount)
+                } else {
+                    fb.sub(&current, &amount)
+                };
+                let converted = self.convert_value(fb, &result, &ir, &pb);
+                fb.store(&converted, &ptr);
+            }
         }
         Ok(())
     }
@@ -22616,6 +22748,19 @@ impl Compiler {
                 let v = val.unwrap_or(0);
                 Ok(fb.const_i32(v as i32))
             }
+            Expr::Deref(_inner) => {
+                // `@ptr` — read the value the PTR variable points to (batch306).
+                // compile_lvalue_ptr(Deref) returns the pointed-to address with
+                // the pointed-to type; load that address once more.
+                let (ptr_val, target) = self.compile_lvalue_ptr(fb, expr)?;
+                let ty = Self::ir_type_for(&target);
+                let v = fb.load(&ty, &ptr_val);
+                if ty == IrType::Ptr {
+                    Ok(self.null_guard_string(fb, &v))
+                } else {
+                    Ok(v)
+                }
+            }
             Expr::FunctionCall(name, args) => {
                 let raw_upper = name.to_uppercase();
                 let name = normalize_name(name);
@@ -22882,6 +23027,39 @@ impl Compiler {
                 ))
             }
             Expr::MethodCall { base, name, args } => {
+                // batch306 (legacy #8): indexed TYPE member array `@p.arr(i)`
+                // (WinSock2.inc FD_CLR/FD_SET read the fd_set.fd_array slot).
+                // When the receiver's TYPE has a member ARRAY of that name,
+                // GEP to the slot, index into it and load the element instead
+                // of lowering it as a <Class>_<Method> call.
+                if let Some(class) = self.struct_type_of_expr(base) {
+                    let mn = normalize_name(name);
+                    // Snapshot the field layout so the immutable borrow of
+                    // self.type_layouts ends before compile_lvalue_ptr (&mut
+                    // self) runs below.
+                    let member = self.type_layouts.get(&class).and_then(|layout| {
+                        layout.field_map.get(&mn).and_then(|&fidx| {
+                            match &layout.fields[fidx].ir_type {
+                                IrType::Array(n, elem) => Some((fidx, *n, (**elem).clone())),
+                                _ => None,
+                            }
+                        })
+                    });
+                    if let Some((fidx, n, elem)) = member {
+                        if args.len() == 1 {
+                            let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
+                            let slot = fb.gep_struct(&class, &base_ptr, fidx);
+                            let idx = self.compile_expr(fb, &args[0])?;
+                            let array_ty = IrType::Array(n, Box::new(elem.clone()));
+                            let ptr = fb.gep_array(&array_ty, &slot, &idx);
+                            return Ok(fb.load(&elem, &ptr));
+                        }
+                        return Err(PbError::runtime(format!(
+                            "indexed TYPE member `{}.{}(...)`: expected exactly 1 index",
+                            class, name
+                        )));
+                    }
+                }
                 // `o.M(a, b)` — the dotted method-call sugar. Lower it to the
                 // qualified free function the METHOD was compiled as, prepending
                 // the receiver as argument 0 so the implicit BYREF `this` receives
@@ -23664,6 +23842,7 @@ impl Compiler {
             "STRINSERT" => Some(self.builtin_strinsert(fb, args)),
             "STRDELETE" => Some(self.builtin_strdelete(fb, args)),
             "REPEAT" => Some(self.builtin_repeat(fb, args)),
+            "NUL" => Some(self.builtin_nul(fb, args)),
             "FRAC" => Some(self.builtin_frac(fb, args)),
             "ISFOLDER" => Some(self.builtin_isfolder(fb, args)),
             "ISNULL" | "ISNOTNULL" => Some(self.builtin_isnull(fb, args, name)),
@@ -24381,11 +24560,19 @@ impl Compiler {
                     fb.and(&shifted, &mask)
                 }))
             }
-            "MAKDWD" | "MAK" => {
-                if args.len() >= 2 {
-                    let lo = self.compile_expr(fb, &args[0]);
+            "MAKDWD" | "MAK" | "MAKLNG" => {
+                // CHW: MAK(ReturnType, LowWord, HighWord) packs two 16-bit
+                // halves into a 32-bit value: (HighWord << 16) | LowWord.
+                // The first argument is a datatype keyword (LONG/DWORD/...),
+                // not a runtime value — official headers call it as
+                // MAK(LONG, iWidth, iHeight) (CommCtrl.inc) and the
+                // preprocessor expands MAKELPARAM(l,h) to MAK(LONG,l,h), so
+                // skip the first operand when three args are present.
+                let operands: &[Expr] = if args.len() >= 3 { &args[1..] } else { args };
+                if operands.len() >= 2 {
+                    let lo = self.compile_expr(fb, &operands[0]);
                     Some(lo.and_then(|lo| {
-                        let hi = self.compile_expr(fb, &args[1])?;
+                        let hi = self.compile_expr(fb, &operands[1])?;
                         let lo32 = self.to_i32(fb, &lo);
                         let hi32 = self.to_i32(fb, &hi);
                         let sixteen = fb.const_i32(16);
@@ -24797,6 +24984,9 @@ impl Compiler {
             PbType::Cur => 13,            // %VARCLASS_CUR
             PbType::UserDefined(_) => 20, // %VARCLASS_TYPE
             PbType::Interface(_) => 20,   // object reference, same class as TYPE
+            // X PTR reports as a pointer class (batch306); PBWin's VARCLASS
+            // enum has no dedicated PTR class, so TYPE (20) is the closest.
+            PbType::Pointer(_) => 20,
             PbType::Variant => 17,        // %VARCLASS_VRNT
             PbType::String => 23,         // %VARCLASS_STR
             PbType::WString => 23,        // WSTRING reports as STRING class (batch280)
@@ -25362,6 +25552,17 @@ impl Compiler {
         let s = self.compile_expr(fb, &args[1])?;
         let n_i = self.to_i64(fb, &n);
         Ok(fb.call(&IrType::Ptr, "pb_repeat", &[n_i, s]))
+    }
+    fn builtin_nul(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // NUL$(n) — CHW NUL$_function.htm: returns a string of n NUL (ASCII 0)
+        // characters; with no argument it returns the empty string.  WindowsX
+        // / ListBoxCtrl use NUL$(4096) to preallocate a buffer.
+        if args.is_empty() {
+            return Ok(fb.call(&IrType::Ptr, "pb_nul_str", &[fb.const_i64(0)]));
+        }
+        let n = self.compile_expr(fb, &args[0])?;
+        let n_i = self.to_i64(fb, &n);
+        Ok(fb.call(&IrType::Ptr, "pb_nul_str", &[n_i]))
     }
     fn builtin_frac(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         if args.is_empty() {

@@ -124,6 +124,10 @@ pub enum Token {
     Colon, // : (label marker / statement separator)
     Hash,  // # (file number prefix)
     Dot,
+    /// `@expr` — pointer dereference prefix operator (CHW PTR / @ operator).
+    /// `@ptr.member` reads a member through a PTR variable (official WinAPI
+    /// inline helpers use this, e.g. WinNT.inc TP_* subs).  batch306.
+    At,
     DotDot,   // .. (range in SELECT CASE)
     LBracket, // [ (inline-ASM indirect addressing)
     RBracket, // ]

@@ -967,6 +967,10 @@ impl Interpreter {
                 let val = self.eval_expr(inner)?;
                 Ok(val.negate())
             }
+            // `@ptr` dereference: the interpreter has no address space, so a
+            // dereference evaluates to a null Long, same as Interface-typed
+            // object variables (batch264 approximation).
+            Expr::Deref(_) => Ok(Value::Long(0)),
             Expr::BinaryOp(op, left, right) => {
                 let lval = self.eval_expr(left)?;
 

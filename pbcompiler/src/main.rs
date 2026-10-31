@@ -193,12 +193,22 @@ fn compile_file(
     // Phase 1: Preprocess
     let t0 = std::time::Instant::now();
     let mut preprocessor = Preprocessor::new();
-    let source_lines = preprocessor.process_file(path)?;
+    let source_lines = preprocessor.preprocess(path)?;
     eprintln!(
         "[PB64Basic] Preprocessed {} lines ({:.1}s)",
         source_lines.len(),
         t0.elapsed().as_secs_f64()
     );
+    // Batch306 debug: PB64DUMP_PP=<file> writes the preprocessed text (one
+    // line per entry) so combined-stream line numbers can be mapped back.
+    if let Ok(f) = std::env::var("PB64DUMP_PP") {
+        let text = source_lines
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&f, text).ok();
+    }
 
     // Reassemble into single source string for lexing
     // Build line map: combined_line (1-based) -> original file line

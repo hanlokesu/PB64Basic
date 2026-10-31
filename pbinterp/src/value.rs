@@ -41,6 +41,9 @@ impl Value {
             // batch264: interface-typed object variables are codegen-only;
             // the interpreter approximates them as a null Long.
             PbType::Interface(_) => Value::Long(0),
+            // Pointer-typed (PTR suffix): interpreter has no address space,
+            // approximate as a null Long, same as Interface.
+            PbType::Pointer(_) => Value::Long(0),
         }
     }
 

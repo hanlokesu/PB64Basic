@@ -324,6 +324,13 @@ impl Lexer {
                     }
                     tokens.push(self.make_located(Token::Question, start_line, start_col));
                 }
+                '@' => {
+                    // `@expr` — pointer dereference prefix (CHW PTR operator).
+                    // Official headers use it in inline helper SUBs
+                    // (`@CallbackEnviron.Version = 1`, WinNT.inc).  batch306.
+                    self.advance();
+                    tokens.push(self.make_located(Token::At, start_line, start_col));
+                }
                 '[' => {
                     self.advance();
                     tokens.push(self.make_located(Token::LBracket, start_line, start_col));

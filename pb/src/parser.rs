@@ -81,6 +81,19 @@ pub struct Parser {
     /// structure (CHW "Structures within structures"); without this registry
     /// the parser would demand `AS` and reject the embed as Error 477.
     defined_types: std::collections::HashSet<String>,
+    /// Percent-constant values, registered at parse time (batch306, legacy
+    /// #8).  `%FD_SETSIZE = 64` is stored under its PercentConstant spelling
+    /// "%FD_SETSIZE" so TYPE member array dimensions like
+    /// `fd_array(%FD_SETSIZE-1)` can be evaluated while the TYPE block is
+    /// parsed (codegen's register_type pass runs before the const decls are
+    /// compiled, so it cannot do this itself).
+    percent_consts: std::collections::HashMap<String, i64>,
+    /// Names of already-defined ENUM blocks (batch306, legacy #5).  Official
+    /// headers use an ENUM name as a TYPE member type
+    /// (`AS NDIS_802_11_WEP_STATUS_ENUM`); PBWin stores it as its underlying
+    /// integer, so it must parse to PbType::Long, never to a UserDefined type
+    /// that codegen would emit as an undefined LLVM type.
+    defined_enums: std::collections::HashSet<String>,
 }
 
 impl Parser {
@@ -95,6 +108,8 @@ impl Parser {
             interface_names: std::collections::HashSet::new(),
             current_function_name: None,
             defined_types: std::collections::HashSet::new(),
+            percent_consts: std::collections::HashMap::new(),
+            defined_enums: std::collections::HashSet::new(),
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -136,10 +151,31 @@ impl Parser {
                 Token::Static => "STATIC",
                 Token::Register => "REGISTER",
                 Token::Threaded => "THREADED",
+                Token::Type => "TYPE",
+                Token::Union => "UNION",
+                Token::Alias => "ALIAS",
+                Token::Callback => "CALLBACK",
                 _ => return None,
             }
             .to_string(),
         )
+    }
+
+    /// Map a bare keyword used as an unnamed parameter type (e.g. the
+    /// `OPTIONAL BYVAL DWORD` tail of ShellMessageBox) to its PbType.
+    fn keyword_to_type(spelling: &str) -> PbType {
+        match spelling {
+            "DWORD" => PbType::Dword,
+            "LONG" => PbType::Long,
+            "INTEGER" => PbType::Integer,
+            "SINGLE" => PbType::Single,
+            "DOUBLE" => PbType::Double,
+            "EXT" => PbType::Ext,
+            "QUAD" => PbType::Quad,
+            "CUR" => PbType::Cur,
+            "STRING" => PbType::String,
+            _ => PbType::Long,
+        }
     }
 
     /// Consume a member/field name: an identifier, or a reserved word that PB
@@ -200,31 +236,6 @@ impl Parser {
                 self.current_file(),
                 self.current_line(),
             ))
-        }
-    }
-
-    /// Skip a balanced parenthesised group (TYPE/UNION member array
-    /// subscripts, e.g. `a1(1 TO 1024)`). Nested parens are handled.
-    fn skip_balanced_parens(&mut self) {
-        if self.peek() != &Token::LParen {
-            return;
-        }
-        self.advance(); // LParen
-        let mut depth = 1usize;
-        while depth > 0 && !self.at_end() {
-            match self.peek() {
-                Token::LParen => {
-                    depth += 1;
-                    self.advance();
-                }
-                Token::RParen => {
-                    depth -= 1;
-                    self.advance();
-                }
-                _ => {
-                    self.advance();
-                }
-            }
         }
     }
 
@@ -534,6 +545,7 @@ impl Parser {
                                 name: fname,
                                 pb_type: ftype,
                                 nested: None,
+                                array_dim: None,
                             });
                             if self.peek() == &Token::Comma {
                                 self.advance();
@@ -1153,17 +1165,19 @@ impl Parser {
 
     fn parse_type(&mut self) -> PbResult<PbType> {
         let t = self.parse_type_inner()?;
-        // PTR suffix: DWORD PTR / ASCIIZ PTR / LONG PTR — x64 pointers are 64-bit
+        // PTR suffix: DWORD PTR / ASCIIZ PTR / LONG PTR — x64 pointers are 64-bit.
+        // Keep the pointed-to type so `@ptr.member` can resolve member layouts
+        // (official WinAPI inline helpers, batch306).
         if let Token::Identifier(s) = self.peek() {
             if s.eq_ignore_ascii_case("PTR") {
                 self.advance();
-                return Ok(PbType::Quad);
+                return Ok(PbType::Pointer(Box::new(t)));
             }
         }
         // Bare PTR (already consumed as UserDefined("PTR"))
         if let PbType::UserDefined(n) = &t {
             if n.eq_ignore_ascii_case("PTR") {
-                return Ok(PbType::Quad);
+                return Ok(PbType::Pointer(Box::new(PbType::Byte)));
             }
         }
         Ok(t)
@@ -1265,11 +1279,40 @@ impl Parser {
                         self.advance();
                         Ok(PbType::Field)
                     }
+                    // CHW bit-field: `AS BIT * n IN base_type` packs a bit
+                    // field into a base container (WinNT.inc
+                    // TP_CALLBACK_ENVIRON Union: `LongFunction AS BIT * 1
+                    // IN DWORD`). The fork has no bit-field access semantics,
+                    // so the member takes the base container's type — layout
+                    // compatible with the official headers (batch306 #5).
+                    "BIT" => {
+                        self.advance();
+                        if self.peek() == &Token::Star {
+                            self.advance();
+                            let _bits = self.parse_expression()?; // bit width
+                        }
+                        if let Token::Identifier(k) = self.peek().clone() {
+                            if k.eq_ignore_ascii_case("IN") {
+                                self.advance();
+                                return self.parse_type_inner();
+                            }
+                        }
+                        Ok(PbType::Long) // bare BIT defaults to LONG
+                    }
                     // batch293: VARIANT is a real PB type (16-byte container),
                     // not a user-defined type name.
                     "VARIANT" => {
                         self.advance();
                         Ok(PbType::Variant)
+                    }
+                    // PBWin built-in GUID data type — 16 bytes (4+2+2+8).
+                    // No GUID member access is implemented; storage is an
+                    // inline 16-byte blob, byte-identical to the official
+                    // layout (official headers use `AS GUID` in TYPE members,
+                    // batch306 #5).
+                    "GUID" => {
+                        self.advance();
+                        Ok(PbType::FixedString(16))
                     }
                     _ => {
                         let name = s.clone();
@@ -1278,6 +1321,11 @@ impl Parser {
                         // object reference (batch 264): `LOCAL o AS MyIface`.
                         if self.interface_names.contains(&name.to_uppercase()) {
                             Ok(PbType::Interface(name.to_uppercase()))
+                        } else if self.defined_enums.contains(&name.to_uppercase()) {
+                            // ENUM as a member/variable type = its underlying
+                            // integer (PBWin; official headers do this in TYPE
+                            // members, batch306 #5).
+                            Ok(PbType::Long)
                         } else {
                             Ok(PbType::UserDefined(name))
                         }
@@ -1329,8 +1377,69 @@ impl Parser {
         };
         self.expect(&Token::Eq)?;
         let value = self.parse_expression()?;
+        // Register the constant for TYPE member array dimensions (batch306).
+        if let Some(v) = self.eval_const_expr(&value) {
+            self.percent_consts.insert(name.clone(), v);
+        }
         self.consume_to_eol();
         Ok(ConstDecl { name, value, line })
+    }
+
+    /// Evaluate a compile-time integer expression (percent constants, integer
+    /// literals, arithmetic) so TYPE member array dimensions like
+    /// `fd_array(%FD_SETSIZE-1)` resolve to a concrete element count at parse
+    /// time.  Returns None when the expression is not a constant.
+    fn eval_const_expr(&self, e: &Expr) -> Option<i64> {
+        match e {
+            Expr::IntegerLit(i) => Some(*i),
+            Expr::FloatLit(f) => Some(*f as i64),
+            Expr::PercentConst(name) => self.percent_consts.get(name).copied().or_else(|| {
+                let bare = name.trim_start_matches('%');
+                self.percent_consts
+                    .iter()
+                    .find(|(k, _)| k.trim_start_matches('%').eq_ignore_ascii_case(bare))
+                    .map(|(_, v)| *v)
+            }),
+            Expr::Variable(name) => {
+                // A percent constant may have been written without the % in the
+                // subscript (rare); also try the bare-name lookup.
+                let upper = name.to_uppercase();
+                self.percent_consts
+                    .iter()
+                    .find(|(k, _)| k.trim_start_matches('%').eq_ignore_ascii_case(&upper))
+                    .map(|(_, v)| *v)
+            }
+            Expr::Negate(inner) => self.eval_const_expr(inner).map(|v| -v),
+            Expr::UnaryOp(UnaryOp::Neg, inner) => self.eval_const_expr(inner).map(|v| -v),
+            Expr::UnaryOp(UnaryOp::Not, inner) => {
+                self.eval_const_expr(inner)
+                    .map(|v| if v == 0 { -1 } else { 0 })
+            }
+            Expr::BinaryOp(op, l, r) => {
+                let (a, b) = (self.eval_const_expr(l)?, self.eval_const_expr(r)?);
+                match op {
+                    BinaryOp::Add => Some(a + b),
+                    BinaryOp::Sub => Some(a - b),
+                    BinaryOp::Mul => Some(a * b),
+                    BinaryOp::Div | BinaryOp::IntDiv => {
+                        if b == 0 {
+                            None
+                        } else {
+                            Some(a / b)
+                        }
+                    }
+                    BinaryOp::Mod => {
+                        if b == 0 {
+                            None
+                        } else {
+                            Some(a % b)
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     fn parse_type_decl(&mut self, line: usize) -> PbResult<TypeDecl> {
@@ -1354,20 +1463,92 @@ impl Parser {
                 break;
             }
 
-            // Parse field: name AS type (array subscripts `(lo TO hi)` are
-            // skipped — CHW TYPE members may be arrays).
+            // Parse field: name AS type.  Array members `name(lo TO hi)` and
+            // multi-dimensional `name(a, b)` (CHW TYPE members; official
+            // headers use both — WinSock2.inc fd_array(%FD_SETSIZE-1),
+            // WinCrypt.inc DecryptionState(10,15)) are kept: each subscript
+            // expression is evaluated at parse time (percent constants are
+            // already registered) and the total element count is stored
+            // (legacy #8/#5, batch306).  A multi-dimensional member is laid
+            // out flat (product of the per-dimension counts) — byte-identical
+            // to the nested layout, which is what random-file/API binary
+            // compatibility needs.
             let fname = self.consume_field_name()?;
-            if self.peek() == &Token::LParen {
-                self.skip_balanced_parens();
-            }
-            // CHW "Structures within structures": a bare previously-defined
-            // structure name on its own line embeds that TYPE/UNION.
-            if self.peek() != &Token::As && self.defined_types.contains(&fname.to_uppercase()) {
+            let dim = if self.peek() == &Token::LParen {
+                self.advance();
+                let mut total: Option<usize> = Some(1);
+                loop {
+                    let lo = self.parse_expression()?;
+                    let (lo_v, hi_v) = if self.peek() == &Token::To {
+                        self.advance();
+                        let hi = self.parse_expression()?;
+                        (self.eval_const_expr(&lo), self.eval_const_expr(&hi))
+                    } else {
+                        (self.eval_const_expr(&lo), None)
+                    };
+                    let cnt = match (lo_v, hi_v) {
+                        // `name(N)` — subscript bound 0..N inclusive = N+1 elements.
+                        (Some(lo), None) if lo >= 0 => Some(lo as usize + 1),
+                        // `name(lo TO hi)` — inclusive range hi-lo+1 elements.
+                        (Some(lo), Some(hi)) if hi >= lo => Some((hi - lo) as usize + 1),
+                        _ => {
+                            eprintln!(
+                                "[b306diag] {} lo={:?} lo_v={:?} hi_v={:?}",
+                                fname, lo, lo_v, hi_v
+                            );
+                            None
+                        }
+                    };
+                    match (total, cnt) {
+                        (Some(t), Some(c)) => total = Some(t * c),
+                        _ => {
+                            eprintln!(
+                                "[b306diag] {} subscript unparseable lo={:?} hi={:?}",
+                                fname, lo_v, hi_v
+                            );
+                            total = None;
+                            break;
+                        }
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect(&Token::RParen)?;
+                match total {
+                    Some(t) if t >= 1 => Some(t),
+                    _ => {
+                        eprintln!(
+                            "[b306diag] TYPE member subscript failed: {} (line {})",
+                            fname, line
+                        );
+                        self.error_count += 1;
+                        self.consume_to_eol();
+                        self.skip_eol();
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            // CHW "Structures within structures": a bare structure name on its
+            // own line embeds that TYPE/UNION. The embedded type may also be
+            // declared LATER in the file (forward reference) — official
+            // headers rely on this (e.g. CommCtrl.inc's #IF/#ELSE A/B
+            // cross-embedding). Accept any bare name that ends the line and
+            // resolve it in codegen, where the full type table exists.
+            if self.peek() != &Token::As
+                && (self.defined_types.contains(&fname.to_uppercase())
+                    || self.peek() == &Token::Eol)
+            {
                 let nested_name = fname.to_uppercase();
                 fields.push(TypeField {
                     name: String::new(),
                     pb_type: PbType::Long,
                     nested: Some(nested_name),
+                    array_dim: None,
                 });
                 self.consume_to_eol();
                 self.skip_eol();
@@ -1379,6 +1560,7 @@ impl Parser {
                 name: fname,
                 pb_type: ftype,
                 nested: None,
+                array_dim: dim,
             });
             self.consume_to_eol();
             self.skip_eol();
@@ -1422,18 +1604,73 @@ impl Parser {
             }
             // Optional `name[(lo TO hi)[, ...]]` array subscripts (TYPE member
             // arrays follow the same rules — CHW TYPE/END TYPE "TYPE Members").
+            // Multi-dimensional members are accepted and laid out flat (see
+            // parse_type_decl, batch306).
             let fname = self.consume_field_name()?;
-            if self.peek() == &Token::LParen {
-                self.skip_balanced_parens();
-            }
+            let dim = if self.peek() == &Token::LParen {
+                self.advance();
+                let mut total: Option<usize> = Some(1);
+                loop {
+                    let lo = self.parse_expression()?;
+                    let (lo_v, hi_v) = if self.peek() == &Token::To {
+                        self.advance();
+                        let hi = self.parse_expression()?;
+                        (self.eval_const_expr(&lo), self.eval_const_expr(&hi))
+                    } else {
+                        (self.eval_const_expr(&lo), None)
+                    };
+                    let cnt = match (lo_v, hi_v) {
+                        (Some(lo), None) if lo >= 0 => Some(lo as usize + 1),
+                        (Some(lo), Some(hi)) if hi >= lo => Some((hi - lo) as usize + 1),
+                        _ => None,
+                    };
+                    match (total, cnt) {
+                        (Some(t), Some(c)) => total = Some(t * c),
+                        _ => {
+                            eprintln!(
+                                "[b306diag] {} subscript unparseable lo={:?} hi={:?}",
+                                fname, lo_v, hi_v
+                            );
+                            total = None;
+                            break;
+                        }
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        continue;
+                    }
+                    break;
+                }
+                self.expect(&Token::RParen)?;
+                match total {
+                    Some(t) if t >= 1 => Some(t),
+                    _ => {
+                        eprintln!(
+                            "[b306diag] TYPE member subscript failed: {} (line {})",
+                            fname, line
+                        );
+                        self.error_count += 1;
+                        self.consume_to_eol();
+                        self.skip_eol();
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
             // CHW: structures may be embedded inside a UNION too (same member
-            // syntax as TYPE).
-            if self.peek() != &Token::As && self.defined_types.contains(&fname.to_uppercase()) {
+            // syntax as TYPE). Forward references are accepted here and
+            // resolved in codegen (official headers do this).
+            if self.peek() != &Token::As
+                && (self.defined_types.contains(&fname.to_uppercase())
+                    || self.peek() == &Token::Eol)
+            {
                 let nested_name = fname.to_uppercase();
                 fields.push(TypeField {
                     name: String::new(),
                     pb_type: PbType::Long,
                     nested: Some(nested_name),
+                    array_dim: None,
                 });
                 self.consume_to_eol();
                 self.skip_eol();
@@ -1445,6 +1682,7 @@ impl Parser {
                 name: fname,
                 pb_type: ftype,
                 nested: None,
+                array_dim: dim,
             });
             self.consume_to_eol();
             self.skip_eol();
@@ -1469,6 +1707,10 @@ impl Parser {
     fn parse_enum_decl(&mut self, line: usize) -> PbResult<EnumDecl> {
         self.advance(); // ENUM
         let name = self.consume_identifier()?;
+        // Batch306: an ENUM name may be used as a TYPE member type
+        // (`AS NDIS_802_11_WEP_STATUS_ENUM` in ntndis.inc); it must resolve to
+        // its underlying integer, so register the name for parse_type_inner.
+        self.defined_enums.insert(name.to_uppercase());
         let mut bits = false;
         let mut singular = false;
         loop {
@@ -1488,6 +1730,7 @@ impl Parser {
         self.skip_eol();
 
         let mut items = Vec::new();
+        let mut enum_cur: Option<i64> = None; // implicit-increment base (batch306)
         loop {
             if self.peek() == &Token::End {
                 self.advance();
@@ -1522,6 +1765,22 @@ impl Parser {
             } else {
                 None
             };
+            // Batch306: enum members are usable as constants elsewhere in
+            // official headers (e.g. netioapi.inc references %ScopeLevelCount
+            // from SCOPE_LEVEL), so register each member's resolved value in
+            // percent_consts for parse-time subscript evaluation.  Members
+            // without `= expr` follow the implicit increment rule.
+            let value_v = value.as_ref().and_then(|v| self.eval_const_expr(v));
+            let enum_key = item_name.trim_start_matches('%').to_uppercase();
+            let reg_val = match (value_v, enum_cur) {
+                (Some(v), _) => Some(v),
+                (None, Some(c)) => Some(c + 1),
+                (None, None) => Some(0),
+            };
+            if let Some(v) = reg_val {
+                self.percent_consts.insert(enum_key, v);
+                enum_cur = Some(v);
+            }
             items.push(EnumItem {
                 name: item_name,
                 value,
@@ -1983,7 +2242,10 @@ impl Parser {
         // whether or not they specify an explicit OPTIONAL or OPT directive."
         let mut following_optional = false;
         loop {
-            if self.peek() == &Token::RParen || self.at_end() {
+            // Batch 306: a DECLARE parameter list truncated by an in-list
+            // #IF/#ELSE/#ENDIF directive ends at the line end (no closing
+            // paren) — stop there just like at RParen.
+            if self.peek() == &Token::RParen || self.peek() == &Token::Eol || self.at_end() {
                 break;
             }
 
@@ -2015,7 +2277,24 @@ impl Parser {
                 following_optional = true;
             }
 
-            let name = self.consume_identifier()?;
+            // Unnamed parameter: `OPTIONAL BYVAL DWORD` (official variadic
+            // declarations such as ShellMessageBox declare the optional tail
+            // as bare types with no name — batch 306).  The consumed keyword
+            // IS the type; the param gets an empty name.
+            let mut unnamed = false;
+            let name = if let Token::Identifier(_) = self.peek() {
+                self.consume_identifier()?
+            } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+                self.advance();
+                unnamed = true;
+                spelling
+            } else {
+                return Err(PbError::generic(format!(
+                    "Expected identifier, got {:?} at line {}",
+                    self.peek(),
+                    self.current_line()
+                )));
+            };
             let is_array = if self.peek() == &Token::LParen {
                 self.advance();
                 self.expect(&Token::RParen)?;
@@ -2027,6 +2306,8 @@ impl Parser {
             let pb_type = if self.peek() == &Token::As {
                 self.advance();
                 self.parse_type()?
+            } else if unnamed {
+                Self::keyword_to_type(&name)
             } else {
                 type_from_suffix(&name)
             };
@@ -2118,7 +2399,15 @@ impl Parser {
             } else {
                 self.parse_params()?
             };
-            self.expect(&Token::RParen)?;
+            // Batch 306: the official WinDNS.inc places a #IF/#ELSE/#ENDIF
+            // directive inside a continued DECLARE parameter list, so the
+            // closing paren never appears on the same statement (the
+            // preprocessor keeps directive lines standalone and the list is
+            // truncated there).  PBWin accepts the declaration; accept an
+            // end-of-line in place of the closing paren here too.
+            if self.peek() != &Token::Eol {
+                self.expect(&Token::RParen)?;
+            }
             p
         } else {
             Vec::new()
@@ -3472,6 +3761,34 @@ impl Parser {
         let line = self.current_line();
 
         match self.peek().clone() {
+            Token::At => {
+                // `@ptr = expr` / `@ptr.member = expr` — dereference assignment
+                // (CHW @ operator, batch306).  Official WinAPI inline helpers
+                // use this form (WinNT.inc TP_* subs, WinSock2.inc FD_ZERO).
+                // The dereference PATH is parsed here (not a full expression):
+                // in PBWin `=` is both assignment and equality, and a full
+                // expression parse would swallow the assignment `=` as a
+                // comparison (TP_* then emitted a Noop).
+                self.advance();
+                let target = self.parse_deref_path()?;
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    Ok(Statement::Assign(AssignStmt {
+                        target,
+                        value,
+                        line,
+                    }))
+                } else {
+                    // `@expr` alone — dereference expression without assignment;
+                    // parse and discard the remaining expression (nothing
+                    // observable happens, but the statement is valid).
+                    let _ = self.parse_expression()?;
+                    self.consume_to_eol();
+                    Ok(Statement::Noop(String::new(), line))
+                }
+            }
             Token::Identifier(name) if is_deftype_name(&name) => self.parse_deftype_statement(),
             Token::If => self.parse_if_statement(),
             Token::For => self.parse_for_statement(),
@@ -15313,7 +15630,96 @@ impl Parser {
         Ok(base)
     }
 
+    /// Parse the path after a consumed `@`: `ptr`, `ptr.member`,
+    /// `ptr.member.sub`, `ptr(0).member`.  Shared by parse_unary (expression
+    /// context) and parse_statement's At branch (statement context, where a
+    /// trailing `=` must not be swallowed as an equality comparison).
+    fn parse_deref_path(&mut self) -> PbResult<Expr> {
+        // `@` binds TIGHTER than `.` — `@ptr.member` = (@ptr).member.  The
+        // generic parse_primary's trailing while-Dot loop (batch 217, the
+        // obj.M(args) sugar) would swallow the member chain FIRST and produce
+        // Deref(TypeMember(...)), which breaks every official @ptr.member
+        // helper (WinSock2.inc FD_CLR/FD_SET, WinNT.inc TP_*).  Parse a
+        // dot-free ATOM here, dereference it, then attach the member chain.
+        let inner = self.parse_deref_atom()?;
+        let mut e = Expr::Deref(Box::new(inner));
+        while self.peek() == &Token::Dot {
+            self.advance();
+            let member = if let Token::Identifier(w) = self.peek() {
+                let w = w.clone();
+                self.advance();
+                w
+            } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+                self.advance();
+                spelling
+            } else {
+                return Err(PbError::parser(
+                    "Expected member name after '@' dereference dot",
+                    self.current_file(),
+                    self.current_line(),
+                ));
+            };
+            // Indexed member — `@p.fd_array(i)` (WinSock2 FD_CLR): keep the
+            // deref'd base as the receiver of a MethodCall so codegen can
+            // resolve the member layout through the pointer.
+            if self.peek() == &Token::LParen {
+                self.advance();
+                let args = if self.peek() == &Token::RParen {
+                    Vec::new()
+                } else {
+                    self.parse_arg_list()?
+                };
+                self.expect(&Token::RParen)?;
+                e = Expr::MethodCall {
+                    base: Box::new(e),
+                    name: member,
+                    args,
+                };
+            } else {
+                e = Expr::TypeMember(Box::new(e), member);
+            }
+        }
+        Ok(e)
+    }
+
+    /// The ATOM to dereference: parenthesised expression, bare identifier
+    /// (variable or array element `@arr(i)`), or a unary fallback.  Never
+    /// consumes a dotted member chain (that is parse_deref_path's job).
+    fn parse_deref_atom(&mut self) -> PbResult<Expr> {
+        match self.peek().clone() {
+            Token::LParen => {
+                self.advance();
+                let e = self.parse_expression()?;
+                self.expect(&Token::RParen)?;
+                Ok(e)
+            }
+            Token::Identifier(s) => {
+                let s = s.clone();
+                self.advance();
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    let args = if self.peek() == &Token::RParen {
+                        Vec::new()
+                    } else {
+                        self.parse_arg_list()?
+                    };
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::FunctionCall(s, args))
+                } else {
+                    Ok(Expr::Variable(s))
+                }
+            }
+            _ => self.parse_unary(),
+        }
+    }
+
     fn parse_unary(&mut self) -> PbResult<Expr> {
+        if self.peek() == &Token::At {
+            // `@ptr` / `@ptr.member` — pointer dereference (CHW @ operator,
+            // batch306).  `@x.member` reads the member through the pointer.
+            self.advance();
+            return self.parse_deref_path();
+        }
         if self.peek() == &Token::Minus {
             self.advance();
             let expr = self.parse_primary()?;
@@ -15921,6 +16327,10 @@ impl Parser {
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())
+                } else if name.eq_ignore_ascii_case("ISTRUE") {
+                    // Bracketless single-argument builtin: `(ISTRUE fCheck)` in
+                    // the official ListView_SetCheckState macro (batch306).
+                    Expr::FunctionCall("ISTRUE".to_string(), vec![self.parse_expression()?])
                 } else {
                     Expr::Variable(name)
                 };

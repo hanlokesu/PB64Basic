@@ -1015,6 +1015,14 @@ char* pb_repeat(long long n, char* s) {
     buf[total] = 0;
     return pb_bstr_alloc(buf, (unsigned int)total);
 }
+char* pb_nul_str(long long n) {
+    // NUL$(n) — a BSTR of n ASCII-0 bytes (batch 306).  WindowsX.inc /
+    // ListBoxCtrl.inc use NUL$(4096) to preallocate a receive buffer.
+    if (n < 0) n = 0;
+    char* buf = (char*)malloc((size_t)n + 1);
+    if (buf) memset(buf, 0, (size_t)n + 1);
+    return pb_bstr_alloc(buf, (unsigned int)n);
+}
 double pb_frac(double x) {
     double i;
     return modf(x, &i);

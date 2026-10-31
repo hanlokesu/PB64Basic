@@ -1,0 +1,11 @@
+#COMPILE EXE
+#DIM ALL
+#INCLUDE ONCE "Win32api.inc"
+FUNCTION PBMAIN() AS LONG
+    LOCAL w AS LONG
+    w = GetSystemMetrics(%SM_CXSCREEN)
+    OPEN "batch306_out.txt" FOR OUTPUT AS #9
+    PRINT #9, "w=" & STR$(w)
+    CLOSE #9
+    FUNCTION = 0
+END FUNCTION
