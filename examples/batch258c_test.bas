@@ -1,22 +1,16 @@
-' batch258c_test.bas - CHOOSE (ELSE/BIT/BITS + lazy) / COMMAND$ / CODEPTR
+' batch258c_test.bas - CHOOSE (ELSE/BIT/BITS + lazy) / CODEPTR
+' COMMAND$ quote-parsing is covered by the dual-run probe (_b258c_probe.bas),
+' which is launched with command-line arguments; the headless harness runs
+' every example with no arguments, so COMMAND$ asserts are not meaningful here.
 #COMPILE EXE
 FUNCTION PBMAIN() AS LONG
     LOCAL h, ok AS LONG
-    LOCAL cmd0, cmd1, cmd2, cmd9 AS STRING
     LOCAL c1, c2, c3, c4 AS LONG
     LOCAL cb AS STRING
     LOCAL p AS LONG
     ok = 1
     h = FREEFILE
     OPEN "batch258c_out.txt" FOR OUTPUT AS #h
-    cmd0 = COMMAND$
-    cmd1 = COMMAND$(1)
-    cmd2 = COMMAND$(2)
-    cmd9 = COMMAND$(9)
-    IF cmd0 <> "alpha " & CHR$(34) & "beta gamma" & CHR$(34) THEN ok = 0
-    IF cmd1 <> "alpha" THEN ok = 0
-    IF cmd2 <> "beta gamma" THEN ok = 0
-    IF cmd9 <> "" THEN ok = 0
     c1 = CHOOSE(2, 10, 20, 30)
     IF c1 <> 20 THEN ok = 0
     c2 = CHOOSE(4, 10, 20, 30)

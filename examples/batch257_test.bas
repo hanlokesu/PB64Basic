@@ -92,5 +92,7 @@ FUNCTION PBMAIN() AS LONG
     c = ASC("")
     IF c = -1 THEN ok = ok OR 8388608
     ConPrint "batch257 ok=" & STR$(ok)
-    FUNCTION = ok
+    ' All 24 bits set = every assertion passed (values PBWin10-measured).  Return
+    ' 0 only then, so the headless harness sees exit 0 on a clean run.
+    IF ok = 16777215 THEN FUNCTION = 0 ELSE FUNCTION = 1
 END FUNCTION

@@ -1458,6 +1458,9 @@ struct FieldInfo {
     name: String,
     pb_type: PbType,
     ir_type: IrType,
+    /// Per-dimension (lower, count) of a member array (legacy #8, batch307).
+    /// Empty = scalar / embedded nested type.
+    dims: Vec<(i64, i64)>,
 }
 
 impl Compiler {
@@ -6893,6 +6896,7 @@ impl Compiler {
                                 name: mn,
                                 pb_type: m.pb_type.clone(),
                                 ir_type,
+                                dims: m.dims.clone(),
                             });
                         }
                         continue;
@@ -6914,6 +6918,7 @@ impl Compiler {
                     name: field_name,
                     pb_type: field.pb_type.clone(),
                     ir_type,
+                    dims: field.dims.clone(),
                 });
             }
             let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
@@ -6954,6 +6959,7 @@ impl Compiler {
                 name: "__cls_id".to_string(),
                 pb_type: PbType::Long,
                 ir_type: IrType::I64,
+                dims: Vec::new(),
             });
             idx = 1;
         }
@@ -6972,6 +6978,7 @@ impl Compiler {
                             name: normalize_name(nested_name),
                             pb_type: PbType::Long,
                             ir_type: IrType::I32,
+                            dims: Vec::new(),
                         });
                         idx += 1;
                         continue;
@@ -6993,6 +7000,7 @@ impl Compiler {
                             name: mn,
                             pb_type: m.pb_type.clone(),
                             ir_type: m.ir_type.clone(),
+                            dims: m.dims.clone(),
                         });
                     }
                     idx += 1;
@@ -7007,6 +7015,7 @@ impl Compiler {
                             name: mn,
                             pb_type: m.pb_type.clone(),
                             ir_type: m.ir_type.clone(),
+                            dims: m.dims.clone(),
                         });
                         idx += 1;
                     }
@@ -7027,6 +7036,7 @@ impl Compiler {
                     name: field_name,
                     pb_type: field.pb_type.clone(),
                     ir_type,
+                    dims: field.dims.clone(),
                 });
                 idx += 1;
             }
@@ -9037,9 +9047,12 @@ impl Compiler {
                 }
             }
             Expr::MethodCall { base, name, args } => {
-                // batch306 (legacy #8): indexed TYPE member array write
-                // `@p.arr(i) = expr` (WinSock2.inc FD_CLR shifts the
-                // fd_set.fd_array slots).  GEP to the slot, index it, store.
+                // batch306/307 (legacy #8): indexed TYPE member array write
+                // `@p.arr(i) = expr` and multi-dim `@p.arr(i,j) = expr`
+                // (WinSock2.inc FD_CLR shifts the fd_set.fd_array slots;
+                // WinCrypt.inc DecryptionState(10,15) is 2-D).  GEP to the
+                // slot, flatten the subscripts (row-major, same as standalone
+                // arrays), index and store.
                 if let Some(class) = self.struct_type_of_expr(base) {
                     let mn = normalize_name(name);
                     // Snapshot the field layout first so the immutable borrow
@@ -9053,24 +9066,41 @@ impl Compiler {
                                     *n,
                                     (**elem).clone(),
                                     layout.fields[fidx].pb_type.clone(),
+                                    layout.fields[fidx].dims.clone(),
                                 )),
                                 _ => None,
                             }
                         })
                     });
-                    if let Some((fidx, n, elem, field_pb)) = member {
-                        if args.len() == 1 {
+                    if let Some((fidx, n, elem, field_pb, dims)) = member {
+                        if !args.is_empty() {
                             let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
                             let slot = fb.gep_struct(&class, &base_ptr, fidx);
-                            let idx = self.compile_expr(fb, &args[0])?;
-                            let array_ty = IrType::Array(n, Box::new(elem.clone()));
-                            let ptr = fb.gep_array(&array_ty, &slot, &idx);
+                            let mut compiled = Vec::with_capacity(args.len());
+                            for a in args {
+                                compiled.push(self.compile_expr(fb, a)?);
+                            }
+                            let dims = if dims.is_empty() {
+                                vec![(0i64, n as i64)]
+                            } else {
+                                dims
+                            };
+                            let arr_info = ArrayInfo {
+                                ptr_name: String::new(),
+                                array_ir_type: IrType::Array(n, Box::new(elem.clone())),
+                                elem_ir_type: elem.clone(),
+                                pb_type: field_pb.clone(),
+                                dims,
+                                total_elements: n,
+                            };
+                            let flat = self.compute_flat_index(fb, &compiled, &arr_info);
+                            let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
                             let converted = self.convert_value(fb, &value, &elem, &field_pb);
                             fb.store(&converted, &ptr);
                         } else {
                             return Err(PbError::runtime(format!(
                                 "indexed TYPE member `{}.{}(...)` write: \
-                                 expected exactly 1 index",
+                                 expected at least 1 index",
                                 class, name
                             )));
                         }
@@ -9538,10 +9568,19 @@ impl Compiler {
             // bounds/type info in place instead of skipping, so a second REDIM
             // correctly changes the array size.
             if let Some(prev) = self.symbols.lookup_array(&name).cloned() {
-                let arr_pb_type = if matches!(dim.pb_type, PbType::Variant) {
-                    prev.pb_type.clone()
-                } else {
-                    dim.pb_type.clone()
+                // Inherit a declared STRING element type exactly like the local
+                // branch below: `LOCAL items() AS STRING` + `DIM items(1 TO 3)`
+                // (or DIM x() AS STRING + DIM x(bounds)) must stay a [N x Ptr]
+                // array, or CONTROL ADD LISTBOX/COMBOBOX items$() fills read
+                // 32-bit-truncated pointers and crash (batch 248/249/249_test/
+                // 245 headless, C0000005 - batch 307).
+                let arr_pb_type = match &dim.pb_type {
+                    PbType::Variant => prev.pb_type.clone(),
+                    PbType::Long => match &prev.pb_type {
+                        PbType::String | PbType::FixedString(_) => prev.pb_type.clone(),
+                        _ => dim.pb_type.clone(),
+                    },
+                    other => other.clone(),
                 };
                 let elem_ir = Self::ir_type_for(&arr_pb_type);
                 let mut dims = Vec::new();
@@ -9553,6 +9592,30 @@ impl Compiler {
                     dims.push((lower, count as i64));
                     total *= count;
                 }
+                // A metadata-only dynamic declaration (DIM x() AS type, the
+                // batch289 path at L9508) registers NO backing storage:
+                // array_ir_type = [0 x T], total_elements == 0.  A later
+                // `DIM x(bounds)` or REDIM must allocate the real buffer then,
+                // or every element store/load (and any CONTROL ADD ... items$()
+                // fill) runs off an 8-byte alloca - the batch 245 headless
+                // crash (C0000005 in pb_control_add_listbox_ex, batch 307).
+                if prev.total_elements == 0 {
+                    let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
+                    let ptr = fb.alloca(&array_ir);
+                    fb.store(&Val::new("zeroinitializer", array_ir.clone()), &ptr);
+                    self.symbols.insert_local_array(
+                        name,
+                        ArrayInfo {
+                            ptr_name: ptr.name,
+                            array_ir_type: array_ir,
+                            elem_ir_type: elem_ir.clone(),
+                            pb_type: arr_pb_type,
+                            dims,
+                            total_elements: total,
+                        },
+                    );
+                    return Ok(());
+                }
                 // Keep the original max-size allocation (from prescan); only
                 // refresh metadata. Never re-allocate here: prescan already
                 // sized every REDIM'd array at its maximum.
@@ -9560,10 +9623,14 @@ impl Compiler {
                 // array (HEX of redim_test: PB prints a(1)=0 after re-REDIM and
                 // fails its own assertion). So clear the whole max-size buffer
                 // before updating metadata.
-                if dim.is_redim && !prev.dims.is_empty() {
+                if dim.is_redim && !prev.dims.is_empty() && !dim.preserve {
                     // Dynamic arrays (DIM x() AS type) have dims == [] and no
                     // backing buffer yet; skip the [0 x T] zeroinitializer
                     // store, which would produce invalid LLVM IR.
+                    // REDIM PRESERVE (CHW) keeps old element values, so the
+                    // whole-buffer zeroinitializer is skipped too; new elements
+                    // are only guaranteed zeroed by fresh stores (noted limit,
+                    // batch 307).
                     fb.store(
                         &Val::new("zeroinitializer", prev.array_ir_type.clone()),
                         &Val::new(prev.ptr_name.clone(), IrType::Ptr),
@@ -23027,11 +23094,13 @@ impl Compiler {
                 ))
             }
             Expr::MethodCall { base, name, args } => {
-                // batch306 (legacy #8): indexed TYPE member array `@p.arr(i)`
-                // (WinSock2.inc FD_CLR/FD_SET read the fd_set.fd_array slot).
-                // When the receiver's TYPE has a member ARRAY of that name,
-                // GEP to the slot, index into it and load the element instead
-                // of lowering it as a <Class>_<Method> call.
+                // batch306/307 (legacy #8): indexed TYPE member array `@p.arr(i)`
+                // and multi-dim `@p.arr(i,j)` (WinSock2.inc FD_CLR/FD_SET read
+                // the fd_set.fd_array slot; WinCrypt.inc DecryptionState(10,15)
+                // is 2-D). When the receiver's TYPE has a member ARRAY of that
+                // name, GEP to the slot, flatten the subscripts (row-major,
+                // same as standalone arrays), index and load the element
+                // instead of lowering it as a <Class>_<Method> call.
                 if let Some(class) = self.struct_type_of_expr(base) {
                     let mn = normalize_name(name);
                     // Snapshot the field layout so the immutable borrow of
@@ -23040,22 +23109,43 @@ impl Compiler {
                     let member = self.type_layouts.get(&class).and_then(|layout| {
                         layout.field_map.get(&mn).and_then(|&fidx| {
                             match &layout.fields[fidx].ir_type {
-                                IrType::Array(n, elem) => Some((fidx, *n, (**elem).clone())),
+                                IrType::Array(n, elem) => Some((
+                                    fidx,
+                                    *n,
+                                    (**elem).clone(),
+                                    layout.fields[fidx].dims.clone(),
+                                )),
                                 _ => None,
                             }
                         })
                     });
-                    if let Some((fidx, n, elem)) = member {
-                        if args.len() == 1 {
+                    if let Some((fidx, n, elem, dims)) = member {
+                        if !args.is_empty() {
                             let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
                             let slot = fb.gep_struct(&class, &base_ptr, fidx);
-                            let idx = self.compile_expr(fb, &args[0])?;
-                            let array_ty = IrType::Array(n, Box::new(elem.clone()));
-                            let ptr = fb.gep_array(&array_ty, &slot, &idx);
+                            let mut compiled = Vec::with_capacity(args.len());
+                            for a in args {
+                                compiled.push(self.compile_expr(fb, a)?);
+                            }
+                            let dims = if dims.is_empty() {
+                                vec![(0i64, n as i64)]
+                            } else {
+                                dims
+                            };
+                            let arr_info = ArrayInfo {
+                                ptr_name: String::new(),
+                                array_ir_type: IrType::Array(n, Box::new(elem.clone())),
+                                elem_ir_type: elem.clone(),
+                                pb_type: PbType::Long,
+                                dims,
+                                total_elements: n,
+                            };
+                            let flat = self.compute_flat_index(fb, &compiled, &arr_info);
+                            let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
                             return Ok(fb.load(&elem, &ptr));
                         }
                         return Err(PbError::runtime(format!(
-                            "indexed TYPE member `{}.{}(...)`: expected exactly 1 index",
+                            "indexed TYPE member `{}.{}(...)`: expected at least 1 index",
                             class, name
                         )));
                     }

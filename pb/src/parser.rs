@@ -546,6 +546,7 @@ impl Parser {
                                 pb_type: ftype,
                                 nested: None,
                                 array_dim: None,
+                                dims: Vec::new(),
                             });
                             if self.peek() == &Token::Comma {
                                 self.advance();
@@ -1078,6 +1079,7 @@ impl Parser {
                 line,
                 is_redim: false,
                 is_array,
+                preserve: false,
             });
 
             if self.peek() == &Token::Comma {
@@ -1094,6 +1096,14 @@ impl Parser {
     fn parse_redim_statement(&mut self) -> PbResult<DimStatement> {
         let line = self.current_line();
         self.advance(); // consume REDIM
+
+        // REDIM PRESERVE - keep existing element values (CHW REDIM_statement.htm)
+        let preserve = if self.peek() == &Token::Preserve {
+            self.advance();
+            true
+        } else {
+            false
+        };
 
         let name = self.consume_identifier()?;
 
@@ -1132,6 +1142,7 @@ impl Parser {
             line,
             is_redim: true,
             is_array,
+            preserve,
         })
     }
 
@@ -1474,9 +1485,10 @@ impl Parser {
             // to the nested layout, which is what random-file/API binary
             // compatibility needs.
             let fname = self.consume_field_name()?;
-            let dim = if self.peek() == &Token::LParen {
+            let (dim, dims) = if self.peek() == &Token::LParen {
                 self.advance();
                 let mut total: Option<usize> = Some(1);
+                let mut dims: Vec<(i64, i64)> = Vec::new();
                 loop {
                     let lo = self.parse_expression()?;
                     let (lo_v, hi_v) = if self.peek() == &Token::To {
@@ -1499,6 +1511,9 @@ impl Parser {
                             None
                         }
                     };
+                    if let (Some(lo), Some(c)) = (lo_v, cnt) {
+                        dims.push((lo, c as i64));
+                    }
                     match (total, cnt) {
                         (Some(t), Some(c)) => total = Some(t * c),
                         _ => {
@@ -1518,7 +1533,7 @@ impl Parser {
                 }
                 self.expect(&Token::RParen)?;
                 match total {
-                    Some(t) if t >= 1 => Some(t),
+                    Some(t) if t >= 1 => (Some(t), dims),
                     _ => {
                         eprintln!(
                             "[b306diag] TYPE member subscript failed: {} (line {})",
@@ -1531,7 +1546,7 @@ impl Parser {
                     }
                 }
             } else {
-                None
+                (None, Vec::new())
             };
             // CHW "Structures within structures": a bare structure name on its
             // own line embeds that TYPE/UNION. The embedded type may also be
@@ -1549,6 +1564,7 @@ impl Parser {
                     pb_type: PbType::Long,
                     nested: Some(nested_name),
                     array_dim: None,
+                    dims: Vec::new(),
                 });
                 self.consume_to_eol();
                 self.skip_eol();
@@ -1561,6 +1577,7 @@ impl Parser {
                 pb_type: ftype,
                 nested: None,
                 array_dim: dim,
+                dims,
             });
             self.consume_to_eol();
             self.skip_eol();
@@ -1607,9 +1624,10 @@ impl Parser {
             // Multi-dimensional members are accepted and laid out flat (see
             // parse_type_decl, batch306).
             let fname = self.consume_field_name()?;
-            let dim = if self.peek() == &Token::LParen {
+            let (dim, dims) = if self.peek() == &Token::LParen {
                 self.advance();
                 let mut total: Option<usize> = Some(1);
+                let mut dims: Vec<(i64, i64)> = Vec::new();
                 loop {
                     let lo = self.parse_expression()?;
                     let (lo_v, hi_v) = if self.peek() == &Token::To {
@@ -1624,6 +1642,9 @@ impl Parser {
                         (Some(lo), Some(hi)) if hi >= lo => Some((hi - lo) as usize + 1),
                         _ => None,
                     };
+                    if let (Some(lo), Some(c)) = (lo_v, cnt) {
+                        dims.push((lo, c as i64));
+                    }
                     match (total, cnt) {
                         (Some(t), Some(c)) => total = Some(t * c),
                         _ => {
@@ -1643,7 +1664,7 @@ impl Parser {
                 }
                 self.expect(&Token::RParen)?;
                 match total {
-                    Some(t) if t >= 1 => Some(t),
+                    Some(t) if t >= 1 => (Some(t), dims),
                     _ => {
                         eprintln!(
                             "[b306diag] TYPE member subscript failed: {} (line {})",
@@ -1656,7 +1677,7 @@ impl Parser {
                     }
                 }
             } else {
-                None
+                (None, Vec::new())
             };
             // CHW: structures may be embedded inside a UNION too (same member
             // syntax as TYPE). Forward references are accepted here and
@@ -1671,6 +1692,7 @@ impl Parser {
                     pb_type: PbType::Long,
                     nested: Some(nested_name),
                     array_dim: None,
+                    dims: Vec::new(),
                 });
                 self.consume_to_eol();
                 self.skip_eol();
@@ -1683,6 +1705,7 @@ impl Parser {
                 pb_type: ftype,
                 nested: None,
                 array_dim: dim,
+                dims,
             });
             self.consume_to_eol();
             self.skip_eol();
@@ -13340,6 +13363,7 @@ impl Parser {
                 line,
                 is_redim: false,
                 is_array,
+                preserve: false,
             });
 
             if self.peek() == &Token::Comma {

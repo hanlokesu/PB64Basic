@@ -37,10 +37,11 @@ FUNCTION PBMAIN() AS LONG
     LOCAL ok AS LONG
     ok = 0
 
-    ' --- enlarge: REDIM 1 TO 3 then 1 TO 5 ---
+    ' --- enlarge: REDIM PRESERVE 1 TO 3 then 1 TO 5 (CHW: plain REDIM is
+    '     ERASE+DIM and zeroes; PRESERVE keeps old element values) ---
     REDIM a(1 TO 3)
     a(1) = 1: a(2) = 2: a(3) = 3
-    REDIM a(1 TO 5)
+    REDIM PRESERVE a(1 TO 5)
     a(4) = 4: a(5) = 5
     FOR i = 1 TO 5
         ConPrint "a(" & STR$(i) & ")=" & STR$(a(i))
@@ -52,14 +53,14 @@ FUNCTION PBMAIN() AS LONG
     a(1) = 7: a(2) = 8
     IF a(1) <> 7 OR a(2) <> 8 THEN ok = ok + 10
 
-    ' --- string array enlarged ---
+    ' --- string array enlarged (PRESERVE keeps sa(1..2)) ---
     REDIM sa(1 TO 2)
     sa(1) = "a": sa(2) = "b"
-    REDIM sa(1 TO 4)
+    REDIM PRESERVE sa(1 TO 4)
     sa(3) = "c": sa(4) = "d"
     IF sa(1) <> "a" OR sa(4) <> "d" THEN ok = ok + 100
 
-    ' --- REDIM inside IF block ---
+    ' --- REDIM inside IF block (plain REDIM zeroes; only a(6) is checked) ---
     IF 1 = 1 THEN
         REDIM a(1 TO 6)
         a(6) = 99

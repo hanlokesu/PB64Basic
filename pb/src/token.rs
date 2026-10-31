@@ -158,7 +158,8 @@ pub enum Token {
     Replace, // REPLACE statement
     Remove,  // REMOVE$ or REMOVE
     Shared,
-    ReDimPreserve, // not a single token, handled in parser
+    ReDimPreserve, // legacy marker kept for compatibility; PRESERVE is a real token now
+    Preserve,      // REDIM PRESERVE (CHW REDIM_statement.htm)
 
     // FREEFILE
     FreeFile,
@@ -224,6 +225,7 @@ impl Token {
             "PRINT" => Some(Token::Print),
             "QUAD" => Some(Token::Quad),
             "REDIM" => Some(Token::Redim),
+            "PRESERVE" => Some(Token::Preserve),
             "REGISTER" => Some(Token::Register),
             "REMOVE" => Some(Token::Remove),
             "REPLACE" => Some(Token::Replace),

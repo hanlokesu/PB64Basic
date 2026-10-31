@@ -50,5 +50,7 @@ FUNCTION PBMAIN() AS LONG
     IF CSET$("ab", 6 USING ".") = "..ab.." THEN ok = ok OR 524288
     IF CSET$("", 4) = "    " THEN ok = ok OR 1048576
     ConPrint "batch258 ok=" & STR$(ok)
-    FUNCTION = ok
+    ' All 21 bits set = every assertion passed (values PBWin10-measured).  Return
+    ' 0 only then, so the headless harness sees exit 0 on a clean run.
+    IF ok = 2097151 THEN FUNCTION = 0 ELSE FUNCTION = 1
 END FUNCTION

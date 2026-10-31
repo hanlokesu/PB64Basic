@@ -3565,9 +3565,11 @@ char* pb_clipboard_get_text(void) {
 }
 
 int pb_clipboard_reset(void) {
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
     CloseClipboard();
+    pb_clip_ok = -1;
     return -1;                          /* TRUE on success (PBWin10) */
 }
 
@@ -3682,18 +3684,22 @@ char* pb_clipboard_get_unicode(void) {
 }
 
 int pb_clipboard_set_bitmap(long long hbitmap) {
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return 0;
     EmptyClipboard();
     int ok = SetClipboardData(CF_BITMAP, (void*)(intptr_t)hbitmap) ? -1 : 0;
     CloseClipboard();
+    pb_clip_ok = ok;
     return ok;
 }
 
 long long pb_clipboard_get_bitmap(void) {
+    pb_clip_ok = 0;
     if (!OpenClipboard(0)) return 0;
     void* h = GetClipboardData(CF_BITMAP);
     long long r = h ? (long long)(intptr_t)h : 0;
     CloseClipboard();
+    if (h) pb_clip_ok = -1;
     return r;
 }
 static int pb_winsock_inited = 0;

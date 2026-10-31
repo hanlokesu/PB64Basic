@@ -115,6 +115,9 @@ pub struct DimStatement {
     /// i.e. an array, even if bounds is empty (dynamic array). Distinguishes
     /// `DIM x() AS LONG` from a scalar `DIM x AS LONG` (batch289 A-class).
     pub is_array: bool,
+    /// REDIM PRESERVE - keep existing element values (CHW: plain REDIM is
+    /// ERASE+DIM and zeroes; PRESERVE keeps old elements, new ones zeroed).
+    pub preserve: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -204,6 +207,12 @@ pub struct TypeField {
     /// official WinAPI headers rely on member arrays (WinSock2.inc fd_set,
     /// MIB_IF_ROW2, IP_ADAPTER_INFO ...).
     pub array_dim: Option<usize>,
+    /// Per-dimension (lower_bound, count) of a TYPE member array (legacy #8,
+    /// batch307): `b(2,3)` stores [(0,3),(0,4)]; `arr(1 TO 3)` stores [(1,3)].
+    /// `array_dim` above is the flattened total (product of counts) for
+    /// layout; this vector is what multi-subscript access flattens against.
+    /// Empty = scalar or embedded nested TYPE.
+    pub dims: Vec<(i64, i64)>,
 }
 
 #[derive(Debug, Clone)]
