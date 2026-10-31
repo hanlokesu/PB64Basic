@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **2** official keywords are not implemented yet (ISINTERFACE, ISMISSING); **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 301 (v0.2.097). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> Updated through batch 307 (v0.2.098). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> batch 307 (v0.2.098) - legacy backlog cleared to zero: 10 headless run FAIL fixed, TYPE multi-dim read side aligned, DECLARE-#IF closed, CLIPBOARD/COMM/#BLOAT/OBJECT dispositioned (environment limits documented), FASTPROC and batch029 confirmed closed.
 > batch 301 (v0.2.097) - E-project audit and fixes: `%EnumName.Member` constant references now lex correctly; ENUM BITS auto-values follow 0,1,2,4,8; the two-argument EXTRACT$(MainStr, MatchStr) form is disambiguated from the start-index form. All verified dual-compile vs PBWin 10, output identical.
 > batch 300 (v0.2.096) - A/B/C re-audit closes real gaps: BIT CALC reset no-op, ISNULL/ISNOTNULL/ISNOTHING, FASTPROC (END FASTPROC = expr), six # meta-directives accepted; CSV +13 rows (945, 938 implemented); verify 35/35; compile-all 340/340.
 > Re-audit of the historical A/B/C batches (ARRAY ASSIGN, BIT family, CHOOSE and
@@ -804,6 +805,19 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.098 (2026-11-01)
+
+- Legacy backlog cleared to zero: all 18 tracked gaps are closed or dispositioned. Hardware / environment limits are documented, not deferred.
+- Fixed all 10 pre-existing headless run failures (batch167/245/248/249/249_test/252/257/258/258c/redim_test). Full regression now shows 0 FAIL on both compile (219) and run (216).
+- TYPE member multi-dimensional arrays: the read side now matches the write side (flat row-major layout), dual-run identical (ok1=25 ok2=45 ok3=116).
+- DECLARE with #IF inside parameter lists closed (fork-side evidence; probe kept as regression).
+- CLIPBOARD BITMAP: fork-side probe closed. PBWin command-line bitmap capture is an environment limit (0xC0000005), documented.
+- COMM error semantics: dual-run identical (ERR 69 on a missing port). True serial-port WIDE/ANSI round-trip needs hardware, documented.
+- batch029 (ONLY-FORK x86): dual-side closed. x86 is out of fork scope (x64 compiler); probes are shelled for PBWin.
+- FASTPROC: confirmed implemented since batch 300 (END FASTPROC = expr) - semantic closure.
+- #BLOAT: fork accepts and ignores the directive (probe kept); PBWin /L /Q rejects any value with Error 496 (environment limit).
+- OBJECT declarations: PBWin Error 524 on this machine (no COM class context); fork ISOBJECT/ISNOTHING already closed (6 examples cover it).
+
 ### v0.2.097 (2026-10-30)
 - E-project batch 301: ENUM `%Name.Member` compound-constant lexing, ENUM BITS auto-value sequence fix (0,1,2,4,8), EXTRACT$ two-argument disambiguation, EQV/ERASE coverage. Probe batch301_test.bas dual-compiles against PBWin 10 with byte-identical output.
 
