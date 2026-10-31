@@ -1,0 +1,11 @@
+#COMPILE EXE
+#DIM ALL
+FUNCTION PBMAIN() AS LONG
+    LOCAL e AS LONG
+    COMM OPEN "COM999:" AS #1
+    e = ERR
+    OPEN "b307_comm_err_out.txt" FOR OUTPUT AS #9
+    PRINT #9, "err=" & STR$(e)
+    CLOSE #9
+    FUNCTION = 0
+END FUNCTION
