@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **2** official keywords are not implemented yet (ISINTERFACE, ISMISSING); **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 308 (v0.2.099). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> Updated through batch 309 (v0.2.100). **2 official keyword(s) remain unimplemented: ISINTERFACE, ISMISSING; all other non-Tier-3 official keywords are implemented.**
+> batch 309 (v0.2.100) - JK-IDE addon release: inline error annotation (a one-line red band printed directly under the error line, no hover/timer/dwell), save-before-compile, error-line jump, unified red standard output across all six addon entries, and the RUN-path fatal-error fix. No keyword coverage change (945 rows, 938 implemented).
 > batch 308 (v0.2.099) - F/G/H/I family CHW audit; fixed GOSUB return-point loop, HIWRD/HIBYT/LOWRD/LOBYT masks, bare ISFALSE, INPUT# space delimiting; dual-run probes byte-identical, compile-all 358/358.
 > batch 307 (v0.2.098) - legacy backlog cleared to zero: 10 headless run FAIL fixed, TYPE multi-dim read side aligned, DECLARE-#IF closed, CLIPBOARD/COMM/#BLOAT/OBJECT dispositioned (environment limits documented), FASTPROC and batch029 confirmed closed.
 > batch 301 (v0.2.097) - E-project audit and fixes: `%EnumName.Member` constant references now lex correctly; ENUM BITS auto-values follow 0,1,2,4,8; the two-argument EXTRACT$(MainStr, MatchStr) form is disambiguated from the start-index form. All verified dual-compile vs PBWin 10, output identical.
@@ -806,6 +807,17 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.100 (2026-11-02)
+
+* JK-IDE addon release. This version ships the improved JK-IDE editor experience (the bundled `jkide/userdll.dll`); the compiler itself is unchanged and keyword coverage stays at 945 rows / 938 implemented.
+* **New: inline error annotation.** When a compile fails, the full compiler error message is now printed on its own line directly underneath the error line - black text on a light red background (RGB 255,220,220). It takes one editor line and pushes the code down, so it never covers your source. It appears automatically with no hover, no timer and no dwell event.
+* The red dot marker on the error line is kept, so you get both the marker and the readable message. Annotations are cleared automatically on the next successful compile.
+* **Save before compile:** the current file is saved automatically before every addon compile/run, so the compiler always sees your latest edits.
+* **Error-line jump:** the editor moves to and selects the error line, alongside the Output Window entry.
+* **Unified output:** all six addon entries (compile and run for PBWin 10 / PB64Basic / PBXB64) now report failures in the same red standard format with the real compiler message and exit code.
+* **RUN fatal-error fixed:** the compile-and-run path no longer raises a Fatal Error dialog. The working directory, log and EXE paths stay alongside the source, and the built program is launched from its own folder.
+* Smoke example: `examples/batch309_test.bas`.
+
 ### v0.2.099 (2026-11-01)
 
 * F/G/H/I keyword family audit against the CHW reference documentation (batch 308).
