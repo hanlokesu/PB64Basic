@@ -35,6 +35,14 @@ PB_CARGO=$(pb_find cargo "$HOME/.cargo/bin" "$USERPROFILE/.cargo/bin" \
            "/c/Users/$USERNAME/.cargo/bin" "/c/Program Files/Rust/bin") || true
 PB_CLANG=$(pb_find clang "/c/Program Files/LLVM/bin" "/c/Program Files (x86)/LLVM/bin") || true
 
+# Export the discovered toolchain directories to PATH so child processes find
+# them too. The PB64Basic compiler re-invokes clang through PATH during the
+# test suite, so a hook PATH that omits the LLVM bin dir fails every test with
+# "Failed to run clang: program not found" even though the runtime builds above
+# use the absolute PB_CLANG/PB_CARGO paths (hit on 2026-11-02, 16 tests failed).
+[ -n "$PB_CLANG" ] && export PATH="$(dirname "$PB_CLANG"):$PATH"
+[ -n "$PB_CARGO" ] && export PATH="$(dirname "$PB_CARGO"):$PATH"
+
 # --- the fast gate -------------------------------------------------------
 pb_fmt_gate() {
   if [ -z "$PB_CARGO" ]; then
@@ -126,7 +134,11 @@ pb_run_suite() {
         continue
       }
     fi
-    "$_base.exe" || {
+    # Run with stdin from /dev/null. Some tests end in WAITKEY$ (l12/l13/l14);
+    # attached to a non-interactive hook that would block forever on a key
+    # press. The runtime treats a DEVNULL stdin as EOF and returns at once
+    # (pb_waitkey), so the headless run completes with its real exit code.
+    "$_base.exe" </dev/null || {
       echo "  TEST FAILED: $_f ($_label)"
       _failed=$((_failed + 1))
     }
