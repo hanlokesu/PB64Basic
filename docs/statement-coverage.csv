@@ -1,4 +1,4 @@
-# Last updated from batch 309 (v0.2.100) - 2026-11-02,,,,
+# Last updated from batch 310 (v0.2.101) - 2026-11-03,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -494,8 +494,8 @@ ISFALSE,FUNCTION,codegen builtin,Implemented
 ISFILE,FUNCTION,codegen builtin,Implemented
 ISFOLDER,FUNCTION,codegen builtin,Implemented
 ISINFINITE,STATEMENT,PB/Win + PB/CC,Implemented
-ISINTERFACE,FUNCTION,codegen builtin,Not implemented
-ISMISSING,FUNCTION,codegen builtin,Not implemented
+ISINTERFACE,FUNCTION,codegen builtin,Implemented
+ISMISSING,FUNCTION,codegen builtin,Implemented
 ISNORMAL,STATEMENT,PB/Win + PB/CC,Implemented
 ISNOTHING,FUNCTION,codegen builtin,Implemented
 ISNOTNULL,FUNCTION,codegen builtin,Implemented

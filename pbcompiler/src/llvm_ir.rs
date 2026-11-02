@@ -541,6 +541,19 @@ impl FunctionBuilder {
         Val::new(r, IrType::I64)
     }
 
+    /// Pointer→int at the target's native pointer width.
+    /// 32-bit target → `ptrtoint ... to i32` (4 bytes); 64-bit → `to i64`.
+    /// A hard-coded i64 on a 32-bit target is pushed as 8 bytes in the
+    /// x86 stdcall frame, shifting every later argument and crashing the
+    /// callee (WriteFile's BYVAL STRPTR was the 0xC0000005 on i686).
+    pub fn ptrtoint_native(&mut self, val: &Val, is_32bit: bool) -> Val {
+        if is_32bit {
+            self.ptrtoint(val)
+        } else {
+            self.ptrtoint64(val)
+        }
+    }
+
     /// `%r = inttoptr i32 %val to ptr` (32-bit target)
     pub fn inttoptr(&mut self, val: &Val) -> Val {
         let r = self.next_reg();

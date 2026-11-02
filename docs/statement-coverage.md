@@ -1,23 +1,23 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 309 (v0.2.100)** — 2026-11-02. All statements through batch 309 are reflected in this matrix.
+> **Last updated from batch 310 (v0.2.101)** — 2026-11-03. All statements through batch 310 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
 - Rows in this matrix: **945** (14 BLOCK, 311 FUNCTION, 5 OPERATOR, 612 STATEMENT, 3 FORK EXTENSION).
-- **940** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
-- **2** documented keywords still not implemented (ISINTERFACE, ISMISSING); **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
+- **942** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **3** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 938 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 940 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **940** | Implemented + Established |
-| ❌ Not implemented | 2 | Official PB keywords this project does not implement yet (ISINTERFACE, ISMISSING) |
+| ✅ **Total available** | **942** | Implemented + Established |
+| ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 3 | Implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
@@ -498,8 +498,8 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ISFILE | FUNCTION | codegen builtin | Implemented |
 | ISFOLDER | FUNCTION | codegen builtin | Implemented |
 | ISINFINITE | STATEMENT | PB/Win + PB/CC | Implemented |
-| ISINTERFACE | FUNCTION | codegen builtin | Not implemented |
-| ISMISSING | FUNCTION | codegen builtin | Not implemented |
+| ISINTERFACE | FUNCTION | codegen builtin | Implemented |
+| ISMISSING | FUNCTION | codegen builtin | Implemented |
 | ISNORMAL | STATEMENT | PB/Win + PB/CC | Implemented |
 | ISNOTHING | FUNCTION | codegen builtin | Implemented |
 | ISNOTNULL | FUNCTION | codegen builtin | Implemented |

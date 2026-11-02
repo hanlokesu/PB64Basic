@@ -24609,11 +24609,12 @@ impl Compiler {
                 Some(Ok(fb.call(&IrType::Ptr, "pb_exe_path", &[])))
             }
             "STRPTR" => {
-                // STRPTR(s$) → returns pointer to string data as integer
+                // STRPTR(s$) → returns pointer to string data as integer, at
+                // the target's native pointer width (i32 on i686, i64 on x64).
                 let s = self.compile_expr(fb, &args[0]);
                 Some(s.map(|s| {
                     // The string value IS the pointer to char data
-                    fb.ptrtoint64(&s)
+                    fb.ptrtoint_native(&s, self.module.is_32bit())
                 }))
             }
             "VARPTR" => {
@@ -24626,7 +24627,7 @@ impl Compiler {
                             Err(e) => return Some(Err(e)),
                         };
                         let ptr = Val::new(ptr_name, IrType::Ptr);
-                        Some(Ok(fb.ptrtoint64(&ptr)))
+                        Some(Ok(fb.ptrtoint_native(&ptr, self.module.is_32bit())))
                     }
                     Expr::ArrayAccess(arr_name, indices) => {
                         let name = normalize_name(arr_name);
@@ -24642,7 +24643,7 @@ impl Compiler {
                                 self.compute_flat_index(fb, &compiled_indices, &arr_info);
                             let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
                             let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
-                            Some(Ok(fb.ptrtoint64(&elem_ptr)))
+                            Some(Ok(fb.ptrtoint_native(&elem_ptr, self.module.is_32bit())))
                         } else {
                             Some(Ok(fb.const_i32(0)))
                         }
@@ -24653,7 +24654,7 @@ impl Compiler {
                             Ok(val) => {
                                 let tmp = fb.alloca(&val.ty);
                                 fb.store(&val, &tmp);
-                                Some(Ok(fb.ptrtoint64(&tmp)))
+                                Some(Ok(fb.ptrtoint_native(&tmp, self.module.is_32bit())))
                             }
                             Err(e) => Some(Err(e)),
                         }
