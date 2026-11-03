@@ -48,3 +48,6 @@ _bak*/
 
 # Static link library build artifacts
 *.sll
+
+# JK-IDE editor state files (caret position / encoding), never source
+*.bmk

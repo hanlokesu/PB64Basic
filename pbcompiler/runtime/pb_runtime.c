@@ -1006,129 +1006,466 @@ static void pb_expand_fixed(char* buf, int* n) {
     *n = k;
 }
 
-/* STR$(double) — PBWin10 measured formatting:
-   - leading space for positive values, '-' (no space) for negative
-   - no leading zero for |v| < 1: " .5", "-.125"
-   - full double precision (15 significant digits) with trailing zeros removed
-   - scientific for |v| >= 1E15 or 0 < |v| < 1E-15, uppercase E, no exponent
-     leading zero: " 1E+15", " 1.23456789012346E+17", " 1E-16", " 1.5E-9"
-     (measured on PBWin: 1E-15 prints fixed ".000000000000001", 1E-16 prints
-     "1E-16")
-   Implemented as %.15g, then: uppercase-E + exponent-zero strip (scientific),
-   or expand %g's premature scientific back to fixed, then trailing-zero strip,
-   "-0.x" -> "-.x", " 0.x" -> " .x". */
-char* pb_str_dbl(double v) {
-    char buf[64];
-    int n;
-    if (v == 0.0) {
-        return pb_bstr_alloc(" 0", 2);
-    }
-    double ax = fabs(v);
-    int e = (int)floor(log10(ax));          /* decimal exponent */
-    if (e >= 15 || e < -15) {
-        n = snprintf(buf, sizeof(buf), "% .15g", v);   /* " 1e+15" / " 1.5e-09" */
-        char* ep = strchr(buf, 'e');
-        if (ep != NULL) {
-            *ep = 'E';
-            char* d = ep + 1;
-            if ((*d == '+' || *d == '-') && d[1] == '0') {
-                memmove(d + 1, d + 2, strlen(d + 2) + 1);   /* "E-09" -> "E-9" */
-                n--;
-            }
-        }
-    } else {
-        n = snprintf(buf, sizeof(buf), "% .15g", v);
-        if (strchr(buf, 'e') != NULL) {
-            pb_expand_fixed(buf, &n);       /* "1e-05" -> "0.00001" (with trim) */
-        } else {
-            /* strip trailing zeros in the fraction (never the final zero of "0") */
-            char* dot = strchr(buf, '.');
-            if (dot != NULL) {
-                char* p = buf + n - 1;
-                while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
-                if (p == dot) { *p = '\0'; n--; }   /* "12." -> "12" */
-            }
-        }
-        /* PBWin: no leading zero on the fraction: "-0.5" -> "-.5", " 0.5" -> " .5" */
-        if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
-            memmove(buf + 1, buf + 2, (size_t)(n - 1));
-            n--;
-        } else if (buf[0] == ' ' && buf[1] == '0' && buf[2] == '.') {
-            memmove(buf + 1, buf + 2, (size_t)(n - 1));
-            n--;
-        }
-    }
-    return pb_bstr_alloc(buf, (unsigned int)n);
+/* =====================================================================
+ * PBWin10-faithful DOUBLE -> decimal conversion.
+ *
+ * The C library's %.15g does not reproduce PBWin's last-digit rounding:
+ * the same double (e.g. LOG(10) = 0x40026BB1BBB55516) prints ...405 with
+ * MSVC printf but ...404 with PBWin.  PBWin's runtime converts the double
+ * to 80-bit extended precision, scales it by an exact power of ten, rounds
+ * to an integer with round-to-nearest-even, and only then emits the top
+ * digits with a second half-even step.  The hardware 80-bit long double is
+ * not usable with the MSVC toolchain, so the 80-bit data path is emulated
+ * here with portable 128-bit integer arithmetic.  Validated byte-for-byte
+ * against PBWin10 output across subnormals, near-1.0 carries and the full
+ * normal/scientific range.
+ * ===================================================================== */
+
+typedef struct {
+    unsigned long long m;
+    int e;
+    int sign;
+    int zero;
+} pb_x87_t;
+
+static const unsigned long long pb_dword_tbl[8] = {
+    1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL, 100000ULL, 1000000ULL,
+    10000000ULL
+};
+
+/* exact 80-bit rounded powers 10^8, 10^16, 10^32, ... (sig, unbiased exp) */
+static const unsigned long long pb_tbyte_sig[10] = {
+    0xBEBC200000000000ULL, 0x8E1BC9BF04000000ULL, 0x9DC5ADA82B70B59EULL,
+    0xC2781F49FFCFA6D5ULL, 0x93BA47C980E98CE0ULL, 0xAA7EEBFB9DF9DE8EULL,
+    0xE319A0AEA60E91C7ULL, 0xC976758681750C17ULL, 0x9E8B3B5DC53D5DE5ULL,
+    0xC46052028A20979BULL
+};
+static const int pb_tbyte_exp[10] = {
+    26, 53, 106, 212, 425, 850, 1700, 3401, 6803, 20454
+};
+
+/* Portable unsigned 128-bit integer (works on 32-bit and 64-bit targets;
+   clang's native 128-bit integer type is rejected on i686).  Stored as two
+   64-bit words. */
+typedef struct {
+    unsigned long long lo;
+    unsigned long long hi;
+} pb_u128;
+
+static pb_u128 pb_u128_from64(unsigned long long x) {
+    pb_u128 r;
+    r.lo = x;
+    r.hi = 0;
+    return r;
 }
 
-/* TRIM$ numeric form (CHW TRIM_function.htm): STR$-like conversion with no
-   leading/trailing spaces.  digits<=0 selects the default 16 significant digits,
-   otherwise 1..18.  PBWin chooses fixed vs scientific by whether the fixed form
-   fits in `digits` positions: for exponent e the fixed representation needs
-   (e+1) positions when e>=0, or -e positions when e<0 (leading zeros count).
-   If it fits, use fixed point (expand C %g's premature scientific); otherwise
-   force scientific, strip mantissa trailing zeros, uppercase E, and drop the
-   exponent leading zero. */
-char* pb_trim_num(double v, int digits) {
-    char buf[64];
-    int n;
-    /* Default TRIM$ (no Digits): 15 significant digits, matching PBWin's
-       STR$/PRINT# float conversion (measured: TRIM$(LOG(10))=15 digits;
-       explicit TRIM$(v,16) is needed to get 16). */
-    if (digits <= 0) digits = 15;
-    if (v == 0.0) {
+/* add x * 2^32 to the accumulator, tracking the carry explicitly */
+static void pb_u128_add_shl32(pb_u128 *r, unsigned long long x) {
+    unsigned long long oldlo = r->lo;
+    unsigned long long newlo = oldlo + (x << 32);
+    unsigned long long carry = (newlo < oldlo);
+    r->lo = newlo;
+    r->hi += (x >> 32) + carry;
+}
+
+/* 64 x 64 -> 128 multiply via 32-bit grade-school partials */
+static pb_u128 pb_u128_mul64(unsigned long long a, unsigned long long b) {
+    unsigned long long a0 = a & 0xffffffffULL, a1 = a >> 32;
+    unsigned long long b0 = b & 0xffffffffULL, b1 = b >> 32;
+    pb_u128 r = pb_u128_from64(a0 * b0);
+    pb_u128_add_shl32(&r, a0 * b1);
+    pb_u128_add_shl32(&r, a1 * b0);
+    r.hi += a1 * b1;
+    return r;
+}
+
+static int pb_u128_bitlen(pb_u128 x) {
+    if (x.hi) return 64 + (64 - __builtin_clzll(x.hi));
+    return 64 - __builtin_clzll(x.lo);
+}
+
+/* low n bits of x (n here is 63 or 64, so effectively the low word) */
+static unsigned long long pb_u128_lowbits(pb_u128 x, int n) {
+    if (n >= 64) return x.lo;
+    return x.lo & ((1ULL << n) - 1ULL);
+}
+
+static int pb_u128_ge64(pb_u128 a, unsigned long long d) {
+    if (a.hi) return 1;
+    return a.lo >= d;
+}
+
+static pb_u128 pb_u128_sub64(pb_u128 a, unsigned long long d) {
+    pb_u128 r;
+    r.lo = a.lo - d;
+    r.hi = a.hi - (r.lo > a.lo);   /* borrow when the low word wrapped */
+    return r;
+}
+
+static pb_x87_t pb_x87_from_bits(unsigned long long bits) {
+    pb_x87_t r;
+    if (bits == 0) { r.m = 0; r.e = 0; r.sign = 0; r.zero = 1; return r; }
+    r.sign = (int)((bits >> 63) & 1ULL);
+    unsigned long long e = (bits >> 52) & 0x7ffULL;
+    unsigned long long m = bits & ((1ULL << 52) - 1ULL);
+    r.zero = 0;
+    if (e == 0) {
+        /* subnormal: value = m * 2^-1074, no implicit leading 1 */
+        int bl = 64 - __builtin_clzll(m);
+        int k = 64 - bl;
+        r.m = m << k;
+        r.e = -1011 - k;
+    } else {
+        r.m = (m | (1ULL << 52)) << 11;
+        r.e = (int)e - 1023;
+    }
+    return r;
+}
+
+static pb_x87_t pb_x87_from_int(unsigned long long n) {
+    pb_x87_t r;
+    if (n == 0) { r.m = 0; r.e = 0; r.sign = 0; r.zero = 1; return r; }
+    int bl = 64 - __builtin_clzll(n);
+    int k = 63 - bl + 1;
+    r.m = n << k;
+    r.e = 63 - k;
+    r.sign = 0;
+    r.zero = 0;
+    return r;
+}
+
+static pb_u128 pb_u128_add1(pb_u128 a) {
+    a.lo++;
+    if (a.lo == 0) a.hi++;
+    return a;
+}
+
+/* 128-bit value right shifted by n (0..127), kept as 128 bits */
+static pb_u128 pb_u128_shr128(pb_u128 x, int n) {
+    if (n == 0) return x;
+    if (n < 64) {
+        x.lo = (x.lo >> n) | (x.hi << (64 - n));
+        x.hi = x.hi >> n;
+    } else if (n == 64) {
+        x.lo = x.hi;
+        x.hi = 0;
+    } else {
+        x.lo = x.hi >> (n - 64);
+        x.hi = 0;
+    }
+    return x;
+}
+
+/* 128-bit value left shifted by n (0..127) */
+static pb_u128 pb_u128_shl128(pb_u128 x, int n) {
+    if (n == 0) return x;
+    if (n < 64) {
+        x.hi = (x.hi << n) | (x.lo >> (64 - n));
+        x.lo = x.lo << n;
+    } else if (n == 64) {
+        x.hi = x.lo;
+        x.lo = 0;
+    } else {
+        x.hi = x.lo << (n - 64);
+        x.lo = 0;
+    }
+    return x;
+}
+
+/* divide (a << sh) by d without materializing the (possibly >128-bit)
+   numerator, returning the full quotient via shift-subtract.  The running
+   remainder stays below 2^65, so a 128-bit rem is sufficient. */
+static pb_u128 pb_u128_div_shl64(unsigned long long a, int sh,
+                                 unsigned long long d) {
+    pb_u128 q;
+    pb_u128 rem;
+    q.lo = 0; q.hi = 0;
+    rem.lo = 0; rem.hi = 0;
+    int top = sh + 63;
+    for (int i = top; i >= 0; i--) {
+        rem.hi = (rem.hi << 1) | (rem.lo >> 63);
+        rem.lo <<= 1;
+        if (i >= sh) rem.lo |= (a >> (i - sh)) & 1ULL;
+        if (pb_u128_ge64(rem, d)) {
+            rem = pb_u128_sub64(rem, d);
+            if (i >= 64) q.hi |= (1ULL << (i - 64));
+            else q.lo |= (1ULL << i);
+        }
+    }
+    return q;
+}
+
+/* round a 128-bit value at the given right shift, result kept at 128 bits so
+   an overflow to 2^64 is preserved (handled by the reduce step) */
+static pb_u128 pb_u128_round_shift(pb_u128 x, int shift) {
+    if (shift <= 0) {
+        if (shift == 0) return x;
+        return pb_u128_shl128(x, -shift);
+    }
+    unsigned long long half = 1ULL << (shift - 1);
+    unsigned long long low = pb_u128_lowbits(x, shift);
+    pb_u128 q = pb_u128_shr128(x, shift);
+    if (low > half) q = pb_u128_add1(q);
+    else if (low == half && (q.lo & 1ULL)) q = pb_u128_add1(q);
+    return q;
+}
+
+/* reduce a (possibly wider than 64-bit) mantissa to a normalized 64-bit
+   pb_x87_t, mirroring the reference normalize: round down while >= 2^64,
+   then shift up while < 2^63 */
+static pb_x87_t pb_x87_reduce128(pb_u128 mant, int e, int sign) {
+    pb_x87_t r;
+    r.sign = sign;
+    r.zero = 0;
+    while (mant.hi != 0) {
+        /* half-even at scale 1 (the low bit is the half position) */
+        unsigned long long lb = mant.lo & 1ULL;
+        pb_u128 q = pb_u128_shr128(mant, 1);
+        if (lb && (q.lo & 1ULL)) q = pb_u128_add1(q);
+        mant = q;
+        e++;
+    }
+    r.m = mant.lo;
+    while (r.m != 0 && (r.m & (1ULL << 63)) == 0) {
+        r.m <<= 1;
+        e--;
+    }
+    if (r.m == 0) {
+        r.m = 0; r.e = 0; r.zero = 1;
+    } else {
+        r.e = e;
+    }
+    return r;
+}
+
+static pb_x87_t pb_x87_mul(pb_x87_t a, pb_x87_t b) {
+    int sign = a.sign ^ b.sign;
+    if (a.zero || b.zero) {
+        pb_x87_t r;
+        r.m = 0; r.e = 0; r.sign = sign; r.zero = 1;
+        return r;
+    }
+    pb_u128 prod = pb_u128_mul64(a.m, b.m);
+    int shift = pb_u128_bitlen(prod) - 64;
+    pb_u128 q = pb_u128_round_shift(prod, shift);
+    int e = a.e + b.e - 63 + shift;
+    return pb_x87_reduce128(q, e, sign);
+}
+
+static pb_x87_t pb_x87_div(pb_x87_t a, pb_x87_t b) {
+    int sign = a.sign ^ b.sign;
+    pb_u128 q = pb_u128_div_shl64(a.m, 70, b.m);
+    int e = a.e - b.e - 7;
+    return pb_x87_reduce128(q, e, sign);
+}
+
+/* frndint: round to integer, keeping the natural exponent (RC = nearest) */
+static pb_x87_t pb_x87_frndint(pb_x87_t a) {
+    pb_x87_t r = a;
+    if (a.e >= 63) return r;
+    if (a.e < 0) { r.m = 0; r.e = 0; r.zero = 1; return r; }
+    int drop = 63 - a.e;
+    unsigned long long half = 1ULL << (drop - 1);
+    unsigned long long low = a.m & ((1ULL << drop) - 1ULL);
+    unsigned long long q = a.m >> drop;
+    if (low > half) q++;
+    else if (low == half && (q & 1ULL)) q++;
+    r.m = q << drop;
+    if (r.m == 0) { r.e = 0; r.zero = 1; }
+    return r;
+}
+
+static unsigned long long pb_x87_to_int(pb_x87_t a) {
+    pb_x87_t v = pb_x87_frndint(a);
+    if (v.zero) return 0;
+    if (v.e >= 63) return v.m << (v.e - 63);
+    return v.m >> (63 - v.e);
+}
+
+static int pb_x87_cmp(pb_x87_t a, pb_x87_t b) {
+    if (a.zero && b.zero) return 0;
+    if (a.e != b.e) return a.e < b.e ? -1 : 1;
+    if (a.m != b.m) return a.m < b.m ? -1 : 1;
+    return 0;
+}
+
+/* high signed word of a 32-bit signed multiply (truncation toward zero) */
+static int pb_imul_high(int a, int b) {
+    unsigned int u = (unsigned int)(a * b);
+    int h = (int)(u >> 16);
+    if (h >= 0x8000) h -= 0x10000;
+    return h;
+}
+
+static pb_x87_t pb_build_factor(unsigned long long mag) {
+    pb_x87_t f;
+    unsigned long long low = mag & 7ULL;
+    f = low ? pb_x87_from_int(pb_dword_tbl[low]) : pb_x87_from_int(1);
+    mag >>= 3;
+    int i = 0;
+    while (mag) {
+        if (mag & 1ULL) {
+            pb_x87_t t;
+            t.m = pb_tbyte_sig[i];
+            t.e = pb_tbyte_exp[i];
+            t.sign = 0;
+            t.zero = 0;
+            f = pb_x87_mul(f, t);
+        }
+        mag >>= 1;
+        i++;
+    }
+    return f;
+}
+
+/* core scaling: returns the integer digits and the decimal exponent */
+static unsigned long long pb_x87_core(unsigned long long bits, int digits,
+                                      int *out_de, int *out_sign) {
+    pb_x87_t x = pb_x87_from_bits(bits);
+    int de = pb_imul_high(x.e, 0x4d10);
+    int ax = (digits + 2) - de;
+    if (ax > 0x1000) {
+        pb_x87_t t;
+        t.m = pb_tbyte_sig[9]; t.e = pb_tbyte_exp[9]; t.sign = 0; t.zero = 0;
+        x = pb_x87_mul(x, t);
+        ax -= 0x1000;
+    } else if (ax <= -0x1000) {
+        pb_x87_t t;
+        t.m = pb_tbyte_sig[9]; t.e = pb_tbyte_exp[9]; t.sign = 0; t.zero = 0;
+        x = pb_x87_div(x, t);
+        ax += 0x1000;
+    }
+    if (ax != 0) {
+        pb_x87_t f = pb_build_factor((unsigned long long)(ax < 0 ? -ax : ax));
+        x = ax > 0 ? pb_x87_mul(x, f) : pb_x87_div(x, f);
+    }
+    pb_x87_t r = pb_x87_frndint(x);
+    pb_x87_t p18;
+    p18.m = 0xDE0B6B3A76400000ULL; p18.e = 59; p18.sign = 0; p18.zero = 0;
+    if (pb_x87_cmp(r, p18) >= 0) {
+        r = pb_x87_div(r, pb_x87_from_int(10));
+        de++;
+    }
+    *out_de = de;
+    *out_sign = r.sign;
+    return pb_x87_to_int(r);
+}
+
+static int pb_ull_str(unsigned long long n, char *out) {
+    char tmp[24];
+    int t = 0;
+    do { tmp[t++] = (char)('0' + (n % 10ULL)); n /= 10ULL; } while (n);
+    int len = 0;
+    while (t) out[len++] = tmp[--t];
+    out[len] = '\0';
+    return len;
+}
+
+static int pb_signed_str(int v, char *out) {
+    int neg = v < 0;
+    unsigned long long n = neg ? (unsigned long long)(-(long long)v)
+                               : (unsigned long long)v;
+    char tmp[24];
+    int t = 0;
+    do { tmp[t++] = (char)('0' + (n % 10ULL)); n /= 10ULL; } while (n);
+    int len = 0;
+    if (neg) out[len++] = '-';
+    while (t) out[len++] = tmp[--t];
+    out[len] = '\0';
+    return len;
+}
+
+/* shared renderer: digits significant digits; lead_space selects STR$ vs TRIM$ */
+static char* pb_num_render(double v, int digits, int lead_space) {
+    unsigned long long bits;
+    memcpy(&bits, &v, sizeof(bits));
+    if (bits == 0) {
+        if (lead_space) return pb_bstr_alloc(" 0", 2);
         return pb_bstr_alloc("0", 1);
     }
-    double ax = fabs(v);
-    int e = (int)floor(log10(ax));
-    int fixed_need = (e >= 0) ? (e + 1) : (-e);
-    if (digits >= fixed_need) {
-        /* Fixed point. */
-        n = snprintf(buf, sizeof(buf), "%.*g", digits, v);
-        if (strchr(buf, 'e') != NULL) {
-            pb_expand_fixed(buf, &n);
+    int sign = (int)((bits >> 63) & 1ULL);
+    int de, rsign;
+    unsigned long long n = pb_x87_core(bits, digits, &de, &rsign);
+    if (n == 0) {
+        if (lead_space) return pb_bstr_alloc(" 0", 2);
+        return pb_bstr_alloc("0", 1);
+    }
+    char s[32];
+    int sl = pb_ull_str(n, s);
+    /* half-even: keep top `digits`, decide from the (digits+1)th digit */
+    if (sl > digits) {
+        char dnext = s[digits];
+        s[digits] = '\0';
+        unsigned long long head = strtoull(s, NULL, 10);
+        if (dnext > '5') head++;
+        else if (dnext == '5' && (head & 1ULL)) head++;
+        sl = pb_ull_str(head, s);
+        if (sl > digits) de++;   /* full carry past the first digit */
+    }
+    while (sl > 0 && s[sl - 1] == '0') s[--sl] = '\0';
+    int ns = sl;
+    int e_adj = (de + 1) - ns;
+    int scientific;
+    if (e_adj > 0) scientific = (de >= 15);
+    else if (e_adj == 0) scientific = 0;
+    else scientific = ((ns - de) > 16);
+
+    char out[80];
+    int k = 0;
+    if (lead_space) out[k++] = sign ? '-' : ' ';
+    else if (sign) out[k++] = '-';
+
+    if (scientific) {
+        out[k++] = s[0];
+        if (ns > 1) {
+            out[k++] = '.';
+            memcpy(out + k, s + 1, (size_t)(ns - 1));
+            k += ns - 1;
         }
-        char* dot = strchr(buf, '.');
-        if (dot != NULL) {
-            char* p = buf + n - 1;
-            while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
-            if (p == dot) { *p = '\0'; n--; }
-        }
-        if (buf[0] == '0' && buf[1] == '.') {
-            memmove(buf, buf + 1, (size_t)n);
-            n--;
-        } else if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
-            memmove(buf + 1, buf + 2, (size_t)(n - 1));
-            n--;
+        out[k++] = 'E';
+        if (de >= 0) out[k++] = '+';
+        char des[16];
+        int dl = pb_signed_str(de, des);
+        memcpy(out + k, des, (size_t)dl);
+        k += dl;
+    } else if (de >= 0) {
+        if (de + 1 >= ns) {
+            memcpy(out + k, s, (size_t)ns);
+            k += ns;
+            int zeros = de + 1 - ns;
+            memset(out + k, '0', (size_t)zeros);
+            k += zeros;
+        } else {
+            memcpy(out + k, s, (size_t)(de + 1));
+            k += de + 1;
+            out[k++] = '.';
+            memcpy(out + k, s + de + 1, (size_t)(ns - (de + 1)));
+            k += ns - (de + 1);
         }
     } else {
-        /* Scientific: %e precision is digits after the point = digits-1. */
-        n = snprintf(buf, sizeof(buf), "%.*e", digits - 1, v);
-        char* ep = strchr(buf, 'e');
-        if (ep != NULL) {
-            char* dot = strchr(buf, '.');
-            if (dot != NULL) {
-                char* p = ep - 1;
-                while (p > dot && *p == '0') {
-                    memmove(p, p + 1, strlen(p + 1) + 1);
-                    p--;
-                    n--;
-                }
-                if (p == dot) {
-                    memmove(dot, dot + 1, strlen(dot + 1) + 1);
-                    n--;
-                }
-            }
-            ep = strchr(buf, 'e');
-            *ep = 'E';
-            char* d = ep + 1;
-            if ((*d == '+' || *d == '-') && d[1] == '0') {
-                memmove(d + 1, d + 2, strlen(d + 2) + 1);
-                n--;
-            }
-        }
+        out[k++] = '.';
+        int gap = -de;
+        memset(out + k, '0', (size_t)(gap - 1));
+        k += gap - 1;
+        memcpy(out + k, s, (size_t)ns);
+        k += ns;
     }
-    return pb_bstr_alloc(buf, (unsigned int)n);
+    out[k] = '\0';
+    return pb_bstr_alloc(out, (unsigned int)k);
+}
+
+/* STR$(double) - PBWin10 measured formatting: leading space for positive
+   values, '-' for negative; 15 significant digits, trailing zeros removed. */
+char* pb_str_dbl(double v) {
+    return pb_num_render(v, 15, 1);
+}
+
+/* TRIM$ numeric form (CHW TRIM_function.htm): no leading/trailing spaces.
+   digits<=0 selects the default 15 significant digits, otherwise 1..18. */
+char* pb_trim_num(double v, int digits) {
+    if (digits <= 0) digits = 15;
+    if (digits > 18) digits = 18;
+    return pb_num_render(v, digits, 0);
 }
 
 /* BIN$/OCT$/DEC$(IntVal[, Digits, LeadSpaces, TrailSpaces]) (CHW, batch 256B).

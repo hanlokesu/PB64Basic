@@ -7,16 +7,17 @@
 
 ![demo](assets/pb64basic-demo.gif)
 
-An enhanced 64-bit PowerBASIC compiler, derived from
-[`benstopics/powerbasilisk`](https://github.com/benstopics/powerbasilisk).
+An enhanced 64-bit PowerBASIC compiler, derived from https://github.com/benstopics/powerbasilisk .
 
-**PB64Basic** is an open-source compiler that translates PowerBASIC source
-code (`.bas`) into LLVM IR and then into native 64-bit Windows executables.
-The toolchain is written in Rust and has zero external crate dependencies.
+PB64Basic is an open-source compiler that translates PowerBASIC source code (.bas) into LLVM IR and then into native 64-bit Windows executables. The toolchain is written in Rust and has zero external crate dependencies.
 
-This repository is an **enhanced branch** that fixes an upstream bug and adds
-several frequently-used PowerBASIC statements/functions that were previously
-silently dropped during code generation.
+This repository is an enhanced branch that fixes an upstream bug and adds several frequently-used PowerBASIC statements/functions that were previously silently dropped during code generation.
+
+## JK-IDE Integration and PowerBASIC Help
+
+JK-IDE can compile a source file with either this compiler (**PB64Basic**) or the separate **PBXB64.exe** compiler. Both toolchains are registered through the JK-IDE add-on, so you can select the compiler from the JK-IDE menu without leaving the editor.
+
+This branch also integrates PowerBASIC Help. Put the mouse pointer over any word or keyword in your source and press **F1** to open the help topic for that word directly (context-sensitive help). If you prefer to browse, you can open the PowerBASIC compiled help file (**PB.chm**) on its own — from the add-on's **Open PB Help** menu or by double-clicking the file — and use its contents, index, and full-text search to look up any keyword. The matching index file (**PB.chw**) is loaded automatically when it sits next to the `.chm` file.
 
 ---
 
@@ -259,7 +260,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 310 (v0.2.102). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 311 (v0.2.103). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 311 (v0.2.103) - L-family numeric fidelity and JK-IDE help. LOG, LOG2 and LOG10 now render exactly like PowerBASIC 10: the runtime number renderer was reworked as a portable x87-style formatter (correct 15-digit decimal rounding and half-even last digit), so the LOG/LOG2/LOG10 dual-run is byte-identical, including LOG(10)=2.30258509299404. LOWRD gained a clean dual-run probe (the earlier bare-PRINT probe failed on the PBWin side with Error 477; the new ConPrint probe is identical). The JK-IDE add-on now integrates PowerBASIC Help and can compile with either PB64Basic or PBXB64.exe. No keyword coverage change (945 rows, 0 unimplemented).
 > batch 310 (v0.2.102) - Console subsystem and runtime dead-code fixes. `#CONSOLE ON` now links /SUBSYSTEM:CONSOLE so PRINT reaches the console (a new --console CLI flag forces it and overrides #CONSOLE OFF); the default and #CONSOLE OFF keep the GUI subsystem. The runtime is built with -ffunction-sections -fdata-sections, so lld-link /OPT:REF discards unreferenced functions; a minimal EXE shrinks from 502,272 B to 163,840 B (about 67%). No keyword coverage change (945 rows, 0 unimplemented).
 > batch 310 (v0.2.101) - Fixed a 32-bit (i686) codegen pointer-width bug. STRPTR and VARPTR were hard-coded to materialise the pointer via ptrtoint i64; on 32-bit, a BYVAL STRPTR/VARPTR in a stdcall frame pushed 8 bytes instead of 4, shifting every later argument and the callee stack cleanup and causing a deterministic access violation (C0000005). ptrtoint now uses the native pointer width (i32 on 32-bit, i64 on 64-bit). No keyword coverage change (945 rows, 940 implemented).
 > batch 309 (v0.2.100) - JK-IDE addon release: inline error annotation (a one-line red band printed directly under the error line, no hover/timer/dwell), save-before-compile, error-line jump, unified red standard output across all six addon entries, and the RUN-path fatal-error fix. No keyword coverage change (945 rows, 938 implemented).
@@ -810,6 +812,14 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.103 (2026-11-04)
+
+- **Exact PowerBASIC numeric rendering**: the runtime number renderer (`pb_str_dbl` / `pb_trim_num`) was reworked as a portable x87-style formatter. It converts the IEEE-754 double to an 80-bit-style value, builds exact powers of ten, and prints the first 15 digits with half-even (banker's) rounding on the last digit, matching PBWin's algorithm rather than the C runtime's `%g`. Two real defects were fixed in the process: an 18th-power-of-ten table exponent was hard-coded one too low (unbiased exponent 58 instead of 59), and the division numerator was truncated by a 128-bit helper. The render harness now matches all 715 reference points with zero mismatches.
+- **LOG / LOG2 / LOG10 dual-run is now identical**: the underlying values were already bit-identical to PBWin (verified through a UNION + HEX$ probe), so the only difference was the last-digit string rendering. With the new renderer, the fork and PBWin output match byte-for-byte, including `LOG(10)=2.30258509299404` and `LOG(2.718281828)=.999999999831127`. Verified on both x86_64 and i686.
+- **LOWRD clean dual-run**: the earlier probe used a bare `PRINT LOWRD(x)`, which PBWin rejects with Error 477 (a console `PRINT` of this form is not accepted), so no valid comparison existed. A new ConPrint-based probe (`lm_lowrd2.bas`) covering four values now produces identical output on both compilers. The earlier LOWRD mask fix is retained.
+- **JK-IDE integration and PowerBASIC Help**: the JK-IDE add-on can compile a source with either PB64Basic or the separate PBXB64.exe, and now integrates PowerBASIC Help. Hover the pointer over any word and press F1 for context-sensitive help, or open the standalone `PB.chm` (from the add-on's Open PB Help menu or by double-clicking) and use its contents, index, and full-text search.
+- No keyword coverage change: 945 rows, 0 official keywords unimplemented. Smoke example: `examples/batch311_test.bas`.
+
 ### v0.2.102 (2026-11-03)
 
 - **Console subsystem (`#CONSOLE ON`)**: the linker previously hard-coded `/SUBSYSTEM:WINDOWS` for every target, so a console program produced no visible output even though `#CONSOLE ON` was accepted and skipped. The directive now records a mode and drives the PE subsystem: `#CONSOLE ON` links `/SUBSYSTEM:CONSOLE` and `PRINT` reaches the console, while `#CONSOLE OFF` and the default keep `/SUBSYSTEM:WINDOWS`. A new `--console` command-line flag forces the console subsystem and overrides an in-source `#CONSOLE OFF`. Both subsystems keep the `mainCRTStartup` entry. Verified on x86_64 and i686.

@@ -23,16 +23,16 @@ function Write-Fail($msg)  { Write-Host "   [X] $msg" -ForegroundColor Red }
 $changed = $false
 
 # ---------- 0. Check winget (App Installer) ----------
-Write-Step "检查 winget（用于自动安装依赖）..."
+Write-Step "Checking winget (used to auto-install dependencies)..."
 $winget = Get-Command winget -ErrorAction SilentlyContinue
 if ($winget) {
-    Write-Ok "winget 可用 - Rust / LLVM / Windows SDK 可自动安装。"
+    Write-Ok "winget is available - Rust / LLVM / Windows SDK can be installed automatically."
 } else {
-    Write-Warn "未找到 winget：下面 3 个依赖若缺失将无法自动安装，需要手动处理："
+    Write-Warn "winget not found: the 3 dependencies below cannot be auto-installed if missing and must be handled manually:"
     Write-Warn "   Rust:        https://rustup.rs"
     Write-Warn "   LLVM:        https://releases.llvm.org"
     Write-Warn "   Windows SDK: https://developer.microsoft.com/windows/downloads/windows-sdk/"
-    Write-Warn "（Windows 10 2004+/Windows 11 自带 winget；旧系统可从 Microsoft Store 安装 App Installer 后重跑本脚本）"
+    Write-Warn "(Windows 10 2004+/Windows 11 ship with winget; on older systems install App Installer from the Microsoft Store, then re-run this script)"
 }
 
 # ---------- 1. Rust toolchain ----------

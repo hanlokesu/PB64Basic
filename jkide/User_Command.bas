@@ -69,6 +69,9 @@ local ztext as asciiz * 260
 
     CASE %JKCOMP_JKINI
       JK_OpenIni
+
+    CASE %JKCOMP_PBHELP
+      JK_OpenPbHelp
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #if 0
   end select

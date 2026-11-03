@@ -19,6 +19,7 @@
 %JKCOMP_RUN_PB64    = %IDC_Userbase + 16   ' compile then run - PB64Basic
 %JKCOMP_RUN_PBXB64  = %IDC_Userbase + 17   ' compile then run - PBXB64
 %JKCOMP_RUN_DEFAULT = %IDC_Userbase + 18   ' compile (sync, default compiler) then run
+%JKCOMP_PBHELP  = %IDC_Userbase + 19   ' open the PowerBASIC help file (PB.chm) via hh.exe (HAN 2026-11-03)
 %JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
 %JKIDE_Save     = 103                  ' WM_COPYDATA dwData: save active file in JK-IDE (VCS protocol, HAN 2026-11-01)
 
@@ -115,6 +116,30 @@ SUB JK_OpenIni()
   cds.cbData = LEN(fp) + 1
   cds.lpData = VARPTR(fp)
   SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+END SUB
+
+SUB JK_OpenPbHelp()
+' Open the PowerBASIC help file named by PbHelpFile in JKIDE.ini. The entry is
+' always the .CHM (never the .CHW); the matching PB.chw kept in the same folder
+' is loaded by hh.exe by itself as the merged index. The path is wrapped in
+' double quotes so a path containing spaces still parses as one argument.
+  LOCAL helpFile AS STRING
+  LOCAL zVerb AS ASCIIZ * 32
+  LOCAL zFile AS ASCIIZ * 260
+  LOCAL zPar  AS ASCIIZ * 2048
+  helpFile = JK_IniValue$("Compilers", "PbHelpFile")
+  IF LEN(helpFile) = 0 THEN
+    JK_SendOutput "Compilers: key PbHelpFile missing in " + JK_IniFile$ + ". Edit JKIDE.ini, then restart JK-IDE.", &HFF
+    EXIT SUB
+  END IF
+  IF ISFALSE ISFILE(helpFile) THEN
+    JK_SendOutput "Compilers: help file not found: " + helpFile + ". Check PbHelpFile in JKIDE.ini.", &HFF
+    EXIT SUB
+  END IF
+  zVerb = "open"
+  zFile = "hh.exe"
+  zPar  = $DQ + helpFile + $DQ
+  ShellExecuteA 0, zVerb, zFile, zPar, "", %SW_SHOW
 END SUB
 
 ' ============ Output window protocol (JK-IDE VCS convention) ============
