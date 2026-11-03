@@ -810,7 +810,7 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
-### v0.2.102 (2026-11-03) - batch 310: console subsystem switch and runtime dead-code elimination
+### v0.2.102 (2026-11-03)
 
 - **Console subsystem (`#CONSOLE ON`)**: the linker previously hard-coded `/SUBSYSTEM:WINDOWS` for every target, so a console program produced no visible output even though `#CONSOLE ON` was accepted and skipped. The directive now records a mode and drives the PE subsystem: `#CONSOLE ON` links `/SUBSYSTEM:CONSOLE` and `PRINT` reaches the console, while `#CONSOLE OFF` and the default keep `/SUBSYSTEM:WINDOWS`. A new `--console` command-line flag forces the console subsystem and overrides an in-source `#CONSOLE OFF`. Both subsystems keep the `mainCRTStartup` entry. Verified on x86_64 and i686.
 - **Runtime dead-code elimination**: the runtime object was compiled into a single `.text` section, so the linker could not drop unreferenced functions and pulled the whole runtime into every EXE. The runtime is now built with `-ffunction-sections -fdata-sections`; each function lands in its own COMDAT section, and lld-link's default `/OPT:REF` removes the unreferenced sections. A minimal hello-world EXE drops from 502,272 B to 163,840 B (about 67% smaller) with identical output, and a controlled marker experiment confirms an unreferenced function is removed only under function sections.
