@@ -9,8 +9,11 @@
  * Implements FORMAT$, PARSE$, REPLACE, and other PB-specific functions
  * that don't have direct C library equivalents.
  *
- * Build: clang -c pb_runtime.c -o pb_runtime.obj
+ * Build: clang -c pb_runtime.c -o pb_runtime.obj --target=<triple> \
+ *            -ffunction-sections -fdata-sections
  * Link:  clang program.ll pb_runtime.obj -o program.exe
+ *          (/OPT:REF is on by default, so unreferenced runtime functions
+ *           in their own COMDAT sections are discarded from the EXE.)
  */
 
 #include <stdio.h>
@@ -38,6 +41,9 @@ __declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr)
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
 __declspec(dllimport) int __stdcall CharToOemA(const char* lpszSrc, char* lpszDst);
 __declspec(dllimport) int __stdcall OemToCharA(const char* lpszSrc, char* lpszDst);
+__declspec(dllimport) unsigned long __stdcall CharLowerBuffA(char* lpsz, unsigned long cchLength);
+__declspec(dllimport) unsigned long __stdcall CharUpperBuffA(char* lpsz, unsigned long cchLength);
+__declspec(dllimport) int __stdcall IsDBCSLeadByte(unsigned char TestChar);
 __declspec(dllimport) unsigned int __stdcall GetMenuState(void* h, unsigned int id, unsigned int f);
 __declspec(dllimport) void* __stdcall GetModuleHandleA(const char* lpModuleName);
 __declspec(dllimport) void* __stdcall FindResourceA(void* hModule, const char* lpName, const char* lpType);
@@ -154,6 +160,13 @@ __declspec(dllimport) void* __stdcall AddVectoredExceptionHandler(unsigned long 
 __declspec(dllimport) void __stdcall ExitProcess(unsigned int uExitCode);
 __declspec(dllimport) int __stdcall MessageBoxA(void* hWnd, const char* lpText, const char* lpCaption, unsigned int uType);
 __declspec(dllimport) int __stdcall CopyFileA(const char* lpExistingFileName, const char* lpNewFileName, int bFailIfExists);
+__declspec(dllimport) int __stdcall DeleteFileA(const char* lpFileName);
+/* Find-file family (forward declared so pb_kill can use them; the batch-24
+   block later in this file is guarded by PB_B24_DEFS and will be skipped). */
+#define PB_B24_DEFS
+__declspec(dllimport) void* __stdcall FindFirstFileA(const char* lpFileName, char* lpFindFileData);
+__declspec(dllimport) int __stdcall FindNextFileA(void* hFindFile, char* lpFindFileData);
+__declspec(dllimport) int __stdcall FindClose(void* hFindFile);
 __declspec(dllimport) unsigned long __stdcall GetLastError(void);
 __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 __declspec(dllimport) int __stdcall SetFileAttributesA(const char* lpFileName, unsigned long dwFileAttributes);
@@ -429,6 +442,111 @@ char* pb_bstr_alloc(const char* src, unsigned int len) {
 #endif
 }
 
+/* LEFT$ on a byte (ANSI) string.  CHW LEFT_function.htm: n is a long integer;
+   n >= LEN returns the whole string, n == 0 returns empty, and a negative n is
+   interpreted as LEN(s) - ABS(n).  Measured against PBWin10 at the overshoot
+   point (ABS(n) > LEN): the effective count goes negative and PBWin returns the
+   WHOLE string (e.g. n=-11 on a 10-char string), while n=-LEN (effective 0)
+   still returns empty.  This effective-count rule reproduces both cases. */
+char* pb_bstr_left(const char* src, long long n) {
+    static const char empty[] = "";
+    if (!src) src = empty;
+    long long len = (long long)strlen(src);
+    if (n < 0) {
+        n = len + n;              /* LEN(s) - ABS(n) */
+        if (n < 0) n = len;       /* overshoot: whole string */
+    }
+    if (n > len) n = len;
+    if (n <= 0) return pb_bstr_alloc(empty, 0);
+    return pb_bstr_alloc(src, (unsigned int)n);
+}
+
+/* RIGHT$ on a byte (ANSI) string.  CHW RIGHT_function.htm: the same effective-
+   count rule as LEFT$; the selected bytes start at LEN(s)-n. */
+char* pb_bstr_right(const char* src, long long n) {
+    static const char empty[] = "";
+    if (!src) src = empty;
+    long long len = (long long)strlen(src);
+    if (n < 0) {
+        n = len + n;
+        if (n < 0) n = len;
+    }
+    if (n > len) n = len;
+    if (n <= 0) return pb_bstr_alloc(empty, 0);
+    return pb_bstr_alloc(src + (len - n), (unsigned int)n);
+}
+
+/* LTRIM$ (CHW LTRIM_function.htm).  has_any=0 and a NULL/empty match: remove
+   leading spaces (the one-argument form).  has_any=1: match is a list of single
+   characters; remove leading characters that occur anywhere in the list.
+   has_any=0 with a match: match is a whole substring; remove leading occurrences
+   of that exact substring.  Matching is case sensitive. */
+char* pb_ltrim(const char* src, int has_any, const char* match) {
+    static const char empty[] = "";
+    if (!src) src = empty;
+    const char* p = src;
+    if (!match || !*match) {
+        while (*p == ' ') p++;
+    } else if (has_any) {
+        size_t mlen = strlen(match);
+        while (*p) {
+            int found = 0;
+            for (size_t k = 0; k < mlen; k++) {
+                if (match[k] == *p) { found = 1; break; }
+            }
+            if (!found) break;
+            p++;
+        }
+    } else {
+        size_t mlen = strlen(match);
+        for (;;) {
+            int starts = 1;
+            for (size_t k = 0; k < mlen; k++) {
+                if (p[k] != match[k]) { starts = 0; break; }
+            }
+            if (!starts) break;
+            p += mlen;
+        }
+    }
+    return pb_bstr_alloc(p, (unsigned int)strlen(p));
+}
+
+/* RTRIM$ (CHW RTRIM_function.htm): mirror of LTRIM$ from the right.  `end` is
+   the exclusive kept boundary; trailing spaces / whole-substring occurrences /
+   single-character set members are removed until the boundary no longer matches.
+   Case sensitive. */
+char* pb_rtrim(const char* src, int has_any, const char* match) {
+    static const char empty[] = "";
+    if (!src) src = empty;
+    size_t end = strlen(src);
+    if (!match || !*match) {
+        while (end > 0 && src[end - 1] == ' ') end--;
+    } else if (has_any) {
+        size_t mlen = strlen(match);
+        while (end > 0) {
+            char c = src[end - 1];
+            int found = 0;
+            for (size_t k = 0; k < mlen; k++) {
+                if (match[k] == c) { found = 1; break; }
+            }
+            if (!found) break;
+            end--;
+        }
+    } else {
+        size_t mlen = strlen(match);
+        for (;;) {
+            if (end < mlen) break;
+            int ends = 1;
+            for (size_t k = 0; k < mlen; k++) {
+                if (src[end - mlen + k] != match[k]) { ends = 0; break; }
+            }
+            if (!ends) break;
+            end -= mlen;
+        }
+    }
+    return pb_bstr_alloc(src, (unsigned int)end);
+}
+
 /* COMMAND$(ArgNum) - batch258 C batch, CHW COMMAND$ function:
    n<=0 -> full trailer (program name excluded, quotes kept verbatim);
    n>0  -> nth parsed argument (blank-space delimited, double quotes
@@ -612,28 +730,104 @@ char* pb_retain_string(char* main, char* match, int any_flag) {
     buf[o] = 0;
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
-char* pb_mcase_string(char* s) {
-    // MCASE$ � capitalize first letter of each word, lowercase the rest
-    // A "word" is a consecutive series of letters; non-letters reset the word boundary
+/* LCASE$ / UCASE$ with optional ANSI (mode=0) / OEM (mode=1).
+ * ANSI: CharLowerBuffA / CharUpperBuffA handle DBCS correctly.
+ * OEM: DBCS pairs are preserved untouched; only ASCII letters are folded.
+ * Verified against PBWin 10 on a 936 DBCS system (lm_lcase* probes). */
+char* pb_lcase(char* s, int mode) {
+    size_t n = strlen(s);
+    char* buf = (char*)malloc(n + 1);
+    memcpy(buf, s, n + 1);
+    if (mode == 0) {
+        CharLowerBuffA(buf, (unsigned long)n);
+    } else {
+        size_t i = 0;
+        while (i < n) {
+            unsigned char c = (unsigned char)buf[i];
+            if (IsDBCSLeadByte(c)) {
+                i += 2; /* keep the whole DBCS pair untouched */
+            } else {
+                if (c >= 'A' && c <= 'Z') buf[i] = (char)(c + 32);
+                i++;
+            }
+        }
+    }
+    char* r = pb_bstr_alloc(buf, (unsigned int)n);
+    free(buf);
+    return r;
+}
+
+char* pb_ucase(char* s, int mode) {
+    size_t n = strlen(s);
+    char* buf = (char*)malloc(n + 1);
+    memcpy(buf, s, n + 1);
+    if (mode == 0) {
+        CharUpperBuffA(buf, (unsigned long)n);
+    } else {
+        size_t i = 0;
+        while (i < n) {
+            unsigned char c = (unsigned char)buf[i];
+            if (IsDBCSLeadByte(c)) {
+                i += 2;
+            } else {
+                if (c >= 'a' && c <= 'z') buf[i] = (char)(c - 32);
+                i++;
+            }
+        }
+    }
+    char* r = pb_bstr_alloc(buf, (unsigned int)n);
+    free(buf);
+    return r;
+}
+
+char* pb_mcase_string(char* s, int mode) {
+    // MCASE$: first letter of each word is capitalized, rest forced lowercase.
+    // A DBCS pair is treated as one letter and then resets the word boundary
+    // (next_upper=1). OEM mode keeps DBCS pairs untouched. Verified against
+    // PBWin 10 on a 936 DBCS system (lm_mcase/lm_mcase2 probes).
     size_t n = strlen(s);
     char* buf = (char*)malloc(n + 1);
     int next_upper = 1;
-    for (size_t i = 0; i < n; i++) {
+    size_t i = 0;
+    while (i < n) {
         unsigned char c = (unsigned char)s[i];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
-            if (next_upper) {
-                buf[i] = (c >= 'a' && c <= 'z') ? c - 32 : c;
+        if (IsDBCSLeadByte(c) && i + 1 < n) {
+            if (mode == 0) {
+                char pair[3];
+                pair[0] = s[i];
+                pair[1] = s[i + 1];
+                pair[2] = 0;
+                if (next_upper) {
+                    CharUpperBuffA(pair, 2);
+                } else {
+                    CharLowerBuffA(pair, 2);
+                }
+                buf[i] = pair[0];
+                buf[i + 1] = pair[1];
             } else {
-                buf[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
+                buf[i] = s[i];
+                buf[i + 1] = s[i + 1];
+            }
+            next_upper = 1;
+            i += 2;
+        } else if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+            if (next_upper) {
+                buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : (char)c;
+            } else {
+                buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : (char)c;
             }
             next_upper = 0;
+            i++;
         } else {
             buf[i] = s[i];
             next_upper = 1;
+            i++;
         }
     }
     buf[n] = 0;
-    return pb_bstr_alloc(buf, (unsigned int)n);
+    char* r = pb_bstr_alloc(buf, (unsigned int)n);
+    free(buf);
+    return r;
 }
 char* pb_remain_string(char* main, char* match, long long start, int any_flag) {
     size_t n = strlen(main);
@@ -867,6 +1061,76 @@ char* pb_str_dbl(double v) {
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 
+/* TRIM$ numeric form (CHW TRIM_function.htm): STR$-like conversion with no
+   leading/trailing spaces.  digits<=0 selects the default 16 significant digits,
+   otherwise 1..18.  PBWin chooses fixed vs scientific by whether the fixed form
+   fits in `digits` positions: for exponent e the fixed representation needs
+   (e+1) positions when e>=0, or -e positions when e<0 (leading zeros count).
+   If it fits, use fixed point (expand C %g's premature scientific); otherwise
+   force scientific, strip mantissa trailing zeros, uppercase E, and drop the
+   exponent leading zero. */
+char* pb_trim_num(double v, int digits) {
+    char buf[64];
+    int n;
+    /* Default TRIM$ (no Digits): 15 significant digits, matching PBWin's
+       STR$/PRINT# float conversion (measured: TRIM$(LOG(10))=15 digits;
+       explicit TRIM$(v,16) is needed to get 16). */
+    if (digits <= 0) digits = 15;
+    if (v == 0.0) {
+        return pb_bstr_alloc("0", 1);
+    }
+    double ax = fabs(v);
+    int e = (int)floor(log10(ax));
+    int fixed_need = (e >= 0) ? (e + 1) : (-e);
+    if (digits >= fixed_need) {
+        /* Fixed point. */
+        n = snprintf(buf, sizeof(buf), "%.*g", digits, v);
+        if (strchr(buf, 'e') != NULL) {
+            pb_expand_fixed(buf, &n);
+        }
+        char* dot = strchr(buf, '.');
+        if (dot != NULL) {
+            char* p = buf + n - 1;
+            while (p > dot && *p == '0') { *p = '\0'; p--; n--; }
+            if (p == dot) { *p = '\0'; n--; }
+        }
+        if (buf[0] == '0' && buf[1] == '.') {
+            memmove(buf, buf + 1, (size_t)n);
+            n--;
+        } else if (buf[0] == '-' && buf[1] == '0' && buf[2] == '.') {
+            memmove(buf + 1, buf + 2, (size_t)(n - 1));
+            n--;
+        }
+    } else {
+        /* Scientific: %e precision is digits after the point = digits-1. */
+        n = snprintf(buf, sizeof(buf), "%.*e", digits - 1, v);
+        char* ep = strchr(buf, 'e');
+        if (ep != NULL) {
+            char* dot = strchr(buf, '.');
+            if (dot != NULL) {
+                char* p = ep - 1;
+                while (p > dot && *p == '0') {
+                    memmove(p, p + 1, strlen(p + 1) + 1);
+                    p--;
+                    n--;
+                }
+                if (p == dot) {
+                    memmove(dot, dot + 1, strlen(dot + 1) + 1);
+                    n--;
+                }
+            }
+            ep = strchr(buf, 'e');
+            *ep = 'E';
+            char* d = ep + 1;
+            if ((*d == '+' || *d == '-') && d[1] == '0') {
+                memmove(d + 1, d + 2, strlen(d + 2) + 1);
+                n--;
+            }
+        }
+    }
+    return pb_bstr_alloc(buf, (unsigned int)n);
+}
+
 /* BIN$/OCT$/DEC$(IntVal[, Digits, LeadSpaces, TrailSpaces]) (CHW, batch 256B).
    base 2/8/10; Digits > 0 = leading zeros to that width, < 0 = leading spaces
    to |Digits|, 0 or absent = none; LeadSpaces/TrailSpaces add extra spaces.
@@ -1031,6 +1295,17 @@ long long pb_isfolder(char* name) {
     struct _stat st;
     if (_stat(name, &st) == 0 && (st.st_mode & _S_IFDIR)) return -1;
     return 0;
+}
+/* ISFILE: true only for an existing non-directory file, in any attribute
+   (hidden/system/read-only). Wildcards and directories return 0, matching
+   CHW ISFILE and the measured PBWin behavior. */
+long long pb_isfile(const char* name) {
+    if (!name) return 0;
+    if (strchr(name, '*') || strchr(name, '?')) return 0;
+    struct _stat st;
+    if (_stat(name, &st) != 0) return 0;
+    if (st.st_mode & _S_IFDIR) return 0;
+    return -1;
 }
 double pb_exp2(double x) { return exp2(x); }
 double pb_exp10(double x) { return pow(10.0, x); }
@@ -2467,15 +2742,93 @@ void pb_input_file_dbl(int filenum, double* dest) {
     *dest = atof(buf);
 }
 
-void pb_kill(const char* path) {
-    if (path) remove(path);
-}
-
-/* pb_err is defined later in this file (global ERR variable);
-   batch 207 wired it into the socket / serial / thread / file / sound
-   failure paths, so those failures are observable as ERR. */
+/* pb_err / pb_err_var are defined later in this file (global ERR variables). */
 extern int pb_err;
 extern int pb_err_var;   /* ERR system variable - keeps the LAST error code */
+
+/* KILL filespec - delete file(s). Supports paths and wildcard characters.
+   CHW KILL semantics (the only standard):
+     - no matching file          -> ERR 53 (File not found)
+     - read-only / access denied -> ERR 70 (Permission denied)
+     - HIDDEN / SYSTEM files     -> silently ignored, no error
+     - directories               -> never deleted (use RMDIR)
+   Returns 0 on success, -1 on failure; the ERR code is set here directly, so
+   the codegen only needs a void call. WIN32_FIND_DATAA is 592 bytes; the
+   directory attribute is 0x10, HIDDEN 0x2, SYSTEM 0x4 (hand-rolled, no
+   windows.h). */
+int pb_kill(const char* path) {
+    if (!path || !*path) { pb_err_var = pb_err = 53; return -1; }
+
+    /* split directory part from the file pattern, to rebuild full paths */
+    const char* last_sep = NULL;
+    for (const char* q = path; *q; q++) {
+        if (*q == '\\' || *q == '/') last_sep = q;
+    }
+    char dirbuf[512];
+    if (last_sep) {
+        size_t dlen = (size_t)(last_sep - path) + 1;
+        if (dlen >= sizeof(dirbuf)) dlen = sizeof(dirbuf) - 1;
+        memcpy(dirbuf, path, dlen);
+        dirbuf[dlen] = '\0';
+    } else {
+        dirbuf[0] = '\0';
+    }
+
+    char find_data[592];
+    void* h = FindFirstFileA(path, find_data);
+    if (h == PB_INVALID_HANDLE) {
+        /* FindFirstFile: ERROR_FILE_NOT_FOUND (2) / ERROR_PATH_NOT_FOUND (3) */
+        pb_err_var = pb_err = 53;
+        return -1;
+    }
+
+    int matched = 0;       /* entries enumerated, excluding "." and ".." */
+    int fail_code = 0;     /* first hard failure (0 = none yet) */
+    do {
+        const char* name = find_data + 44;   /* cFileName offset */
+        if ((name[0] == '.' && name[1] == '\0') ||
+            (name[0] == '.' && name[1] == '.' && name[2] == '\0')) {
+            continue;
+        }
+        unsigned long fa;
+        memcpy(&fa, find_data, sizeof(fa));
+        matched++;
+
+        /* KILL never deletes directories. */
+        if (fa & 0x10UL) continue;
+
+        /* HIDDEN / SYSTEM: the attempt is ignored with no error. */
+        if (fa & (0x2UL | 0x4UL)) continue;
+
+        char full[768];
+        int n = snprintf(full, sizeof(full), "%s%s", dirbuf, name);
+        if (n < 0 || (size_t)n >= sizeof(full)) {
+            if (!fail_code) fail_code = 76;
+            continue;
+        }
+
+        if (DeleteFileA(full)) continue;
+
+        unsigned long e = GetLastError();
+        int code;
+        if (e == 5)                code = 70;  /* ERROR_ACCESS_DENIED */
+        else if (e == 2 || e == 3) code = 53;
+        else                       code = 75;
+        if (!fail_code) fail_code = code;
+    } while (FindNextFileA(h, find_data));
+    FindClose(h);
+
+    if (matched == 0) {
+        pb_err_var = pb_err = 53;
+        return -1;
+    }
+    if (fail_code) {
+        pb_err_var = pb_err = fail_code;
+        return -1;
+    }
+    pb_err = 0;
+    return 0;
+}
 
 /* CLS: clear the console screen (PB/CC) */
 void pb_cls(void) {
@@ -4027,6 +4380,38 @@ char* pb_cset_str(const char* s, long long len, const char* pad) {
     return r;
 }
 
+/* LSET$(s, len [USING u]): left-justify s into a len result, padding the
+   right with the first char of u (or spaces).  If s is longer than len, only
+   the left-most len bytes are returned.  (CHW LSET$_function.htm) */
+char* pb_lset_str(const char* s, long long len, const char* pad) {
+    unsigned long slen = (unsigned long)strlen(s);
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    if (len < 0) len = 0;
+    unsigned long n = (unsigned long)len;
+    char* r = pb_bstr_alloc(NULL, n);
+    if (n == 0) return r;
+    for (unsigned long i = 0; i < n; i++) r[i] = padc;
+    unsigned long take = (slen < n) ? slen : n;
+    memcpy(r, s, take);
+    return r;
+}
+
+/* RSET$(s, len [USING u]): right-justify s into a len result, padding the
+   left with the first char of u (or spaces).  If s is longer than len, only
+   the left-most len bytes are returned.  (CHW RSET$_function.htm) */
+char* pb_rset_str(const char* s, long long len, const char* pad) {
+    unsigned long slen = (unsigned long)strlen(s);
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    if (len < 0) len = 0;
+    unsigned long n = (unsigned long)len;
+    char* r = pb_bstr_alloc(NULL, n);
+    if (n == 0) return r;
+    for (unsigned long i = 0; i < n; i++) r[i] = padc;
+    unsigned long take = (slen < n) ? slen : n;
+    memcpy(r + (n - take), s, take);
+    return r;
+}
+
 int pb_clipboard_set_text(const char* text) {
     if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
@@ -4429,6 +4814,48 @@ void pb_rset_buf(char* dest, const char* src, int len) {
     int i;
     for (i = 0; i < len; i++) {
         dest[i] = (i < pad) ? 32 : ((i - pad) < src_len ? src[i - pad] : 32);
+    }
+    dest[len] = (char)0;
+}
+
+/* LSET ABS (buffer target): left-justify src, leave padding positions
+   unchanged from their original content (CHW LSET_statement.htm). */
+void pb_lset_abs_buf(char* dest, const char* src, int len) {
+    int src_len = src ? (int)strlen(src) : 0;
+    int take = src_len < len ? src_len : len;
+    if (take > 0) memmove(dest, src, (size_t)take);
+    dest[len] = (char)0;
+}
+
+/* RSET ABS (buffer target): right-justify src, leave padding positions
+   unchanged from their original content. */
+void pb_rset_abs_buf(char* dest, const char* src, int len) {
+    int src_len = src ? (int)strlen(src) : 0;
+    int take = src_len < len ? src_len : len;
+    int pad = len - take;
+    if (take > 0) memmove(dest + pad, src, (size_t)take);
+    dest[len] = (char)0;
+}
+
+/* LSET USING (buffer target): left-justify src, pad with first char of pad. */
+void pb_lset_using_buf(char* dest, const char* src, int len, const char* pad) {
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    int src_len = src ? (int)strlen(src) : 0;
+    int i;
+    for (i = 0; i < len; i++) {
+        dest[i] = (i < src_len) ? src[i] : padc;
+    }
+    dest[len] = (char)0;
+}
+
+/* RSET USING (buffer target): right-justify src, pad with first char of pad. */
+void pb_rset_using_buf(char* dest, const char* src, int len, const char* pad) {
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    int src_len = src ? (int)strlen(src) : 0;
+    int p = (src_len < len) ? (len - src_len) : 0;
+    int i;
+    for (i = 0; i < len; i++) {
+        dest[i] = (i < p) ? padc : ((i - p) < src_len ? src[i - p] : padc);
     }
     dest[len] = (char)0;
 }
@@ -9395,34 +9822,52 @@ long long pb_thread_count(void) {
 }
 
 
-/* === JOIN$: concatenate string array with delimiter === */
-char* pb_join(char** arr, const char* delim) {
-    if (!arr || !delim) return SysAllocStringByteLen("", 0);
+/* === JOIN$: concatenate string array with delimiter ===
+   CHW: JOIN$(array(), delim$ | BINARY).  base is the fork [N x ptr] array
+   block, which has NO NULL sentinel, so count is the exact element count.
+   PBWin-measured: when the delimiter content is the 3 characters
+   quote-comma-quote (source code """,""") each section is wrapped in one
+   double quote at each end (quotes/commas inside the data are NOT escaped)
+   and the sections are joined with a single comma.  Empty sections become
+   a pair of quotes.  Any other delimiter is copied verbatim between
+   sections, and an empty delimiter inserts nothing. */
+char* pb_join(char* base, long long count, const char* delim) {
+    if (count <= 0) return SysAllocStringByteLen("", 0);
+    char** arr = (char**)base;
+    size_t dlen = delim ? strlen(delim) : 0;
+    int quote_mode = (dlen == 3 && delim[0] == '"' && delim[1] == ',' && delim[2] == '"');
 
     /* First pass: calculate total length */
     size_t total = 0;
-    int count = 0;
-    for (int i = 0; arr[i] != NULL; i++) {
-        if (i > 0) total += strlen(delim);
-        total += strlen(arr[i]);
-        count++;
+    for (long long i = 0; i < count; i++) {
+        char* s = arr[i];
+        size_t slen = s ? strlen(s) : 0;
+        if (quote_mode) {
+            total += slen + 2;                 /* wrapping quotes */
+            if (i < count - 1) total += 1;    /* single comma */
+        } else {
+            total += slen;
+            if (i < count - 1) total += dlen;
+        }
     }
 
-    if (count == 0) return SysAllocStringByteLen("", 0);
-
-    /* Allocate result */
     char* result = SysAllocStringByteLen(NULL, (unsigned int)total);
     if (!result) return SysAllocStringByteLen("", 0);
 
-    /* Second pass: concatenate */
+    /* Second pass: build */
     char* p = result;
-    for (int i = 0; i < count; i++) {
-        if (i > 0) {
-            strcpy(p, delim);
-            p += strlen(delim);
+    for (long long i = 0; i < count; i++) {
+        char* s = arr[i];
+        size_t slen = s ? strlen(s) : 0;
+        if (quote_mode) {
+            *p++ = '"';
+            if (slen) { memcpy(p, s, slen); p += slen; }
+            *p++ = '"';
+            if (i < count - 1) *p++ = ',';
+        } else {
+            if (slen) { memcpy(p, s, slen); p += slen; }
+            if (i < count - 1 && dlen) { memcpy(p, delim, dlen); p += dlen; }
         }
-        strcpy(p, arr[i]);
-        p += strlen(arr[i]);
     }
 
     return result;

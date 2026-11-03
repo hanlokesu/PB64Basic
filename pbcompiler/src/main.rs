@@ -24,7 +24,7 @@ fn main() {
             "Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--session-struct]"
         );
         eprintln!("       [--emit-llvm] [--parse-only] [--runtime-lib path] [--lib-dir path]");
-        eprintln!("       [--debug] [--target triple]");
+        eprintln!("       [--debug] [--target triple] [--console]");
         process::exit(2);
     }
 
@@ -73,6 +73,9 @@ fn main() {
     let parse_only = args.iter().any(|a| a == "--parse-only");
     let emit_llvm = args.iter().any(|a| a == "--emit-llvm");
     let debug_mode = args.iter().any(|a| a == "--debug");
+    // --console: force the console PE subsystem regardless of the source's
+    // #CONSOLE directive (batch 310).
+    let cli_console = args.iter().any(|a| a == "--console");
 
     let output = get_flag_value(&args, "-o").unwrap_or_else(|| {
         let p = Path::new(file_path);
@@ -119,9 +122,10 @@ fn main() {
         target,
         option_explicit: false,
         stack_size: None,
+        console_mode: None,
     };
 
-    match compile_file(file_path, &output, parse_only, &mut opts) {
+    match compile_file(file_path, &output, parse_only, cli_console, &mut opts) {
         Ok(()) => {
             eprintln!("[PB64Basic] Success: {}", output);
         }
@@ -186,6 +190,7 @@ fn compile_file(
     path: &str,
     output: &str,
     parse_only: bool,
+    force_console: bool,
     opts: &mut codegen::CompileOptions,
 ) -> PbResult<()> {
     let path = Path::new(path);
@@ -257,6 +262,13 @@ fn compile_file(
     // preprocessor rounds it up (64 Kb boundary, min 128 Kb). Passed through
     // to the linker as /STACK:bytes in codegen::link_exe.
     opts.stack_size = preprocessor.stack_size();
+    // #CONSOLE ON/OFF (batch 310): the source directive selects the PE
+    // subsystem at link time; an explicit --console on the command line
+    // overrides the source.
+    opts.console_mode = preprocessor.console_mode();
+    if force_console {
+        opts.console_mode = Some(true);
+    }
 
     if parse_only {
         eprintln!("[PB64Basic] Parse-only mode, skipping codegen");

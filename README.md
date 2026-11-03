@@ -259,7 +259,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (945 rows, deduplicated). **0** official keywords are not implemented yet; **3** entry is a fork extension, implemented here but not an official PB keyword (ARRAY SELECT, DIALOG CENTER, GRAPHIC BITMAP CAPTURE). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 310 (v0.2.101). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 310 (v0.2.102). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 310 (v0.2.102) - Console subsystem and runtime dead-code fixes. `#CONSOLE ON` now links /SUBSYSTEM:CONSOLE so PRINT reaches the console (a new --console CLI flag forces it and overrides #CONSOLE OFF); the default and #CONSOLE OFF keep the GUI subsystem. The runtime is built with -ffunction-sections -fdata-sections, so lld-link /OPT:REF discards unreferenced functions; a minimal EXE shrinks from 502,272 B to 163,840 B (about 67%). No keyword coverage change (945 rows, 0 unimplemented).
 > batch 310 (v0.2.101) - Fixed a 32-bit (i686) codegen pointer-width bug. STRPTR and VARPTR were hard-coded to materialise the pointer via ptrtoint i64; on 32-bit, a BYVAL STRPTR/VARPTR in a stdcall frame pushed 8 bytes instead of 4, shifting every later argument and the callee stack cleanup and causing a deterministic access violation (C0000005). ptrtoint now uses the native pointer width (i32 on 32-bit, i64 on 64-bit). No keyword coverage change (945 rows, 940 implemented).
 > batch 309 (v0.2.100) - JK-IDE addon release: inline error annotation (a one-line red band printed directly under the error line, no hover/timer/dwell), save-before-compile, error-line jump, unified red standard output across all six addon entries, and the RUN-path fatal-error fix. No keyword coverage change (945 rows, 938 implemented).
 > batch 308 (v0.2.099) - F/G/H/I family CHW audit; fixed GOSUB return-point loop, HIWRD/HIBYT/LOWRD/LOBYT masks, bare ISFALSE, INPUT# space delimiting; dual-run probes byte-identical, compile-all 358/358.
@@ -809,6 +810,12 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.102 (2026-11-03) - batch 310: console subsystem switch and runtime dead-code elimination
+
+- **Console subsystem (`#CONSOLE ON`)**: the linker previously hard-coded `/SUBSYSTEM:WINDOWS` for every target, so a console program produced no visible output even though `#CONSOLE ON` was accepted and skipped. The directive now records a mode and drives the PE subsystem: `#CONSOLE ON` links `/SUBSYSTEM:CONSOLE` and `PRINT` reaches the console, while `#CONSOLE OFF` and the default keep `/SUBSYSTEM:WINDOWS`. A new `--console` command-line flag forces the console subsystem and overrides an in-source `#CONSOLE OFF`. Both subsystems keep the `mainCRTStartup` entry. Verified on x86_64 and i686.
+- **Runtime dead-code elimination**: the runtime object was compiled into a single `.text` section, so the linker could not drop unreferenced functions and pulled the whole runtime into every EXE. The runtime is now built with `-ffunction-sections -fdata-sections`; each function lands in its own COMDAT section, and lld-link's default `/OPT:REF` removes the unreferenced sections. A minimal hello-world EXE drops from 502,272 B to 163,840 B (about 67% smaller) with identical output, and a controlled marker experiment confirms an unreferenced function is removed only under function sections.
+- No keyword coverage change: 945 rows, 0 official keywords unimplemented.
+
 ### v0.2.101 (2026-11-03)
 
 * Fixed a 32-bit (i686) codegen pointer-width bug. STRPTR and VARPTR were hard-coded to materialise the pointer with `ptrtoint ... to i64`. On 64-bit, i64 and a pointer are both 8 bytes and ABI-equivalent, so the defect stayed hidden; on 32-bit a pointer is 4 bytes, so an i64 passed BYVAL in a stdcall frame was pushed as 8 bytes, shifting every later argument and the stdcall callee stack cleanup and causing a deterministic access violation (C0000005).

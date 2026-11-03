@@ -166,6 +166,13 @@ pub struct TypeDecl {
     /// offset 0 and every object variable is a reference to a heap object,
     /// matching the official PowerBASIC object model (CHW CLASS/END CLASS).
     pub is_class: bool,
+    /// Member alignment in bytes (CHW TYPE/END TYPE): BYTE = 1 (the default),
+    /// WORD = 2, DWORD = 4, or QWORD = 8. Each member is placed on the
+    /// specified boundary and the structure is padded at the tail.
+    pub align: u32,
+    /// FILL option (CHW TYPE FILL): padding bytes are skipped only when the
+    /// next member would not fit entirely into the space to be skipped.
+    pub fill: bool,
     /// EVENT SOURCE interfaces advertised by this class (batch 222).
     pub event_sources: Vec<String>,
     /// Interface blocks implemented by this CLASS (batch 264).  Each entry is

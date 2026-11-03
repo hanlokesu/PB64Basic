@@ -231,6 +231,20 @@ impl ModuleBuilder {
         .unwrap();
     }
 
+    /// Define a PACKED named struct: `<{ ... }>`. All fields are placed on a
+    /// 1-byte boundary with no automatic ABI padding, so codegen can control
+    /// exact member offsets (CHW TYPE BYTE/WORD/DWORD/QWORD alignment).
+    pub fn define_packed_struct_type(&mut self, name: &str, field_types: &[IrType]) {
+        let fields_str: Vec<String> = field_types.iter().map(|t| t.to_string()).collect();
+        writeln!(
+            self.globals,
+            "%{} = type <{{ {} }}>",
+            name,
+            fields_str.join(", ")
+        )
+        .unwrap();
+    }
+
     /// Add a global variable.
     pub fn add_global(&mut self, name: &str, ty: &IrType, init: &str) {
         writeln!(self.globals, "@{} = global {} {}", name, ty, init).unwrap();

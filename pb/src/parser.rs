@@ -634,6 +634,8 @@ impl Parser {
                         line,
                         is_union: false,
                         is_class: true,
+                        align: 1,
+                        fill: false,
                         event_sources,
                         interfaces,
                     })))
@@ -1456,6 +1458,37 @@ impl Parser {
     fn parse_type_decl(&mut self, line: usize) -> PbResult<TypeDecl> {
         self.advance(); // TYPE
         let name = self.consume_identifier()?;
+        // Optional member alignment: [BYTE | WORD | DWORD | QWORD] [FILL].
+        // BYTE (1) is the default per CHW TYPE/END TYPE. These tokens were
+        // previously discarded by consume_to_eol.
+        let mut align: u32 = 1;
+        let mut fill = false;
+        loop {
+            match self.peek().clone() {
+                Token::Dword => {
+                    self.advance();
+                    align = 4;
+                }
+                Token::Identifier(w) => {
+                    if w.eq_ignore_ascii_case("BYTE") {
+                        self.advance();
+                        align = 1;
+                    } else if w.eq_ignore_ascii_case("WORD") {
+                        self.advance();
+                        align = 2;
+                    } else if w.eq_ignore_ascii_case("QWORD") {
+                        self.advance();
+                        align = 8;
+                    } else if w.eq_ignore_ascii_case("FILL") {
+                        self.advance();
+                        fill = true;
+                    } else {
+                        break;
+                    }
+                }
+                _ => break,
+            }
+        }
         self.consume_to_eol();
         self.skip_eol();
 
@@ -1498,21 +1531,23 @@ impl Parser {
                     } else {
                         (self.eval_const_expr(&lo), None)
                     };
-                    let cnt = match (lo_v, hi_v) {
-                        // `name(N)` — subscript bound 0..N inclusive = N+1 elements.
-                        (Some(lo), None) if lo >= 0 => Some(lo as usize + 1),
+                    let (cnt, real_lower) = match (lo_v, hi_v) {
+                        // `name(N)` — subscript bound 0..N inclusive = N+1 elements,
+                        // and the effective lower bound is 0 (the bare N is the
+                        // upper bound, not the lower bound).
+                        (Some(lo), None) if lo >= 0 => (Some(lo as usize + 1), 0i64),
                         // `name(lo TO hi)` — inclusive range hi-lo+1 elements.
-                        (Some(lo), Some(hi)) if hi >= lo => Some((hi - lo) as usize + 1),
+                        (Some(lo), Some(hi)) if hi >= lo => (Some((hi - lo) as usize + 1), lo),
                         _ => {
                             eprintln!(
                                 "[b306diag] {} lo={:?} lo_v={:?} hi_v={:?}",
                                 fname, lo, lo_v, hi_v
                             );
-                            None
+                            (None, 0i64)
                         }
                     };
-                    if let (Some(lo), Some(c)) = (lo_v, cnt) {
-                        dims.push((lo, c as i64));
+                    if let Some(c) = cnt {
+                        dims.push((real_lower, c as i64));
                     }
                     match (total, cnt) {
                         (Some(t), Some(c)) => total = Some(t * c),
@@ -1591,6 +1626,8 @@ impl Parser {
             line,
             is_union: false,
             is_class: false,
+            align,
+            fill,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
         })
@@ -1719,6 +1756,8 @@ impl Parser {
             line,
             is_union: true,
             is_class: false,
+            align: 1,
+            fill: false,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
         })
@@ -7988,16 +8027,38 @@ impl Parser {
 
                 if matches!(name_upper.as_str(), "LSET" | "RSET") {
                     self.advance(); // consume LSET/RSET
-                                    // LSET target$ = value  (and RSET)
+                                    // LSET [ABS] target = value [USING pad] (and RSET).
+                                    // ABS: padding positions keep their original content.
+                    let has_abs = matches!(self.peek(), Token::Identifier(a)
+                        if a.eq_ignore_ascii_case("ABS"));
+                    if has_abs {
+                        self.advance();
+                    }
                     let target = self.parse_primary()?;
                     if self.peek() == &Token::Eq {
                         self.advance();
                     }
                     let value = self.parse_expression()?;
+                    // Optional USING pad expression (CHW syntax).
+                    let pad_expr = if matches!(self.peek(), Token::Identifier(u)
+                        if u.eq_ignore_ascii_case("USING"))
+                    {
+                        self.advance();
+                        Some(self.parse_expression()?)
+                    } else {
+                        None
+                    };
                     self.consume_to_eol();
+                    let mut cargs = vec![target, value];
+                    if let Some(p) = pad_expr {
+                        cargs.push(p);
+                    } else if has_abs {
+                        // Sentinel: ABS without USING leaves padding untouched.
+                        cargs.push(Expr::StringLit("__ABS__".to_string()));
+                    }
                     return Ok(Statement::Call(CallStmt {
                         name: name_upper.clone(),
-                        args: vec![target, value],
+                        args: cargs,
                         line,
                     }));
                 }

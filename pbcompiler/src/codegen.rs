@@ -209,6 +209,10 @@ pub struct CompileOptions {
     /// `#STACK num_expr` — requested runtime stack size in bytes (rounded up
     /// to 64 Kb boundary, min 128 Kb).  Passed to the linker as /STACK:bytes.
     pub stack_size: Option<u64>,
+    /// `#CONSOLE ON` / `#CONSOLE OFF` or `--console` — select the PE
+    /// subsystem.  Some(true) links /SUBSYSTEM:CONSOLE (PRINT/WRITE go to the
+    /// owning console); None / Some(false) keeps the GUI subsystem.
+    pub console_mode: Option<bool>,
 }
 
 /// Compile a parsed PB program to LLVM IR, then optionally to object code via clang.
@@ -863,8 +867,15 @@ fn link_exe(
         args.push(legacy.clone());
     }
 
-    // Use Windows GUI subsystem (no console window)
-    args.push("-Wl,/SUBSYSTEM:WINDOWS,/ENTRY:mainCRTStartup".to_string());
+    // #CONSOLE ON / --console (batch 310): link a console-subsystem EXE so
+    // PRINT/WRITE go to the owning console without AllocConsole.  The default
+    // (and #CONSOLE OFF) stays the Windows GUI subsystem.  Both keep the
+    // mainCRTStartup entry because the runtime uses `main`, not WinMain.
+    if opts.console_mode == Some(true) {
+        args.push("-Wl,/SUBSYSTEM:CONSOLE,/ENTRY:mainCRTStartup".to_string());
+    } else {
+        args.push("-Wl,/SUBSYSTEM:WINDOWS,/ENTRY:mainCRTStartup".to_string());
+    }
 
     // #STACK num_expr (batch 299): request a custom runtime stack reserve.
     // CHW rounds up to the next 64 Kb boundary, minimum 128 Kb; the
@@ -1464,6 +1475,12 @@ struct FieldInfo {
     /// Per-dimension (lower, count) of a member array (legacy #8, batch307).
     /// Empty = scalar / embedded nested type.
     dims: Vec<(i64, i64)>,
+    /// LLVM packed-struct slot index for this field, INCLUDING any padding
+    /// slots. `field_map` stores the index into the `fields` Vec (real fields
+    /// only, no padding), so GEP must use this value rather than the Vec
+    /// index — otherwise fields after a padding slot are mis-addressed or
+    /// fall out of bounds (lm_fill panic).
+    gep_idx: usize,
 }
 
 impl Compiler {
@@ -1595,34 +1612,81 @@ impl Compiler {
         }
     }
 
-    /// ABI alignment of a scalar IR type (LLVM x64 defaults; matches the real
-    /// `alloca` footprint so LEN/SIZEOF of a UDT agree with memory).
-    fn ir_align_bytes(ir: &IrType) -> u32 {
-        match ir {
-            IrType::I1 | IrType::I8 => 1,
-            IrType::I16 => 2,
-            IrType::I32 | IrType::Float => 4,
-            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-            IrType::Array(_, elem) => Self::ir_align_bytes(elem),
-            _ => 4,
+    /// Storage size in bytes of a scalar PowerBASIC type (CHW LEN/SIZEOF).
+    /// Handles the 32/64-bit width for pointer-like types; UDT and Variant are
+    /// resolved by the caller. Used to fix LEN of numeric variables, which
+    /// previously fell through to pb_str_len and returned garbage (lm_len).
+    fn pb_scalar_size(pb_type: &PbType, is_32bit: bool) -> i32 {
+        let ptr_w = if is_32bit { 4 } else { 8 };
+        match pb_type {
+            PbType::Byte => 1,
+            PbType::Integer | PbType::Word => 2,
+            PbType::Long | PbType::Dword | PbType::Single => 4,
+            PbType::Double | PbType::Ext | PbType::Cur | PbType::Quad => 8,
+            PbType::FixedString(n) => *n as i32,
+            PbType::String | PbType::WString | PbType::Pointer(_) | PbType::Interface(_) => ptr_w,
+            PbType::Field => 16,
+            // Variant/UDT: caller resolves; default to pointer width.
+            PbType::Variant => ptr_w,
+            PbType::UserDefined(_) => ptr_w,
         }
     }
 
-    /// LLVM struct layout size: fields are placed at ABI-aligned offsets and
-    /// the whole struct is padded to its maximum member alignment (batch 278,
-    /// LEN/SIZEOF of a UDT).
-    fn llvm_abi_size(types: &[IrType]) -> u32 {
-        let mut offset = 0u32;
-        let mut max_align = 1u32;
-        for t in types {
-            let al = Self::ir_align_bytes(t);
-            if al > max_align {
-                max_align = al;
-            }
-            offset = offset.div_ceil(al) * al;
-            offset += Self::ir_size_bytes(t);
+    /// Bytes skipped before a member.
+    ///
+    /// Standard alignment (no FILL): CHW states every member is aligned on the
+    /// declared boundary ("Each member will be aligned on a DWORD/WORD/QWORD
+    /// boundary"), so the effective alignment is the structure's alignment,
+    /// regardless of the member's natural size.
+    ///
+    /// FILL (CHW rules 1-3):
+    ///   rule 2 - fixed-length strings are byte arrays, so no bytes are skipped;
+    ///   rule 1 - otherwise, if the member's total size fits entirely in the gap
+    ///   that standard alignment would skip, nothing is skipped, else the
+    ///   member moves to the next boundary;
+    ///   rule 3 (arrays) falls out of rule 1 using the array's total size.
+    fn field_padding(
+        cur_offset: u32,
+        field_ir: &IrType,
+        struct_align: u32,
+        is_fill: bool,
+        is_fixed_str: bool,
+    ) -> u32 {
+        let a = struct_align.max(1);
+        let rem = cur_offset % a;
+        let gap = if rem == 0 { 0 } else { a - rem };
+        if !is_fill {
+            return gap;
         }
-        offset.div_ceil(max_align) * max_align
+        // FILL rule 2: fixed-length strings never skip.
+        if is_fixed_str {
+            return 0;
+        }
+        if gap == 0 {
+            return 0;
+        }
+        let field_size = Self::ir_size_bytes(field_ir);
+        if field_size <= gap {
+            0 // rule 1: fits entirely into the gap
+        } else {
+            gap
+        }
+    }
+
+    /// Tail padding so the total structure size is a multiple of its declared
+    /// alignment (CHW: "the structure is padded at the tail"). FILL never adds
+    /// trailing bytes (PBWin: FillT LEN=9 vs standard 12 for the same members).
+    fn tail_padding(cur_offset: u32, struct_align: u32, is_fill: bool) -> u32 {
+        if is_fill {
+            return 0;
+        }
+        let a = struct_align.max(1);
+        let rem = cur_offset % a;
+        if rem == 0 {
+            0
+        } else {
+            a - rem
+        }
     }
 
     /// IR type for a struct field → FixedString becomes [N x i8] instead of ptr
@@ -2030,8 +2094,51 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32],
             false,
         );
+        // LEFT$/RIGHT$ on byte strings: full PBWin boundary semantics
+        // (n >= LEN, n == 0, negative n -> LEN-ABS(n)); count passed as i64.
+        self.module.declare_function(
+            "pb_bstr_left",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_bstr_right",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        // LTRIM$: (src, has_any, match) -> trimmed BSTR; empty match = spaces.
+        self.module.declare_function(
+            "pb_ltrim",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        // RTRIM$: same signature as LTRIM$, trimming from the right.
+        self.module.declare_function(
+            "pb_rtrim",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        // TRIM$ numeric form: (double, digits) -> BSTR, digits<=0 = default.
+        self.module.declare_function(
+            "pb_trim_num",
+            &IrType::Ptr,
+            &[IrType::Double, IrType::I32],
+            false,
+        );
         self.module
             .declare_function("pb_str_len", &IrType::I32, &[IrType::Ptr], false);
+        // JOIN$(array(), delim$): join the [N x ptr] array block (no NULL
+        // sentinel) with an explicit element count
+        self.module.declare_function(
+            "pb_join",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::Ptr],
+            false,
+        );
         // batch 281: WSTRING (UTF-16 BSTR) string-function helpers
         self.module
             .declare_function("pb_wstr_len", &IrType::I32, &[IrType::Ptr], false);
@@ -2291,6 +2398,30 @@ impl Compiler {
             "pb_rset_buf",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_lset_abs_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_rset_abs_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_lset_using_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_rset_using_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -3944,6 +4075,8 @@ impl Compiler {
         self.module
             .declare_function("pb_isfolder", &IrType::I64, &[IrType::Ptr], false);
         self.module
+            .declare_function("pb_isfile", &IrType::I64, &[IrType::Ptr], false);
+        self.module
             .declare_function("pb_exp2", &IrType::Double, &[IrType::Double], false);
         self.module
             .declare_function("pb_exp10", &IrType::Double, &[IrType::Double], false);
@@ -4025,8 +4158,16 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr, IrType::I64, IrType::I32],
             false,
         );
+        self.module.declare_function(
+            "pb_mcase_string",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
         self.module
-            .declare_function("pb_mcase_string", &IrType::Ptr, &[IrType::Ptr], false);
+            .declare_function("pb_lcase", &IrType::Ptr, &[IrType::Ptr, IrType::I32], false);
+        self.module
+            .declare_function("pb_ucase", &IrType::Ptr, &[IrType::Ptr, IrType::I32], false);
         self.module
             .declare_function("pb_build", &IrType::Ptr, &[IrType::Ptr, IrType::I64], false);
         self.module
@@ -6000,6 +6141,18 @@ impl Compiler {
             &[IrType::Ptr, IrType::I64, IrType::Ptr],
             false,
         );
+        self.module.declare_function(
+            "pb_lset_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_rset_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_ccur", &IrType::Double, &[IrType::Double], false);
         self.module
@@ -6900,12 +7053,13 @@ impl Compiler {
                                 largest = Some((ir_type.clone(), sz));
                             }
                             let mn = normalize_name(&m.name);
-                            field_map.insert(mn.clone(), 0usize); // overlap
+                            field_map.insert(mn.clone(), fields.len()); // Vec index
                             fields.push(FieldInfo {
                                 name: mn,
                                 pb_type: m.pb_type.clone(),
                                 ir_type,
                                 dims: m.dims.clone(),
+                                gep_idx: 0, // all union members share LLVM slot 0
                             });
                         }
                         continue;
@@ -6922,12 +7076,13 @@ impl Compiler {
                     largest = Some((ir_type.clone(), sz));
                 }
                 let field_name = normalize_name(&field.name);
-                field_map.insert(field_name.clone(), 0usize); // all at offset 0
+                field_map.insert(field_name.clone(), fields.len()); // Vec index
                 fields.push(FieldInfo {
                     name: field_name,
                     pb_type: field.pb_type.clone(),
                     ir_type,
                     dims: field.dims.clone(),
+                    gep_idx: 0, // all union members share LLVM slot 0
                 });
             }
             let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
@@ -6956,6 +7111,24 @@ impl Compiler {
         // defined structure name embeds that TYPE/UNION; members flatten into
         // this structure (X.H works directly, per the CHW example).
         let mut idx = 0usize;
+        let mut cur_offset = 0u32;
+        let struct_align = td.align.max(1);
+        let is_fill = td.fill;
+        // Insert alignment padding before a real field so it lands on its
+        // effective boundary (CHW TYPE BYTE/WORD/DWORD/QWORD). Padding is an
+        // [N x i8] slot inside the packed struct.
+        let emit_pad = |ir_types: &mut Vec<IrType>,
+                        idx: &mut usize,
+                        cur_offset: &mut u32,
+                        field_ir: &IrType,
+                        fixed_str: bool| {
+            let pad = Self::field_padding(*cur_offset, field_ir, struct_align, is_fill, fixed_str);
+            if pad > 0 {
+                ir_types.push(IrType::Array(pad as usize, Box::new(IrType::I8)));
+                *idx += 1;
+                *cur_offset += pad;
+            }
+        };
         if td.is_class {
             // Official CLASS object model (batch 305, legacy #2): the object
             // layout carries a hidden class-id header at offset 0 so an
@@ -6969,8 +7142,10 @@ impl Compiler {
                 pb_type: PbType::Long,
                 ir_type: IrType::I64,
                 dims: Vec::new(),
+                gep_idx: 0, // hidden header occupies LLVM slot 0
             });
             idx = 1;
+            cur_offset = Self::ir_size_bytes(&IrType::I64);
         }
         for field in td.fields.iter() {
             if let Some(nested_name) = &field.nested {
@@ -6981,14 +7156,23 @@ impl Compiler {
                         // Not supported yet: keep the structure registrable by
                         // treating the embed as an opaque LONG field so the
                         // layout does not silently shrink.
+                        emit_pad(
+                            &mut ir_types,
+                            &mut idx,
+                            &mut cur_offset,
+                            &IrType::I32,
+                            false,
+                        );
                         ir_types.push(IrType::I32);
-                        field_map.insert(normalize_name(nested_name), idx);
+                        field_map.insert(normalize_name(nested_name), fields.len());
                         fields.push(FieldInfo {
                             name: normalize_name(nested_name),
                             pb_type: PbType::Long,
                             ir_type: IrType::I32,
                             dims: Vec::new(),
+                            gep_idx: idx,
                         });
+                        cur_offset += Self::ir_size_bytes(&IrType::I32);
                         idx += 1;
                         continue;
                     }
@@ -7001,31 +7185,44 @@ impl Compiler {
                         .iter()
                         .max_by_key(|f| Self::ir_size_bytes(&f.ir_type));
                     let ir_type = largest.map(|f| f.ir_type.clone()).unwrap_or(IrType::I8);
+                    emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, false);
                     ir_types.push(ir_type.clone());
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
-                        field_map.insert(mn.clone(), idx);
+                        field_map.insert(mn.clone(), fields.len());
                         fields.push(FieldInfo {
                             name: mn,
                             pb_type: m.pb_type.clone(),
                             ir_type: m.ir_type.clone(),
                             dims: m.dims.clone(),
+                            gep_idx: idx, // all overlap on this LLVM slot
                         });
                     }
+                    cur_offset += Self::ir_size_bytes(&ir_type);
                     idx += 1;
                 } else {
                     // Embedded TYPE: flatten its (already expanded) members in
                     // declaration order.
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
+                        let m_fixed = matches!(m.pb_type, PbType::FixedString(_));
+                        emit_pad(
+                            &mut ir_types,
+                            &mut idx,
+                            &mut cur_offset,
+                            &m.ir_type,
+                            m_fixed,
+                        );
                         ir_types.push(m.ir_type.clone());
-                        field_map.insert(mn.clone(), idx);
+                        field_map.insert(mn.clone(), fields.len());
                         fields.push(FieldInfo {
                             name: mn,
                             pb_type: m.pb_type.clone(),
                             ir_type: m.ir_type.clone(),
                             dims: m.dims.clone(),
+                            gep_idx: idx,
                         });
+                        cur_offset += Self::ir_size_bytes(&m.ir_type);
                         idx += 1;
                     }
                 }
@@ -7039,20 +7236,32 @@ impl Compiler {
                 } else {
                     elem_ir
                 };
+                let fixed =
+                    matches!(field.pb_type, PbType::FixedString(_)) && field.array_dim.is_none();
+                emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, fixed);
                 ir_types.push(ir_type.clone());
-                field_map.insert(field_name.clone(), idx);
+                field_map.insert(field_name.clone(), fields.len());
                 fields.push(FieldInfo {
                     name: field_name,
                     pb_type: field.pb_type.clone(),
                     ir_type,
                     dims: field.dims.clone(),
+                    gep_idx: idx,
                 });
+                cur_offset += Self::ir_size_bytes(&fields.last().unwrap().ir_type);
                 idx += 1;
             }
         }
 
+        // Tail padding so the total size is a multiple of the declared align.
+        // FILL never adds trailing bytes.
+        let tail = Self::tail_padding(cur_offset, struct_align, is_fill);
+        if tail > 0 {
+            ir_types.push(IrType::Array(tail as usize, Box::new(IrType::I8)));
+            cur_offset += tail;
+        }
         if !self.type_layouts.contains_key(&name) {
-            self.module.define_struct_type(&name, &ir_types);
+            self.module.define_packed_struct_type(&name, &ir_types);
         }
         self.type_layouts.insert(
             name.clone(),
@@ -7061,7 +7270,7 @@ impl Compiler {
                 fields,
                 field_map,
                 is_union: false,
-                size: Self::llvm_abi_size(&ir_types),
+                size: cur_offset,
             },
         );
 
@@ -8317,35 +8526,11 @@ impl Compiler {
                 Ok(())
             }
             Statement::Kill(expr) => {
-                // KILL filespec — on failure set ERR: ENOENT -> 53, EACCES -> 70, other -> 75
+                // KILL filespec — pb_kill handles wildcards, HIDDEN/SYSTEM and
+                // the ERR mapping (53/70) internally, the same shape as
+                // pb_filecopy, so the return value is simply ignored.
                 let path = self.compile_expr(fb, expr)?;
-                let ret = fb.call(&IrType::I32, "pb_kill", &[path]);
-                let neg1 = fb.const_i32(-1);
-                let is_err = fb.icmp("eq", &ret, &neg1);
-                let err_lbl = fb.next_label("kill.err");
-                let merge_lbl = fb.next_label("kill.merge");
-                fb.condbr(&is_err, &err_lbl, &merge_lbl);
-                fb.label(&err_lbl);
-                let errno_ptr = fb.call(&IrType::Ptr, "_errno", &[]);
-                let eno = fb.load(&IrType::I32, &errno_ptr);
-                let enoent = fb.const_i32(2);
-                let is_enoent = fb.icmp("eq", &eno, &enoent);
-                let enoent_lbl = fb.next_label("kill.enoent");
-                let other_lbl = fb.next_label("kill.other");
-                fb.condbr(&is_enoent, &enoent_lbl, &other_lbl);
-                fb.label(&enoent_lbl);
-                let g = Val::new("@pb_err".to_string(), IrType::Ptr);
-                fb.store(&fb.const_i32(53), &g);
-                let gv = Val::new("@pb_err_var".to_string(), IrType::Ptr);
-                fb.store(&fb.const_i32(53), &gv);
-                fb.br(&merge_lbl);
-                fb.label(&other_lbl);
-                let g2 = Val::new("@pb_err".to_string(), IrType::Ptr);
-                fb.store(&fb.const_i32(75), &g2);
-                let gv2 = Val::new("@pb_err_var".to_string(), IrType::Ptr);
-                fb.store(&fb.const_i32(75), &gv2);
-                fb.br(&merge_lbl);
-                fb.label(&merge_lbl);
+                fb.call_void("pb_kill", &[path]);
                 Ok(())
             }
             Statement::Asm(text) => {
@@ -8833,14 +9018,16 @@ impl Compiler {
                             self.current_line,
                         ));
                     }
-                    // FixedString (ASCIIZ*N): use strncpy instead of store
+                    // FixedString (ASCIIZ*N): standalone vars get an [N+1 x i8]
+                    // buffer (see compile_dim), so write all N data bytes and
+                    // keep NUL at position N - matches PBWin's N usable bytes.
                     if let PbType::FixedString(n) = &target_pb {
                         let buf_ptr = Val::new(ptr_name, IrType::Ptr);
                         let src = self.compile_expr(fb, &assign.value)?;
-                        let size = fb.const_i32((*n as i32) - 1);
+                        let size = fb.const_i32(*n as i32);
                         fb.call_void("strncpy", &[buf_ptr.clone(), src, size]);
-                        // Null-terminate at position N-1
-                        let term_idx = fb.const_i32((*n as i32) - 1);
+                        // Null-terminate at position N (the extra buffer byte).
+                        let term_idx = fb.const_i32(*n as i32);
                         let term_ptr = fb.gep_byte(&buf_ptr, &term_idx);
                         fb.store(&Val::new("0".to_string(), IrType::I8), &term_ptr);
                     } else if self.field_bound_strings.contains(&name) {
@@ -9073,6 +9260,7 @@ impl Compiler {
                             match &layout.fields[fidx].ir_type {
                                 IrType::Array(n, elem) => Some((
                                     fidx,
+                                    layout.fields[fidx].gep_idx,
                                     *n,
                                     (**elem).clone(),
                                     layout.fields[fidx].pb_type.clone(),
@@ -9082,10 +9270,10 @@ impl Compiler {
                             }
                         })
                     });
-                    if let Some((fidx, n, elem, field_pb, dims)) = member {
+                    if let Some((_fidx, gep_idx, n, elem, field_pb, dims)) = member {
                         if !args.is_empty() {
                             let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
-                            let slot = fb.gep_struct(&class, &base_ptr, fidx);
+                            let slot = fb.gep_struct(&class, &base_ptr, gep_idx);
                             let mut compiled = Vec::with_capacity(args.len());
                             for a in args {
                                 compiled.push(self.compile_expr(fb, a)?);
@@ -9213,6 +9401,33 @@ impl Compiler {
         }
     }
 
+    /// Resolve the declared PbType of a variable/member lvalue expression.
+    /// Used by LEN to return a static size for a numeric member (CHW LEN:
+    /// LEN of a single member returns its real size, not the struct size).
+    fn expr_pb_type(&self, expr: &Expr) -> Option<PbType> {
+        match expr {
+            Expr::Variable(name) => {
+                if name.eq_ignore_ascii_case("ME") || name.eq_ignore_ascii_case("MYBASE") {
+                    return Some(
+                        self.symbols
+                            .lookup(&normalize_name("this"))?
+                            .pb_type
+                            .clone(),
+                    );
+                }
+                Some(self.symbols.lookup(&normalize_name(name))?.pb_type.clone())
+            }
+            Expr::TypeMember(base, member) => {
+                let t = self.struct_type_of_expr(base)?;
+                let layout = self.type_layouts.get(&t)?;
+                let idx = *layout.field_map.get(&normalize_name(member))?;
+                Some(layout.fields[idx].pb_type.clone())
+            }
+            Expr::Deref(inner) => self.expr_pb_type(inner),
+            _ => None,
+        }
+    }
+
     // ========== Lvalue pointer ==========
 
     /// True when `expr` is a variable/member whose type is an INTERFACE name
@@ -9336,13 +9551,69 @@ impl Compiler {
                         PbError::runtime(format!("Unknown field: {}.{}", type_name, member_norm))
                     })?;
                     let field_pb = layout.fields[field_idx].pb_type.clone();
-                    let field_ptr = fb.gep_struct(&type_name, &base_ptr, field_idx);
+                    let field_ptr =
+                        fb.gep_struct(&type_name, &base_ptr, layout.fields[field_idx].gep_idx);
                     Ok((field_ptr, field_pb))
                 } else {
                     Err(PbError::runtime(
                         "TypeMember on non-TYPE variable".to_string(),
                     ))
                 }
+            }
+            Expr::MethodCall { base, name, args } => {
+                // VARPTR(u.arr(i)): the address of a TYPE member-array element.
+                // Snapshot the field layout first so the immutable borrow of
+                // self.type_layouts ends before the &mut self calls below.
+                let class = self.struct_type_of_expr(base).ok_or_else(|| {
+                    PbError::runtime("member-array address: receiver is not a TYPE".to_string())
+                })?;
+                let mn = normalize_name(name);
+                let member = self.type_layouts.get(&class).and_then(|layout| {
+                    layout
+                        .field_map
+                        .get(&mn)
+                        .and_then(|&fidx| match &layout.fields[fidx].ir_type {
+                            IrType::Array(n, elem) => Some((
+                                layout.fields[fidx].gep_idx,
+                                *n,
+                                (**elem).clone(),
+                                layout.fields[fidx].pb_type.clone(),
+                                layout.fields[fidx].dims.clone(),
+                            )),
+                            _ => None,
+                        })
+                });
+                let (gep_idx, n, elem, field_pb, dims) = member.ok_or_else(|| {
+                    PbError::runtime(format!("member `{}.{}` is not an array", class, mn))
+                })?;
+                if args.is_empty() {
+                    return Err(PbError::runtime(format!(
+                        "member-array `{}.{}(...)` address: expected at least 1 index",
+                        class, mn
+                    )));
+                }
+                let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
+                let slot = fb.gep_struct(&class, &base_ptr, gep_idx);
+                let mut compiled = Vec::with_capacity(args.len());
+                for a in args {
+                    compiled.push(self.compile_expr(fb, a)?);
+                }
+                let dims = if dims.is_empty() {
+                    vec![(0i64, n as i64)]
+                } else {
+                    dims
+                };
+                let arr_info = ArrayInfo {
+                    ptr_name: String::new(),
+                    array_ir_type: IrType::Array(n, Box::new(elem.clone())),
+                    elem_ir_type: elem.clone(),
+                    pb_type: field_pb,
+                    dims,
+                    total_elements: n,
+                };
+                let flat = self.compute_flat_index(fb, &compiled, &arr_info);
+                let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
+                Ok((elem_ptr, arr_info.pb_type))
             }
             _ => Err(PbError::runtime("Not an lvalue".to_string())),
         }
@@ -9521,7 +9792,18 @@ impl Compiler {
             let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
             let ptr = fb.alloca(&array_ir);
             fb.store(&Val::new("zeroinitializer", array_ir.clone()), &ptr);
-            let dims = vec![(1i64, total as i64)];
+            // When the array was first declared with an empty-bounds DIM
+            // (`DIM x() AS T`), it stays undimensioned until the REDIM runs.
+            // Keep the max-size backing storage, but register it with empty
+            // dims / zero elements so LBOUND/UBOUND return 0/-1 beforehand
+            // (CHW LBOUND; lm_bound probe). A direct REDIM with no prior DIM
+            // keeps the historical (1, total) metadata.
+            let undim_declared = elem_types.contains_key(&name);
+            let (dims, total_elements) = if undim_declared {
+                (Vec::new(), 0usize)
+            } else {
+                (vec![(1i64, total as i64)], total)
+            };
             self.symbols.insert_local_array(
                 name,
                 ArrayInfo {
@@ -9530,7 +9812,7 @@ impl Compiler {
                     elem_ir_type: elem_ir.clone(),
                     pb_type,
                     dims,
-                    total_elements: total,
+                    total_elements,
                 },
             );
         }
@@ -9545,11 +9827,16 @@ impl Compiler {
         // assigns real bounds (batch289 A-class audit). Previously this fell
         // through to the scalar path and lookup_array failed with
         // "array not declared".
-        if dim.is_array
-            && dim.bounds.is_empty()
-            && !dim.is_redim
-            && !self.symbols.lookup_array(&name).is_some()
-        {
+        if dim.is_array && dim.bounds.is_empty() && !dim.is_redim {
+            // prescan may already have registered the max-size backing storage
+            // marked as undimensioned (dims empty). Keep that registration and
+            // do not fall through to the scalar path, which would overwrite the
+            // array symbol with a scalar (lm_bound probe).
+            if let Some(existing) = self.symbols.lookup_array(&name) {
+                if existing.dims.is_empty() {
+                    return Ok(());
+                }
+            }
             let elem_ir = Self::ir_type_for(&dim.pb_type);
             let ptr = fb.alloca(&IrType::Ptr);
             fb.store(&Val::new("null", IrType::Ptr), &ptr);
@@ -9610,6 +9897,28 @@ impl Compiler {
                 // fill) runs off an 8-byte alloca - the batch 245 headless
                 // crash (C0000005 in pb_control_add_listbox_ex, batch 307).
                 if prev.total_elements == 0 {
+                    if let IrType::Array(max_n, _) = &prev.array_ir_type {
+                        if *max_n > 0 {
+                            // prescan already allocated a max-size backing buffer
+                            // but registered it as undimensioned (dims empty). Reuse
+                            // that storage and only refresh the dims metadata; the
+                            // current REDIM never exceeds the max-size buffer.
+                            self.symbols.insert_local_array(
+                                name,
+                                ArrayInfo {
+                                    ptr_name: prev.ptr_name.clone(),
+                                    array_ir_type: prev.array_ir_type.clone(),
+                                    elem_ir_type: elem_ir.clone(),
+                                    pb_type: arr_pb_type,
+                                    dims,
+                                    total_elements: total,
+                                },
+                            );
+                            return Ok(());
+                        }
+                    }
+                    // True metadata-only declaration ([0 x T], no backing storage):
+                    // allocate the real buffer now.
                     let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
                     let ptr = fb.alloca(&array_ir);
                     fb.store(&Val::new("zeroinitializer", array_ir.clone()), &ptr);
@@ -18983,7 +19292,7 @@ impl Compiler {
                 return Ok(());
             }
             "LSET" | "RSET" => {
-                // LSET target$ = value  → pb_lset(&target, value, len)
+                // LSET [ABS] target = value [USING pad]
                 if call.args.len() >= 2 {
                     let value = self.compile_expr(fb, &call.args[1])?;
                     let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &call.args[0])?;
@@ -18993,16 +19302,39 @@ impl Compiler {
                     };
                     let is_fixed = matches!(pb_type, PbType::FixedString(_));
                     let len_const = fb.const_i32(len);
-                    if is_fixed {
-                        if name == "LSET" {
-                            fb.call_void("pb_lset_buf", &[ptr, value, len_const]);
-                        } else {
-                            fb.call_void("pb_rset_buf", &[ptr, value, len_const]);
-                        }
-                    } else if name == "LSET" {
-                        fb.call_void("pb_lset", &[ptr, value, len_const]);
+                    // Optional third arg: ABS sentinel or USING pad expression.
+                    let is_abs = matches!(call.args.get(2),
+                        Some(Expr::StringLit(s)) if s == "__ABS__");
+                    let pad_val = if call.args.len() >= 3 && !is_abs {
+                        Some(self.compile_expr(fb, &call.args[2])?)
                     } else {
-                        fb.call_void("pb_rset", &[ptr, value, len_const]);
+                        None
+                    };
+                    let is_l = name == "LSET";
+                    if is_fixed {
+                        if is_abs {
+                            let fnn = if is_l {
+                                "pb_lset_abs_buf"
+                            } else {
+                                "pb_rset_abs_buf"
+                            };
+                            fb.call_void(fnn, &[ptr, value, len_const]);
+                        } else if let Some(pad) = pad_val {
+                            let fnn = if is_l {
+                                "pb_lset_using_buf"
+                            } else {
+                                "pb_rset_using_buf"
+                            };
+                            fb.call_void(fnn, &[ptr, value, len_const, pad]);
+                        } else {
+                            let fnn = if is_l { "pb_lset_buf" } else { "pb_rset_buf" };
+                            fb.call_void(fnn, &[ptr, value, len_const]);
+                        }
+                    } else {
+                        // Dynamic BSTR target: ABS/USING have no pre-existing
+                        // content to preserve; use the plain space-padded form.
+                        let fnn = if is_l { "pb_lset" } else { "pb_rset" };
+                        fb.call_void(fnn, &[ptr, value, len_const]);
                     }
                 }
                 return Ok(());
@@ -23139,6 +23471,7 @@ impl Compiler {
                             match &layout.fields[fidx].ir_type {
                                 IrType::Array(n, elem) => Some((
                                     fidx,
+                                    layout.fields[fidx].gep_idx,
                                     *n,
                                     (**elem).clone(),
                                     layout.fields[fidx].dims.clone(),
@@ -23147,10 +23480,10 @@ impl Compiler {
                             }
                         })
                     });
-                    if let Some((fidx, n, elem, dims)) = member {
+                    if let Some((_fidx, gep_idx, n, elem, dims)) = member {
                         if !args.is_empty() {
                             let (base_ptr, _) = self.compile_lvalue_ptr(fb, base)?;
-                            let slot = fb.gep_struct(&class, &base_ptr, fidx);
+                            let slot = fb.gep_struct(&class, &base_ptr, gep_idx);
                             let mut compiled = Vec::with_capacity(args.len());
                             for a in args {
                                 compiled.push(self.compile_expr(fb, a)?);
@@ -23948,6 +24281,8 @@ impl Compiler {
             "CWORD" | "CWRD" => Some(self.builtin_to_u16(fb, args)),
             "CDWORD" => Some(self.builtin_to_i32(fb, args)),
             "CSET" => Some(self.builtin_cset_str(fb, args)),
+            "LSET" => Some(self.builtin_lset_str(fb, args)),
+            "RSET" => Some(self.builtin_rset_str(fb, args)),
             "ISTRUE" => Some(self.builtin_istrue(fb, args, false)),
             "ISFALSE" => Some(self.builtin_istrue(fb, args, true)),
             "ISEVEN" => Some(self.builtin_parity(fb, args, false)),
@@ -24060,9 +24395,10 @@ impl Compiler {
             "RETAIN" => Some(self.builtin_retain(fb, args)),
             "REMAIN" => Some(self.builtin_remain(fb, args)),
             "MCASE" => {
-                // MCASE$(s$) — capitalize first letter of each word, lowercase rest
+                // MCASE$(s$[, ANSI|OEM]) — capitalize first letter of each word
                 let s = self.compile_expr(fb, &args[0]);
-                Some(s.map(|v| fb.call(&IrType::Ptr, "pb_mcase_string", &[v])))
+                let mode_val = self.case_mode_val(fb, args);
+                Some(s.map(|v| fb.call(&IrType::Ptr, "pb_mcase_string", &[v, mode_val])))
             }
             "RGB" | "BGR" => Some(self.builtin_rgb(fb, args, name)),
             "MONTHNAME" => Some(self.builtin_name1(fb, args, "pb_monthname")),
@@ -24423,15 +24759,13 @@ impl Compiler {
                 }))
             }
             "ISFILE" => {
-                // ISFILE(path$) → returns -1 (true) if the file exists, 0 if not (PB9+ alias of EXIST)
+                // ISFILE(path$) → -1 only for an existing non-directory file
+                // (any attribute). Wildcards/directories return 0 (CHW ISFILE;
+                // pb_isfile mirrors the measured PBWin behavior).
                 let path = self.compile_expr(fb, &args[0]);
                 Some(path.map(|p| {
-                    let zero = fb.const_i32(0);
-                    let result = fb.call(&IrType::I32, "_access", &[p, zero.clone()]);
-                    let exists = fb.icmp("eq", &result, &zero);
-                    let neg_one = fb.const_i32(-1);
-                    let zero2 = fb.const_i32(0);
-                    fb.select(&exists, &neg_one, &zero2)
+                    let v = fb.call(&IrType::I64, "pb_isfile", std::slice::from_ref(&p));
+                    fb.trunc(&v, &IrType::I32)
                 }))
             }
             "GETDLGITEM" => {
@@ -26050,6 +26384,50 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, "pb_cset_str", &[s, len, pad]))
     }
 
+    /// LSET$(s$, len& [USING u$]) — left-justify s$ into a len& result,
+    /// padding the right with the first char of u$ (or spaces).
+    /// (CHW LSET$_function.htm)
+    fn builtin_lset_str(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.is_empty() {
+            return Err(PbError::runtime("LSET$ requires at least 1 argument"));
+        }
+        let s = self.compile_expr(fb, &args[0])?;
+        let len = if args.len() > 1 {
+            let l = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &l)
+        } else {
+            fb.const_i64(0)
+        };
+        let pad = if args.len() > 2 {
+            self.compile_expr(fb, &args[2])?
+        } else {
+            fb.const_null_ptr()
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_lset_str", &[s, len, pad]))
+    }
+
+    /// RSET$(s$, len& [USING u$]) — right-justify s$ into a len& result,
+    /// padding the left with the first char of u$ (or spaces).
+    /// (CHW RSET$_function.htm)
+    fn builtin_rset_str(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.is_empty() {
+            return Err(PbError::runtime("RSET$ requires at least 1 argument"));
+        }
+        let s = self.compile_expr(fb, &args[0])?;
+        let len = if args.len() > 1 {
+            let l = self.compile_expr(fb, &args[1])?;
+            self.to_i64(fb, &l)
+        } else {
+            fb.const_i64(0)
+        };
+        let pad = if args.len() > 2 {
+            self.compile_expr(fb, &args[2])?
+        } else {
+            fb.const_null_ptr()
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_rset_str", &[s, len, pad]))
+    }
+
     /// CCUR/CCUX — round to 4 / 2 fixed decimals (currency semantics).
     fn builtin_cur(
         &mut self,
@@ -26135,11 +26513,22 @@ impl Compiler {
         if args.len() != 2 {
             return Err(PbError::runtime("JOIN$: expected (array(), delimiter$)"));
         }
-        let arr_ptr = self.compile_expr(fb, &args[0])?;
+        let arr_name = match &args[0] {
+            Expr::FunctionCall(n, _) | Expr::ArrayAccess(n, _) | Expr::Variable(n) => {
+                normalize_name(n)
+            }
+            _ => return Err(PbError::runtime("JOIN$: first argument must be an array")),
+        };
+        let arr_info = self
+            .symbols
+            .lookup_array(&arr_name)
+            .cloned()
+            .ok_or_else(|| PbError::runtime("JOIN$: unknown array"))?;
+        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+        let count = fb.const_i64(arr_info.total_elements as i64);
         let delim = self.compile_expr(fb, &args[1])?;
         let delim_ptr = self.convert_value(fb, &delim, &IrType::Ptr, &PbType::String);
-        let arr_ptr = self.convert_value(fb, &arr_ptr, &IrType::Ptr, &PbType::String);
-        Ok(fb.call(&IrType::Ptr, "pb_join", &[arr_ptr, delim_ptr]))
+        Ok(fb.call(&IrType::Ptr, "pb_join", &[base, count, delim_ptr]))
     }
 
     fn builtin_inputbox(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -26253,6 +26642,7 @@ impl Compiler {
         };
         let v = self.compile_expr(fb, &args[1])?;
         let vi = self.convert_value(fb, &v, &IrType::I64, &PbType::Quad);
+        let is_signed = dtype.as_str() == "INTEGER" || dtype.as_str() == "LONG";
         let bits: i64 = match dtype.as_str() {
             "BYTE" => 8,
             "WORD" | "INTEGER" => 16,
@@ -26265,7 +26655,17 @@ impl Compiler {
         } else {
             fb.and(&vi, &fb.const_i64(mask))
         };
-        Ok(r)
+        // CHW HI/LO: INTEGER/LONG results are signed, BYTE/WORD/DWORD unsigned.
+        // Sign-extend when the extracted field's top bit is set.
+        if is_signed {
+            let sign_bit = fb.const_i64(1i64 << (bits - 1));
+            let neg_base = fb.const_i64(1i64 << bits);
+            let is_neg = fb.icmp("uge", &r, &sign_bit);
+            let rneg = fb.sub(&r, &neg_base);
+            Ok(fb.select(&is_neg, &rneg, &r))
+        } else {
+            Ok(r)
+        }
     }
 
     fn builtin_fileattr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -26484,29 +26884,45 @@ impl Compiler {
     // ========== String builtins ==========
 
     fn builtin_len(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        let s = self.compile_expr(fb, &args[0])?; // FixedString variables are raw buffers (no BSTR prefix): LEN must
-                                                  // return the FIXED BUFFER LENGTH (CHW LEN function: "If target is a
-                                                  // fixed-length string, the length of the fixed buffer is returned"),
-                                                  // not strlen of the contents (a NUL inside the buffer must not shrink
-                                                  // the reported length).
-        if let Expr::Variable(name) = &args[0] {
-            let nn = normalize_name(name);
-            if let Some(info) = self.symbols.lookup(&nn) {
-                if let PbType::FixedString(n) = info.pb_type {
-                    return Ok(fb.const_i32(n as i32));
-                }
-                // LEN of a UDT variable = the structure size in memory (CHW
-                // LEN function, batch 278; previously this crashed by passing
-                // the whole struct by value to pb_str_len).
-                if let PbType::UserDefined(tname) = &info.pb_type {
-                    let key = normalize_name(tname);
-                    if let Some(layout) = self.type_layouts.get(&key) {
-                        return Ok(fb.const_i32(layout.size as i32));
+        // Variable target: resolve statically where CHW gives a compile-time size
+        // (fixed-length strings, numeric scalars, UDTs). Dynamic strings still
+        // need the runtime BSTR length.
+        // Variable / member lvalue: resolve statically where CHW gives a
+        // compile-time size (fixed-length strings, numeric scalars, UDTs).
+        // Dynamic strings still need the runtime BSTR length. This covers
+        // both LEN(v) and LEN(u.member) (CHW: LEN of a single member
+        // returns its real size, not the struct size).
+        if matches!(&args[0], Expr::Variable(_) | Expr::TypeMember(_, _)) {
+            if let Some(pbt) = self.expr_pb_type(&args[0]) {
+                match &pbt {
+                    // FixedString variables are raw buffers (no BSTR prefix):
+                    // LEN returns the FIXED BUFFER LENGTH, not strlen of the
+                    // contents (a NUL inside the buffer must not shrink it).
+                    PbType::FixedString(n) => return Ok(fb.const_i32(*n as i32)),
+                    // LEN of a UDT variable = the structure size in memory
+                    // (CHW LEN, batch 278; previously crashed passing the whole
+                    // struct by value to pb_str_len).
+                    PbType::UserDefined(tname) => {
+                        let key = normalize_name(tname);
+                        if let Some(layout) = self.type_layouts.get(&key) {
+                            return Ok(fb.const_i32(layout.size as i32));
+                        }
+                    }
+                    // Dynamic strings: runtime length, handled below.
+                    PbType::String | PbType::WString => {}
+                    // Numeric / pointer scalars: static storage byte count
+                    // (fixes LEN of numeric variables/members that previously
+                    // returned garbage through pb_str_len; lm_len probe).
+                    other => {
+                        return Ok(
+                            fb.const_i32(Self::pb_scalar_size(other, self.module.is_32bit()))
+                        );
                     }
                 }
             }
         }
-        // Constants carry a BSTR prefix; runtime strings are BSTRs: byte-length prefix
+        let s = self.compile_expr(fb, &args[0])?;
+        // Constants carry a BSTR prefix; runtime strings are BSTRs: byte-length prefix.
         // WSTRING: UTF-16 BSTR — LEN = code-unit count = byte prefix / 2 (batch 281).
         if self.expr_is_wstring(&args[0]) {
             return Ok(fb.call(&IrType::I32, "pb_wstr_len", &[s]));
@@ -27023,32 +27439,26 @@ impl Compiler {
 
     fn builtin_left(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
+        let n = self.compile_expr(fb, &args[1])?;
+        let n_i64 = self.to_i64(fb, &n);
         // WSTRING: LEFT$ takes the first n UTF-16 code units (batch 281).
         if self.expr_is_wstring(&args[0]) {
-            let n = self.compile_expr(fb, &args[1])?;
-            let n_i64 = self.to_i64(fb, &n);
             return Ok(fb.call(&IrType::Ptr, "pb_wstr_left", &[s, n_i64]));
         }
-        let n = self.compile_expr(fb, &args[1])?;
-        let n_i32 = self.to_i32(fb, &n);
-        // SysAllocStringByteLen copies n bytes from src and null-terminates
-        Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[s, n_i32]))
+        // Byte string: pb_bstr_left handles n>=LEN, n==0 and negative n.
+        Ok(fb.call(&IrType::Ptr, "pb_bstr_left", &[s, n_i64]))
     }
 
     fn builtin_right(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
+        let n = self.compile_expr(fb, &args[1])?;
+        let n_i64 = self.to_i64(fb, &n);
         // WSTRING: RIGHT$ takes the last n UTF-16 code units (batch 281).
         if self.expr_is_wstring(&args[0]) {
-            let n = self.compile_expr(fb, &args[1])?;
-            let n_i64 = self.to_i64(fb, &n);
             return Ok(fb.call(&IrType::Ptr, "pb_wstr_right", &[s, n_i64]));
         }
-        let n = self.compile_expr(fb, &args[1])?;
-        let n_i32 = self.to_i32(fb, &n);
-        let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
-        let offset = fb.sub(&len, &n_i32);
-        let src = fb.gep_byte(&s, &offset);
-        Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[src, n_i32]))
+        // Byte string: pb_bstr_right handles n>=LEN, n==0 and negative n.
+        Ok(fb.call(&IrType::Ptr, "pb_bstr_right", &[s, n_i64]))
     }
 
     /// TAB(COUNT|DIALOG|IMAGE|PAGE|SELECT, ...) / TAB$(TEXT, ...) — the
@@ -27279,249 +27689,123 @@ impl Compiler {
 
     fn builtin_ucase(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
-        let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
-        let one = fb.const_i32(1);
-        let buf_size = fb.add(&len, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
-
-        // Loop: for i = 0 to len-1, buf[i] = toupper(s[i])
-        let cond_label = fb.next_label("ucase.cond");
-        let body_label = fb.next_label("ucase.body");
-        let exit_label = fb.next_label("ucase.exit");
-
-        let i_ptr = fb.alloca(&IrType::I32);
-        let zero_i32_val = fb.const_i32(0);
-        fb.store(&zero_i32_val, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&cond_label);
-        let i = fb.load(&IrType::I32, &i_ptr);
-        let cmp = fb.icmp("slt", &i, &len);
-        fb.condbr(&cmp, &body_label, &exit_label);
-
-        fb.label(&body_label);
-        let src_ptr = fb.gep_byte(&s, &i);
-        let byte = fb.load(&IrType::I8, &src_ptr);
-        let byte_i32 = fb.zext(&byte, &IrType::I32);
-        let upper = fb.call(&IrType::I32, "toupper", &[byte_i32]);
-        let upper_i8 = fb.trunc(&upper, &IrType::I8);
-        let dst_ptr = fb.gep_byte(&buf, &i);
-        fb.store(&upper_i8, &dst_ptr);
-        let next_i = fb.add(&i, &one);
-        fb.store(&next_i, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&exit_label);
-        // Null-terminate
-        let i_final = fb.load(&IrType::I32, &i_ptr);
-        let null_ptr = fb.gep_byte(&buf, &i_final);
-        let zero_byte = fb.const_i8(0);
-        fb.store(&zero_byte, &null_ptr);
-        Ok(self.bstr_from_buf(fb, &buf))
+        let mode_val = self.case_mode_val(fb, args);
+        Ok(fb.call(&IrType::Ptr, "pb_ucase", &[s, mode_val]))
     }
 
     fn builtin_lcase(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
-        let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
-        let one = fb.const_i32(1);
-        let buf_size = fb.add(&len, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
+        let mode_val = self.case_mode_val(fb, args);
+        Ok(fb.call(&IrType::Ptr, "pb_lcase", &[s, mode_val]))
+    }
 
-        let cond_label = fb.next_label("lcase.cond");
-        let body_label = fb.next_label("lcase.body");
-        let exit_label = fb.next_label("lcase.exit");
-
-        let i_ptr = fb.alloca(&IrType::I32);
-        let zero_i32_val = fb.const_i32(0);
-        fb.store(&zero_i32_val, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&cond_label);
-        let i = fb.load(&IrType::I32, &i_ptr);
-        let cmp = fb.icmp("slt", &i, &len);
-        fb.condbr(&cmp, &body_label, &exit_label);
-
-        fb.label(&body_label);
-        let src_ptr = fb.gep_byte(&s, &i);
-        let byte = fb.load(&IrType::I8, &src_ptr);
-        let byte_i32 = fb.zext(&byte, &IrType::I32);
-        let lower = fb.call(&IrType::I32, "tolower", &[byte_i32]);
-        let lower_i8 = fb.trunc(&lower, &IrType::I8);
-        let dst_ptr = fb.gep_byte(&buf, &i);
-        fb.store(&lower_i8, &dst_ptr);
-        let next_i = fb.add(&i, &one);
-        fb.store(&next_i, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&exit_label);
-        let i_final = fb.load(&IrType::I32, &i_ptr);
-        let null_ptr = fb.gep_byte(&buf, &i_final);
-        let zero_byte = fb.const_i8(0);
-        fb.store(&zero_byte, &null_ptr);
-        Ok(self.bstr_from_buf(fb, &buf))
+    /* Resolve the optional ANSI/OEM charset argument of LCASE$/UCASE$/MCASE$.
+     * The parser turns the bare keyword into Expr::Variable("ANSI"|"OEM").
+     * Returns 0 for ANSI (default), 1 for OEM. */
+    fn case_mode_val(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> Val {
+        let mut mode = 0;
+        if let Some(Expr::Variable(nm)) = args.get(1) {
+            if nm.eq_ignore_ascii_case("OEM") {
+                mode = 1;
+            }
+        }
+        fb.const_i32(mode)
     }
 
     fn builtin_ltrim(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // Skip leading spaces, return new string
-        let s = self.compile_expr(fb, &args[0])?;
-
-        let cond_label = fb.next_label("ltrim.cond");
-        let body_label = fb.next_label("ltrim.body");
-        let exit_label = fb.next_label("ltrim.exit");
-
-        let i_ptr = fb.alloca(&IrType::I32);
-        let zero_i32_val = fb.const_i32(0);
-        fb.store(&zero_i32_val, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&cond_label);
-        let i = fb.load(&IrType::I32, &i_ptr);
-        let cur_ptr = fb.gep_byte(&s, &i);
-        let byte = fb.load(&IrType::I8, &cur_ptr);
-        let space = fb.const_i8(32); // space character
-        let is_space = fb.icmp("eq", &byte, &space);
-        let not_null = fb.icmp("ne", &byte, &fb.const_i8(0));
-        let cont = fb.and(&is_space, &not_null);
-        fb.condbr(&cont, &body_label, &exit_label);
-
-        fb.label(&body_label);
-        let one = fb.const_i32(1);
-        let next = fb.add(&i, &one);
-        fb.store(&next, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&exit_label);
-        let i_final = fb.load(&IrType::I32, &i_ptr);
-        let start = fb.gep_byte(&s, &i_final);
-        let rest_len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&start));
-        let one = fb.const_i32(1);
-        let buf_size = fb.add(&rest_len, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
-        fb.call(&IrType::Ptr, "strcpy", &[buf.clone(), start]);
-        Ok(self.bstr_from_buf(fb, &buf))
+        // CHW LTRIM_function.htm: LTRIM$(MainString [, [ANY] MatchString]).
+        // The parser turns ANY into a StringLit("__ANY__") sentinel.
+        let mut has_any = false;
+        let mut match_expr: Option<&Expr> = None;
+        for (idx, e) in args.iter().enumerate() {
+            if idx == 0 {
+                continue;
+            }
+            if let Expr::StringLit(s) = e {
+                if s == "__ANY__" {
+                    has_any = true;
+                    continue;
+                }
+            }
+            match_expr = Some(e);
+        }
+        let src = self.compile_expr(fb, &args[0])?;
+        let any_i32 = fb.const_i32(if has_any { 1 } else { 0 });
+        let match_ptr = match match_expr {
+            Some(me) => self.compile_expr(fb, me)?,
+            None => fb.const_null_ptr(),
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_ltrim", &[src, any_i32, match_ptr]))
     }
 
     fn builtin_rtrim(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // Copy string, then walk backwards removing trailing spaces
-        let s = self.compile_expr(fb, &args[0])?;
-        let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
-        let one = fb.const_i32(1);
-        let buf_size = fb.add(&len, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
-        fb.call(&IrType::Ptr, "strcpy", &[buf.clone(), s]);
-
-        // Walk backwards: i = len - 1, while i >= 0 and buf[i] == ' ', i--
-        let cond_label = fb.next_label("rtrim.cond");
-        let body_label = fb.next_label("rtrim.body");
-        let exit_label = fb.next_label("rtrim.exit");
-
-        let i_ptr = fb.alloca(&IrType::I32);
-        let len_minus1 = fb.sub(&len, &one);
-        fb.store(&len_minus1, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&cond_label);
-        let i = fb.load(&IrType::I32, &i_ptr);
-        let zero_i32_val = fb.const_i32(0);
-        let ge_zero = fb.icmp("sge", &i, &zero_i32_val);
-        let cur_ptr = fb.gep_byte(&buf, &i);
-        let byte = fb.load(&IrType::I8, &cur_ptr);
-        let space = fb.const_i8(32);
-        let is_space = fb.icmp("eq", &byte, &space);
-        let cont = fb.and(&ge_zero, &is_space);
-        fb.condbr(&cont, &body_label, &exit_label);
-
-        fb.label(&body_label);
-        let next = fb.sub(&i, &one);
-        fb.store(&next, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&exit_label);
-        // Null-terminate at i+1
-        let i_final = fb.load(&IrType::I32, &i_ptr);
-        let term_pos = fb.add(&i_final, &one);
-        let term_ptr = fb.gep_byte(&buf, &term_pos);
-        let zero_byte = fb.const_i8(0);
-        fb.store(&zero_byte, &term_ptr);
-        Ok(self.bstr_from_buf(fb, &buf))
+        // CHW RTRIM_function.htm: RTRIM$(MainString [, [ANY] MatchString]).
+        let mut has_any = false;
+        let mut match_expr: Option<&Expr> = None;
+        for (idx, e) in args.iter().enumerate() {
+            if idx == 0 {
+                continue;
+            }
+            if let Expr::StringLit(s) = e {
+                if s == "__ANY__" {
+                    has_any = true;
+                    continue;
+                }
+            }
+            match_expr = Some(e);
+        }
+        let src = self.compile_expr(fb, &args[0])?;
+        let any_i32 = fb.const_i32(if has_any { 1 } else { 0 });
+        let match_ptr = match match_expr {
+            Some(me) => self.compile_expr(fb, me)?,
+            None => fb.const_null_ptr(),
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_rtrim", &[src, any_i32, match_ptr]))
     }
 
     fn builtin_trim(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // TRIM$ = LTRIM$(RTRIM$(s))
-        // First RTRIM, then LTRIM
-        let s = self.compile_expr(fb, &args[0])?;
-
-        // RTRIM part: copy and truncate trailing spaces
-        let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&s));
-        let one = fb.const_i32(1);
-        let buf_size = fb.add(&len, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
-        fb.call(&IrType::Ptr, "strcpy", &[buf.clone(), s]);
-
-        let cond_label = fb.next_label("trim.rcond");
-        let body_label = fb.next_label("trim.rbody");
-        let exit_label = fb.next_label("trim.rexit");
-
-        let i_ptr = fb.alloca(&IrType::I32);
-        let len_minus1 = fb.sub(&len, &one);
-        fb.store(&len_minus1, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&cond_label);
-        let i = fb.load(&IrType::I32, &i_ptr);
-        let zero_i32_val = fb.const_i32(0);
-        let ge_zero = fb.icmp("sge", &i, &zero_i32_val);
-        let cur_ptr = fb.gep_byte(&buf, &i);
-        let byte = fb.load(&IrType::I8, &cur_ptr);
-        let space = fb.const_i8(32);
-        let is_space = fb.icmp("eq", &byte, &space);
-        let cont = fb.and(&ge_zero, &is_space);
-        fb.condbr(&cont, &body_label, &exit_label);
-
-        fb.label(&body_label);
-        let next = fb.sub(&i, &one);
-        fb.store(&next, &i_ptr);
-        fb.br(&cond_label);
-
-        fb.label(&exit_label);
-        let i_final = fb.load(&IrType::I32, &i_ptr);
-        let term_pos = fb.add(&i_final, &one);
-        let term_ptr = fb.gep_byte(&buf, &term_pos);
-        let zero_byte = fb.const_i8(0);
-        fb.store(&zero_byte, &term_ptr);
-
-        // LTRIM part: skip leading spaces of buf
-        let cond2 = fb.next_label("trim.lcond");
-        let body2 = fb.next_label("trim.lbody");
-        let exit2 = fb.next_label("trim.lexit");
-
-        let j_ptr = fb.alloca(&IrType::I32);
-        fb.store(&zero_i32_val, &j_ptr);
-        fb.br(&cond2);
-
-        fb.label(&cond2);
-        let j = fb.load(&IrType::I32, &j_ptr);
-        let cur_ptr2 = fb.gep_byte(&buf, &j);
-        let byte2 = fb.load(&IrType::I8, &cur_ptr2);
-        let is_space2 = fb.icmp("eq", &byte2, &space);
-        let not_null = fb.icmp("ne", &byte2, &fb.const_i8(0));
-        let cont2 = fb.and(&is_space2, &not_null);
-        fb.condbr(&cont2, &body2, &exit2);
-
-        fb.label(&body2);
-        let next_j = fb.add(&j, &one);
-        fb.store(&next_j, &j_ptr);
-        fb.br(&cond2);
-
-        fb.label(&exit2);
-        let j_final = fb.load(&IrType::I32, &j_ptr);
-        let start = fb.gep_byte(&buf, &j_final);
-        let rest_len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&start));
-        let result_size = fb.add(&rest_len, &one);
-        let result = fb.call(&IrType::Ptr, "malloc", &[result_size]);
-        fb.call(&IrType::Ptr, "strcpy", &[result.clone(), start]);
-        fb.call_void("free", &[buf]);
-        Ok(self.bstr_from_buf(fb, &result))
+        // CHW TRIM_function.htm: two signatures.
+        //   TRIM$(OldString$ [, [ANY] CharsToTrim$])
+        //   TRIM$(NumrExpr [, Digits&])
+        let first = self.compile_expr(fb, &args[0])?;
+        if first.ty == IrType::Ptr {
+            // String form: parse the ANY sentinel and optional match.
+            let mut has_any = false;
+            let mut match_expr: Option<&Expr> = None;
+            for (idx, e) in args.iter().enumerate() {
+                if idx == 0 {
+                    continue;
+                }
+                if let Expr::StringLit(s) = e {
+                    if s == "__ANY__" {
+                        has_any = true;
+                        continue;
+                    }
+                }
+                match_expr = Some(e);
+            }
+            let any_i32 = fb.const_i32(if has_any { 1 } else { 0 });
+            let match_ptr = match match_expr {
+                Some(me) => self.compile_expr(fb, me)?,
+                None => fb.const_null_ptr(),
+            };
+            // Trim both ends: RTRIM then LTRIM.
+            let r = fb.call(
+                &IrType::Ptr,
+                "pb_rtrim",
+                &[first, any_i32.clone(), match_ptr.clone()],
+            );
+            return Ok(fb.call(&IrType::Ptr, "pb_ltrim", &[r, any_i32, match_ptr]));
+        }
+        // Numeric form: convert to double, optional Digits (0 = default).
+        let f64_val = self.to_f64(fb, &first);
+        let digits = if args.len() >= 2 {
+            let d = self.compile_expr(fb, &args[1])?;
+            self.to_i32(fb, &d)
+        } else {
+            fb.const_i32(0)
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_trim_num", &[f64_val, digits]))
     }
 
     fn builtin_space(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

@@ -169,6 +169,12 @@ pub struct Preprocessor {
     /// _STACK_metastatement.htm).  Recorded here (rounded up to the next
     /// 64 Kb boundary, minimum 128 Kb) so main.rs can pass it to the linker.
     stack_size: Option<u64>,
+    /// `#CONSOLE ON` / `#CONSOLE OFF` (CHW meta directives).  Some(true)
+    /// selects a console-subsystem EXE (PRINT/WRITE go to the owning console),
+    /// Some(false) forces the GUI subsystem; None leaves the historical
+    /// default (GUI, see codegen::link_exe).  Recorded here so main.rs can
+    /// pass it to the linker as /SUBSYSTEM:CONSOLE.
+    console_mode: Option<bool>,
 }
 
 impl Default for Preprocessor {
@@ -208,6 +214,7 @@ impl Preprocessor {
             version_info: VersionInfo::default(),
             dim_all: false,
             stack_size: None,
+            console_mode: None,
         }
     }
 
@@ -413,14 +420,18 @@ impl Preprocessor {
 
             let upper_full = trimmed_full.to_uppercase();
 
-            // #CONSOLE OFF / #CONSOLE ON are legal PB directives; accept and skip
-            // them.  The old console_off flag (batch 129) was removed in
-            // batch 250: `?` always lowers to MSGBOX regardless of console mode.
+            // #CONSOLE OFF / #CONSOLE ON are legal PB directives.  The old
+            // console_off flag (batch 129) was removed in batch 250: `?`
+            // always lowers to MSGBOX regardless of console mode.  The
+            // directive now selects the PE subsystem (batch 310): ON records
+            // the console subsystem, OFF keeps the GUI subsystem.
             if upper_full.starts_with("#CONSOLE OFF") {
+                self.console_mode = Some(false);
                 i += 1;
                 continue;
             }
             if upper_full.starts_with("#CONSOLE ON") {
+                self.console_mode = Some(true);
                 i += 1;
                 continue;
             }
@@ -1194,6 +1205,10 @@ impl Preprocessor {
 
     pub fn stack_size(&self) -> Option<u64> {
         self.stack_size
+    }
+
+    pub fn console_mode(&self) -> Option<bool> {
+        self.console_mode
     }
 
     pub fn version_info(&self) -> &VersionInfo {

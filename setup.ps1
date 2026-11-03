@@ -112,7 +112,11 @@ Write-Step "Building pb_runtime_x64.obj..."
 $rtSrc = Join-Path $ScriptDir "pbcompiler\runtime\pb_runtime.c"
 $rtObj = Join-Path $ScriptDir "pb_runtime_x64.obj"
 if (Test-Path $rtSrc) {
-    & clang -c $rtSrc -o $rtObj --target=x86_64-pc-windows-msvc 2>&1 | Out-Null
+    # -ffunction-sections/-fdata-sections (batch 310): place each function and
+    # global in its own COMDAT section so the linker (/OPT:REF, on by default)
+    # drops the runtime functions the program never references, shrinking the
+    # EXE instead of pulling the whole runtime.
+    & clang -c $rtSrc -o $rtObj --target=x86_64-pc-windows-msvc -ffunction-sections -fdata-sections 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0 -and (Test-Path $rtObj)) {
         Write-Ok "Runtime object built: $rtObj"
     } else {
