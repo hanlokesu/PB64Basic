@@ -430,7 +430,7 @@ int pb_str_cstr_len(const char* s) {
     return (int)strlen(s);
 }
 
-/* Public BSTR allocation wrapper � called from LLVM IR codegen (cdecl) */
+/* Public BSTR allocation wrapper — called from LLVM IR codegen (cdecl) */
 char* pb_bstr_alloc(const char* src, unsigned int len) {
 #ifdef _WIN32
     return SysAllocStringByteLen(src, len);
@@ -440,6 +440,12 @@ char* pb_bstr_alloc(const char* src, unsigned int len) {
     buf[len] = '\0';
     return buf;
 #endif
+}
+
+/* UDT-to-string byte copy (CHW LET statement with Types): copy a UDT's raw
+   bytes into a BSTR of exactly the struct size, preserving embedded NULs. */
+char* pb_bstr_from_bytes(const void* data, unsigned int len) {
+    return pb_bstr_alloc((const char*)data, len);
 }
 
 /* LEFT$ on a byte (ANSI) string.  CHW LEFT_function.htm: n is a long integer;
@@ -6957,24 +6963,34 @@ static void pb_bstr_cpy(char* dst, size_t cap, const char* s) {
 /* ---- LPRINT: direct line-printer device output ---- */
 static HANDLE pb_lpt_handle = NULL;
 static int pb_lpt_col = 0; /* current column for comma (14-column) handling */
+static char pb_lpt_device[64]; /* name of the attached device, for LPRINT$ */
 
 /* LPRINT ATTACH device$  (open device/file for direct writes; "" or NULL = close) */
 int pb_lprint_attach(char* device) {
     if (pb_lpt_handle) { CloseHandle(pb_lpt_handle); pb_lpt_handle = NULL; }
     pb_lpt_col = 0;
+    pb_lpt_device[0] = '\0';
     if (!device || strlen(device) == 0) return 0; /* close-only */
     char path[512];
     strncpy(path, device, sizeof(path) - 1);
     path[sizeof(path) - 1] = '\0';
     HANDLE h = CreateFileA(path, PB_GENERIC_WRITE, PB_FILE_SHARE_WRITE, NULL,
-                           PB_OPEN_ALWAYS, 0, NULL);
+                           PB_OPEN_EXISTING, 0, NULL);
     if (h == PB_INVALID_HANDLE) { pb_err_var = pb_err = 68; return -1; }
     pb_lpt_handle = h;
+    /* retain the device name for LPRINT$ (CHW: max 32 chars; buffer holds 63) */
+    strncpy(pb_lpt_device, device, sizeof(pb_lpt_device) - 1);
+    pb_lpt_device[sizeof(pb_lpt_device) - 1] = '\0';
     return 0;
+}
+/* LPRINT$: BSTR of the attached device name, or an empty BSTR if none */
+char* pb_lprint_device(void) {
+    return pb_bstr_alloc(pb_lpt_device, (unsigned int)strlen(pb_lpt_device));
 }
 /* LPRINT CLOSE */
 void pb_lprint_close(void) {
     if (pb_lpt_handle) { CloseHandle(pb_lpt_handle); pb_lpt_handle = NULL; }
+    pb_lpt_device[0] = '\0';
 }
 /* LPRINT FLUSH */
 void pb_lprint_flush(void) {
@@ -7001,15 +7017,26 @@ void pb_lprint_bstr(char* s) {
 }
 void pb_lprint_int(int n) {
     char b[32]; int l = sprintf(b, "%d", n);
+    /* PB numeric field: leading space reserves the sign column for non-negatives,
+       and a trailing space always follows the number (CHW PRINT/LPRINT semantics). */
+    if (n >= 0) pb_lpt_write(" ", 1);
     pb_lpt_write(b, (unsigned int)l);
+    pb_lpt_write(" ", 1);
 }
 void pb_lprint_i64(long long n) {
     char b[32]; int l = sprintf(b, "%lld", n);
+    if (n >= 0) pb_lpt_write(" ", 1);
     pb_lpt_write(b, (unsigned int)l);
+    pb_lpt_write(" ", 1);
 }
 void pb_lprint_dbl(double d) {
-    char b[64]; int l = sprintf(b, "%.6g", d);
-    pb_lpt_write(b, (unsigned int)l);
+    /* PBWin LPRINT prints the full 15-significant-digit field (same renderer as
+       STR$), including the leading sign space, then a trailing space. */
+    char* b = pb_num_render(d, 15, 1);
+    if (b) {
+        pb_lpt_write(b, (unsigned int)strlen(b));
+        pb_lpt_write(" ", 1);
+    }
 }
 /* LPRINT statement terminator: CRLF unless trailing semicolon (simplified: always CRLF) */
 void pb_lprint_crlf(void) {
@@ -13473,15 +13500,26 @@ long long pb_cblb_find(void* hDlg, long id, int item, const char* text,
     void* h = pb_cblb_hwnd(hDlg, id);
     long long r;
     unsigned int m;
+    int start;
     if (!h) return 0;
+    if (item < 1) item = 1;
     if (kind == PB_CBLB_LB) {
         m = (unsigned int)(exact ? PB_LB_FINDSTRINGEXACT : PB_LB_FINDSTRING);
     } else {
         m = (unsigned int)(exact ? PB_CB_FINDSTRINGEXACT : PB_CB_FINDSTRING);
     }
-    r = (long long)(intptr_t)SendMessageA(h, m, (unsigned int)(item - 1),
+    /* DDT FIND starts AT the 1-based "item" and, per the help, never wraps.
+       The underlying LB/CB FINDSTRING messages DO wrap: wParam is the
+       zero-based item preceding the first one searched (-1 = whole list), so
+       it is item-2.  A match at or after the first searched index (item-1)
+       is a genuine forward hit; any smaller index was reached only by
+       wrapping, so it is reported as no match. */
+    start = item - 1;
+    r = (long long)(intptr_t)SendMessageA(h, m, (unsigned int)(item - 2),
                                           (pb_lparam_t)text);
-    return r < 0 ? 0 : r + 1;
+    if (r < 0) return 0;
+    if (r < start) return 0;
+    return r + 1;
 }
 
 long long pb_cblb_get_count(void* hDlg, long id, int kind) {

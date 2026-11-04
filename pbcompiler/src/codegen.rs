@@ -2131,6 +2131,13 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_str_len", &IrType::I32, &[IrType::Ptr], false);
+        // CHW LET (with Types): UDT byte-for-byte copy into a dynamic string.
+        self.module.declare_function(
+            "pb_bstr_from_bytes",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
         // JOIN$(array(), delim$): join the [N x ptr] array block (no NULL
         // sentinel) with an explicit element count
         self.module.declare_function(
@@ -6484,6 +6491,8 @@ impl Compiler {
         self.module
             .declare_function("pb_lprint_attach", &IrType::I32, &[IrType::Ptr], false);
         self.module
+            .declare_function("pb_lprint_device", &IrType::Ptr, &[], false);
+        self.module
             .declare_function("pb_lprint_close", &IrType::Void, &[], false);
         self.module
             .declare_function("pb_lprint_flush", &IrType::Void, &[], false);
@@ -8973,6 +8982,24 @@ impl Compiler {
                 // through to the storage path below.
             }
         }
+        // CHW LET (with Variants): `v = EMPTY` sets a Variant to VT_EMPTY
+        // (vt word 0, value union zeroed). Intercepted before the value is
+        // compiled because EMPTY has no standalone expression value.
+        if let Expr::Variable(orig_name) = &assign.target {
+            if matches!(assign.value, Expr::Empty) {
+                let tname = normalize_name(orig_name);
+                if let Some(info) = self.symbols.lookup(&tname) {
+                    if matches!(info.pb_type, PbType::Variant) {
+                        let ptr = Val::new(info.ptr_name.clone(), IrType::Ptr);
+                        let vt_ptr = fb.gep_byte(&ptr, &fb.const_i32(0));
+                        fb.store(&fb.const_i16(0), &vt_ptr);
+                        let u_ptr = fb.gep_byte(&ptr, &fb.const_i32(8));
+                        fb.store(&fb.const_i64(0), &u_ptr);
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let value = self.compile_expr(fb, &assign.value)?;
         match &assign.target {
             Expr::Variable(orig_name) => {
@@ -9000,6 +9027,30 @@ impl Compiler {
                     let ptr_name = info.ptr_name.clone();
                     let target_ir = info.ir_type.clone();
                     let target_pb = info.pb_type.clone();
+                    // CHW LET (with Types): a UDT value assigned to a dynamic
+                    // string is copied byte-for-byte into a BSTR of the struct
+                    // size, preserving embedded NULs. Must precede the Error
+                    // 421 numeric-to-string check below.
+                    if matches!(target_pb, PbType::String) {
+                        if let Some(udt) = self.struct_type_of_expr(&assign.value) {
+                            let (src_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
+                            let size = match self.type_layouts.get(&udt) {
+                                Some(layout) => fb.const_i32(layout.size as i32),
+                                None => {
+                                    return Err(PbError::parser(
+                                        format!("unknown TYPE layout for `{}`", udt),
+                                        None,
+                                        self.current_line,
+                                    ));
+                                }
+                            };
+                            let bstr =
+                                fb.call(&IrType::Ptr, "pb_bstr_from_bytes", &[src_ptr, size]);
+                            let slot = Val::new(ptr_name, IrType::Ptr);
+                            fb.store(&bstr, &slot);
+                            return Ok(());
+                        }
+                    }
                     // PBWin10 Error 421 (String operand expected): assigning a
                     // numeric value to a string-typed variable is a hard error
                     // in the official compiler; align instead of silently
@@ -9051,8 +9102,18 @@ impl Compiler {
                         // (vt word at +0, value union at +8).  SINGLE is promoted
                         // to R8 (PBWin stores VT_R8 for both — batch295 measured);
                         // STRING is VT_BSTR.
-                        let ptr = Val::new(ptr_name, IrType::Ptr);
-                        self.emit_variant_store(fb, &ptr, &value);
+                        let dst = Val::new(ptr_name, IrType::Ptr);
+                        if matches!(self.expr_pb_type(&assign.value), Some(PbType::Variant)) {
+                            // CHW LET (with Variants): "This form duplicates the
+                            // contents of one variant variable". Copy all 16
+                            // bytes so the source's original vt is preserved
+                            // (the old path re-read the number as R8 and always
+                            // rewrote vt to 5, losing VT_I4 etc.).
+                            let (src_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
+                            fb.call(&IrType::Ptr, "memcpy", &[dst, src_ptr, fb.const_i32(16)]);
+                        } else {
+                            self.emit_variant_store(fb, &dst, &value);
+                        }
                     } else {
                         // WSTRING destination: a non-wide (ANSI STRING / literal)
                         // value must be converted to UTF-16 first (batch 281;
@@ -23074,6 +23135,11 @@ impl Compiler {
                     "WAITKEY" if orig_name.ends_with('$') => {
                         return Ok(fb.call(&IrType::Ptr, "pb_waitkey", &[]));
                     }
+                    "LPRINT" if orig_name.ends_with('$') => {
+                        // LPRINT$ (CHW LPRINT_function.htm): BSTR of the attached
+                        // device name, or an empty BSTR when nothing is attached.
+                        return Ok(fb.call(&IrType::Ptr, "pb_lprint_device", &[]));
+                    }
                     "CALLSTKCOUNT" => {
                         return Ok(fb.call(&IrType::I64, "pb_callstk_count", &[]));
                     }
@@ -23686,6 +23752,9 @@ impl Compiler {
             }
             Expr::Omitted => Err(PbError::runtime(
                 "Omitted argument slot is not valid inside an expression",
+            )),
+            Expr::Empty => Err(PbError::runtime(
+                "EMPTY is only valid as the value assigned to a Variant variable",
             )),
             Expr::BinaryOp(op, left, right) => {
                 let lhs = self.compile_expr(fb, left)?;

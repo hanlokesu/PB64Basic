@@ -295,6 +295,64 @@ impl Parser {
         }
     }
 
+    /// CHW LET compound assignment: map the operator token of a "<op>=" form
+    /// to the binary operator it desugars to. Only meaningful when '=' follows.
+    fn compound_assign_op(tok: &Token) -> Option<BinaryOp> {
+        match tok {
+            Token::Plus => Some(BinaryOp::Add),
+            Token::Minus => Some(BinaryOp::Sub),
+            Token::Star => Some(BinaryOp::Mul),
+            Token::Slash => Some(BinaryOp::Div),
+            Token::Backslash => Some(BinaryOp::IntDiv),
+            Token::Ampersand => Some(BinaryOp::StrConcat),
+            Token::Mod => Some(BinaryOp::Mod),
+            Token::And => Some(BinaryOp::And),
+            Token::Or => Some(BinaryOp::Or),
+            Token::Xor => Some(BinaryOp::Xor),
+            Token::Eqv => Some(BinaryOp::Eqv),
+            Token::Imp => Some(BinaryOp::Imp),
+            _ => None,
+        }
+    }
+
+    /// Parse the tail of an assignment whose target lvalue is already parsed.
+    /// Handles plain "target = expr" and the compound "target <op>= expr",
+    /// desugaring the latter to target = target <op> expr (CHW LET statement).
+    fn parse_assignment_tail(&mut self, target: Expr, line: usize) -> PbResult<Statement> {
+        if self.peek() == &Token::Eq {
+            self.advance();
+            let value = self.parse_expression()?;
+            self.consume_to_eol();
+            return Ok(Statement::Assign(AssignStmt {
+                target,
+                value,
+                line,
+            }));
+        }
+        if let Some(op) = Self::compound_assign_op(self.peek()) {
+            if self.peek_at(1) == Some(&Token::Eq) {
+                self.advance(); // operator
+                self.advance(); // '='
+                let rhs = self.parse_expression()?;
+                self.consume_to_eol();
+                let value = Expr::BinaryOp(op, Box::new(target.clone()), Box::new(rhs));
+                return Ok(Statement::Assign(AssignStmt {
+                    target,
+                    value,
+                    line,
+                }));
+            }
+        }
+        Err(PbError::parser(
+            format!(
+                "Expected '=' or a compound assignment operator, got {:?}",
+                self.peek()
+            ),
+            self.current_file(),
+            line,
+        ))
+    }
+
     pub fn parse(&mut self) -> PbResult<Program> {
         let mut items = Vec::new();
         self.skip_eol();
@@ -12597,20 +12655,8 @@ impl Parser {
                 if name_upper == "LET" && self.peek_at(1) != Some(&Token::Star) {
                     self.advance(); // consume LET
                     let primary = self.parse_primary()?;
-                    if self.peek() == &Token::Eq {
-                        self.advance();
-                        let value = self.parse_expression()?;
-                        self.consume_to_eol();
-                        return Ok(Statement::Assign(AssignStmt {
-                            target: primary,
-                            value,
-                            line,
-                        }));
-                    }
-                    self.consume_to_eol();
-                    eprintln!("Error: LET: unsupported form on line {}", line);
-                    self.error_count += 1;
-                    return Ok(Statement::Noop("LET".to_string(), line));
+                    // Plain "=" and compound "<op>=" are both handled here.
+                    return self.parse_assignment_tail(primary, line);
                 }
                 // LET *ptr = obj / LET *ptr = variant — object/variant pointer assign (accepted; no-op)
                 if name_upper == "LET" && self.peek_at(1) == Some(&Token::Star) {
@@ -13197,18 +13243,25 @@ impl Parser {
                     }));
                 }
 
+                // Compound assignment to a plain variable: name <op>= expr
+                if let Some(tok) = self.peek_at(1) {
+                    if Self::compound_assign_op(tok).is_some()
+                        && self.peek_at(2) == Some(&Token::Eq)
+                    {
+                        self.advance(); // consume name
+                        return self.parse_assignment_tail(Expr::Variable(name_clone), line);
+                    }
+                }
+
                 if self.peek_at(1) == Some(&Token::Dot) {
                     // TYPE member assignment: name.member = expr
                     let primary = self.parse_primary()?;
-                    if self.peek() == &Token::Eq {
-                        self.advance(); // consume =
-                        let value = self.parse_expression()?;
-                        self.consume_to_eol();
-                        return Ok(Statement::Assign(AssignStmt {
-                            target: primary,
-                            value,
-                            line,
-                        }));
+                    if self.peek() == &Token::Eq
+                        || (Self::compound_assign_op(self.peek()).is_some()
+                            && self.peek_at(1) == Some(&Token::Eq))
+                    {
+                        // Plain "=" and compound "<op>=" member assignment.
+                        return self.parse_assignment_tail(primary, line);
                     }
                     // `o.M(args)` with no assignment: a statement-position method
                     // call (batch 217). Keep the receiver as argument 0 and mark the
@@ -13245,16 +13298,12 @@ impl Parser {
                     // Parse just the primary expression (no comparison operators)
                     let primary = self.parse_primary()?;
 
-                    if self.peek() == &Token::Eq {
-                        // Array assignment: arr(idx) = expr
-                        self.advance(); // consume =
-                        let value = self.parse_expression()?;
-                        self.consume_to_eol();
-                        return Ok(Statement::Assign(AssignStmt {
-                            target: primary,
-                            value,
-                            line,
-                        }));
+                    if self.peek() == &Token::Eq
+                        || (Self::compound_assign_op(self.peek()).is_some()
+                            && self.peek_at(1) == Some(&Token::Eq))
+                    {
+                        // Array element assignment, plain "=" and compound "<op>=".
+                        return self.parse_assignment_tail(primary, line);
                     }
 
                     // It's a sub call with parenthesized args
@@ -15902,6 +15951,11 @@ impl Parser {
             Token::PercentConstant(name) => {
                 self.advance();
                 Ok(Expr::PercentConst(name))
+            }
+            Token::Empty => {
+                // CHW LET (with Variants): RHS EMPTY sets a Variant to VT_EMPTY.
+                self.advance();
+                Ok(Expr::Empty)
             }
             Token::FreeFile => {
                 self.advance();

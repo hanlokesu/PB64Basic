@@ -904,6 +904,7 @@ impl Interpreter {
             Expr::FloatLit(f) => Ok(Value::Double(*f)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::WideStringLit(s) => Ok(Value::Str(s.clone())),
+            Expr::Empty => Ok(Value::Null),
             Expr::Variable(name) => {
                 let key = name.to_uppercase();
                 // Check string equates (official PB built-in string equates)

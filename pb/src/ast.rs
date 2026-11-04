@@ -733,6 +733,9 @@ pub enum Expr {
     /// `MSGBOX "text", , "title"` leaves style as Omitted.  Only ever
     /// produced in call argument lists; never valid inside an expression.
     Omitted,
+    /// `EMPTY` — assign %VT_EMPTY to a Variant (CHW LET with Variants).
+    /// Only meaningful as the RHS of a Variant assignment.
+    Empty,
 }
 
 #[derive(Debug, Clone)]

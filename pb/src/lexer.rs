@@ -6,6 +6,55 @@
 use crate::error::{PbError, PbResult};
 use crate::token::{Located, Token};
 
+/// Floating-point precision class for a numeric literal, matching the CHM
+/// "Constants and Literals" rules.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum FloatPrec {
+    Single,
+    Double,
+    Ext,
+}
+
+/// Number of written digit characters in the mantissa (before any e/E
+/// exponent), counting leading and trailing zeros, excluding the decimal point.
+fn mantissa_digit_count(num_str: &str) -> usize {
+    let mantissa = match num_str.find(['e', 'E']) {
+        Some(i) => &num_str[..i],
+        None => num_str,
+    };
+    mantissa.chars().filter(|c| c.is_ascii_digit()).count()
+}
+
+/// Convert a decimal numeric literal to its stored f64 value, reproducing
+/// PowerBASIC's literal-precision rule.
+///
+/// Without an explicit type suffix, a decimal-point literal with up to six
+/// written digits is first rounded to Single precision (32-bit) and then
+/// widened; 7-16 digits use Double precision; 17-18 digits would use Extended.
+/// The fork has no 80-bit Extended type, so Extended is kept as the best f64
+/// effort. An explicit suffix (!, #, ##) forces the precision.
+fn pb_float_value(num_str: &str, forced: Option<FloatPrec>) -> f64 {
+    let parsed: f64 = num_str.parse().unwrap_or(0.0);
+    let prec = match forced {
+        Some(p) => p,
+        None => {
+            let digits = mantissa_digit_count(num_str);
+            if digits <= 6 {
+                FloatPrec::Single
+            } else if digits <= 16 {
+                FloatPrec::Double
+            } else {
+                FloatPrec::Ext
+            }
+        }
+    };
+    match prec {
+        FloatPrec::Single => (parsed as f32) as f64,
+        FloatPrec::Double => parsed,
+        FloatPrec::Ext => parsed,
+    }
+}
+
 pub struct Lexer {
     source: Vec<char>,
     pos: usize,
@@ -398,8 +447,9 @@ impl Lexer {
                                 break;
                             }
                         }
+                        let forced = self.forced_float_prec();
                         self.consume_numeric_suffix();
-                        let val: f64 = num_str.parse().unwrap_or(0.0);
+                        let val: f64 = pb_float_value(&num_str, forced);
                         tokens.push(self.make_located(
                             Token::FloatLiteral(val),
                             start_line,
@@ -642,14 +692,31 @@ impl Lexer {
         }
 
         // Consume type suffix
+        let forced = self.forced_float_prec();
         self.consume_numeric_suffix();
 
         if is_float {
-            let val: f64 = num_str.parse().unwrap_or(0.0);
+            let val: f64 = pb_float_value(&num_str, forced);
             Ok(self.make_located(Token::FloatLiteral(val), start_line, start_col))
         } else {
             let val: i64 = num_str.parse().unwrap_or(0);
             Ok(self.make_located(Token::IntegerLiteral(val), start_line, start_col))
+        }
+    }
+
+    /// Peek an explicit float type suffix (!, #, ##) without consuming it.
+    /// Returns None when no float-forcing suffix is present.
+    fn forced_float_prec(&self) -> Option<FloatPrec> {
+        match self.peek() {
+            Some('!') => Some(FloatPrec::Single),
+            Some('#') => {
+                if self.peek_ahead(1) == Some('#') {
+                    Some(FloatPrec::Ext)
+                } else {
+                    Some(FloatPrec::Double)
+                }
+            }
+            _ => None,
         }
     }
 
