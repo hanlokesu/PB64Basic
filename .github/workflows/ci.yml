@@ -66,11 +66,11 @@ jobs:
       run: cargo build --release
 
     - name: Build runtime (32-bit)
-      run: clang -c --target=i686-pc-windows-msvc pbcompiler/runtime/pb_runtime.c -o pbcompiler/runtime/pb_runtime.obj
+      run: clang -c --target=i686-pc-windows-msvc -ffunction-sections -fdata-sections pbcompiler/runtime/pb_runtime.c -o pbcompiler/runtime/pb_runtime.obj
       shell: bash
 
     - name: Build runtime (64-bit)
-      run: clang -c --target=x86_64-pc-windows-msvc pbcompiler/runtime/pb_runtime.c -o pbcompiler/runtime/pb_runtime_x64.obj
+      run: clang -c --target=x86_64-pc-windows-msvc -ffunction-sections -fdata-sections pbcompiler/runtime/pb_runtime.c -o pbcompiler/runtime/pb_runtime_x64.obj
       shell: bash
 
     - name: Run compiler tests (32-bit)
