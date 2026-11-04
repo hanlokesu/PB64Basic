@@ -2475,12 +2475,31 @@ impl Parser {
 
         let name = self.consume_identifier()?;
 
-        // Optional: CDECL, STDCALL, etc. — skip any identifier that's a calling convention
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "CDECL" || u == "STDCALL" || u == "BDECL"
-        }) {
-            self.advance();
+        // Optional calling convention descriptor (CHW DECLARE): CDECL/STDCALL/
+        // SDECL/BDECL, possibly comma-separated. Preserve it instead of
+        // discarding; if more than one is written the last one wins.
+        let mut call_conv = CallConv::default();
+        loop {
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            let conv = match self.peek() {
+                Token::Identifier(ref s) => match s.to_uppercase().as_str() {
+                    "CDECL" => Some(CallConv::CDecl),
+                    "STDCALL" | "SDECL" => Some(CallConv::StdCall),
+                    "BDECL" => Some(CallConv::BDecl),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match conv {
+                Some(cc) => {
+                    call_conv = cc;
+                    self.advance();
+                }
+                None => break,
+            }
         }
 
         // Optional LIB "dll.dll"
@@ -2559,6 +2578,7 @@ impl Parser {
             return_type,
             lib,
             alias,
+            call_conv,
             line,
         }))
     }
@@ -7194,16 +7214,25 @@ impl Parser {
                         }));
                     }
                     if op == "DELETE" {
+                        // MENU DELETE hMenu, [BYCMD] position&
                         self.advance();
-                        let mut args = vec![self.parse_expression()?];
-                        while self.peek() == &Token::Comma {
+                        let hmenu = self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                        let bycmd;
+                        if self.peek_plain_upper() == "BYCMD" {
                             self.advance();
-                            args.push(self.parse_expression()?);
+                            bycmd = 1;
+                            if matches!(self.peek(), Token::Comma) {
+                                self.advance();
+                            }
+                        } else {
+                            bycmd = 0;
                         }
+                        let pos = self.parse_expression()?;
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "MENU_DELETE".to_string(),
-                            args,
+                            args: vec![hmenu, Expr::IntegerLit(bycmd), pos],
                             line,
                         }));
                     }
@@ -16426,6 +16455,38 @@ impl Parser {
                             }
                             self.expect(&Token::RParen)?;
                             Expr::FunctionCall(name, args)
+                        }
+                    } else if name.eq_ignore_ascii_case("MID$") && self.peek() != &Token::RParen {
+                        // MID$(StringVar, Start [, Count])  — comma form (unchanged).
+                        // MID$(StringVar, Start TO End)    — range form; encode as the
+                        // sentinel "MIDRANGE" so codegen can tell the TO form apart from
+                        // a plain Count argument (CHW MID_statement.htm).  Without this
+                        // the reserved Token::To broke out of the comma arg list and the
+                        // statement failed to parse.
+                        let s_arg = self.parse_expression()?;
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            let start_arg = self.parse_expression()?;
+                            if self.peek() == &Token::To {
+                                self.advance();
+                                let end_arg = self.parse_expression()?;
+                                self.expect(&Token::RParen)?;
+                                Expr::FunctionCall(
+                                    "MIDRANGE".to_string(),
+                                    vec![s_arg, start_arg, end_arg],
+                                )
+                            } else {
+                                let mut args = vec![s_arg, start_arg];
+                                while self.peek() == &Token::Comma {
+                                    self.advance();
+                                    args.push(self.parse_expression()?);
+                                }
+                                self.expect(&Token::RParen)?;
+                                Expr::FunctionCall(name, args)
+                            }
+                        } else {
+                            self.expect(&Token::RParen)?;
+                            Expr::FunctionCall(name, vec![s_arg])
                         }
                     } else {
                         let args = if self.peek() == &Token::RParen {

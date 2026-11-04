@@ -201,6 +201,23 @@ __declspec(dllimport) void* __stdcall CreatePopupMenu(void);
 __declspec(dllimport) int __stdcall AppendMenuA(void* hMenu, unsigned int uFlags, uintptr_t uIDNewItem, const char* lpNewItem);
 __declspec(dllimport) int __stdcall DeleteMenu(void* hMenu, unsigned int uPosition, unsigned int uFlags);
 __declspec(dllimport) int __stdcall DestroyMenu(void* hMenu);
+typedef struct {
+    unsigned int cbSize;
+    unsigned int fMask;
+    unsigned int fType;
+    unsigned int fState;
+    unsigned int wID;
+    void* hSubMenu;
+    void* hbmpChecked;
+    void* hbmpUnchecked;
+    uintptr_t dwItemData;
+    char* dwTypeData;
+    unsigned int cch;
+    void* hbmpItem;
+} PB_MENUITEMINFOA;
+__declspec(dllimport) unsigned long __stdcall GetLastError(void);
+__declspec(dllimport) int __stdcall GetMenuItemInfoA(void* hMenu, unsigned int uItem, int fByPosition, PB_MENUITEMINFOA* lpmii);
+__declspec(dllimport) int __stdcall SetMenuDefaultItem(void* hMenu, unsigned int uItem, unsigned int fByPosition);
 __declspec(dllimport) int __stdcall SetMenu(void* hWnd, void* hMenu);
 __declspec(dllimport) int __stdcall DrawMenuBar(void* hWnd);
 __declspec(dllimport) int __stdcall SetWindowPos(void* hWnd, void* hWndInsertAfter,
@@ -1845,11 +1862,12 @@ long pb_globalmem_unlock(long slot) {
     return GlobalUnlock(gm_table[slot]) ? 1 : 0; /* non-zero = still locked */
 }
 
-/* MOUSEPTR: style 0 = hide, 1..13 = stock cursors, other = fail closed */
+/* MOUSEPTR: style 0 = hide, 1..13 = stock cursors, other = fail closed.
+ * Returns the previous HCURSOR handle in var& per CHW; 0 on failure. */
 long pb_mouseptr(long style) {
     unsigned short idc = 0;
     switch (style) {
-        case 0: ShowCursor(0); return 1;
+        case 0: ShowCursor(0); return 0;
         case 1: case 4: idc = 32512; break; /* IDC_ARROW */
         case 2: idc = 32515; break;         /* IDC_CROSS */
         case 3: idc = 32513; break;         /* IDC_IBEAM */
@@ -1860,13 +1878,15 @@ long pb_mouseptr(long style) {
         case 9: idc = 32646; break;         /* IDC_SIZEWE */
         case 10: idc = 32516; break;        /* IDC_UPARROW */
         case 11: idc = 32514; break;        /* IDC_WAIT */
-        case 12: ShowCursor(0); return 1; /* no pointer */
+        case 12: ShowCursor(0); return 0;
         case 13: idc = 32651; break;        /* IDC_APPSTARTING */
         default: return 0;                  /* opaque cursor handle: fail closed */
     }
     void* h = LoadCursorA(NULL, (const char*)(size_t)idc);
     if (!h) return 0;
-    return SetCursor(h) ? 1 : 0;
+    /* SetCursor returns the HCURSOR of the previous cursor (NULL on failure),
+     * which is exactly the CHW-documented value for TO var&. */
+    return (long)(intptr_t)SetCursor(h);
 }
 
 /* UCODEPAGE: record codepage for future ANSI<->UNICODE conversions.
@@ -4337,6 +4357,91 @@ void pb_mid_assign(char** slot, long long start, long long length, char* repl) {
     memcpy((*slot) + idx, repl, (size_t)n);
 }
 
+/* CHW MID$ statement shared resolution (MID_statement.htm).
+   Given a target buffer of length L (1-based positions 1..L), the raw
+   start/third arguments, and whether `third` is a Count (is_range=0) or a
+   TO-End position (is_range=1), compute the 0-based write index and the number
+   of bytes to copy.  Returns 1 on success, 0 for a no-op.
+
+   Semantics, probed against PBWin10 on a STRING*10 buffer:
+     - start < 0 counts backward from the end (-1 = last char): pos = L+start+1
+     - start == 0 or pos outside 1..L                 -> no-op
+     - is_range=0 (Count): third<0 -> L-ABS(third); third==0 (omitted) -> to end
+     - is_range=1 (End): end<0 counts backward; count = end-pos+1
+     - write min(count, len(repl), L-pos+1) bytes; never extends past L. */
+static int pb_mid_resolve(long long L, long long start, long long third,
+                          long long is_range, long long rlen,
+                          long long *out_idx, long long *out_n) {
+    long long pos = (start < 0) ? (L + start + 1) : start;
+    if (pos < 1 || pos > L) return 0;
+    long long avail = L - pos + 1;
+    long long count;
+    if (is_range) {
+        long long end = (third < 0) ? (L + third + 1) : third;
+        count = end - pos + 1;
+    } else if (third < 0) {
+        count = L - (-third);
+    } else if (third == 0) {
+        count = avail;
+    } else {
+        count = third;
+    }
+    long long n = count;
+    if (n > rlen) n = rlen;
+    if (n > avail) n = avail;
+    if (n <= 0) return 0;
+    *out_idx = pos - 1;
+    *out_n = n;
+    return 1;
+}
+
+/* MID$ statement on a fixed-length STRING*n inline [N x i8] buffer (batch 316).
+   buflen is the declared N; the trailing NUL at buf[N-1] is never touched, so
+   the buffer keeps its length.  third is a Count (is_range=0) or an End
+   position (is_range=1). */
+void pb_mid_assign_fixed(char* buf, long long buflen, long long start,
+                         long long third, long long is_range, const char* repl) {
+    if (!buf || buflen <= 0 || !repl) return;
+    long long rlen = pb_bstr_byte_len(repl);
+    long long idx, n;
+    if (!pb_mid_resolve(buflen, start, third, is_range, rlen, &idx, &n)) return;
+    memcpy(buf + idx, repl, (size_t)n);
+}
+
+/* MID$ statement on a dynamic string slot, full CHW start/count/End resolution
+   (the TO-End form; the comma form keeps the original pb_mid_assign).  The slot
+   may point at a read-only string constant, so rebind a fresh mutable buffer
+   first. */
+void pb_mid_assign_dynamic(char** slot, long long start, long long third,
+                           long long is_range, const char* repl) {
+    if (!slot || !repl) return;
+    char* s = *slot;
+    long long L = s ? pb_bstr_byte_len(s) : 0;
+    long long rlen = pb_bstr_byte_len(repl);
+    long long idx, n;
+    if (!pb_mid_resolve(L, start, third, is_range, rlen, &idx, &n)) return;
+    pb_str_assign_copy(slot, s, (unsigned)L);
+    memcpy((*slot) + idx, repl, (size_t)n);
+}
+
+/* MID$ FUNCTION form (MID_function.htm): return a slice of s using the same
+   CHW start/count/End resolution as the assignment form.  third is a Count
+   (is_range=0; 0 = omitted -> to end) or a TO-End position (is_range=1).
+   Negative start/third count backward from the end; zero/out-of-range yields
+   an empty string.  Pass L as the "replacement length" cap so a slice is only
+   bounded by the requested count and the available characters. */
+char* pb_mid_func(const char* s, long long start, long long third,
+                  long long is_range) {
+    static const char empty[] = "";
+    if (!s) s = empty;
+    long long L = (long long)strlen(s);
+    long long idx, n;
+    if (!pb_mid_resolve(L, start, third, is_range, L, &idx, &n)) {
+        return pb_bstr_alloc("", 0);
+    }
+    return pb_bstr_alloc(s + idx, (unsigned int)n);
+}
+
 /* FIELD RESET var � unbind, becomes empty */
 void pb_field_reset(pb_field_t* fv) {
     if (!fv) return;
@@ -5627,6 +5732,18 @@ int pb_str_cmp(const char* a, const char* b) {
         if (c) return c < 0 ? -1 : 1;
     }
     return la == lb ? 0 : (la < lb ? -1 : 1);
+}
+
+/* MAX$/MIN$ (MAX_function.htm / MIN_function.htm): return the lexicographically
+   larger (is_max != 0) or smaller string.  The compiler folds the variadic
+   argument list pairwise; this picks one of the two input pointers, so no
+   allocation is needed. */
+const char* pb_minmax_str(const char* a, const char* b, long long is_max) {
+    int c = pb_str_cmp(a, b); /* <0: a<b, 0: equal, >0: a>b */
+    int pick_a;
+    if (is_max) { pick_a = (c >= 0); }
+    else        { pick_a = (c <= 0); }
+    return pick_a ? a : b;
 }
 
 /* ASC(s$ [, pos]) — character code at 1-based pos; negative pos counts from
@@ -9759,15 +9876,37 @@ long long pb_menu_new_popup(void) {
     return (long long)(intptr_t)CreatePopupMenu();
 }
 int pb_menu_add_string(long long h, char* txt, int id, int state) {
+    /* CHW separator convention: txt$="-", id&=0, state&=0 creates a real
+     * Win32 separator (MF_SEPARATOR), not a string item displaying "-". */
+    if (txt && txt[0] == '-' && txt[1] == '\0' && id == 0 && state == 0) {
+        return AppendMenuA((void*)(intptr_t)h, 0x0800, 0, 0) ? 1 : 0; /* MF_SEPARATOR */
+    }
     unsigned int flags = 0x0000; /* MF_STRING */
     flags |= (unsigned int)state;
-    return AppendMenuA((void*)(intptr_t)h, flags, (unsigned long long)id, txt) ? 1 : 0;
+    int ok = AppendMenuA((void*)(intptr_t)h, flags, (unsigned long long)id, txt) ? 1 : 0;
+    /* AppendMenuA with MF_DEFAULT does not reliably mark the item as the
+     * default; call SetMenuDefaultItem to make it stick (so GetMenuItemInfoA
+     * returns MFS_DEFAULT and PBWin's readback matches). */
+    if (ok && (state & 0x1000)) {
+        SetMenuDefaultItem((void*)(intptr_t)h, (unsigned int)id, 0 /*MF_BYCOMMAND*/);
+    }
+    return ok;
 }
-int pb_menu_add_popup(long long h, long long hSub, int id) {
-    return AppendMenuA((void*)(intptr_t)h, 0x0010, (unsigned long long)(intptr_t)hSub, 0) ? 1 : 0; /* MF_POPUP */
+int pb_menu_add_popup(long long h, char* txt, long long hSub, int state) {
+    /* MF_POPUP | MF_STRING: attach the submenu handle as uIDNewItem and pass
+     * the label as lpNewItem.  state is ORed in so MFS_CHECKED etc. on a popup
+     * entry are honored. */
+    unsigned int flags = 0x0010u /*MF_POPUP*/ | 0x0000u /*MF_STRING*/;
+    flags |= (unsigned int)state;
+    return AppendMenuA((void*)(intptr_t)h, flags,
+                       (unsigned long long)(intptr_t)hSub, txt) ? 1 : 0;
 }
-int pb_menu_delete(long long h, int pos) {
-    return DeleteMenu((void*)(intptr_t)h, (unsigned int)pos, 0x0400) ? 1 : 0; /* MF_BYPOSITION */
+int pb_menu_delete(long long h, int bycmd, int pos) {
+    /* PB MENU DELETE uses 1-based physical indexing; Win32 MF_BYPOSITION is
+     * 0-based.  BYCMD switches to MF_BYCOMMAND (pos is the item id, no offset). */
+    unsigned int flags = bycmd ? 0x0000u /*MF_BYCOMMAND*/ : 0x0400u /*MF_BYPOSITION*/;
+    unsigned int m = bycmd ? (unsigned int)pos : (unsigned int)(pos - 1);
+    return DeleteMenu((void*)(intptr_t)h, m, flags) ? 1 : 0;
 }
 int pb_dialog_menu(void* hDlg, void* hMenu) {
     SetMenu(hDlg, hMenu);
@@ -9818,8 +9957,26 @@ int pb_menu_context(long long hMenu, int x, int y, unsigned int flags, long* cmd
 /* MENU GET STATE / SET STATE / GET TEXT / SET TEXT (batch 62) */
 int pb_menu_get_state(long long h, int bycmd, long pos, long* state) {
     if (!state) return 0;
-    unsigned int f = GetMenuState((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), bycmd ? 0 : 0x0400);
-    if (f == (unsigned int)-1) return 0;
+    /* Use GetMenuState as the base.  PBWin normalizes out MF_SEPARATOR
+     * (0x800) and returns 0 for a missing item.  MF_DEFAULT (0x1000) is
+     * exposed via GetMenuItemInfoA best-effort. */
+    unsigned int f = GetMenuState((void*)(intptr_t)h,
+                                  (unsigned int)(bycmd ? pos : pos - 1),
+                                  bycmd ? 0 : 0x0400);
+    if (f == (unsigned int)-1) { *state = 0; return 0; }
+    f &= ~0x0800u;
+    {
+        PB_MENUITEMINFOA mii;
+        memset(&mii, 0, sizeof(mii));
+        mii.cbSize = sizeof(mii);
+        mii.fMask = 0x0001; /* MIIM_STATE */
+        int ok = GetMenuItemInfoA((void*)(intptr_t)h,
+                                  (unsigned int)(bycmd ? pos : pos - 1),
+                                  bycmd ? 0 : 1, &mii);
+        if (ok && (mii.fState & 0x1000u)) {
+            f |= 0x1000u; /* MFS_DEFAULT */
+        }
+    }
     *state = (long)(f & 0xFFFF);
     return 1;
 }
@@ -10055,13 +10212,15 @@ void pb_mem_swap(long long src, long long dst, long long count) {
     }
 }
 
-/* MEMORY FILL dst, count, BYTE|WORD|DWORD val � fill count elements of width bytes. */
+/* MEMORY FILL dst, Count_bytes, BYTE|WORD|DWORD val.  CHW MEMORY_statement.htm:
+   Count is always a number of BYTES; the BYTE/WORD/DWORD keyword only chooses
+   the width of the repeating little-endian pattern.  Fill `count` bytes,
+   cycling through the pattern bytes. */
 void pb_mem_fill(long long dst, long long count, long long val, long long width) {
     unsigned char* p = (unsigned char*)(intptr_t)dst;
+    if (width < 1) width = 1;
     for (long long i = 0; i < count; i++) {
-        for (long long w = 0; w < width; w++) {
-            p[i * width + w] = (unsigned char)((val >> (8 * w)) & 0xFF);
-        }
+        p[i] = (unsigned char)((val >> (8 * (i % width))) & 0xFF);
     }
 }
 

@@ -1826,6 +1826,46 @@ impl Compiler {
             &[IrType::Ptr, IrType::I64, IrType::I64, IrType::Ptr],
             false,
         );
+        // MID$ statement on a fixed-length STRING*n buffer (batch 316):
+        //   void pb_mid_assign_fixed(char* buf, i64 buflen, i64 start,
+        //                            i64 third, i64 is_range, char* repl);
+        self.module.declare_function(
+            "pb_mid_assign_fixed",
+            &IrType::Void,
+            &[
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        // MID$ statement on a dynamic string slot, TO-End form (batch 316):
+        //   void pb_mid_assign_dynamic(char** slot, i64 start, i64 third,
+        //                              i64 is_range, char* repl);
+        self.module.declare_function(
+            "pb_mid_assign_dynamic",
+            &IrType::Void,
+            &[
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        // MID$ FUNCTION form (MID_function.htm):
+        //   char* pb_mid_func(char* s, i64 start, i64 third, i64 is_range);
+        // third is a Count (0 = omitted) or a TO-End position.
+        self.module.declare_function(
+            "pb_mid_func",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::I64, IrType::I64],
+            false,
+        );
         self.module.declare_function(
             "pb_mat_fill",
             &IrType::Void,
@@ -2319,6 +2359,13 @@ impl Compiler {
             "pb_str_cmp",
             &IrType::I32,
             &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        // MAX$/MIN$ lexicographic pairwise pick (returns one of the two ptrs).
+        self.module.declare_function(
+            "pb_minmax_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::Ptr, IrType::I64],
             false,
         );
         self.module
@@ -4357,13 +4404,13 @@ impl Compiler {
         self.module.declare_function(
             "pb_menu_add_popup",
             &IrType::I32,
-            &[IrType::I64, IrType::I64, IrType::I32],
+            &[IrType::I64, IrType::Ptr, IrType::I64, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_menu_delete",
             &IrType::I32,
-            &[IrType::I64, IrType::I32],
+            &[IrType::I64, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -7450,6 +7497,24 @@ impl Compiler {
         );
     }
 
+    /// Whether a DECLARE should use the LLVM x86_stdcallcc on the current
+    /// target, honoring the explicit CHW calling convention:
+    /// - SDECL/STDCALL (the PowerBASIC default): stdcall on 32-bit, callee
+    ///   cleans and the name gets the `_name@N` decoration.
+    /// - CDECL: never stdcall — caller cleans, undecorated `_name`.
+    /// - BDECL (legacy BASIC/Pascal): callee cleans, so it uses the stdcall
+    ///   convention for stack cleanup. Its left-to-right push order is not
+    ///   separately modeled (no BDECL external object exists on this target),
+    ///   which is recorded here rather than silently implied.
+    ///
+    /// On x86_64 there is a single calling convention, so this is always false.
+    fn declare_is_stdcall(&self, cc: CallConv) -> bool {
+        if !self.module.is_32bit() {
+            return false;
+        }
+        matches!(cc, CallConv::StdCall | CallConv::BDecl)
+    }
+
     fn register_declare(&mut self, ds: &DeclareStmt) {
         let name = normalize_name(&ds.name);
 
@@ -7496,11 +7561,12 @@ impl Compiler {
             // and COFF symbol matching is case-sensitive — `@SUM` would be
             // an unresolved `SUM` against an obj that exports `sum`.
             let ir_name = ds.alias.clone().unwrap_or_else(|| ds.name.clone());
-            // SDECL/STDCALL is the default PowerBASIC calling convention (CHW
-            // DECLARE statement). On 32-bit targets emit x86_stdcallcc so clang
-            // applies the `_name@N` decoration matching the external stdcall
-            // object; x86_64 has a single convention and stays plain/cdecl.
-            let ext_is_stdcall = self.module.is_32bit();
+            // Honor the explicit CHW calling convention instead of always
+            // assuming stdcall on 32-bit. SDECL/STDCALL (the default) emits
+            // x86_stdcallcc so clang applies the `_name@N` decoration matching
+            // an external stdcall object; an explicit CDECL stays plain
+            // (caller-clean, undecorated `_name`). x86_64 has one convention.
+            let ext_is_stdcall = self.declare_is_stdcall(ds.call_conv);
             if ds.is_function {
                 let ret_type = Self::ir_type_for(&ds.return_type);
                 self.functions.insert(
@@ -7554,13 +7620,13 @@ impl Compiler {
 
         // Determine calling convention and linkage:
         // - Stubbed DLLs: regular extern (stubs provided in pb_runtime.c)
-        // - Everything else on 32-bit: dllimport + stdcall (SDECL/STDCALL is the
-        //   PowerBASIC default per CHW DECLARE; this covers both Win32 API DLLs
-        //   and user-built DLLs, which export stdcall functions)
+        // - Non-stubbed on 32-bit: honor the explicit CHW convention. SDECL/
+        //   STDCALL (the default) and BDECL use dllimport + stdcall; an explicit
+        //   CDECL uses the plain (caller-clean) dllimport instead.
         // - On x86_64 there is a single calling convention: plain dllimport
         let lib_name = ds.lib.as_deref().unwrap_or("").trim().to_uppercase();
         let is_stubbed = Self::is_stubbed_dll(&lib_name);
-        let is_stdcall = self.module.is_32bit() && !is_stubbed;
+        let is_stdcall = !is_stubbed && self.declare_is_stdcall(ds.call_conv);
         // User DLL import (batch 276): record the .lib so the link step can
         // resolve the dllimport symbols.  System DLLs are already covered by
         // `-lkernel32`/`-luser32`/... in link_exe/link_dll.
@@ -9225,8 +9291,11 @@ impl Compiler {
                 // batch 259): overwrite chars in place, never grow/shrink.
                 // NOTE: this must live inside the ArrayAccess|FunctionCall arm —
                 // a bare FunctionCall target arm after this arm is unreachable.
-                if name == "MID" && !indices.is_empty() {
+                if (name == "MID" || name == "MIDRANGE") && !indices.is_empty() {
                     let s_expr = &indices[0];
+                    // MIDRANGE = the `Start TO End` form (parser sentinel);
+                    // otherwise indices[2] (when present) is a Count.
+                    let is_range = if name == "MIDRANGE" { 1i64 } else { 0i64 };
                     if let Ok((sptr, spb)) = self.compile_lvalue_ptr(fb, s_expr) {
                         if matches!(spb, PbType::String | PbType::FixedString(_)) {
                             let start = if indices.len() > 1 {
@@ -9235,9 +9304,11 @@ impl Compiler {
                             } else {
                                 fb.const_i64(1)
                             };
-                            let length = if indices.len() > 2 {
-                                let lv = self.compile_expr(fb, &indices[2])?;
-                                self.to_i64(fb, &lv)
+                            // Comma form: indices[2] = Count (0 = omitted).
+                            // Range form (MIDRANGE): indices[2] = End position.
+                            let third = if indices.len() > 2 {
+                                let tv = self.compile_expr(fb, &indices[2])?;
+                                self.to_i64(fb, &tv)
                             } else {
                                 fb.const_i64(0)
                             };
@@ -9248,16 +9319,34 @@ impl Compiler {
                                 fb.const_null_ptr()
                             };
                             if matches!(spb, PbType::String) {
+                                if is_range == 0 {
+                                    // dynamic comma form (batch 259): unchanged lowering
+                                    fb.call_void(
+                                        "pb_mid_assign",
+                                        &[sptr.clone(), start, third, replp],
+                                    );
+                                } else {
+                                    // dynamic TO-end form: full CHW resolution
+                                    fb.call_void(
+                                        "pb_mid_assign_dynamic",
+                                        &[sptr.clone(), start, third, fb.const_i64(1), replp],
+                                    );
+                                }
+                            } else if let PbType::FixedString(n) = &spb {
+                                // Fixed-length STRING*n inline [N x i8] buffer:
+                                // in-place overwrite, never grows/shrinks (CHW).
+                                let buflen = fb.const_i64(*n as i64);
                                 fb.call_void(
-                                    "pb_mid_assign",
-                                    &[sptr.clone(), start, length, replp],
+                                    "pb_mid_assign_fixed",
+                                    &[
+                                        sptr.clone(),
+                                        buflen,
+                                        start,
+                                        third,
+                                        fb.const_i64(is_range),
+                                        replp,
+                                    ],
                                 );
-                            } else {
-                                // FixedString: inline [N x i8] buffer; not bridged
-                                // yet — fail loudly, never silently no-op.
-                                return Err(PbError::runtime(
-                                    "MID$ statement on fixed-length strings not implemented yet",
-                                ));
                             }
                         }
                     }
@@ -10542,23 +10631,35 @@ impl Compiler {
                 return Ok(());
             }
             "MENU_ADD_POPUP" => {
-                // args: hMenu, hSub, id&
+                // CHW form (4 args): hMenu, txt$, hSub, state&
+                // Legacy fork form (3 args): hMenu, hSub, state&  (no label; batch145)
                 let h = self.compile_expr(fb, &call.args[0])?;
                 let h2 = self.convert_value(fb, &h, &IrType::I64, &PbType::Quad);
-                let hs = self.compile_expr(fb, &call.args[1])?;
+                let (txt, hs, state) = if call.args.len() >= 4 {
+                    let txt = self.compile_expr(fb, &call.args[1])?;
+                    let hs = self.compile_expr(fb, &call.args[2])?;
+                    let st = self.compile_expr(fb, &call.args[3])?;
+                    (txt, hs, st)
+                } else {
+                    let txt = Val::new(self.empty_string_name.clone(), IrType::Ptr);
+                    let hs = self.compile_expr(fb, &call.args[1])?;
+                    let st = self.compile_expr(fb, &call.args[2])?;
+                    (txt, hs, st)
+                };
                 let hs2 = self.convert_value(fb, &hs, &IrType::I64, &PbType::Quad);
-                let id = self.compile_expr(fb, &call.args[2])?;
-                let id2 = self.convert_value(fb, &id, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_menu_add_popup", &[h2, hs2, id2]);
+                let s2 = self.convert_value(fb, &state, &IrType::I32, &PbType::Long);
+                fb.call_void("pb_menu_add_popup", &[h2, txt, hs2, s2]);
                 return Ok(());
             }
             "MENU_DELETE" => {
-                // args: hMenu, pos&
+                // args: hMenu, bycmd, pos&
                 let h = self.compile_expr(fb, &call.args[0])?;
                 let h2 = self.convert_value(fb, &h, &IrType::I64, &PbType::Quad);
-                let pos = self.compile_expr(fb, &call.args[1])?;
+                let bycmd = self.compile_expr(fb, &call.args[1])?;
+                let b2 = self.convert_value(fb, &bycmd, &IrType::I32, &PbType::Long);
+                let pos = self.compile_expr(fb, &call.args[2])?;
                 let p2 = self.convert_value(fb, &pos, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_menu_delete", &[h2, p2]);
+                fb.call_void("pb_menu_delete", &[h2, b2, p2]);
                 return Ok(());
             }
 
@@ -19892,8 +19993,9 @@ impl Compiler {
                     let st = self.to_i32(fb, &cv);
                     let r = fb.call(&IrType::I32, "pb_mouseptr", &[st]);
                     if call.args.len() >= 2 {
-                        let (ptr, _) = self.compile_lvalue_ptr(fb, &call.args[1])?;
-                        fb.store(&r, &ptr);
+                        let (ptr, pbt) = self.compile_lvalue_ptr(fb, &call.args[1])?;
+                        let r2 = self.convert_value(fb, &r, &IrType::Ptr, &pbt);
+                        fb.store(&r2, &ptr);
                     }
                 }
                 return Ok(());
@@ -23767,9 +23869,11 @@ impl Compiler {
                 }
             }
             Expr::Varptr(inner) => {
-                // VARPTR(var) or VARPTR(arr(idx)) → return address as i32
+                // VARPTR(var) or VARPTR(arr(idx)): materialize at the target's
+                // native pointer width. A hard-coded i64 on i686 is pushed as
+                // 8 bytes, shifting the frame and crashing the callee.
                 let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, inner)?;
-                Ok(fb.ptrtoint64(&ptr))
+                Ok(fb.ptrtoint_native(&ptr, self.module.is_32bit()))
             }
             Expr::ByvalOverride(inner) => {
                 // BYVAL override outside of call args context → just compile inner expr
@@ -24523,6 +24627,12 @@ impl Compiler {
             "LEFT" => Some(self.builtin_left(fb, args)),
             "RIGHT" => Some(self.builtin_right(fb, args)),
             "MID" => Some(self.builtin_mid(fb, args)),
+            // MID$(s, start TO end) function form: the parser emits the
+            // FunctionCall("MIDRANGE", [s, start, end]) sentinel (same sentinel
+            // the statement form uses on the LHS).  Resolve it to a string
+            // slice via pb_mid_func with is_range=1; previously it fell through
+            // to an undefined external symbol and failed at link.
+            "MIDRANGE" => Some(self.builtin_mid_range(fb, args)),
             "INSTR" => Some(self.builtin_instr(fb, args)),
             "UCASE" => Some(self.builtin_ucase(fb, args)),
             "LCASE" => Some(self.builtin_lcase(fb, args)),
@@ -25746,26 +25856,46 @@ impl Compiler {
         args: &[Expr],
         is_max: bool,
     ) -> PbResult<Val> {
-        let a = self.compile_expr(fb, &args[0])?;
-        let b = self.compile_expr(fb, &args[1])?;
-        if a.ty.is_float() || b.ty.is_float() {
-            let fa = self.to_f64(fb, &a);
-            let fb_val = self.to_f64(fb, &b);
-            let cmp = if is_max {
-                fb.fcmp("ogt", &fa, &fb_val)
-            } else {
-                fb.fcmp("olt", &fa, &fb_val)
-            };
-            Ok(fb.select(&cmp, &fa, &fb_val))
-        } else {
-            let (ia, ib) = self.promote_ints(fb, &a, &b);
-            let cmp = if is_max {
-                fb.icmp("sgt", &ia, &ib)
-            } else {
-                fb.icmp("slt", &ia, &ib)
-            };
-            Ok(fb.select(&cmp, &ia, &ib))
+        // CHW MAX_function.htm / MIN_function.htm: "any number of arguments"
+        // (variadic).  The previous implementation compared only args[0] and
+        // args[1] and silently discarded the rest.  Fold pairwise over every
+        // argument.  The string form MAX$/MIN$ compares string contents
+        // lexicographically (pb_minmax_str); the numeric form compares by value.
+        if args.len() < 2 {
+            return Err(PbError::parser(
+                "MIN/MAX requires at least two arguments".to_string(),
+                None,
+                self.current_line,
+            ));
         }
+        let mut cur = self.compile_expr(fb, &args[0])?;
+        // String form: a Ptr result is a string pointer -> lexicographic fold.
+        let str_mode = cur.ty == IrType::Ptr;
+        for a in &args[1..] {
+            let next = self.compile_expr(fb, a)?;
+            if str_mode {
+                let imax = fb.const_i64(is_max as i64);
+                cur = fb.call(&IrType::Ptr, "pb_minmax_str", &[cur, next, imax]);
+            } else if cur.ty.is_float() || next.ty.is_float() {
+                let fc = self.to_f64(fb, &cur);
+                let fn_ = self.to_f64(fb, &next);
+                let cmp = if is_max {
+                    fb.fcmp("ogt", &fc, &fn_)
+                } else {
+                    fb.fcmp("olt", &fc, &fn_)
+                };
+                cur = fb.select(&cmp, &fc, &fn_);
+            } else {
+                let (ic, in_) = self.promote_ints(fb, &cur, &next);
+                let cmp = if is_max {
+                    fb.icmp("sgt", &ic, &in_)
+                } else {
+                    fb.icmp("slt", &ic, &in_)
+                };
+                cur = fb.select(&cmp, &ic, &in_);
+            }
+        }
+        Ok(cur)
     }
 
     fn builtin_int(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -27677,22 +27807,38 @@ impl Compiler {
             ));
         }
         let start = self.compile_expr(fb, &args[1])?;
-        let start_i32 = self.to_i32(fb, &start);
-        let one = fb.const_i32(1);
-        let offset = fb.sub(&start_i32, &one); // convert to 0-based
-
-        let src = fb.gep_byte(&s, &offset);
-
-        if args.len() >= 3 {
-            // MID$(s, start, length)
-            let length = self.compile_expr(fb, &args[2])?;
-            let len_i32 = self.to_i32(fb, &length);
-            Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[src, len_i32]))
+        let start_i64 = self.to_i64(fb, &start);
+        // ANSI: full CHW MID_function.htm semantics live in pb_mid_func
+        // (negative start counts backward; negative Count = LEN-ABS(Count);
+        // omitted Count -> to end; out-of-range/zero -> empty).  third is the
+        // Count (0 = omitted).  Previously the raw GEP handled only positive
+        // in-range starts and produced garbage for the documented edge cases.
+        let third = if args.len() >= 3 {
+            let t = self.compile_expr(fb, &args[2])?;
+            self.to_i64(fb, &t)
         } else {
-            // MID$(s, start) → rest of string
-            let src_len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&src));
-            Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[src, src_len]))
-        }
+            fb.const_i64(0)
+        };
+        Ok(fb.call(
+            &IrType::Ptr,
+            "pb_mid_func",
+            &[s, start_i64, third, fb.const_i64(0)],
+        ))
+    }
+
+    /// MID$(s, start TO end) function form: slice [start, end] inclusive using
+    /// the shared CHW resolver (negative end counts backward from the end).
+    fn builtin_mid_range(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        let s = self.compile_expr(fb, &args[0])?;
+        let start = self.compile_expr(fb, &args[1])?;
+        let end = self.compile_expr(fb, &args[2])?;
+        let start_i64 = self.to_i64(fb, &start);
+        let end_i64 = self.to_i64(fb, &end);
+        Ok(fb.call(
+            &IrType::Ptr,
+            "pb_mid_func",
+            &[s, start_i64, end_i64, fb.const_i64(1)],
+        ))
     }
 
     fn builtin_instr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

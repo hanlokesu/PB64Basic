@@ -252,6 +252,21 @@ pub struct Param {
     pub is_array: bool,
 }
 
+/// Calling convention for a DECLARE (CHW DECLARE statement descriptors).
+/// SDECL (synonym STDCALL) is the PowerBASIC default; CDECL is the C
+/// convention; BDECL is the legacy BASIC/Pascal convention. The explicit
+/// keyword is preserved here instead of being accepted and discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallConv {
+    /// SDECL / STDCALL: right-to-left, callee removes the arguments (default).
+    #[default]
+    StdCall,
+    /// CDECL: right-to-left, caller removes the arguments.
+    CDecl,
+    /// BDECL: legacy BASIC/Pascal, left-to-right, callee removes the arguments.
+    BDecl,
+}
+
 #[derive(Debug, Clone)]
 pub struct DeclareStmt {
     pub name: String,
@@ -260,6 +275,7 @@ pub struct DeclareStmt {
     pub return_type: PbType,   // Void for SUB
     pub lib: Option<String>,   // LIB "dll.dll"
     pub alias: Option<String>, // ALIAS "ExternalName"
+    pub call_conv: CallConv,   // explicit CDECL/STDCALL/BDECL
     pub line: usize,
 }
 
