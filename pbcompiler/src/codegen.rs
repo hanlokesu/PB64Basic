@@ -358,6 +358,8 @@ fn compile_with_clang(
         .args([
             "-c",
             opt_level,
+            "-ffunction-sections",
+            "-fdata-sections",
             &target_flag,
             ll_str.as_ref(),
             "-o",
@@ -388,6 +390,8 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
         .args([
             "-c",
             "-O1",
+            "-ffunction-sections",
+            "-fdata-sections",
             &target_flag,
             ll_str.as_ref(),
             "-o",
@@ -407,6 +411,8 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
         .args([
             "-c",
             "-O0",
+            "-ffunction-sections",
+            "-fdata-sections",
             "-mllvm",
             "-fast-isel",
             &target_flag,
@@ -428,6 +434,8 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
         .args([
             "-c",
             "-O0",
+            "-ffunction-sections",
+            "-fdata-sections",
             &target_flag,
             ll_str.as_ref(),
             "-o",
@@ -7022,15 +7030,25 @@ impl Compiler {
         for fi in self.functions.values() {
             if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
-                self.module
-                    .declare_function(&fi.ir_name, &fi.ret_type, &params, false);
+                if fi.is_stdcall {
+                    self.module
+                        .declare_external_stdcall(&fi.ir_name, &fi.ret_type, &params);
+                } else {
+                    self.module
+                        .declare_function(&fi.ir_name, &fi.ret_type, &params, false);
+                }
             }
         }
         for fi in self.subs.values() {
             if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
-                self.module
-                    .declare_function(&fi.ir_name, &IrType::Void, &params, false);
+                if fi.is_stdcall {
+                    self.module
+                        .declare_external_stdcall(&fi.ir_name, &IrType::Void, &params);
+                } else {
+                    self.module
+                        .declare_function(&fi.ir_name, &IrType::Void, &params, false);
+                }
             }
         }
 
@@ -7478,6 +7496,11 @@ impl Compiler {
             // and COFF symbol matching is case-sensitive — `@SUM` would be
             // an unresolved `SUM` against an obj that exports `sum`.
             let ir_name = ds.alias.clone().unwrap_or_else(|| ds.name.clone());
+            // SDECL/STDCALL is the default PowerBASIC calling convention (CHW
+            // DECLARE statement). On 32-bit targets emit x86_stdcallcc so clang
+            // applies the `_name@N` decoration matching the external stdcall
+            // object; x86_64 has a single convention and stays plain/cdecl.
+            let ext_is_stdcall = self.module.is_32bit();
             if ds.is_function {
                 let ret_type = Self::ir_type_for(&ds.return_type);
                 self.functions.insert(
@@ -7488,7 +7511,7 @@ impl Compiler {
                         params,
                         export: false,
                         is_external: true,
-                        is_stdcall: false,
+                        is_stdcall: ext_is_stdcall,
                     },
                 );
             } else {
@@ -7500,7 +7523,7 @@ impl Compiler {
                         params,
                         export: false,
                         is_external: true,
-                        is_stdcall: false,
+                        is_stdcall: ext_is_stdcall,
                     },
                 );
             }
@@ -7530,12 +7553,14 @@ impl Compiler {
         let ir_param_types: Vec<IrType> = params.iter().map(|p| p.ir_type.clone()).collect();
 
         // Determine calling convention and linkage:
-        // - Win32 API DLLs: dllimport + stdcall on 32-bit
         // - Stubbed DLLs: regular extern (stubs provided in pb_runtime.c)
-        // - Other DLLs: dllimport + cdecl
+        // - Everything else on 32-bit: dllimport + stdcall (SDECL/STDCALL is the
+        //   PowerBASIC default per CHW DECLARE; this covers both Win32 API DLLs
+        //   and user-built DLLs, which export stdcall functions)
+        // - On x86_64 there is a single calling convention: plain dllimport
         let lib_name = ds.lib.as_deref().unwrap_or("").trim().to_uppercase();
-        let is_stdcall = self.module.is_32bit() && Self::is_win32_stdcall_dll(&lib_name);
         let is_stubbed = Self::is_stubbed_dll(&lib_name);
+        let is_stdcall = self.module.is_32bit() && !is_stubbed;
         // User DLL import (batch 276): record the .lib so the link step can
         // resolve the dllimport symbols.  System DLLs are already covered by
         // `-lkernel32`/`-luser32`/... in link_exe/link_dll.

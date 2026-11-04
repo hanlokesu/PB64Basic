@@ -162,7 +162,45 @@ impl ModuleBuilder {
             }
             sig.push_str("...");
         }
-        writeln!(self.globals, "declare {} @{}({})", ret, name, sig).unwrap();
+        writeln!(
+            self.globals,
+            "declare {} @{}({})",
+            ret,
+            llvm_ident(name),
+            sig
+        )
+        .unwrap();
+    }
+
+    /// Declare an external (non-dllimport) stdcall function, resolved at link
+    /// time from a `#LINK` object. On 32-bit targets `x86_stdcallcc` makes clang
+    /// emit the `_name@N` decoration; on 64-bit there is a single convention,
+    /// so the plain declaration is used.
+    pub fn declare_external_stdcall(&mut self, name: &str, ret: &IrType, params: &[IrType]) {
+        if !self.declared.insert(name.to_string()) {
+            return; // already declared
+        }
+        let params_str: Vec<String> = params.iter().map(|t| t.to_string()).collect();
+        let id = llvm_ident(name);
+        if self.is_32bit() {
+            writeln!(
+                self.globals,
+                "declare x86_stdcallcc {} @{}({})",
+                ret,
+                id,
+                params_str.join(", ")
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                self.globals,
+                "declare {} @{}({})",
+                ret,
+                id,
+                params_str.join(", ")
+            )
+            .unwrap();
+        }
     }
 
     /// Declare an external global variable.
@@ -896,7 +934,13 @@ impl FunctionBuilder {
     /// Call a void function.
     pub fn call_void(&mut self, name: &str, args: &[Val]) {
         let args_str: Vec<String> = args.iter().map(|a| a.typed()).collect();
-        writeln!(self.body, "  call void @{}({})", name, args_str.join(", ")).unwrap();
+        writeln!(
+            self.body,
+            "  call void @{}({})",
+            llvm_ident(name),
+            args_str.join(", ")
+        )
+        .unwrap();
     }
 
     /// Call a void function through an indirect pointer (CALL DWORD).
@@ -933,7 +977,7 @@ impl FunctionBuilder {
         writeln!(
             self.body,
             "  call x86_stdcallcc void @{}({})",
-            name,
+            llvm_ident(name),
             args_str.join(", ")
         )
         .unwrap();
@@ -948,7 +992,7 @@ impl FunctionBuilder {
             "  {} = call {} @{}({})",
             r,
             ret_ty,
-            name,
+            llvm_ident(name),
             args_str.join(", ")
         )
         .unwrap();
@@ -964,7 +1008,7 @@ impl FunctionBuilder {
             "  {} = call x86_stdcallcc {} @{}({})",
             r,
             ret_ty,
-            name,
+            llvm_ident(name),
             args_str.join(", ")
         )
         .unwrap();
@@ -1078,5 +1122,43 @@ fn llvm_escape_string(s: &str) -> String {
             }
         }
     }
+    out
+}
+
+/// Whether `c` may start an unquoted LLVM identifier: `[-a-zA-Z$._]`.
+fn is_ident_start(c: char) -> bool {
+    c == '-' || c == '$' || c == '.' || c == '_' || c.is_ascii_alphabetic()
+}
+
+/// Whether `c` may continue an unquoted LLVM identifier: start set plus digits.
+fn is_ident_continue(c: char) -> bool {
+    is_ident_start(c) || c.is_ascii_digit()
+}
+
+/// Render a name as an LLVM identifier (the part written after the leading
+/// `@`/`%`), quoting it when it contains characters outside the unquoted
+/// identifier set.
+///
+/// Unquoted identifiers match `[-a-zA-Z$._][-a-zA-Z$._0-9]*`. A name such as
+/// `sum@4` or one containing a space must be emitted quoted as `"..."`, with
+/// double quotes and backslashes escaped as hex. Ordinary names are returned
+/// unchanged, so this never alters the output of existing valid identifiers.
+pub fn llvm_ident(name: &str) -> String {
+    let mut chars = name.chars();
+    let valid =
+        matches!(chars.next(), Some(c) if is_ident_start(c)) && chars.all(is_ident_continue);
+    if valid {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(name.len() + 2);
+    out.push('"');
+    for c in name.chars() {
+        match c {
+            '"' => out.push_str("\\22"),
+            '\\' => out.push_str("\\5C"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
     out
 }
