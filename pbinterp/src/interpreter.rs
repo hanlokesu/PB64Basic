@@ -621,6 +621,15 @@ impl Interpreter {
             return Ok(Flow::Normal);
         }
 
+        // NAME old$ AS new$: perform the rename in-process (interpreter has no
+        // pb_err channel; best-effort, matching the runtime's Win32 path).
+        if name.as_str() == "NAME" && args.len() >= 2 {
+            let oldp = args[0].to_string_val();
+            let newp = args[1].to_string_val();
+            let _ = std::fs::rename(&oldp, &newp);
+            return Ok(Flow::Normal);
+        }
+
         // Look up user-defined SUB
         if let Some(sub_decl) = self.subs.get(&name).cloned() {
             self.call_sub(&sub_decl, &args)?;

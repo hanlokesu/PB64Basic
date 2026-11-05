@@ -39,6 +39,8 @@ __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
 __declspec(dllimport) wchar_t* __stdcall SysAllocStringLen(const wchar_t* psz, unsigned int len);
 __declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
+__declspec(dllimport) int __stdcall MoveFileExA(const char* lpExisting, const char* lpNew, unsigned long dwFlags);
+__declspec(dllimport) unsigned long __stdcall GetLastError(void);
 __declspec(dllimport) int __stdcall CharToOemA(const char* lpszSrc, char* lpszDst);
 __declspec(dllimport) int __stdcall OemToCharA(const char* lpszSrc, char* lpszDst);
 __declspec(dllimport) unsigned long __stdcall CharLowerBuffA(char* lpsz, unsigned long cchLength);
@@ -168,6 +170,14 @@ __declspec(dllimport) void* __stdcall FindFirstFileA(const char* lpFileName, cha
 __declspec(dllimport) int __stdcall FindNextFileA(void* hFindFile, char* lpFindFileData);
 __declspec(dllimport) int __stdcall FindClose(void* hFindFile);
 __declspec(dllimport) unsigned long __stdcall GetLastError(void);
+/* OBJRESULT$ descriptive text: measured PBWin returns the Windows system
+ * message for the hResult (FormatMessage FROM_SYSTEM), e.g. 0 -> "The
+ * operation completed successfully." */
+__declspec(dllimport) unsigned long __stdcall FormatMessageA(
+    unsigned long dwFlags, const void* lpSource, unsigned long dwMessageId,
+    unsigned long dwLanguageId, char* lpBuffer, unsigned long nSize,
+    const void* Arguments);
+__declspec(dllimport) void __stdcall LocalFree(void* hMem);
 __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
 __declspec(dllimport) int __stdcall SetFileAttributesA(const char* lpFileName, unsigned long dwFileAttributes);
 __declspec(dllimport) void* __stdcall GetCurrentProcess(void);
@@ -5326,11 +5336,22 @@ void pb_flush(int filenum) {
     }
 }
 
-/* NAME: rename a file � PB-compatible ERR on failure (53 = file not found). */
+/* NAME: rename a file - CHW-specified errors:
+ *   53 = source does not exist
+ *   58 = destination already exists
+ *   51 = source open/locked by the caller (ACCESS_DENIED on MoveFileEx)
+ */
 int pb_name(const char* old_path, const char* new_path) {
-    if (!old_path || !new_path) { pb_err_var = pb_err = 76; return -1; }
-    if (rename(old_path, new_path) != 0) {
-        pb_err_var = pb_err = 53;
+    if (!old_path || !new_path || !*old_path || !*new_path) { pb_err_var = pb_err = 76; return -1; }
+    /* source must exist (CHW: Error 53) */
+    if (GetFileAttributesA(old_path) == 0xFFFFFFFF) { pb_err_var = pb_err = 53; return -1; }
+    /* destination must not already exist (CHW: Error 58) */
+    if (GetFileAttributesA(new_path) != 0xFFFFFFFF) { pb_err_var = pb_err = 58; return -1; }
+    if (!MoveFileExA(old_path, new_path, 0)) {
+        unsigned long e = GetLastError();
+        /* ERROR_ACCESS_DENIED(5): source open/locked by caller (CHW: Error 51) */
+        if (e == 5) { pb_err_var = pb_err = 51; }
+        else { pb_err_var = pb_err = 53; }
         return -1;
     }
     pb_err = 0;
@@ -9547,6 +9568,42 @@ void* pb_com_new(int mode, const char* progid, const char* clsid, const char* li
 
 long pb_com_result(void) {
     return pb_com_hresult;
+}
+
+/* OBJRESULT$([nexp&]) — CHW OBJRESULT$_function.htm: "Returns a string which
+ * describes an OBJRESULT (hResult) code."  Measured against PBWin10 (probe
+ * objres_out.txt): the descriptive text is the Windows system message for the
+ * hResult, produced by FormatMessageA(FROM_SYSTEM), e.g.
+ *   hr=0x00000000 -> "The operation completed successfully."
+ *   hr=0x00000001 -> "Incorrect function."
+ *   hr=0x80004005 -> "Unspecified error"
+ * Trailing CR/LF/space from FormatMessage are stripped (PBWin output has none).
+ * If the system has no message for the code, fall back to a hex rendering
+ * (CHW does not specify an English message table, so none is invented). */
+char* pb_objresult_str(long hr_signed) {
+    unsigned long hr = (unsigned long)hr_signed;
+#define PB_FORMAT_MESSAGE_ALLOCATE_BUFFER 0x00000100UL
+#define PB_FORMAT_MESSAGE_FROM_SYSTEM     0x00001000UL
+#define PB_FORMAT_MESSAGE_IGNORE_INSERTS  0x00000200UL
+#define PB_MAKELANGID(p, s)               (((unsigned long)(s) << 10) | (unsigned long)(p))
+    char* buf = NULL;
+    DWORD n = FormatMessageA(
+        PB_FORMAT_MESSAGE_ALLOCATE_BUFFER | PB_FORMAT_MESSAGE_FROM_SYSTEM |
+            PB_FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL, hr, PB_MAKELANGID(0x00 /*LANG_NEUTRAL*/, 0x01 /*SUBLANG_DEFAULT*/),
+        (char*)&buf, 0, NULL);
+    if (n == 0 || buf == NULL) {
+        char tmp[24];
+        _snprintf(tmp, sizeof(tmp) - 1, "0x%08lX", hr);
+        tmp[sizeof(tmp) - 1] = 0;
+        return pb_bstr_alloc(tmp, (unsigned int)strlen(tmp));
+    }
+    while (n > 0 && (buf[n - 1] == '\r' || buf[n - 1] == '\n' || buf[n - 1] == ' ')) {
+        n--;
+    }
+    char* out = pb_bstr_alloc(buf, (unsigned int)n);
+    LocalFree(buf);
+    return out;
 }
 
 /* ---- batch278-74: OBJECT CALL / OBJECT GET — DISPATCH invocation with

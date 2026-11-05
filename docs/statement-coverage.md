@@ -1,28 +1,28 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 316 (v0.2.107)** — 2026-11-05. All statements through batch 316 are reflected in this matrix.
+> **Last updated from batch 317 (v0.2.108)** — 2026-11-05. All statements through batch 317 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **945** (14 BLOCK, 286 FUNCTION, 5 OPERATOR, 612 STATEMENT, 28 FORK EXTENSION).
-- **917** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- Rows in this matrix: **946** (14 BLOCK, 287 FUNCTION, 5 OPERATOR, 612 STATEMENT, 28 FORK EXTENSION).
+- **918** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
 - **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **28** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 915 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 916 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **917** | Implemented + Established |
+| ✅ **Total available** | **918** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
 | 🔧 Fork extension | 28 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, SEC, SECH, SINH, TANH, TRUNC) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (945 rows)
+## All keywords (946 rows)
 
 |---------|------|----------|--------|
 | ABS | FUNCTION | LLVM intrinsic | Implemented |
@@ -652,11 +652,12 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | OBJACTIVE | FUNCTION | PB/Win only | Implemented |
 | OBJECT | STATEMENT | PB/Win + PB/CC | Implemented |
 | OBJEQUAL | FUNCTION | PB/Win only | Implemented |
+| OBJRESULT$ | FUNCTION | PB/Win only | Implemented |
 | OCT | FUNCTION | codegen builtin | Implemented |
 | OCT$ | FUNCTION | Win32 | Implemented |
 | OEMTOCHR | FUNCTION | codegen builtin | Implemented |
 | OEMTOCHR$ | FUNCTION | Win32 | Implemented |
-| ON CALL | STATEMENT | PB/Win + PB/CC | Implemented |
+| ON CALL | STATEMENT | FORK EXTENSION | Implemented |
 | ON ERROR | STATEMENT | PB/Win + PB/CC | Implemented |
 | ON GOSUB | STATEMENT | PB/Win + PB/CC | Implemented |
 | ON GOTO | STATEMENT | PB/Win + PB/CC | Implemented |

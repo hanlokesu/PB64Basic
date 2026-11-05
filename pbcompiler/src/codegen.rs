@@ -5310,6 +5310,10 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_com_result", &IrType::I32, &[], false);
+        // OBJRESULT$([nexp&]) — descriptive string for an hResult code
+        // (CHW OBJRESULT$_function.htm).
+        self.module
+            .declare_function("pb_objresult_str", &IrType::Ptr, &[IrType::I32], false);
         // batch292: PROGID$(ClassID$) — CLSID$ complement (16-byte GUID ->
         // HKCR\CLSID\{...}\ProgID alphanumeric ProgID string)
         self.module
@@ -8331,10 +8335,9 @@ impl Compiler {
                 // segment as a property GET returning an IDispatch, then run
                 // the final segment with the requested args/kind.
                 if oc.kind == "LET" || oc.kind == "SET" {
-                    return Err(PbError::runtime(format!(
-                        "OBJECT {}: property write (DISPATCH_PROPERTYPUT) not implemented yet (line {})",
-                        oc.kind, oc.line
-                    )));
+                    // property write (DISPATCH_PROPERTYPUT, wflags=4); the value
+                    // expression is the last arg of the final member (parser
+                    // appends it after `=`). RAISEEVENT uses wflags=1.
                 }
                 let objv = self.compile_expr(fb, &oc.object)?;
                 if oc.members.is_empty() {
@@ -8367,7 +8370,11 @@ impl Compiler {
                 }
                 let last = oc.members.last().unwrap();
                 let (mname, _) = self.module.add_string_constant(&last.name);
-                let wflags = if oc.kind == "GET" { 2 } else { 1 };
+                let wflags = match oc.kind.as_str() {
+                    "GET" => 2,         // DISPATCH_PROPERTYGET
+                    "LET" | "SET" => 4, // DISPATCH_PROPERTYPUT
+                    _ => 1,             // CALL / RAISEEVENT = DISPATCH_METHOD
+                };
                 let (res_ptr, rtype_pb) = match &oc.result {
                     Some(rn) => self.compile_lvalue_ptr(fb, &Expr::Variable(rn.clone()))?,
                     None => (fb.const_null_ptr(), PbType::Long),
@@ -23401,15 +23408,34 @@ impl Compiler {
                         // runtime pb_bits_str ignores its ANSI director; pass a
                         // null pointer (args[0] is a type code, not a string,
                         // so it must never be handed to the char* slot).
-                        Ok(fb.call(&IrType::Ptr, "pb_bits_str", &[fb.const_null_ptr(), sv]))
+                        return Ok(fb.call(
+                            &IrType::Ptr,
+                            "pb_bits_str",
+                            &[fb.const_null_ptr(), sv],
+                        ));
                     } else {
-                        Err(PbError::parser(
+                        return Err(PbError::parser(
                             "BITS$ requires a string argument",
                             None,
                             self.current_line,
-                        ))
+                        ));
                     }
-                } else if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
+                }
+                // OBJRESULT$ (CHW OBJRESULT$_function.htm): returns a string
+                // describing an hResult. `text$ = OBJRESULT$([nexp&])`; with no
+                // argument it equals OBJRESULT$(OBJRESULT). normalize_name would
+                // strip the trailing $ and collapse onto the numeric OBJRESULT
+                // arm, so the raw spelling is intercepted here.
+                if raw_upper == "OBJRESULT$" {
+                    let hr = if args.is_empty() {
+                        fb.call(&IrType::I32, "pb_com_result", &[])
+                    } else {
+                        let a = self.compile_expr(fb, &args[0])?;
+                        self.to_i32(fb, &a)
+                    };
+                    return Ok(fb.call(&IrType::Ptr, "pb_objresult_str", &[hr]));
+                }
+                if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                     let mut compiled_indices = Vec::new();
                     for idx in args {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
@@ -23630,7 +23656,10 @@ impl Compiler {
                 // form) + CoCreateInstance / GetActiveObject / either,
                 // returning the IDispatch* (NULL on failure).  A plain heap
                 // pointer, so ISOBJECT()/OBJPTR() work.
-                let (pn, _) = self.module.add_string_constant(progid);
+                let pn = match progid {
+                    Some(e) => self.compile_expr(fb, e)?,
+                    None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
+                };
                 let clsid_v = match clsid {
                     Some(e) => self.compile_expr(fb, e)?,
                     None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
@@ -23640,11 +23669,7 @@ impl Compiler {
                     None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
                 };
                 let mode_v = Val::new(mode.to_string(), IrType::I32);
-                Ok(fb.call(
-                    &IrType::Ptr,
-                    "pb_com_new",
-                    &[mode_v, Val::new(pn, IrType::Ptr), clsid_v, lib_v],
-                ))
+                Ok(fb.call(&IrType::Ptr, "pb_com_new", &[mode_v, pn, clsid_v, lib_v]))
             }
             Expr::MethodCall { base, name, args } => {
                 // batch306/307 (legacy #8): indexed TYPE member array `@p.arr(i)`
@@ -23858,7 +23883,15 @@ impl Compiler {
             }
             Expr::UnaryOp(UnaryOp::Not, inner) => {
                 let val = self.compile_expr(fb, inner)?;
-                Ok(fb.not(&val))
+                // CHW NOT is integer-class. PBWin does not reject a float
+                // operand: it rounds half-to-even to an integer, then bitwise
+                // one's-complement (measured: NOT 1.5=-3, NOT 2.5=-3).
+                if val.ty.is_float() {
+                    let i = Self::float_to_rounded_i64(fb, &val);
+                    Ok(fb.not(&i))
+                } else {
+                    Ok(fb.not(&val))
+                }
             }
             Expr::UnaryOp(UnaryOp::Neg, inner) => {
                 let val = self.compile_expr(fb, inner)?;
@@ -23998,7 +24031,36 @@ impl Compiler {
                 let rs = self.num_to_string(fb, r);
                 Ok(self.compile_str_concat(fb, &ls, &rs, false, false))
             }
-            _ => Ok(fb.const_f64(0.0)),
+            // Bitwise operators on float operands: PBWin rounds each operand
+            // half-to-even to an integer, then applies the bitwise op
+            // (measured: 1.5 OR 2.0 = 2, 2.5 OR 1.0 = 3). Previously the fork
+            // emitted a silent constant 0.0 here.
+            BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
+                let li = Self::float_to_rounded_i64(fb, l);
+                let ri = Self::float_to_rounded_i64(fb, r);
+                let v = match op {
+                    BinaryOp::And => fb.and(&li, &ri),
+                    BinaryOp::Or => fb.or(&li, &ri),
+                    _ => fb.xor(&li, &ri),
+                };
+                Ok(fb.sitofp(&v, &IrType::Double))
+            }
+            BinaryOp::Eqv => {
+                let li = Self::float_to_rounded_i64(fb, l);
+                let ri = Self::float_to_rounded_i64(fb, r);
+                let x = fb.xor(&li, &ri);
+                let ones = fb.const_i64(-1);
+                let nx = fb.xor(&x, &ones);
+                Ok(fb.sitofp(&nx, &IrType::Double))
+            }
+            BinaryOp::Imp => {
+                let li = Self::float_to_rounded_i64(fb, l);
+                let ri = Self::float_to_rounded_i64(fb, r);
+                let ones = fb.const_i64(-1);
+                let nl = fb.xor(&li, &ones);
+                let n = fb.or(&nl, &ri);
+                Ok(fb.sitofp(&n, &IrType::Double))
+            }
         }
     }
 
@@ -24547,7 +24609,7 @@ impl Compiler {
             "DISKFREE" => Some(self.builtin_disk(fb, args, "pb_diskfree")),
             "DISKSIZE" => Some(self.builtin_disk(fb, args, "pb_disksize")),
             "CHRTOOEM" => Some(self.builtin_conv1(fb, args, "pb_chr_to_oem")),
-            "OEMTOCHR" => Some(self.builtin_conv1(fb, args, "pb_oem_to_chr")),
+            "OEMTOCHR" => Some(self.builtin_oem_to_chr(fb, args)),
             "CHRTOUTF8" => Some(self.builtin_conv1(fb, args, "pb_chr_to_utf8")),
             "UTF8TOCHR" => Some(self.builtin_conv1(fb, args, "pb_utf8_to_chr")),
             "CLIP" => Some(self.builtin_clip(fb, args)),
@@ -24700,7 +24762,18 @@ impl Compiler {
                     }
                 };
                 match self.compile_expr(fb, first) {
-                    Ok(v) => Some(Ok(v)),
+                    Ok(v) => {
+                        // CHW OBJPTR_function.htm: "OBJPTR returns the object
+                        // pointer as a Double-word (DWORD) value." Narrow the
+                        // raw pointer to a 32-bit DWORD on every target (on x86
+                        // the pointer is already 32-bit; on x64 this truncates
+                        // to the documented DWORD width).
+                        if v.ty == IrType::Ptr {
+                            Some(Ok(fb.ptrtoint(&v)))
+                        } else {
+                            Some(Ok(v))
+                        }
+                    }
                     Err(e) => Some(Err(e)),
                 }
             }
@@ -27048,6 +27121,30 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, fname, std::slice::from_ref(&s)))
     }
 
+    /// OEMTOCHR$ / OEMTOCHR — CHW OemToChr$_function.htm:
+    ///   a$  = OEMTOCHR$(OemExpr$)
+    ///   a$$ = OEMTOCHR$(GRAPHIC, OemExpr$)
+    /// The optional leading GRAPHIC keyword requests control-code -> graphic
+    /// symbol conversion (WIDE output). The fork's narrow runtime produces the
+    /// ANSI form; for printable/control bytes the ANSI and WIDE results agree
+    /// on the byte value (control codes pass through unchanged, measured on
+    /// PBWin10). The GRAPHIC keyword is recognised and skipped so the CHW
+    /// syntax parses; WIDE (a$$) string-kind selection is left to the normal
+    /// assignment coercion.
+    fn builtin_oem_to_chr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        let mut idx = 0;
+        if let Some(Expr::Variable(name)) = args.first() {
+            if name.eq_ignore_ascii_case("GRAPHIC") {
+                idx = 1;
+            }
+        }
+        if args.len() <= idx {
+            return Err(PbError::runtime("OEMTOCHR$ requires an argument"));
+        }
+        let s = self.compile_expr(fb, &args[idx])?;
+        Ok(fb.call(&IrType::Ptr, "pb_oem_to_chr", std::slice::from_ref(&s)))
+    }
+
     fn builtin_to_f64(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
         Ok(self.to_f64(fb, &val))
@@ -28323,6 +28420,18 @@ impl Compiler {
             IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I64),
             _ => val.clone(),
         }
+    }
+
+    /// Round a float value half-to-even to an i64, matching PBWin's float->int
+    /// coercion for the bitwise operators (measured NOT/OR probes).
+    fn float_to_rounded_i64(fb: &mut FunctionBuilder, v: &Val) -> Val {
+        let d = if v.ty == IrType::Float {
+            fb.fpext(v, &IrType::Double)
+        } else {
+            v.clone()
+        };
+        let r = fb.call(&IrType::Double, "llvm.roundeven.f64", &[d]);
+        fb.fptosi(&r, &IrType::I64)
     }
 
     /// Compute flat index from multi-dimensional indices.

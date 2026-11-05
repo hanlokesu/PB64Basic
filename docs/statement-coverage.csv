@@ -1,4 +1,4 @@
-# Last updated from batch 316 (v0.2.107) - 2026-11-05,,,,
+# Last updated from batch 317 (v0.2.108) - 2026-11-05,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -651,11 +651,12 @@ OBJECT,STATEMENT,PB/Win + PB/CC,Implemented
 OBJEQUAL,FUNCTION,PB/Win only,Implemented
 OBJPTR,FUNCTION,codegen builtin,Implemented
 OBJRESULT,FUNCTION,codegen builtin,Implemented
+OBJRESULT$,FUNCTION,PB/Win only,Implemented
 OCT,FUNCTION,codegen builtin,Implemented
 OCT$,FUNCTION,Win32,Implemented
 OEMTOCHR,FUNCTION,codegen builtin,Implemented
 OEMTOCHR$,FUNCTION,Win32,Implemented
-ON CALL,STATEMENT,PB/Win + PB/CC,Implemented
+ON CALL,STATEMENT,FORK EXTENSION,Implemented
 ON ERROR,STATEMENT,PB/Win + PB/CC,Implemented
 ON GOSUB,STATEMENT,PB/Win + PB/CC,Implemented
 ON GOTO,STATEMENT,PB/Win + PB/CC,Implemented

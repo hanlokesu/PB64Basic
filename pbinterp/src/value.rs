@@ -202,10 +202,20 @@ impl Value {
     }
 
     pub fn not(&self) -> Value {
-        if self.is_truthy() {
-            Value::Long(0)
-        } else {
-            Value::Long(-1) // PB TRUE = -1
+        // CHW NOT operator: bitwise one's-complement of an integer-class value,
+        // NOT a logical not. NOT 1 = -2, NOT 16383 = -16384. Preserve width.
+        match self {
+            Value::Long(n) => Value::Long(!n),
+            Value::Integer(n) => Value::Integer(!n),
+            Value::Dword(n) => Value::Dword(!n),
+            Value::Quad(n) => Value::Quad(!n),
+            Value::Currency(n) => Value::Quad(!n),
+            // Float operands: PBWin rounds half-to-even to integer then bitwise.
+            Value::Single(n) => Value::Long(round_half_even(*n as f64) as i32 ^ -1),
+            Value::Double(n) => Value::Long(round_half_even(*n) as i32 ^ -1),
+            Value::Ext(n) => Value::Long(round_half_even(*n) as i32 ^ -1),
+            Value::Str(_) => Value::Long(if self.is_truthy() { 0 } else { -1 }),
+            Value::Null => Value::Long(-1),
         }
     }
 
@@ -290,6 +300,22 @@ fn format_float(n: f64) -> String {
         // Remove trailing zeros
         let s = format!("{}", n);
         s
+    }
+}
+
+/// Round half to even (banker's rounding), matching PBWin's float->int
+/// coercion for bitwise operators (measured: 2.5->2, 3.5->4).
+fn round_half_even(n: f64) -> f64 {
+    let f = n.floor();
+    let diff = n - f;
+    if diff < 0.5 {
+        f
+    } else if diff > 0.5 {
+        f + 1.0
+    } else if (f as i64) % 2 == 0 {
+        f
+    } else {
+        f + 1.0
     }
 }
 

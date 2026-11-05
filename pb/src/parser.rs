@@ -4617,7 +4617,7 @@ impl Parser {
                         Some(Token::Call) => Some("CALL".to_string()),
                         Some(Token::Identifier(kw)) => {
                             let k = kw.to_uppercase();
-                            if k == "GET" || k == "LET" || k == "SET" {
+                            if k == "GET" || k == "LET" || k == "SET" || k == "RAISEEVENT" {
                                 Some(k)
                             } else {
                                 None
@@ -15167,38 +15167,86 @@ impl Parser {
         let line = self.current_line();
         self.advance(); // OPEN
 
+        // CHW OPEN HANDLE filehandle ... : the first token may be HANDLE, in
+        // which case the next expression is an OS file handle (we treat it like
+        // a filename expression for the fork's runtime table).
+        if let Token::Identifier(w) = self.peek() {
+            if w.eq_ignore_ascii_case("HANDLE") {
+                self.advance();
+            }
+        }
+
         let filename = self.parse_expression()?;
 
-        self.expect(&Token::For)?;
+        // CHW: `FOR mode` is optional; if omitted, mode defaults to RANDOM.
+        let mut mode = OpenMode::Random;
+        if self.peek() == &Token::For {
+            self.advance();
+            mode = match self.peek() {
+                Token::Output => {
+                    self.advance();
+                    OpenMode::Output
+                }
+                Token::Append => {
+                    self.advance();
+                    OpenMode::Append
+                }
+                Token::Input => {
+                    self.advance();
+                    OpenMode::Input
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("BINARY") => {
+                    self.advance();
+                    OpenMode::Binary
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("RANDOM") => {
+                    self.advance();
+                    OpenMode::Random
+                }
+                _ => {
+                    self.consume_to_eol();
+                    eprintln!("Error: OPEN: unknown file mode on line {}", line);
+                    self.error_count += 1;
+                    return Ok(Statement::Noop("OPEN (unknown mode)".to_string(), line));
+                }
+            };
+        }
 
-        let mode = match self.peek() {
-            Token::Output => {
-                self.advance();
-                OpenMode::Output
+        // CHW optional positional clauses between FOR-mode and AS:
+        //   [ACCESS access] [LOCK lock] [BASE = 0|1] [CHR = ANSI|WIDE]
+        // The fork's runtime does not yet parameterize on these; skip them so
+        // CHW syntax parses. They do not alter observable file I/O for the
+        // probe programs (the CHW defaults apply).
+        loop {
+            match self.peek() {
+                Token::Identifier(w) if w.eq_ignore_ascii_case("ACCESS") => {
+                    self.advance();
+                    self.skip_open_access_lock();
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("LOCK") => {
+                    self.advance();
+                    self.skip_open_access_lock();
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("BASE") => {
+                    self.advance();
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    let _ = self.parse_expression();
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("CHR") => {
+                    self.advance();
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    // ANSI | WIDE keyword
+                    if let Token::Identifier(_) = self.peek() {
+                        self.advance();
+                    }
+                }
+                _ => break,
             }
-            Token::Append => {
-                self.advance();
-                OpenMode::Append
-            }
-            Token::Input => {
-                self.advance();
-                OpenMode::Input
-            }
-            Token::Identifier(w) if w.to_uppercase() == "BINARY" => {
-                self.advance();
-                OpenMode::Binary
-            }
-            Token::Identifier(w) if w.to_uppercase() == "RANDOM" => {
-                self.advance();
-                OpenMode::Random
-            }
-            _ => {
-                self.consume_to_eol();
-                eprintln!("Error: OPEN: unknown file mode on line {}", line);
-                self.error_count += 1;
-                return Ok(Statement::Noop("OPEN (unknown mode)".to_string(), line));
-            }
-        };
+        }
 
         self.expect(&Token::As)?;
         // # is optional: OPEN file FOR OUTPUT AS #num  or  AS num
@@ -15212,8 +15260,7 @@ impl Parser {
         if let Token::Identifier(w) = self.peek() {
             if w.eq_ignore_ascii_case("LEN") {
                 self.advance();
-                // '=' may be Eq token or part of identifier context; consume any '='
-                // '=' is Token::Eq
+                // '=' may be Eq token
                 if self.peek() == &Token::Eq {
                     self.advance();
                 }
@@ -15229,6 +15276,23 @@ impl Parser {
             reclen,
             line,
         }))
+    }
+
+    /// Skip an ACCESS/LOCK argument: READ | WRITE | READ WRITE (up to two
+    /// reserved words). Used by parse_open_statement.
+    fn skip_open_access_lock(&mut self) {
+        let mut seen = 0;
+        while seen < 2 {
+            if let Token::Identifier(w) = self.peek() {
+                let u = w.to_uppercase();
+                if u == "READ" || u == "WRITE" || u == "SHARED" {
+                    self.advance();
+                    seen += 1;
+                    continue;
+                }
+            }
+            break;
+        }
     }
 
     fn parse_close_statement(&mut self) -> PbResult<Statement> {
@@ -16055,7 +16119,10 @@ impl Parser {
                 //   NEWCOM CLSID ClassID$ LIB DllPath$  (registry-free load)
                 // GETCOM opens an existing running instance (GetActiveObject);
                 // ANYCOM prefers an existing instance, else creates a new one.
-                // All IDs / paths are string literals (PBWin requires them).
+                // CHW (LET with Objects): "The string expression ProID$
+                // evaluates to a ProgID name on an external COM server" — so
+                // ProgID$ may be a variable/expression, not just a literal
+                // (measured: PBWin10 accepts `NEWCOM progid_var$`).
                 let mode = if name.eq_ignore_ascii_case("GETCOM") {
                     1
                 } else if name.eq_ignore_ascii_case("ANYCOM") {
@@ -16066,10 +16133,10 @@ impl Parser {
                 self.advance();
                 let mut clsid: Option<Box<Expr>> = None;
                 let mut lib: Option<Box<Expr>> = None;
-                let progid: String;
+                let progid: Option<Box<Expr>>;
                 if let Token::StringLiteral(s) = self.peek().clone() {
                     self.advance();
-                    progid = s;
+                    progid = Some(Box::new(Expr::StringLit(s)));
                 } else if let Token::Identifier(kw) = self.peek().clone() {
                     if kw.eq_ignore_ascii_case("CLSID") {
                         self.advance();
@@ -16083,14 +16150,11 @@ impl Parser {
                                 lib = Some(Box::new(self.parse_expression()?));
                             }
                         }
-                        progid = String::new();
+                        progid = None;
                     } else {
-                        return Err(PbError::parser(
-                            "NEWCOM/GETCOM/ANYCOM requires a ProgID string: NEWCOM \"ProgID\""
-                                .to_string(),
-                            None,
-                            self.current_line(),
-                        ));
+                        // ProgID$ as a general string expression (variable,
+                        // function call, concat, ...).
+                        progid = Some(Box::new(self.parse_expression()?));
                     }
                 } else {
                     return Err(PbError::parser(
@@ -16522,8 +16586,15 @@ impl Parser {
                     || name.eq_ignore_ascii_case("FUNCNAME$")
                     // batch271: OBJRESULT must be called WITHOUT parentheses in
                     // PBWin (Error 477 with parens), so the bare form is the
-                    // official one.
+                    // official one.  OBJRESULT$ (CHW string form) likewise has a
+                    // bare spelling; with no argument it equals
+                    // OBJRESULT$(OBJRESULT).
                     || name.eq_ignore_ascii_case("OBJRESULT")
+                    || name.eq_ignore_ascii_case("OBJRESULT$")
+                    // NUL$ (CHW NUL$_function.htm): bare NUL$ returns the empty
+                    // string; NUL$(n) returns n NUL chars.  Without parens the
+                    // fork otherwise treated it as an undeclared variable.
+                    || name.eq_ignore_ascii_case("NUL$")
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())
