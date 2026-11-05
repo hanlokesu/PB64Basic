@@ -1,24 +1,24 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 317 (v0.2.108)** — 2026-11-05. All statements through batch 317 are reflected in this matrix.
+> **Last updated from batch 318 (v0.2.109)** — 2026-11-06. All statements through batch 318 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **946** (14 BLOCK, 287 FUNCTION, 5 OPERATOR, 612 STATEMENT, 28 FORK EXTENSION).
-- **918** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
-- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **28** fork extension (implemented here, not an official PB keyword).
+- Rows in this matrix: **946** (14 BLOCK, 285 FUNCTION, 5 OPERATOR, 612 STATEMENT, 29 FORK EXTENSION).
+- **917** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **29** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 916 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 915 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **918** | Implemented + Established |
+| ✅ **Total available** | **917** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
-| 🔧 Fork extension | 28 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, SEC, SECH, SINH, TANH, TRUNC) |
+| 🔧 Fork extension | 29 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
@@ -700,7 +700,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | QUAD | FUNCTION | codegen builtin | Implemented |
 | RAISEEVENT | STATEMENT | PB/Win + PB/CC | Implemented |
 | RANDOMIZE | STATEMENT | PB/Win + PB/CC | Implemented |
-| READ | FUNCTION | codegen builtin | Implemented |
+| READ | STATEMENT | PB/Win + PB/CC | Implemented |
 | READ$ | FUNCTION | Win32 | Implemented |
 | REDIM | STATEMENT | PB/Win + PB/CC | Implemented |
 | REGEXPR | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -715,7 +715,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | REPEAT$ | FUNCTION | Win32 | Implemented |
 | REPLACE | STATEMENT | PB/Win + PB/CC | Implemented |
 | RESET | STATEMENT | PB/Win + PB/CC | Implemented |
-| RESOURCE SAVE FILE | STATEMENT | PB/Win + PB/CC | Implemented |
+| RESOURCE SAVE FILE | FORK EXTENSION | PB/Win + PB/CC | Implemented |
 | RESOURCE$ | FUNCTION | Win32 | Implemented |
 | RESUME | STATEMENT | PB/Win + PB/CC | Implemented |
 | RETAIN | FUNCTION | codegen builtin | Implemented |
@@ -751,7 +751,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | SHRINK | FUNCTION | codegen builtin | Implemented |
 | SHRINK$ | FUNCTION | Win32 | Implemented |
 | SIN | FUNCTION | LLVM intrinsic | Implemented |
-| SINGLE | FUNCTION | codegen builtin | Implemented |
+| SINGLE | TYPE KEYWORD | CHW DIM type (conversion builtin is CSNG; no SINGLE() function) | Implemented |
 | SINH | FORK EXTENSION | LLVM intrinsic | Implemented |
 | SIZEOF | FUNCTION | codegen builtin | Implemented |
 | SLEEP | STATEMENT | PB/Win + PB/CC | Implemented |

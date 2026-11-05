@@ -52,6 +52,7 @@ __declspec(dllimport) void* __stdcall FindResourceA(void* hModule, const char* l
 __declspec(dllimport) unsigned long __stdcall SizeofResource(void* hModule, void* hResInfo);
 __declspec(dllimport) void* __stdcall LoadResource(void* hModule, void* hResInfo);
 __declspec(dllimport) void* __stdcall LockResource(void* hResData);
+__declspec(dllimport) int __stdcall LoadStringA(void* hInstance, unsigned int uID, char* lpBuffer, int cchBufferMax);
 #define RT_RCDATA MAKEINTRESOURCE(10)
 #define MAKEINTRESOURCEA(i) ((const char*)((unsigned long long)(i)))
 #define RT_RCDATA MAKEINTRESOURCEA(10)
@@ -683,23 +684,43 @@ char* pb_unwrap(char* s, char* l, char* r) {
     if (to < from) to = from;
     return pb_bstr_alloc(s + from, (unsigned int)(to - from));
 }
+/* CHW SHRINK$ function (SHRINK$_function.htm).
+ * First form (mask == NULL/empty): collapse runs of whitespace
+ *   (space/tab/CR/LF) to a single space; trim leading/trailing whitespace.
+ * Second form (mask != NULL): Mask$ defines one or more delimiter chars.
+ *   All leading/trailing mask chars are removed; every run of one-or-more
+ *   mask chars is collapsed to the first char of Mask$.  The old code only
+ *   collapsed the hard-coded whitespace set even when a custom Mask$ was
+ *   supplied, so SHRINK$("a,,b", ",") was returned unchanged. */
 char* pb_shrink(char* s, char* mask) {
     size_t n = strlen(s);
     char* buf = (char*)malloc(n + 1);
     size_t o = 0;
-    char m = (mask && mask[0]) ? mask[0] : 0;
+    unsigned char delim[256];
+    char sep;
     int first = 1;
+    memset(delim, 0, sizeof(delim));
+    if (mask && mask[0]) {
+        size_t mi = 0;
+        while (mask[mi]) delim[(unsigned char)mask[mi++]] = 1;
+        sep = mask[0];
+    } else {
+        delim[(unsigned char)' '] = 1;
+        delim[(unsigned char)'\t'] = 1;
+        delim[(unsigned char)'\r'] = 1;
+        delim[(unsigned char)'\n'] = 1;
+        sep = ' ';
+    }
     for (size_t i = 0; i < n; i++) {
-        int ws = (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n');
-        if (ws) {
-            while (i + 1 < n && (s[i+1] == ' ' || s[i+1] == '\t' || s[i+1] == '\r' || s[i+1] == '\n')) i++;
-            if (!first) buf[o++] = m ? m : ' ';
+        if (delim[(unsigned char)s[i]]) {
+            while (i + 1 < n && delim[(unsigned char)s[i+1]]) i++;
+            if (!first) buf[o++] = sep;
         } else {
             first = 0;
             buf[o++] = s[i];
         }
     }
-    while (o > 0 && (buf[o-1] == ' ' || buf[o-1] == '\t' || buf[o-1] == '\r' || buf[o-1] == '\n')) o--;
+    while (o > 0 && buf[o-1] == sep) o--;
     buf[o] = 0;
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
@@ -1491,6 +1512,15 @@ static char* pb_num_render(double v, int digits, int lead_space) {
    values, '-' for negative; 15 significant digits, trailing zeros removed. */
 char* pb_str_dbl(double v) {
     return pb_num_render(v, 15, 1);
+}
+
+/* STR$(double, digits) - CHW STR_function.htm: "digits specifies the maximum
+   number of significant digits (1 to 18)".  digits<=0 defaults to 15; values
+   above 18 clamp to 18.  Leading space for positive, '-' for negative. */
+char* pb_str_dbl_d(double v, int digits) {
+    if (digits <= 0) digits = 15;
+    if (digits > 18) digits = 18;
+    return pb_num_render(v, digits, 1);
 }
 
 /* TRIM$ numeric form (CHW TRIM_function.htm): no leading/trailing spaces.
@@ -2718,6 +2748,31 @@ void pb_replace(char** target, const char* old_str, const char* new_str) {
     *target = bstr_from_buf(result);
 }
 
+/* REPLACE ANY "oldset" WITH "newset" IN main$ (CHW REPLACE_statement.htm).
+ * For each character in main that appears in oldset, replace it with the
+ * character at the same position in newset. oldset and newset must be the
+ * same length (one-to-one correspondence). */
+void pb_replace_any(char** target, const char* old_set, const char* new_set) {
+    if (target == NULL || *target == NULL || old_set == NULL || new_set == NULL) return;
+    int old_len = (int)strlen(old_set);
+    int new_len = (int)strlen(new_set);
+    if (old_len == 0 || new_len == 0) return;
+    int map_len = old_len < new_len ? old_len : new_len;
+    size_t orig_len = strlen(*target);
+    char* result = (char*)malloc(orig_len + 1);
+    if (!result) return;
+    for (size_t i = 0; i < orig_len; i++) {
+        char c = (*target)[i];
+        int slot = -1;
+        for (int k = 0; k < map_len; k++) {
+            if (old_set[k] == c) { slot = k; break; }
+        }
+        result[i] = (slot >= 0) ? new_set[slot] : c;
+    }
+    result[orig_len] = 0;
+    *target = bstr_from_buf(result);
+}
+
 /* ============================================================
  * USING$ � Format number using a PRINT USING-style format string
  *
@@ -3468,6 +3523,94 @@ char* pb_time(void) {
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
 
+/* TIMER (CHW TIMER_function.htm): seconds since midnight as a Single,
+ * range 0..86400. The fork previously returned time(NULL) (Unix epoch
+ * seconds), which broke bare RANDOMIZE seeding and CHW parity. */
+double pb_timer(void) {
+#ifdef _WIN32
+    PB_SYSTEMTIME st;
+    GetLocalTime(&st);
+    return (double)st.wHour * 3600.0 + (double)st.wMinute * 60.0 +
+           (double)st.wSecond + (double)st.wMilliseconds / 1000.0;
+#else
+    return 0.0;
+#endif
+}
+
+/* Per-thread PB-style PRNG. CHW RANDOMIZE: "each thread has its own,
+ * independent random number seed." The fork previously used the process-wide
+ * libc srand/rand. The state below is thread-local; RANDOMIZE n makes the
+ * stream reproducible, and RND reads this same state (pb_rnd_value is the
+ * shared entry point the R2 shard builds on). */
+static __declspec(thread) unsigned long long pb_prng_state = 0;
+static __declspec(thread) int pb_prng_seeded = 0;
+
+void pb_randomize(unsigned int seed) {
+    /* SplitMix64-style mixer so any seed (including 0 / 0xFFFFFFFF) lands in
+     * a good xorshift state; guarantees RANDOMIZE n -> reproducible stream. */
+    unsigned long long x = (unsigned long long)seed + 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    pb_prng_state = x ^ (x >> 31);
+    if (pb_prng_state == 0) pb_prng_state = 1;
+    pb_prng_seeded = 1;
+}
+
+/* Bare RANDOMIZE: seed from TIMER (CHW: "If number is not specified, the
+ * value returned by the TIMER function is used"). The float->integer mapping
+ * is fork-internal (CHW does not specify it). */
+void pb_randomize_timer(void) {
+    pb_randomize((unsigned int)(pb_timer() * 1000.0));
+}
+
+/* R2 RND: cached last value so RND(0) can repeat it without advancing.
+ * CHW RND_function.htm: "With an argument of 0, RND repeats the last number
+ * generated." pb_rnd_value() stores every produced sample here; pb_rnd_last()
+ * returns it without stepping the generator. */
+static __declspec(thread) double pb_prng_last = 0.0;
+
+double pb_rnd_value(void) {
+    if (!pb_prng_seeded) {
+        /* CHW default seed: RANDOMIZE CVS(CHR$(255,255,255,255)) */
+        pb_randomize(0xFFFFFFFFu);
+    }
+    unsigned long long x = pb_prng_state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    pb_prng_state = x;
+    double v = (double)(x >> 11) * (1.0 / 9007199254740992.0);
+    pb_prng_last = v;
+    return v;
+}
+
+/* RND(0): repeat the most recently generated value without advancing. */
+double pb_rnd_last(void) {
+    if (!pb_prng_seeded) {
+        pb_randomize(0xFFFFFFFFu);
+    }
+    return pb_prng_last;
+}
+
+/* RND(n) with n<0: re-seed the per-thread PRNG from the signed argument
+ * (CHW: "A negative argument causes the random number generator to be
+ * re-seeded"). The caller then issues a normal next-value call to consume
+ * the first sample of the new stream. */
+void pb_rnd_reseed(int seed) {
+    pb_randomize((unsigned int)seed);
+}
+
+/* R2 RND 1-arg CHW dispatch (CHW RND_function.htm):
+ *   n == 0  -> repeat the last value (no advance)
+ *   n <  0  -> reseed from n, then produce the next value
+ *   n >  0  -> produce the next value (same stream as bare RND)
+ * The old code treated RND(n) as "random int in [0,n)" which is not CHW. */
+double pb_rnd_1arg(double n) {
+    if (n == 0.0) return pb_rnd_last();
+    if (n < 0.0) pb_rnd_reseed((int)n);
+    return pb_rnd_value();
+}
+
 /* DATE$ = s$ - CHW: set the local system date.  Accepted formats:
    MM-DD-YY / MM-DD-YYYY / MM/DD/YY / MM/DD/YYYY (2-digit years mapped
    with the standard Windows rule: 00-69 -> 2000-2069, 70-99 -> 1970-1999).
@@ -3942,15 +4085,40 @@ static const char* pb_rex_alt_split(const char* p) {
 }
 
 static const char* pb_rex_alt_end(const char* p) {
+    /* If p points at '(', return its matching ')' (the group-arm / atom_end
+     * call sites). Otherwise return the first ')' at depth 0 (closes an outer
+     * group). The previous version started depth at 0 and only returned on a
+     * ')' seen while d==0, so a pattern that *started* with '(' never matched
+     * its own closing paren and the group arm bailed out with NULL. */
     int d = 0;
+    if (*p == '(') { d = 1; p++; }
     while (*p) {
         if (*p == '\\') { p += 2; continue; }
         if (*p == '[') { while (*p && *p != ']') p++; p++; continue; }
         if (*p == '(') d++;
-        else if (*p == ')') { if (d == 0) return p; d--; }
+        else if (*p == ')') {
+            if (d <= 0) return p;   /* outer close (non-group-anchored call) */
+            d--;
+            if (d == 0) return p;   /* matched the opening group anchor */
+        }
         p++;
     }
     return NULL;
+}
+
+/* Count unescaped '(' outside character classes in p. Used to advance the
+ * capture-group counter past every group opened inside the current group's
+ * body, so sibling groups after a group that contained nested groups still
+ * receive the correct CHW left-to-right group number. */
+static int pb_rex_count_groups(const char* p) {
+    int n = 0;
+    while (*p) {
+        if (*p == '\\') { p += 2; continue; }
+        if (*p == '[') { while (*p && *p != ']') p++; p++; continue; }
+        if (*p == '(') n++;
+        p++;
+    }
+    return n;
 }
 
 static int pb_rex_char_eq(int a, int b, int cs) {
@@ -4018,9 +4186,15 @@ static const char* pb_rex_atom_end(const char* p) {
     return p + 1;
 }
 
-/* match whole pattern at s; anchors recomputed from the CURRENT s every call */
+/* match whole pattern at s; anchors recomputed from the CURRENT s every call.
+ * gstart[gdepth+1..], gend[gdepth+1..] receive (start,end) pointers for each
+ * (..) capture group entered at this recursion level (CHW REGREPL \01..\99).
+ * gdepth points to the caller's current group depth; this function treats
+ * *gdepth as read-only except when entering a new group (it uses a local). */
+#define PB_REX_MAX_GROUPS 100
 static const char* pb_rex_match_here(const char* pat, const char* s, const char* send,
-                                     const char* tbegin, int cs) {
+                                     const char* tbegin, int cs,
+                                     const char** gstart, const char** gend, int gdepth) {
     if (!*pat) return s;
     int at_line_start = (s == tbegin) ||
         (s > tbegin && s[-1] == '\n') ||
@@ -4034,28 +4208,28 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
             size_t l = (size_t)(bar - pat);
             if (l >= sizeof(tmp)) return NULL;
             memcpy(tmp, pat, l); tmp[l] = 0;
-            const char* e = pb_rex_match_here(tmp, s, send, tbegin, cs);
+            const char* e = pb_rex_match_here(tmp, s, send, tbegin, cs, gstart, gend, gdepth);
             if (e) return e;
-            return pb_rex_match_here(bar + 1, s, send, tbegin, cs);
+            return pb_rex_match_here(bar + 1, s, send, tbegin, cs, gstart, gend, gdepth);
         }
     }
     if (*pat == '^') {
         if (!at_line_start) return NULL;
-        return pb_rex_match_here(pat + 1, s, send, tbegin, cs);
+        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, gstart, gend, gdepth);
     }
     if (*pat == '$') {
         if (!at_line_end) return NULL;
-        return pb_rex_match_here(pat + 1, s, send, tbegin, cs);
+        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, gstart, gend, gdepth);
     }
     if (pat[0] == '\\' && pat[1] == 'c') {
-        return pb_rex_match_here(pat + 2, s, send, tbegin, cs ? 0 : 1);
+        return pb_rex_match_here(pat + 2, s, send, tbegin, cs ? 0 : 1, gstart, gend, gdepth);
     }
     if (pat[0] == '\\' && pat[1] == 'b') {
         /* word boundary: previous/next char class change */
         int prev_word = (s > tbegin) && pb_re_is_word_char((unsigned char)s[-1]);
         int next_word = (s < send) && pb_re_is_word_char((unsigned char)s[0]);
         if (prev_word == next_word) return NULL;
-        return pb_rex_match_here(pat + 2, s, send, tbegin, cs);
+        return pb_rex_match_here(pat + 2, s, send, tbegin, cs, gstart, gend, gdepth);
     }
     {
         const char* aend = pb_rex_atom_end(pat);
@@ -4071,17 +4245,17 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
             const char* cur = s;
             int n = 0;
             while ((max < 0 || n < max) && cur < send) {
-                const char* e = pb_rex_match_here(atom, cur, send, tbegin, cs);
+                const char* e = pb_rex_match_here(atom, cur, send, tbegin, cs, gstart, gend, gdepth);
                 if (!e || e == cur) break;
                 cur = e; n++;
             }
             while (n >= min) {
-                const char* e = pb_rex_match_here(rest, cur, send, tbegin, cs);
+                const char* e = pb_rex_match_here(rest, cur, send, tbegin, cs, gstart, gend, gdepth);
                 if (e) return e;
                 if (n == 0) break;
                 const char* prev = s;
                 for (int k = 1; k < n; k++) {
-                    const char* e2 = pb_rex_match_here(atom, prev, send, tbegin, cs);
+                    const char* e2 = pb_rex_match_here(atom, prev, send, tbegin, cs, gstart, gend, gdepth);
                     if (!e2) break;
                     prev = e2;
                 }
@@ -4098,19 +4272,29 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
         size_t ilen = (size_t)(close - pat - 1);
         if (ilen >= sizeof(inner)) return NULL;
         memcpy(inner, pat + 1, ilen); inner[ilen] = 0;
-        const char* e = pb_rex_match_here(inner, s, send, tbegin, cs);
+        int child = gdepth + 1;
+        if (child < PB_REX_MAX_GROUPS) gstart[child] = s;
+        const char* e = pb_rex_match_here(inner, s, send, tbegin, cs, gstart, gend, child);
         if (!e) return NULL;
-        return pb_rex_match_here(close + 1, e, send, tbegin, cs);
+        if (child < PB_REX_MAX_GROUPS) gend[child] = e;
+        /* After this group, the next sibling group must be numbered after this
+         * group AND every group nested inside its body (CHW left-to-right
+         * capture numbering). Passing the parent gdepth here reused index 1
+         * for the second sibling group, so \01 grabbed the wrong capture. */
+        int after = child + pb_rex_count_groups(inner);
+        return pb_rex_match_here(close + 1, e, send, tbegin, cs, gstart, gend, after);
     }
     {
         const char* e = pb_rex_match_one(pat, s, send, cs);
         if (!e) return NULL;
-        return pb_rex_match_here(pb_rex_atom_end(pat), e, send, tbegin, cs);
+        return pb_rex_match_here(pb_rex_atom_end(pat), e, send, tbegin, cs, gstart, gend, gdepth);
     }
 }
 
-int pb_regex_scan(const char* mask, const char* target, long long start,
-                  long long* opos, long long* olen) {
+/* Internal scan with out-group array. gstart/gend may be NULL. */
+static int pb_regex_scan_ex(const char* mask, const char* target, long long start,
+                            long long* opos, long long* olen,
+                            const char** gstart, const char** gend) {
     *opos = 0; *olen = 0;
     size_t tlen = strlen(target);
     if (!mask || !mask[0]) return 0;
@@ -4119,7 +4303,8 @@ int pb_regex_scan(const char* mask, const char* target, long long start,
     const char* begin = target + (size_t)(start - 1);
     const char* send = target + tlen;
     for (const char* s = begin; s <= send; s++) {
-        const char* e = pb_rex_match_here(mask, s, send, target, 0);
+        const char* e = pb_rex_match_here(mask, s, send, target, 0,
+                                          gstart, gend, 0);
         if (e) {
             *opos = (long long)(s - target) + 1;
             *olen = (long long)(e - s);
@@ -4129,25 +4314,51 @@ int pb_regex_scan(const char* mask, const char* target, long long start,
     return 0;
 }
 
+int pb_regex_scan(const char* mask, const char* target, long long start,
+                  long long* opos, long long* olen) {
+    return pb_regex_scan_ex(mask, target, start, opos, olen, NULL, NULL);
+}
+
 char* pb_regex_replace(const char* mask, const char* target, const char* repl,
                        long long start, long long* opos) {
     *opos = 0;
     long long pos = 0, len = 0;
-    if (!pb_regex_scan(mask, target, start, &pos, &len)) {
+    const char* gstart[PB_REX_MAX_GROUPS] = {0};
+    const char* gend[PB_REX_MAX_GROUPS] = {0};
+    if (!pb_regex_scan_ex(mask, target, start, &pos, &len, gstart, gend)) {
         return pb_bstr_alloc(target, (int)strlen(target));
     }
     size_t tlen = strlen(target), rlen = strlen(repl);
-    size_t outsz = tlen - (size_t)len + rlen + 16;
+    /* worst case: every repl char is a tag referencing a group of length <= tlen */
+    size_t outsz = tlen + rlen * (tlen + 1) + 16;
     char* out = (char*)malloc(outsz ? outsz : 1);
     if (!out) return pb_bstr_alloc("", 0);
     size_t pre = (size_t)(pos - 1);
     memcpy(out, target, pre);
     size_t o = pre;
     for (size_t i = 0; i < rlen; i++) {
-        if (repl[i] == '\\' && i + 2 < rlen + 1 && repl[i + 1] == '0' && repl[i + 2] == '0') {
-            memcpy(out + o, target + pre, (size_t)len); o += (size_t)len; i += 2;
-        } else if (repl[i] == '\\' && i + 1 < rlen && (repl[i + 1] >= '1' && repl[i + 1] <= '9')) {
-            i++;
+        if (repl[i] == '\\' && i + 1 < rlen) {
+            if (repl[i+1] == '0' && i + 2 < rlen && repl[i+2] == '0') {
+                /* \00 = whole match */
+                memcpy(out + o, target + pre, (size_t)len);
+                o += (size_t)len; i += 2;
+            } else if (repl[i+1] >= '0' && repl[i+1] <= '9') {
+                /* \N or \NN capture-group reference (CHW \01..\99) */
+                int gnum = repl[i+1] - '0';
+                i++;
+                if (i + 1 < rlen && repl[i+1] >= '0' && repl[i+1] <= '9') {
+                    gnum = gnum * 10 + (repl[i+1] - '0');
+                    i++;
+                }
+                if (gnum >= 1 && gnum < PB_REX_MAX_GROUPS && gstart[gnum] && gend[gnum]) {
+                    size_t gl = (size_t)(gend[gnum] - gstart[gnum]);
+                    memcpy(out + o, gstart[gnum], gl);
+                    o += gl;
+                }
+                /* unmatched group: emit nothing (CHW: non-match presumed) */
+            } else {
+                out[o++] = repl[i];
+            }
         } else {
             out[o++] = repl[i];
         }
@@ -4155,8 +4366,8 @@ char* pb_regex_replace(const char* mask, const char* target, const char* repl,
     memcpy(out + o, target + pre + (size_t)len, tlen - pre - (size_t)len);
     o += tlen - pre - (size_t)len;
     out[o] = 0;
-    /* iPos& = 1-based position immediately following the matched text in the NEW string */
-    *opos = (long long)(pre + rlen + 1);
+    /* iPos& = 1-based position immediately following the replacement in newtarget$ */
+    *opos = (long long)(o + 1 - (tlen - pre - (size_t)len));
     return out;
 }
 
@@ -4559,6 +4770,31 @@ long long pb_shift_right(long long v, int n, int keep_sign) {
     return (long long)((unsigned long long)v >> k);
 }
 
+/* SHIFT RIGHT width-aware (CHW SHIFT_statement.htm).
+ * The SIGNED option "does not allow the sign (positive or negative) of the
+ * value to change", where sign is the MSB of ivar's DECLARED width, even for
+ * nominally-unsigned BYTE/WORD.  The fork previously zero-extended ivar to
+ * 64 bits before the arithmetic shift, so BYTE 0xDD (bit 7 set) SIGNED RIGHT
+ * 1 yielded 0x6E (110) instead of the documented 0xEE (238).  Sign-extend
+ * from the declared width (8/16/32/64) to 64 bits first; the logical case is
+ * masked to the width as well.  Count is taken modulo the width. */
+long long pb_shift_right_w(long long v, int n, int width, int keep_sign) {
+    if (width <= 0 || width >= 64) {
+        int k = n & 63;
+        if (keep_sign) return v >> k;
+        return (long long)((unsigned long long)v >> k);
+    }
+    unsigned long long mask = (1ULL << (unsigned)width) - 1ULL;
+    unsigned long long x = ((unsigned long long)v) & mask;
+    unsigned k = ((unsigned)n) % (unsigned)width;
+    if (keep_sign) {
+        unsigned long long sign_bit = 1ULL << ((unsigned)width - 1);
+        if (x & sign_bit) x |= ~mask;
+        return (long long)(x >> k);
+    }
+    return (long long)(x >> k);
+}
+
 /* ROTATE LEFT/RIGHT � 64-bit circular shift */
 long long pb_rotate_left(long long v, int n) {
     int k = n & 63;
@@ -4569,6 +4805,37 @@ long long pb_rotate_right(long long v, int n) {
     int k = n & 63;
     if (k == 0) return v;
     return ((unsigned long long)v >> k) | (v << (64 - k));
+}
+
+/* R2 ROTATE width-aware (CHW ROTATE_statement.htm): ivar may be Byte (8),
+ * Word/Integer (16), Dword/Long (32), or Quad (64). The fork previously
+ * widened to i64, rotated across all 64 bits, then truncated - so the wrap
+ * bit travelled from bit 0 to bit 63 and was dropped, turning BYTE 221
+ * ROR 1 into 110 instead of the documented 238. Mask to the operand width
+ * and take the count modulo that width. CHW: "ROTATE rotates all the bits
+ * in ivar without special regard to the sign bit of a signed integral-class
+ * variable" - i.e. treat the narrow value as unsigned bits. */
+static unsigned long long pb_rotate_mask(int width) {
+    if (width >= 64) return ~0ULL;
+    return (1ULL << (unsigned)width) - 1ULL;
+}
+long long pb_rotate_left_w(long long v, int n, int width) {
+    if (width <= 0) width = 64;
+    unsigned long long mask = pb_rotate_mask(width);
+    unsigned long long x = ((unsigned long long)v) & mask;
+    unsigned k = ((unsigned)n) % (unsigned)width;
+    if (k == 0) return (long long)x;
+    unsigned long long r = (x << k) | (x >> ((unsigned)width - k));
+    return (long long)(r & mask);
+}
+long long pb_rotate_right_w(long long v, int n, int width) {
+    if (width <= 0) width = 64;
+    unsigned long long mask = pb_rotate_mask(width);
+    unsigned long long x = ((unsigned long long)v) & mask;
+    unsigned k = ((unsigned)n) % (unsigned)width;
+    if (k == 0) return (long long)x;
+    unsigned long long r = (x >> k) | (x << ((unsigned)width - k));
+    return (long long)(r & mask);
 }
 
 /* ===== Batch 3: PLAY SOUND / SPLIT / ARRAY SHUFFLE ===== */
@@ -4597,12 +4864,27 @@ void pb_beep(void) {
 #endif
 }
 
-/* SPLIT MainStr, Part1Len TO Part1Var, Part2Var */
-void pb_split(const char* src, int n, char** out1, char** out2) {
+/* SPLIT [WORD] MainStr, Part1Len TO Part1Var, Part2Var.
+   word != 0 (CHW SPLIT_statement.htm, PBWin10 measured): "Part1 will not end
+   on a partial word".  PBWin behaviour: (1) drop any trailing space that would
+   end up in Part1; (2) if the cut then still divides a word (Part1 ends mid-word
+   AND Part2 starts mid-word), back the cut off to the preceding space, leaving
+   that space as the leading space of Part2 (the caller may LTRIM$ it). */
+void pb_split(const char* src, int n, char** out1, char** out2, int word) {
     if (!src) src = "";
     size_t len = strlen(src);
     if (n < 0) n = 0;
     if ((size_t)n > len) n = (int)len;
+    if (word) {
+        /* (1) trailing space in Part1 -> back off. */
+        while (n > 0 && src[n - 1] == ' ') n--;
+        /* (2) cut still divides a word -> back to the preceding space. */
+        if (n > 0 && (size_t)n < len && src[n - 1] != ' ' && src[n] != ' ') {
+            int s = n - 1;
+            while (s > 0 && src[s] != ' ') s--;
+            n = (src[s] == ' ') ? s : 0;
+        }
+    }
     *out1 = pb_bstr_alloc(src, n);
     *out2 = pb_bstr_alloc(src + n, (int)(len - n));
 }
@@ -4624,40 +4906,101 @@ void pb_array_shuffle(void* base, int elem_size, int total) {
     }
 }
 
-/* ===== Batch 4: DATA / READ / RESTORE ===== */
+/* ===== Batch 4: DATA / READ / RESTORE =====
+   CHW READ_function.htm: "There is a limit of 64 Kilobytes and 16384 separate
+   data items per Sub, Function, Method, or Property, and it is not possible
+   to read DATA from outside of the scope of current procedure." The fork used
+   one global pool; now each procedure owns its own list, keyed by name, with
+   an activate/deactivate stack so nested calls do not cross-pollute. */
 
 #define MAX_DATA_ITEMS 16384
-static const char* data_pool[MAX_DATA_ITEMS] = {0};
-static int data_count = 0;
-static int data_cursor = 0;
+#define MAX_DATA_POOLS 64
+#define DATA_STACK 32
+
+typedef struct {
+    char name[48];
+    const char* items[MAX_DATA_ITEMS];
+    int count;
+    int cursor;
+    int in_use;
+} DataPool;
+
+static DataPool data_pools[MAX_DATA_POOLS];
+static DataPool* data_active = NULL;
+static DataPool* data_stack[DATA_STACK];
+static int data_sp = 0;
+
+void pb_data_activate(const char* procname) {
+    DataPool* found = NULL;
+    for (int i = 0; i < MAX_DATA_POOLS; i++) {
+        if (data_pools[i].in_use && strcmp(data_pools[i].name, procname) == 0) {
+            found = &data_pools[i];
+            break;
+        }
+    }
+    if (!found) {
+        for (int i = 0; i < MAX_DATA_POOLS; i++) {
+            if (!data_pools[i].in_use) {
+                found = &data_pools[i];
+                strncpy(found->name, procname, sizeof(found->name) - 1);
+                found->name[sizeof(found->name) - 1] = 0;
+                found->count = 0;
+                found->cursor = 0;
+                found->in_use = 1;
+                break;
+            }
+        }
+    }
+    if (data_sp < DATA_STACK) {
+        data_stack[data_sp++] = data_active;
+    }
+    data_active = found;
+    /* On each entry the local list is (re)built from the inline DATA items. */
+    if (data_active) {
+        data_active->count = 0;
+        data_active->cursor = 0;
+    }
+}
+
+void pb_data_deactivate(void) {
+    if (data_sp > 0) {
+        data_sp--;
+        data_active = data_stack[data_sp];
+    }
+}
 
 void pb_data_append(const char* s) {
-    if (!s || data_count >= MAX_DATA_ITEMS) return;
-    data_pool[data_count++] = s;
+    if (!data_active || !s) return;
+    if (data_active->count >= MAX_DATA_ITEMS) return;
+    data_active->items[data_active->count++] = s;
 }
 
 char* pb_read_data_str(void) {
-    if (data_cursor >= data_count) return pb_bstr_alloc("", 0);
-    const char* item = data_pool[data_cursor];
-    data_cursor++;
+    if (!data_active || data_active->cursor >= data_active->count) {
+        return pb_bstr_alloc("", 0);
+    }
+    const char* item = data_active->items[data_active->cursor];
+    data_active->cursor++;
     return pb_bstr_alloc(item, (int)strlen(item));
 }
 
 double pb_read_data_num(void) {
-    if (data_cursor >= data_count) return 0.0;
-    return atof(data_pool[data_cursor++]);
+    if (!data_active || data_active->cursor >= data_active->count) return 0.0;
+    return atof(data_active->items[data_active->cursor++]);
 }
 
 /* READ$(n%) — CHW READ_function.htm: 1-based random access to the local DATA
    list; n > DATACOUNT returns an empty string with no runtime error. */
 char* pb_read_data_idx(long long n) {
-    if (n < 1 || n > data_count) return pb_bstr_alloc("", 0);
-    const char* item = data_pool[n - 1];
+    if (!data_active || n < 1 || n > data_active->count) {
+        return pb_bstr_alloc("", 0);
+    }
+    const char* item = data_active->items[n - 1];
     return pb_bstr_alloc(item, (int)strlen(item));
 }
 
 void pb_data_reset(void) {
-    data_cursor = 0;
+    if (data_active) data_active->cursor = 0;
 }
 
 // PROCESS GET/SET PRIORITY - current process priority class
@@ -4667,6 +5010,53 @@ unsigned long pb_process_get_priority(void) {
 
 int pb_process_set_priority(unsigned long pri) {
     return SetPriorityClass(GetCurrentProcess(), pri) ? 0 : -1;
+}
+
+/* CHW SHELL statement (SHELL_statement.htm): run a child process SYNCHRONOUSLY.
+ * "The SHELLing thread ... is suspended until the SHELLed program ends."
+ * mode&: 0=hide window, 1=normal with focus (default), 2=minimized, 3=maximized,
+ * 4=normal-no-focus, 6=minimized-no-focus.  exit_out (may be NULL) receives the
+ * child process exit code (GetExitCodeProcess).  Returns the child process id. */
+#ifdef _WIN32
+__declspec(dllimport) int __stdcall CreateProcessA(const char*, char*, void*, void*, int,
+    unsigned long, void*, const char*, void*, void*);
+__declspec(dllimport) unsigned long __stdcall WaitForSingleObject(void* h, unsigned long ms);
+__declspec(dllimport) int __stdcall GetExitCodeProcess(void* h, unsigned long* code);
+__declspec(dllimport) int __stdcall CloseHandle(void* h);
+#endif
+long pb_shell_sync(char* cmd, int mode, long* exit_out) {
+    if (exit_out) *exit_out = 0;
+    if (!cmd || !*cmd) return 0;
+#ifdef _WIN32
+    struct { unsigned long cb; void* reserved; char* desktop; char* title;
+             unsigned long x, y, xsz, ysz; unsigned long xcount, ycount;
+             unsigned long fillattr; unsigned long flags; unsigned short show;
+             unsigned short reserved2; void* reserved3; void* stdin_, *stdout_, *stderr_; } si;
+    struct { void* hProcess; void* hThread; unsigned long pid, tid; } pi;
+    memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+    unsigned long create_flags = (mode == 0) ? 0x08000000UL /* CREATE_NO_WINDOW */ : 0;
+    si.flags = 0x00000001UL /* STARTF_USESHOWWINDOW */;
+    si.show = (unsigned short)(mode < 0 ? 1 : (mode > 10 ? 1 : mode));
+    char* cmdmut = (char*)malloc(strlen(cmd) + 1);
+    if (!cmdmut) return 0;
+    strcpy(cmdmut, cmd);
+    int ok = CreateProcessA(NULL, cmdmut, NULL, NULL, 0/*FALSE*/,
+                            create_flags, NULL, NULL, &si, &pi);
+    free(cmdmut);
+    if (!ok) { if (exit_out) *exit_out = -1; return 0; }
+    WaitForSingleObject(pi.hProcess, 0xFFFFFFFFUL /* INFINITE */);
+    unsigned long code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (exit_out) *exit_out = (long)code;
+    return (long)pi.pid;
+#else
+    (void)mode;
+    if (exit_out) *exit_out = -1;
+    return 0;
+#endif
 }
 
 /* ARRAY SCAN arr([idx]) [FOR count], OP expr, TO var& � first matching relative index, 0 = none.
@@ -5244,6 +5634,32 @@ void pb_rset(char** dest, const char* src, int len) {
     if (old) SysFreeString(old);
 }
 
+/* R2 RSET on a dynamic BSTR target (CHW RSET_statement.htm example:
+ * `a$ = SPACE$(20): RSET a$ = "Right-align"` -> 9 spaces + 11 chars = 20).
+ * The "space of the string variable" for a dynamic BSTR is its current LEN.
+ * pad=NULL means pad with spaces; otherwise the first character of pad is
+ * used (CHW USING). If src is longer than the current width, truncate src
+ * from the right (take the leftmost `width` bytes). */
+void pb_rset_dynamic(char** dest, const char* src, const char* pad) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)strlen(old) : 0;
+    if (width < 0) width = 0;
+    const char* s = src ? src : "";
+    int src_len = (int)strlen(s);
+    int take = src_len < width ? src_len : width;
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    char* buf = (char*)malloc((size_t)width + 1);
+    int padn = width - take;
+    int i;
+    for (i = 0; i < padn; i++) buf[i] = (char)padc;
+    if (take > 0) memcpy(buf + padn, s, (size_t)take);
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+    if (old) SysFreeString(old);
+}
+
 /* ERASE: zero-out a static array (non-string) or NULL-out string elements */
 void pb_erase_array(char* base, int elem_size, int count, int is_string) {
     if (is_string) {
@@ -5421,9 +5837,23 @@ long long pb_loc(int filenum) {
     return 0;
 }
 
-void pb_seek(int filenum, long pos) {
+/* SEEK function (CHW SEEK_function.htm): return the 1-based position where
+ * the next I/O will occur.  RANDOM -> next record number; every other mode
+ * -> next byte position.  This is distinct from the legacy LOC function,
+ * which on sequential files reports ftell/128 (128-byte block convention).
+ * The fork previously aliased SEEK(f) to pb_loc. */
+long long pb_seek_pos(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        fseek(file_handles[filenum], (long)(pos - 1), SEEK_SET);
+        int m = file_modes[filenum];
+        if (m == 4) return rec_pos[filenum] + 1;
+        return (long long)ftell(file_handles[filenum]) + 1;
+    }
+    return 0;
+}
+
+void pb_seek(int filenum, long long pos) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        _fseeki64(file_handles[filenum], pos - 1, SEEK_SET);
     }
 }
 
@@ -8783,6 +9213,84 @@ int pb_resource_save_file(const char* resname, const char* filename) {
 
     return 1;
 }
+
+/* R2 RESOURCE$ (CHW RESOURCE$_function.htm): return embedded resource data as
+ * a BSTR. type_str selects RCDATA (raw bytes) or STRING (string table,
+ * wide->ANSI via LoadStringA); anything else defaults to RCDATA. resid may
+ * be a numeric 0..65535 ID (all-digit string) or an alphanumeric label.
+ * CHW: "If the ID you request is not present, a nul (zero-length) string
+ * is returned." */
+static int pb_resource_type_code(const char* t) {
+    if (!t) return 0;
+    /* case-insensitive compare, short strings */
+    char a = (char)toupper((unsigned char)t[0]);
+    if (a == 'S') return 1; /* STRING */
+    return 0;               /* RCDATA / default */
+}
+static const char* pb_res_make_id(const char* s) {
+    if (!s || !*s) return (const char*)0;
+    int all_digits = 1;
+    for (const char* p = s; *p; p++) {
+        if (*p < '0' || *p > '9') { all_digits = 0; break; }
+    }
+    if (all_digits) {
+        unsigned long id = strtoul(s, NULL, 10);
+        return MAKEINTRESOURCEA(id);
+    }
+    return s;
+}
+char* pb_resource_str(const char* type_str, const char* resid) {
+    void* hMod = GetModuleHandleA(NULL);
+    if (!hMod || !resid || !*resid) return pb_bstr_alloc("", 0);
+    int type = pb_resource_type_code(type_str);
+    if (type == 1) {
+        /* STRING table: CHW says only integral numeric IDs are accepted. */
+        unsigned long id = 0;
+        int digits = 1;
+        for (const char* p = resid; *p; p++) {
+            if (*p < '0' || *p > '9') { digits = 0; break; }
+        }
+        if (!digits) return pb_bstr_alloc("", 0);
+        id = strtoul(resid, NULL, 10);
+        char buf[4096];
+        int n = LoadStringA(hMod, (unsigned int)id, buf, (int)sizeof(buf));
+        if (n <= 0) return pb_bstr_alloc("", 0);
+        return pb_bstr_alloc(buf, (unsigned)n);
+    }
+    /* RCDATA: raw bytes, byte-for-byte as compiled. */
+    const char* name = pb_res_make_id(resid);
+    void* hRes = FindResourceA(hMod, name, RT_RCDATA);
+    if (!hRes) return pb_bstr_alloc("", 0);
+    unsigned long sz = SizeofResource(hMod, hRes);
+    void* hData = LoadResource(hMod, hRes);
+    if (!hData || sz == 0) return pb_bstr_alloc("", 0);
+    void* p = LockResource(hData);
+    if (!p) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc((const char*)p, sz);
+}
+/* Numeric-id entry point: RESOURCE$(RCDATA, 999) / RESOURCE$(STRING, id%)
+ * where the id is a numeric expression, not a string literal. Avoids the
+ * crash where an i32 id was reinterpreted as a const char*. */
+char* pb_resource_str_num(const char* type_str, int resid_num) {
+    void* hMod = GetModuleHandleA(NULL);
+    if (!hMod) return pb_bstr_alloc("", 0);
+    if (resid_num < 0) return pb_bstr_alloc("", 0);
+    int type = pb_resource_type_code(type_str);
+    if (type == 1) {
+        char buf[4096];
+        int n = LoadStringA(hMod, (unsigned int)resid_num, buf, (int)sizeof(buf));
+        if (n <= 0) return pb_bstr_alloc("", 0);
+        return pb_bstr_alloc(buf, (unsigned)n);
+    }
+    void* hRes = FindResourceA(hMod, MAKEINTRESOURCEA((unsigned int)resid_num), RT_RCDATA);
+    if (!hRes) return pb_bstr_alloc("", 0);
+    unsigned long sz = SizeofResource(hMod, hRes);
+    void* hData = LoadResource(hMod, hRes);
+    if (!hData || sz == 0) return pb_bstr_alloc("", 0);
+    void* p = LockResource(hData);
+    if (!p) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc((const char*)p, sz);
+}
 /* === Batch 76: remaining XPRINT statements (completes XPRINT family) === */
 /* XPRINT papers/trays: targets are PB STRING variables (BSTR slots), same
    crash hazard as pb_xprint_get_attach - write BSTR strings, not raw LONGs */
@@ -10391,7 +10899,7 @@ char* pb_monthname(long long n) {
     return pb_bstr_alloc((char*)names[n-1], (unsigned int)strlen(names[n-1]));
 }
 long long pb_data_count(void) {
-    return data_count;
+    return data_active ? (long long)data_active->count : 0;
 }
 long long pb_thread_count(void) {
     long long n = 1; /* primary thread */
@@ -12271,6 +12779,17 @@ void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int h
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     /* Set default range 0-100 so scrollbar works immediately */
     SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
+    /* CHW SCROLLBAR_statement.htm: "Upon ScrollBar creation, the default
+     * page size is 10."  Win32 defaults nPage to 0, so set it explicitly. */
+    if (hbar) {
+        struct { unsigned int cbSize; unsigned int fMask; int nMin; int nMax;
+                 unsigned int nPage; int nPos; int nTrackPos; } si;
+        memset(&si, 0, sizeof(si));
+        si.cbSize = (unsigned int)sizeof(si);
+        si.fMask = 0x0002 /* SIF_PAGE */;
+        si.nPage = 10;
+        SendMessageA(hbar, 0x00E9 /* SBM_SETSCROLLINFO */, 0, (long long)&si);
+    }
     if (hbar) SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
     return hbar;
 }
@@ -15217,6 +15736,16 @@ void* pb_control_add_scrollbar_ex(void* parent, long id, const char* text,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
+    /* CHW: default page size is 10 on creation. */
+    if (hbar) {
+        struct { unsigned int cbSize; unsigned int fMask; int nMin; int nMax;
+                 unsigned int nPage; int nPos; int nTrackPos; } si;
+        memset(&si, 0, sizeof(si));
+        si.cbSize = (unsigned int)sizeof(si);
+        si.fMask = 0x0002 /* SIF_PAGE */;
+        si.nPage = 10;
+        SendMessageA(hbar, 0x00E9 /* SBM_SETSCROLLINFO */, 0, (long long)&si);
+    }
     if (hbar) { SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font(), 1);
                 if (fn) pb_register_callback_hwnd(hbar, fn); }
     return hbar;

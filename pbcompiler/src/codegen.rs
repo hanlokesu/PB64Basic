@@ -1306,6 +1306,10 @@ struct Compiler {
     // module global -- LLVM would reject the duplicate symbol).
     threaded_declared: std::collections::HashSet<String>,
 
+    // CHW REGISTER variables declared in the current procedure (normalized
+    // names). VARPTR is rejected; DIALOG SHOW ... TO <name> is Error 491.
+    register_vars: std::collections::HashSet<String>,
+
     // ASMDATA blocks: canonical uppercase name -> IR global symbol name.
     // CODEPTR(BlockName) and ASM Offset/name references resolve through this.
     asmdata_blocks: std::collections::HashMap<String, String>,
@@ -1554,6 +1558,7 @@ impl Compiler {
             loop_stack: Vec::new(),
             pending_global_arrays: HashMap::new(),
             threaded_declared: std::collections::HashSet::new(),
+            register_vars: std::collections::HashSet::new(),
             asmdata_blocks: std::collections::HashMap::new(),
             empty_string_name: String::new(),
             msgbox_title_name: String::new(),
@@ -2430,6 +2435,58 @@ impl Compiler {
             .declare_function("srand", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("rand", &IrType::I32, &[], false);
+        // CHW RANDOMIZE/RND: per-thread PRNG; TIMER = seconds since midnight.
+        self.module
+            .declare_function("pb_timer", &IrType::Double, &[], false);
+        self.module
+            .declare_function("pb_randomize", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_randomize_timer", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_rnd_value", &IrType::Double, &[], false);
+        // R2 RND: RND(0) repeats the last sample; RND(-n) reseeds.
+        self.module
+            .declare_function("pb_rnd_last", &IrType::Double, &[], false);
+        self.module
+            .declare_function("pb_rnd_reseed", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_rnd_1arg", &IrType::Double, &[IrType::Double], false);
+        // R2 ROTATE width-aware: mask to operand bit-width, mod count by width.
+        self.module.declare_function(
+            "pb_rotate_left_w",
+            &IrType::I64,
+            &[IrType::I64, IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_rotate_right_w",
+            &IrType::I64,
+            &[IrType::I64, IrType::I32, IrType::I32],
+            false,
+        );
+        // R2 RESOURCE$: returns BSTR of RCDATA bytes or STRING-table text.
+        self.module.declare_function(
+            "pb_resource_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        // R2 RESOURCE$ numeric-id entry: avoids crashing when the id is an
+        // integer literal/variable rather than a string expression.
+        self.module.declare_function(
+            "pb_resource_str_num",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        // R2 RSET on a dynamic BSTR: right-justify into current LEN(target),
+        // honoring USING pad. No hard-coded 256.
+        self.module.declare_function(
+            "pb_rset_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("_mkdir", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -6005,6 +6062,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_shift_right_w",
+            &IrType::I64,
+            &[IrType::I64, IrType::I32, IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_rotate_left",
             &IrType::I64,
             &[IrType::I64, IrType::I32],
@@ -6025,7 +6088,13 @@ impl Compiler {
         self.module.declare_function(
             "pb_split",
             &IrType::Void,
-            &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::Ptr],
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::I32,
+            ],
             false,
         );
         self.module.declare_function(
@@ -6044,6 +6113,11 @@ impl Compiler {
             .declare_function("pb_read_data_idx", &IrType::Ptr, &[IrType::I64], false);
         self.module
             .declare_function("pb_data_reset", &IrType::Void, &[], false);
+        // CHW per-procedure DATA scope: activate the procedure's local list.
+        self.module
+            .declare_function("pb_data_activate", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_data_deactivate", &IrType::Void, &[], false);
         self.module.declare_function(
             "pb_array_scan_num",
             &IrType::I64,
@@ -6202,6 +6276,12 @@ impl Compiler {
         self.module
             .declare_function("pb_str_dbl", &IrType::Ptr, &[IrType::Double], false);
         self.module.declare_function(
+            "pb_str_dbl_d",
+            &IrType::Ptr,
+            &[IrType::Double, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_cset_str",
             &IrType::Ptr,
             &[IrType::Ptr, IrType::I64, IrType::Ptr],
@@ -6268,11 +6348,19 @@ impl Compiler {
         self.module
             .declare_function("pb_loc", &IrType::I64, &[IrType::I32], false);
         self.module
+            .declare_function("pb_seek_pos", &IrType::I64, &[IrType::I32], false);
+        self.module
             .declare_function("pb_process_get_priority", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_process_set_priority",
             &IrType::I32,
             &[IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_shell_sync",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
             false,
         );
         self.module
@@ -6396,6 +6484,12 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_reset", &IrType::Void, &[], false);
+        self.module.declare_function(
+            "pb_replace_any",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_flush", &IrType::Void, &[IrType::I32], false);
         self.module
@@ -7849,8 +7943,19 @@ impl Compiler {
         // Allocate REDIM'd arrays at their max size before compiling the body
         self.prescan_redim_arrays(&mut fb, &fd.body)?;
 
+        // CHW per-procedure DATA scope: activate this procedure's local list.
+        fb.call_void(
+            "pb_data_activate",
+            &[Val::new(fn_name_str.clone(), IrType::Ptr)],
+        );
+        self.register_vars.clear();
+
         // Compile body
         self.compile_body(&mut fb, &fd.body)?;
+
+        if !fb.is_terminated() {
+            fb.call_void("pb_data_deactivate", &[]);
+        }
 
         // Emit RETURN dispatch if we had GOSUBs
         self.emit_return_dispatch(&mut fb);
@@ -7938,8 +8043,19 @@ impl Compiler {
         // Set up GOSUB context
         self.setup_gosub_context(&mut fb, &sd.body);
 
+        // CHW per-procedure DATA scope: activate this SUB's local list.
+        fb.call_void(
+            "pb_data_activate",
+            &[Val::new(fn_name_str.clone(), IrType::Ptr)],
+        );
+        self.register_vars.clear();
+
         // Compile body
         self.compile_body(&mut fb, &sd.body)?;
+
+        if !fb.is_terminated() {
+            fb.call_void("pb_data_deactivate", &[]);
+        }
 
         // Emit RETURN dispatch if we had GOSUBs
         self.emit_return_dispatch(&mut fb);
@@ -8466,6 +8582,21 @@ impl Compiler {
             Statement::Label(name) => self.compile_label(fb, name),
             Statement::GoSub(label) => self.compile_gosub(fb, label),
             Statement::Return => self.compile_return(fb),
+            // CHW RETURN FLUSH: pop the most recent GOSUB return address and
+            // fall through to the next statement (do NOT branch back to the
+            // caller). Implemented by decrementing the stored return-ID slot
+            // so a later RETURN resumes the next-older GOSUB point.
+            Statement::ReturnFlush => {
+                if let Some(ref ctx) = self.gosub_context {
+                    if !ctx.return_points.is_empty() {
+                        let cur = fb.load(&IrType::I32, &ctx.ret_addr_ptr);
+                        let one = fb.const_i32(1);
+                        let popped = fb.sub(&cur, &one);
+                        fb.store(&popped, &ctx.ret_addr_ptr);
+                    }
+                }
+                Ok(())
+            }
             Statement::GoTo(label) => self.compile_goto(fb, label),
             Statement::OnGoTo { expr, labels } => self.compile_on_goto(fb, expr, labels),
             Statement::OnGoSub { expr, labels } => self.compile_on_gosub(fb, expr, labels),
@@ -9402,7 +9533,7 @@ impl Compiler {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
                     }
                     let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                    let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                    let base = self.array_base(fb, &arr_info);
                     let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                     let converted =
                         self.convert_value(fb, &value, &arr_info.elem_ir_type, &arr_info.pb_type);
@@ -9472,6 +9603,7 @@ impl Compiler {
                                 pb_type: field_pb.clone(),
                                 dims,
                                 total_elements: n,
+                                indirect_base: false,
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -9693,7 +9825,7 @@ impl Compiler {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
                     }
                     let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                    let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                    let base = self.array_base(fb, &arr_info);
                     let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                     Ok((elem_ptr, arr_info.pb_type.clone()))
                 } else {
@@ -9792,6 +9924,7 @@ impl Compiler {
                     pb_type: field_pb,
                     dims,
                     total_elements: n,
+                    indirect_base: false,
                 };
                 let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                 let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -9995,14 +10128,33 @@ impl Compiler {
                     pb_type,
                     dims,
                     total_elements,
+                    indirect_base: false,
                 },
             );
         }
         Ok(())
     }
 
+    /// Base pointer for array element access. For a CHW `REDIM ... AT address`
+    /// overlay the backing store is a runtime inttoptr kept in a slot, so the
+    /// slot must be loaded before GEP; ordinary arrays GEP the alloca directly.
+    fn array_base(&self, fb: &mut FunctionBuilder, info: &ArrayInfo) -> Val {
+        let raw = Val::new(info.ptr_name.clone(), IrType::Ptr);
+        if info.indirect_base {
+            fb.load(&IrType::Ptr, &raw)
+        } else {
+            raw
+        }
+    }
+
     fn compile_dim(&mut self, fb: &mut FunctionBuilder, dim: &DimStatement) -> PbResult<()> {
         let name = normalize_name(&dim.name);
+
+        // CHW REGISTER: remember this name so VARPTR is rejected and
+        // `DIALOG SHOW ... TO <name>` raises Error 491 (see error_491 page).
+        if dim.is_register {
+            self.register_vars.insert(name.clone());
+        }
 
         // CHW `DIM x() AS type`: undimensioned (dynamic) array. Metadata-only
         // registration so LBOUND returns 0 / UBOUND returns -1 until REDIM
@@ -10031,6 +10183,53 @@ impl Compiler {
                     pb_type: dim.pb_type.clone(),
                     dims: Vec::new(),
                     total_elements: 0,
+                    indirect_base: false,
+                },
+            );
+            return Ok(());
+        }
+
+        // CHW REDIM ... AT address: absolute array overlay. Back the array with
+        // the given address instead of an allocated buffer (not reset by REDIM
+        // or procedure exit; only RESET clears it).
+        if let Some(at) = &dim.at_address {
+            let mut dims = Vec::new();
+            let mut total = 1usize;
+            for bound in &dim.bounds {
+                let lower = Self::eval_const_expr(&bound.lower).unwrap_or(0);
+                let upper = Self::eval_const_expr(&bound.upper).unwrap_or(0);
+                let count = (upper - lower + 1) as usize;
+                dims.push((lower, count as i64));
+                total *= count;
+            }
+            let addr = self.compile_expr(fb, at)?;
+            // REDIM ... AT has no AS clause: inherit the element type from the
+            // previously-declared array (`LOCAL arr() AS LONG`), exactly like
+            // the normal REDIM path, so the overlay uses i32 not Variant.
+            let arr_pb_type = match (self.symbols.lookup_array(&name), &dim.pb_type) {
+                (Some(prev), PbType::Variant) => prev.pb_type.clone(),
+                (Some(prev), PbType::Long)
+                    if matches!(prev.pb_type, PbType::String | PbType::FixedString(_)) =>
+                {
+                    prev.pb_type.clone()
+                }
+                (_, t) => t.clone(),
+            };
+            let elem_ir = Self::ir_type_for(&arr_pb_type);
+            let slot = fb.alloca(&IrType::Ptr);
+            let base = fb.inttoptr(&addr);
+            fb.store(&base, &slot);
+            let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
+            self.symbols.insert_local_array(
+                name.clone(),
+                ArrayInfo {
+                    ptr_name: slot.name,
+                    array_ir_type: array_ir,
+                    elem_ir_type: elem_ir.clone(),
+                    pb_type: arr_pb_type,
+                    dims,
+                    total_elements: total,
+                    indirect_base: true,
                 },
             );
             return Ok(());
@@ -10094,6 +10293,7 @@ impl Compiler {
                                     pb_type: arr_pb_type,
                                     dims,
                                     total_elements: total,
+                                    indirect_base: false,
                                 },
                             );
                             return Ok(());
@@ -10113,6 +10313,7 @@ impl Compiler {
                             pb_type: arr_pb_type,
                             dims,
                             total_elements: total,
+                            indirect_base: false,
                         },
                     );
                     return Ok(());
@@ -10146,6 +10347,7 @@ impl Compiler {
                         pb_type: arr_pb_type,
                         dims,
                         total_elements: total,
+                        indirect_base: false,
                     },
                 );
                 return Ok(());
@@ -10193,6 +10395,7 @@ impl Compiler {
                     pb_type: arr_pb_type,
                     dims,
                     total_elements: total,
+                    indirect_base: false,
                 },
             );
             return Ok(());
@@ -10325,26 +10528,34 @@ impl Compiler {
         // System statement-builtins
         match name.as_str() {
             "SLEEP" => {
-                if !call.args.is_empty() {
-                    let ms = self.compile_expr(fb, &call.args[0])?;
-                    let ms_i32 = self.to_i32(fb, &ms);
-                    if self.module.is_32bit() {
-                        fb.call_void_stdcall("Sleep", &[ms_i32]);
-                    } else {
-                        fb.call_void("Sleep", &[ms_i32]);
-                    }
+                // CHW SLEEP_statement.htm: pauses the current thread for m&
+                // milliseconds; m& = 0 relinquishes the rest of the time
+                // slice. CHW does not document a no-argument form, but the
+                // parser accepts one: realize it as a minimal timeslice yield
+                // (Sleep(0)) so headless runs do not stall, rather than the
+                // previous silent no-op.
+                let ms: Val = if call.args.is_empty() {
+                    fb.const_i32(0)
+                } else {
+                    let msv = self.compile_expr(fb, &call.args[0])?;
+                    self.to_i32(fb, &msv)
+                };
+                if self.module.is_32bit() {
+                    fb.call_void_stdcall("Sleep", &[ms]);
+                } else {
+                    fb.call_void("Sleep", &[ms]);
                 }
                 return Ok(());
             }
             "RANDOMIZE" => {
+                // CHW RANDOMIZE: per-thread PRNG seed. With an arg the stream
+                // is reproducible; bare RANDOMIZE seeds from TIMER.
                 if !call.args.is_empty() {
                     let seed = self.compile_expr(fb, &call.args[0])?;
                     let seed_i32 = self.to_i32(fb, &seed);
-                    fb.call_void("srand", &[seed_i32]);
+                    fb.call_void("pb_randomize", &[seed_i32]);
                 } else {
-                    let null = Val::new("null".to_string(), IrType::Ptr);
-                    let t = fb.call(&IrType::I32, "time", &[null]);
-                    fb.call_void("srand", &[t]);
+                    fb.call_void("pb_randomize_timer", &[]);
                 }
                 return Ok(());
             }
@@ -11418,7 +11629,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let s = self.compile_expr(fb, &call.args[1])?;
                         let s32 = self.to_i32(fb, &s);
                         let e = self.compile_expr(fb, &call.args[2])?;
@@ -11439,7 +11650,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -11663,6 +11874,19 @@ impl Compiler {
                     .event_method_ids
                     .entry(method.clone())
                     .or_insert(next_id);
+                // CHW RAISEEVENT_statement.htm: at most one user argument is
+                // supported by the runtime (pb_raise_event(int, int)). Emit a
+                // compile error rather than silently dropping trailing args.
+                if call.args.len() > 3 {
+                    return Err(pb::error::PbError::parser(
+                        format!(
+                            "RAISEEVENT {}: at most one argument supported on line {}",
+                            method, call.line
+                        ),
+                        None,
+                        call.line,
+                    ));
+                }
                 let arg = if call.args.len() > 2 {
                     let v = self.compile_expr(fb, &call.args[2])?;
                     self.to_i32(fb, &v)
@@ -12841,55 +13065,43 @@ impl Compiler {
                 return Ok(());
             }
             "SHELL" => {
-                // SHELL command$ [, mode&] -> ShellExecuteA(NULL, "open", command, NULL, NULL, mode)
+                // SHELL [HANDLES,] cmd$ [, mode&] [, EXIT TO exitcode&]
+                // CHW SHELL_statement.htm: run SYNCHRONOUSLY (block until the child
+                // exits); optionally capture the child exit code via EXIT TO.
                 if !call.args.is_empty() {
                     let cmd = self.compile_expr(fb, &call.args[0])?;
                     let mode = if call.args.len() > 1 {
                         let sv = self.compile_expr(fb, &call.args[1])?;
                         self.to_i32(fb, &sv)
                     } else {
-                        fb.const_i32(1) // SW_SHOWNORMAL
+                        fb.const_i32(1) // normal with focus (CHW default)
                     };
-                    let null = Val::new("null".to_string(), IrType::Ptr);
-                    let (open_name, _) = self.module.add_string_constant("open");
-                    let open = Val::new(open_name, IrType::Ptr);
-                    if self.module.is_32bit() {
-                        fb.call_stdcall(
-                            &IrType::Ptr,
-                            "ShellExecuteA",
-                            &[
-                                null.clone(),
-                                open.clone(),
-                                cmd.clone(),
-                                null.clone(),
-                                null.clone(),
-                                mode.clone(),
-                            ],
-                        );
+                    // args[2] (when present) is the EXIT TO exitcode& lvalue.
+                    let exit_ptr = if call.args.len() > 2 {
+                        if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
+                            ptr
+                        } else {
+                            fb.const_null_ptr()
+                        }
                     } else {
-                        fb.call(
-                            &IrType::Ptr,
-                            "ShellExecuteA",
-                            &[
-                                null.clone(),
-                                open.clone(),
-                                cmd.clone(),
-                                null.clone(),
-                                null.clone(),
-                                mode,
-                            ],
-                        );
-                    }
+                        fb.const_null_ptr()
+                    };
+                    fb.call_void("pb_shell_sync", &[cmd, mode, exit_ptr]);
                 }
                 return Ok(());
             }
             "REPLACE" => {
-                // REPLACE old$ WITH new$ IN target$  → pb_replace(&target, old, new)
+                // REPLACE [ANY] old$ WITH new$ IN target$
                 if call.args.len() >= 3 {
                     let old = self.compile_expr(fb, &call.args[1])?;
                     let new_s = self.compile_expr(fb, &call.args[2])?;
                     let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, &call.args[0])?;
-                    fb.call_void("pb_replace", &[ptr, old, new_s]);
+                    let any_mode = matches!(call.args.get(3), Some(Expr::IntegerLit(1)));
+                    if any_mode {
+                        fb.call_void("pb_replace_any", &[ptr, old, new_s]);
+                    } else {
+                        fb.call_void("pb_replace", &[ptr, old, new_s]);
+                    }
                 }
                 return Ok(());
             }
@@ -13094,7 +13306,7 @@ impl Compiler {
                 if let Some(Expr::Variable(vname)) = call.args.first() {
                     let arr_name = normalize_name(vname);
                     if let Some(arr_info) = self.symbols.lookup_array(&arr_name).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -13512,7 +13724,7 @@ impl Compiler {
                         let an = normalize_name(arr_name);
                         if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                             (
-                                Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+                                self.array_base(fb, &arr_info),
                                 arr_info.total_elements as i64,
                             )
                         } else {
@@ -14465,19 +14677,19 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let lo = fb.call(&IrType::I64, "pb_scrollbar_get_lo", &[h, id]);
+                    // Resolve h/id once: do not re-evaluate handle/id expressions
+                    // (which may carry side effects) across the lo/hi queries.
+                    // LLVM SSA values are reusable as call operands.
+                    let lo = fb.call(
+                        &IrType::I64,
+                        "pb_scrollbar_get_lo",
+                        &[h.clone(), id.clone()],
+                    );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
                         let cv = self.convert_value(fb, &lo, &ty, &pty);
                         fb.store(&cv, &ptr);
                     }
-                    // fb.call consumes its operands, so the two simple
-                    // handle/id operands are re-evaluated for the second query.
-                    let mut h2 = self.compile_expr(fb, &call.args[0])?;
-                    if h2.ty != IrType::Ptr {
-                        h2 = fb.inttoptr(&h2);
-                    }
-                    let id2 = self.compile_expr(fb, &call.args[1])?;
-                    let hi = fb.call(&IrType::I64, "pb_scrollbar_get_hi", &[h2, id2]);
+                    let hi = fb.call(&IrType::I64, "pb_scrollbar_get_hi", &[h, id]);
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[3]) {
                         let cv = self.convert_value(fb, &hi, &ty, &pty);
                         fb.store(&cv, &ptr);
@@ -17670,6 +17882,18 @@ impl Compiler {
                 // batch 238: HelloDDT (C:\PBWin10\samples\DDT) - the modal
                 // result set by DIALOG END is written back to the target
                 // variable via pb_show_modal_to (returns pb_modal_result).
+                // CHW error_491: the TO target may not be an explicit REGISTER var.
+                if let Some(Expr::Variable(tname)) = call.args.get(1) {
+                    let tn = normalize_name(tname);
+                    if self.register_vars.contains(&tn) {
+                        return Err(pb::error::PbError::parser(
+                            "Error 491: Invalid register variable (DIALOG SHOW MODAL TO register variable)"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hd_ptr = if hd.ty != IrType::Ptr {
@@ -18886,7 +19110,7 @@ impl Compiler {
                         let an = normalize_name(arr_name);
                         if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                             (
-                                Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+                                self.array_base(fb, &arr_info),
                                 arr_info.total_elements as i64,
                             )
                         } else {
@@ -19304,7 +19528,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -19348,7 +19572,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let name = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let (elem_size, sort_type) = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => (1, 0),
                             IrType::I16 => (2, 0),
@@ -19525,10 +19749,21 @@ impl Compiler {
                             fb.call_void(fnn, &[ptr, value, len_const]);
                         }
                     } else {
-                        // Dynamic BSTR target: ABS/USING have no pre-existing
-                        // content to preserve; use the plain space-padded form.
-                        let fnn = if is_l { "pb_lset" } else { "pb_rset" };
-                        fb.call_void(fnn, &[ptr, value, len_const]);
+                        // Dynamic BSTR target (CHW RSET_statement.htm example:
+                        // a$ = SPACE$(20): RSET a$ = "Right-align" -> width is
+                        // LEN(a$)=20, not a hard-coded 256). For RSET, route
+                        // to pb_rset_dynamic which reads the current BSTR
+                        // length and honors USING pad. LSET dynamic is left
+                        // on the existing pb_lset (out of R2 scope).
+                        if is_l {
+                            fb.call_void("pb_lset", &[ptr, value, len_const]);
+                        } else {
+                            let pad_arg = match &pad_val {
+                                Some(p) => p.clone(),
+                                None => fb.const_null_ptr(),
+                            };
+                            fb.call_void("pb_rset_dynamic", &[ptr, value, pad_arg]);
+                        }
                     }
                 }
                 return Ok(());
@@ -19552,7 +19787,39 @@ impl Compiler {
                 return Ok(());
             }
             "RESET" => {
-                fb.call_void("pb_reset", &[]);
+                // CHW RESET_statement.htm: set the named scalar / array element /
+                // whole array to zero or null/empty. Do NOT close files (the old
+                // GW-BASIC semantics was conflated into pb_reset; PowerBASIC
+                // closes files via CLOSE, not RESET).
+                for arg in &call.args {
+                    // Whole-array form: RESET arr() (empty subscripts).
+                    if let Some(name) = self.array_ref_name(arg) {
+                        if let Some(arr_info) = self.symbols.lookup_array(&name) {
+                            let base = self.array_base(fb, arr_info);
+                            fb.store(
+                                &Val::new("zeroinitializer", arr_info.array_ir_type.clone()),
+                                &base,
+                            );
+                            continue;
+                        }
+                    }
+                    if let Some((ptr, ir, pb)) = self.lvalue_ptr(fb, arg) {
+                        match pb {
+                            PbType::String => {
+                                // dynamic BSTR: assign empty (frees old, avoids leak)
+                                let (e, _) = self.module.add_string_constant("");
+                                fb.call_void(
+                                    "pb_str_assign_copy",
+                                    &[ptr, Val::new(e, IrType::Ptr), fb.const_i32(0)],
+                                );
+                            }
+                            _ => {
+                                // numeric / fixed-string / UDT / Variant: zero-fill
+                                fb.store(&Val::new("zeroinitializer", ir), &ptr);
+                            }
+                        }
+                    }
+                }
                 return Ok(());
             }
             "PLAY WAVE" => {
@@ -19581,16 +19848,41 @@ impl Compiler {
                 return Ok(());
             }
             "SWAP" => {
-                // SWAP var1, var2 — exchange two variables of the same type
-                if call.args.len() == 2 {
-                    if let (Some((ptr1, ty1, _)), Some((ptr2, ty2, _))) = (
-                        self.lvalue_ptr(fb, &call.args[0]),
-                        self.lvalue_ptr(fb, &call.args[1]),
-                    ) {
+                // SWAP var1, var2 — exchange two variables of the SAME type
+                // (CHW SWAP_statement.htm: "If you try to swap variables of
+                // differing types ... a compile-time Error 482 occurs ('Data
+                // type mismatch')").  Wrong arity / non-lvalue operands are a
+                // parse error, not a silent no-op.
+                if call.args.len() != 2 {
+                    return Err(PbError::parser(
+                        "Error 482: Data type mismatch (SWAP requires two variables)",
+                        None,
+                        self.current_line,
+                    ));
+                }
+                match (
+                    self.lvalue_ptr(fb, &call.args[0]),
+                    self.lvalue_ptr(fb, &call.args[1]),
+                ) {
+                    (Some((ptr1, ty1, _)), Some((ptr2, ty2, _))) => {
+                        if ty1 != ty2 {
+                            return Err(PbError::parser(
+                                "Error 482: Data type mismatch",
+                                None,
+                                self.current_line,
+                            ));
+                        }
                         let v1 = fb.load(&ty1, &ptr1);
                         let v2 = fb.load(&ty2, &ptr2);
                         fb.store(&v2, &ptr1);
                         fb.store(&v1, &ptr2);
+                    }
+                    _ => {
+                        return Err(PbError::parser(
+                            "Error 482: Data type mismatch (SWAP requires two variables)",
+                            None,
+                            self.current_line,
+                        ));
                     }
                 }
                 return Ok(());
@@ -19609,15 +19901,54 @@ impl Compiler {
                                 fb.call(&IrType::I64, "pb_shift_left", &[v, n])
                             }
                             "SHIFT RIGHT" => {
+                                // S1: width-aware right shift. The SIGNED option
+                                // preserves the sign bit of ivar's DECLARED width
+                                // (CHW SHIFT_statement.htm: BYTE 0xDD SIGNED RIGHT 1
+                                // = 0xEE = 238).  Pass width so the runtime sign-
+                                // extends from the declared width before the arithmetic
+                                // shift; the logical case is masked to the width.
+                                let width = match &ty {
+                                    IrType::I8 | IrType::I1 => 8i32,
+                                    IrType::I16 => 16i32,
+                                    IrType::I32 | IrType::Float => 32i32,
+                                    _ => 64i32,
+                                };
+                                let w = fb.const_i32(width);
                                 let keep = fb.const_i32(0);
-                                fb.call(&IrType::I64, "pb_shift_right", &[v, n, keep])
+                                fb.call(&IrType::I64, "pb_shift_right_w", &[v, n, w, keep])
                             }
                             "SHIFT SIGNED RIGHT" => {
+                                let width = match &ty {
+                                    IrType::I8 | IrType::I1 => 8i32,
+                                    IrType::I16 => 16i32,
+                                    IrType::I32 | IrType::Float => 32i32,
+                                    _ => 64i32,
+                                };
+                                let w = fb.const_i32(width);
                                 let keep = fb.const_i32(1);
-                                fb.call(&IrType::I64, "pb_shift_right", &[v, n, keep])
+                                fb.call(&IrType::I64, "pb_shift_right_w", &[v, n, w, keep])
                             }
-                            "ROTATE LEFT" => fb.call(&IrType::I64, "pb_rotate_left", &[v, n]),
-                            _ => fb.call(&IrType::I64, "pb_rotate_right", &[v, n]),
+                            "ROTATE LEFT" | "ROTATE RIGHT" => {
+                                // R2: width-aware rotate. CHW ROTATE_statement.htm:
+                                // ivar may be Byte(8)/Word,Integer(16)/Dword,Long(32)/
+                                // Quad(64). The old path widened to i64 and rotated
+                                // across all 64 bits, so the wrap bit was dropped on
+                                // narrow types (BYTE 221 ROR 1 gave 110 instead of
+                                // the documented 238).
+                                let width = match &ty {
+                                    IrType::I8 | IrType::I1 => 8i32,
+                                    IrType::I16 => 16i32,
+                                    IrType::I32 | IrType::Float => 32i32,
+                                    _ => 64i32,
+                                };
+                                let w = fb.const_i32(width);
+                                if name.as_str() == "ROTATE LEFT" {
+                                    fb.call(&IrType::I64, "pb_rotate_left_w", &[v, n, w])
+                                } else {
+                                    fb.call(&IrType::I64, "pb_rotate_right_w", &[v, n, w])
+                                }
+                            }
+                            _ => fb.call(&IrType::I64, "pb_shift_left", &[v, n]),
                         };
                         let back = self.convert_value(fb, &res, &ty, &pb_ty);
                         fb.store(&back, &ptr);
@@ -19636,7 +19967,7 @@ impl Compiler {
                     if let Some(an) = arr_name {
                         let name = normalize_name(an);
                         if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
-                            let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                            let base = self.array_base(fb, &arr_info);
                             let elem_size = match &arr_info.elem_ir_type {
                                 IrType::I8 | IrType::I1 => 1,
                                 IrType::I16 => 2,
@@ -20047,15 +20378,23 @@ impl Compiler {
             }
             "SPLIT" => {
                 // SPLIT [WORD] MainStr, Part1Len TO Part1Var, Part2Var
-                if call.args.len() == 4 {
+                // The parser appends a trailing WORD flag (1 = adjust Part1 to
+                // a word boundary, CHW SPLIT_statement.htm).
+                if call.args.len() == 4 || call.args.len() == 5 {
                     let src = self.compile_expr(fb, &call.args[0])?;
                     let len_v = self.compile_expr(fb, &call.args[1])?;
                     let n = self.to_i32(fb, &len_v);
+                    let word = if call.args.len() == 5 {
+                        let wv = self.compile_expr(fb, &call.args[4])?;
+                        self.to_i32(fb, &wv)
+                    } else {
+                        fb.const_i32(0)
+                    };
                     if let (Some((p1, _, _)), Some((p2, _, _))) = (
                         self.lvalue_ptr(fb, &call.args[2]),
                         self.lvalue_ptr(fb, &call.args[3]),
                     ) {
-                        fb.call_void("pb_split", &[src, n, p1, p2]);
+                        fb.call_void("pb_split", &[src, n, p1, p2, word]);
                     }
                 }
                 return Ok(());
@@ -20071,7 +20410,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -20131,7 +20470,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, _)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -20323,7 +20662,7 @@ impl Compiler {
                 if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                        let base = self.array_base(fb, &arr_info);
                         let elem_size = match &arr_info.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -20390,7 +20729,7 @@ impl Compiler {
                     if let Some(an) = arr_name {
                         let name = normalize_name(an);
                         if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
-                            let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                            let base = self.array_base(fb, &arr_info);
                             let elem_size = match &arr_info.elem_ir_type {
                                 IrType::I8 | IrType::I1 => 1,
                                 IrType::I16 => 2,
@@ -21760,7 +22099,60 @@ impl Compiler {
         fb: &mut FunctionBuilder,
         select: &SelectCaseStmt,
     ) -> PbResult<()> {
-        let test_val = self.compile_expr(fb, &select.expr)?;
+        // CHW SELECT_CASE_END_SELECT_block.htm: honor the AS LONG/CONST/CONST$/
+        // CONST$$ modifiers.  AS CONST requires every case value to be a plain
+        // numeric literal in Long range (no operators/ranges); the jump table is
+        // limited to ~3200 entries (Error 402 when exceeded).  AS CONST$/CONST$$
+        // requires string literal cases.
+        match select.modifier {
+            SelectModifier::Const => {
+                let mut total: usize = 0;
+                for case in &select.cases {
+                    for p in &case.patterns {
+                        match p {
+                            CasePattern::Value(Expr::IntegerLit(n)) => {
+                                if *n < -2147483648i64 || *n > 2147483647i64 {
+                                    return Err(PbError::runtime(
+                                        "SELECT CASE AS CONST: case value is outside the Long-integer range",
+                                    ));
+                                }
+                                total += 1;
+                            }
+                            _ => {
+                                return Err(PbError::runtime(
+                                    "SELECT CASE AS CONST: each case value must be a numeric literal; operators and ranges are not allowed",
+                                ));
+                            }
+                        }
+                    }
+                }
+                if total > 3200 {
+                    return Err(PbError::runtime(
+                        "Error 402: SELECT CASE AS CONST jump table exceeds ~3200 entries",
+                    ));
+                }
+            }
+            SelectModifier::ConstDollar | SelectModifier::ConstDollarDollar => {
+                for case in &select.cases {
+                    for p in &case.patterns {
+                        match p {
+                            CasePattern::Value(Expr::StringLit(_)) => {}
+                            _ => {
+                                return Err(PbError::runtime(
+                                    "SELECT CASE AS CONST$/CONST$$: each case value must be a string literal",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut test_val = self.compile_expr(fb, &select.expr)?;
+        // AS LONG: force the controlling expression into the Long-integer range.
+        if select.modifier == SelectModifier::Long {
+            test_val = self.to_i32(fb, &test_val);
+        }
         let merge_label = fb.next_label("select.merge");
 
         let else_label = if !select.else_body.is_empty() {
@@ -22476,7 +22868,7 @@ impl Compiler {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
                     }
                     let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                    let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                    let base = self.array_base(fb, &arr_info);
                     let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                     let current = fb.load(&arr_info.elem_ir_type, &elem_ptr);
                     let cur_i32 = self.to_i32(fb, &current);
@@ -23073,8 +23465,13 @@ impl Compiler {
         // label terminate on `br label %gosub.bad` and must match this.
         let bad_label = "gosub.bad".to_string();
 
-        // Emit the dispatch block
-        fb.br("gosub.dispatch");
+        // Emit the dispatch block. If the current block already terminated
+        // (e.g. EXIT FUNCTION after RETURN FLUSH fall-through), do not emit a
+        // br after the terminator; the dispatch block is reached via br from
+        // RETURN statements.
+        if !fb.is_terminated() {
+            fb.br("gosub.dispatch");
+        }
         fb.label("gosub.dispatch");
         let ret_addr = fb.load(&IrType::I32, &ctx.ret_addr_ptr);
         fb.switch(&ret_addr, &bad_label, &cases);
@@ -23308,6 +23705,10 @@ impl Compiler {
                         // Bare RND (no parens) is the PB random function
                         return self.builtin_rnd(fb, &[]);
                     }
+                    "TIMER" => {
+                        // Bare TIMER (no parens): seconds since midnight.
+                        return Ok(fb.call(&IrType::Double, "pb_timer", &[]));
+                    }
                     "TIX" => {
                         // TIX — high-resolution performance counter (QUAD)
                         return Ok(fb.call(&IrType::I64, "pb_tix", &[]));
@@ -23397,6 +23798,13 @@ impl Compiler {
                 if raw_upper == "CHR$$" {
                     return self.builtin_chr_wide(fb, args);
                 }
+                // STRING$$(Count&, Character%) — the WIDE (UTF-16) variant
+                // (CHW STRING$/STRING$$ function.htm): normalize_name would
+                // collapse it onto the ANSI STRING$ arm, which truncates the
+                // character code to i8.  Intercept the raw spelling.
+                if raw_upper == "STRING$$" {
+                    return self.builtin_string_wide(fb, args);
+                }
                 // BITS$(STRING, s$) copies string contents without conversion
                 // (CHW BITS$_function.htm).  normalize_name strips the trailing
                 // $, so the original spelling is checked here to keep BITS and
@@ -23435,13 +23843,20 @@ impl Compiler {
                     };
                     return Ok(fb.call(&IrType::Ptr, "pb_objresult_str", &[hr]));
                 }
+                // SWITCH$ returns a string; bare SWITCH / SWITCH& return a
+                // number. normalize_name strips the trailing $, so the raw
+                // spelling decides the result type (CHW SWITCH_function.htm),
+                // and the value expressions are lowered lazily inside a CFG.
+                if raw_upper == "SWITCH$" {
+                    return self.builtin_switch(fb, args, true);
+                }
                 if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                     let mut compiled_indices = Vec::new();
                     for idx in args {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
                     }
                     let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                    let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                    let base = self.array_base(fb, &arr_info);
                     let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                     let val = fb.load(&arr_info.elem_ir_type, &elem_ptr);
                     // Null-guard string array elements (zeroinitializer → null pointers)
@@ -23588,7 +24003,7 @@ impl Compiler {
                         compiled_indices.push(self.compile_expr(fb, idx)?);
                     }
                     let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                    let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                    let base = self.array_base(fb, &arr_info);
                     let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                     let val = fb.load(&arr_info.elem_ir_type, &elem_ptr);
                     // Null-guard string array elements (zeroinitializer → null pointers)
@@ -23718,6 +24133,7 @@ impl Compiler {
                                 pb_type: PbType::Long,
                                 dims,
                                 total_elements: n,
+                                indirect_base: false,
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -23905,6 +24321,15 @@ impl Compiler {
                 // VARPTR(var) or VARPTR(arr(idx)): materialize at the target's
                 // native pointer width. A hard-coded i64 on i686 is pushed as
                 // 8 bytes, shifting the frame and crashing the callee.
+                // CHW error_491: VARPTR cannot be used on a register variable.
+                if let Expr::Variable(vn) = &**inner {
+                    if self.register_vars.contains(&normalize_name(vn)) {
+                        return Err(PbError::generic(format!(
+                            "Error 491: VARPTR cannot be used on a register variable ({})",
+                            vn
+                        )));
+                    }
+                }
                 let (ptr, _pb_type) = self.compile_lvalue_ptr(fb, inner)?;
                 Ok(fb.ptrtoint_native(&ptr, self.module.is_32bit()))
             }
@@ -24642,7 +25067,7 @@ impl Compiler {
                 let len = fb.const_i32(name.len() as i32);
                 Some(Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[sv, len])))
             }
-            "SWITCH" | "SWITCH$" => Some(self.builtin_switch(fb, args, name)),
+            "SWITCH" => Some(self.builtin_switch(fb, args, false)),
             "HI" | "LO" => Some(self.builtin_hilo(fb, args, name)),
             "FILEATTR" => Some(self.builtin_fileattr(fb, args)),
             "FILENAME" => Some(self.builtin_filename(fb, args)),
@@ -24654,6 +25079,62 @@ impl Compiler {
             "REMOVE" => Some(self.builtin_remove(fb, args)),
             "RETAIN" => Some(self.builtin_retain(fb, args)),
             "REMAIN" => Some(self.builtin_remain(fb, args)),
+            // R2 RESOURCE$ (CHW RESOURCE$_function.htm):
+            //   s$ = RESOURCE$(RCDATA, id)  /  s$$ = RESOURCE$(STRING, id%)
+            // The first arg is the resource class keyword. The second arg is
+            // the resource id, which may be either a numeric literal/variable
+            // (e.g. 999) or a string expression (e.g. "MYBLOB"). The two forms
+            // must NOT share a const char* signature: passing an integer id as
+            // a pointer crashes (0xC0000005). Route numeric args to
+            // pb_resource_str_num; string args to pb_resource_str.
+            "RESOURCE" => {
+                if args.len() >= 2 {
+                    Some((|| -> PbResult<Val> {
+                        let class_val: Val = match &args[0] {
+                            Expr::Variable(n) => {
+                                let up = n.to_uppercase();
+                                let lit = if up == "STRING" { "STRING" } else { "RCDATA" };
+                                let (sym, _) = self.module.add_string_constant(lit);
+                                Val::new(sym, IrType::Ptr)
+                            }
+                            other => self.compile_expr(fb, other)?,
+                        };
+                        // Decide numeric vs string id form. CHW: the id is
+                        // either a numeric value (literal/variable/expression)
+                        // or a quoted string label. Only StringLit /
+                        // WideStringLit / string-typed variables take the
+                        // const char* path; everything else is numeric.
+                        let is_string_id = match &args[1] {
+                            Expr::StringLit(_) | Expr::WideStringLit(_) => true,
+                            Expr::Variable(name) => {
+                                let un = normalize_name(name);
+                                match self.symbols.lookup(&un) {
+                                    Some(info) => {
+                                        matches!(
+                                            info.pb_type,
+                                            PbType::String
+                                                | PbType::WString
+                                                | PbType::FixedString(_)
+                                        )
+                                    }
+                                    None => false,
+                                }
+                            }
+                            _ => false,
+                        };
+                        if is_string_id {
+                            let id_val = self.compile_expr(fb, &args[1])?;
+                            Ok(fb.call(&IrType::Ptr, "pb_resource_str", &[class_val, id_val]))
+                        } else {
+                            let id_val = self.compile_expr(fb, &args[1])?;
+                            let id_i32 = self.to_i32(fb, &id_val);
+                            Ok(fb.call(&IrType::Ptr, "pb_resource_str_num", &[class_val, id_i32]))
+                        }
+                    })())
+                } else {
+                    None
+                }
+            }
             "MCASE" => {
                 // MCASE$(s$[, ANSI|OEM]) — capitalize first letter of each word
                 let s = self.compile_expr(fb, &args[0]);
@@ -24866,8 +25347,8 @@ impl Compiler {
             }
             // System builtins
             "TIMER" => {
-                let null = Val::new("null".to_string(), IrType::Ptr);
-                Some(Ok(fb.call(&IrType::I32, "time", &[null])))
+                // CHW TIMER_function.htm: seconds since midnight (0..86400).
+                Some(Ok(fb.call(&IrType::Double, "pb_timer", &[])))
             }
             "COMMAND" => {
                 // COMMAND$( [ArgNum] ) — CHW: ArgNum 0/absent = the full
@@ -25156,59 +25637,88 @@ impl Compiler {
                 Some(Ok(fb.call(&IrType::Ptr, "pb_callstk_get", &[n_i64])))
             }
             "SIZEOF" => {
-                // SIZEOF(var) → return size in bytes
-                // For ASCIIZ*N / FixedString(N): returns N
-                // For TYPE variables: returns struct size
-                // For scalar types: returns type size
+                // SIZEOF(target) -> physical length in bytes (CHW SIZEOF_function.htm).
+                // - UDT sizes include alignment/tail padding (CHW: "the measured
+                //   length includes any padding that was added to the structure").
+                // - SIZEOF(udtvar.member) returns the member's true size, without
+                //   padding or alignment.
+                // - pointer / dynamic-string-handle size reflects the target width
+                //   (4 on i386, 8 on x64); CHW's "4" is the 32-bit-era statement.
+                let ptrw = if self.module.is_32bit() { 4i32 } else { 8i32 };
+                let mut size: i32 = 0;
                 if let Some(arg) = args.first() {
-                    let size = match arg {
+                    match arg {
                         Expr::Variable(vname) => {
                             let norm = normalize_name(vname);
                             if let Some(info) = self.symbols.lookup(&norm) {
                                 match &info.pb_type {
-                                    PbType::FixedString(n) => *n as i32,
-                                    PbType::Long | PbType::Dword | PbType::Single => 4,
-                                    PbType::Integer | PbType::Word => 2,
-                                    PbType::Byte => 1,
-                                    PbType::Double | PbType::Ext | PbType::Cur | PbType::Quad => 8,
-                                    PbType::String => 4, // pointer size (32-bit)
+                                    PbType::FixedString(n) => size = *n as i32,
+                                    PbType::Byte => size = 1,
+                                    PbType::Word | PbType::Integer => size = 2,
+                                    PbType::Long | PbType::Dword | PbType::Single => size = 4,
+                                    PbType::Double | PbType::Ext | PbType::Cur | PbType::Quad => {
+                                        size = 8
+                                    }
+                                    PbType::String | PbType::WString => size = ptrw,
+                                    PbType::Pointer(_) | PbType::Interface(_) => size = ptrw,
                                     PbType::UserDefined(tn) => {
                                         let tn = normalize_name(tn);
-                                        self.type_layouts
+                                        size = self
+                                            .type_layouts
                                             .get(&tn)
-                                            .map(|l| {
-                                                l.fields
-                                                    .iter()
-                                                    .map(|f| match &f.pb_type {
-                                                        PbType::Long
-                                                        | PbType::Dword
-                                                        | PbType::Single
-                                                        | PbType::String => 4,
-                                                        PbType::Integer | PbType::Word => 2,
-                                                        PbType::Byte => 1,
-                                                        PbType::Double
-                                                        | PbType::Ext
-                                                        | PbType::Cur
-                                                        | PbType::Quad => 8,
-                                                        PbType::FixedString(n) => *n as i32,
-                                                        _ => 4,
-                                                    })
-                                                    .sum::<i32>()
-                                            })
-                                            .unwrap_or(0)
+                                            .map(|l| l.size as i32)
+                                            .unwrap_or(0);
                                     }
-                                    _ => 4,
+                                    PbType::Field => size = 16,
+                                    _ => size = ptrw,
                                 }
-                            } else {
-                                0
                             }
                         }
-                        _ => 0,
-                    };
-                    Some(Ok(fb.const_i32(size)))
-                } else {
-                    Some(Ok(fb.const_i32(0)))
+                        Expr::TypeMember(base, member) => {
+                            // SIZEOF(udtvar.member): true member size, no padding.
+                            if let Expr::Variable(vname) = base.as_ref() {
+                                let norm = normalize_name(vname);
+                                if let Some(info) = self.symbols.lookup(&norm) {
+                                    if let PbType::UserDefined(tn) = &info.pb_type {
+                                        let tn = normalize_name(tn);
+                                        if let Some(layout) = self.type_layouts.get(&tn) {
+                                            if let Some(idx) = layout.field_map.get(member) {
+                                                match &layout.fields[*idx].pb_type {
+                                                    PbType::FixedString(n) => size = *n as i32,
+                                                    PbType::Byte => size = 1,
+                                                    PbType::Word | PbType::Integer => size = 2,
+                                                    PbType::Long
+                                                    | PbType::Dword
+                                                    | PbType::Single => size = 4,
+                                                    PbType::Double
+                                                    | PbType::Ext
+                                                    | PbType::Cur
+                                                    | PbType::Quad => size = 8,
+                                                    PbType::String | PbType::WString => size = ptrw,
+                                                    PbType::Pointer(_) | PbType::Interface(_) => {
+                                                        size = ptrw
+                                                    }
+                                                    PbType::UserDefined(tn2) => {
+                                                        let tn2 = normalize_name(tn2);
+                                                        size = self
+                                                            .type_layouts
+                                                            .get(&tn2)
+                                                            .map(|l| l.size as i32)
+                                                            .unwrap_or(0);
+                                                    }
+                                                    PbType::Field => size = 16,
+                                                    _ => size = ptrw,
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                 }
+                Some(Ok(fb.const_i32(size)))
             }
             "ENVIRON" => {
                 let var_name = self.compile_expr(fb, &args[0]);
@@ -25220,8 +25730,25 @@ impl Compiler {
                 Some(Ok(fb.call(&IrType::Ptr, "pb_exe_path", &[])))
             }
             "STRPTR" => {
-                // STRPTR(s$) → returns pointer to string data as integer, at
+                // STRPTR(s$) -> returns pointer to string data as integer, at
                 // the target's native pointer width (i32 on i686, i64 on x64).
+                // CHW STRPTR_function.htm: "STRPTR may not be used with
+                // fixed-length or nul-terminated strings, because they do not
+                // use string handles. Use VARPTR with fixed-length and
+                // nul-terminated strings." The fork models ASCIIZ*N as
+                // PbType::FixedString, so reject those variables here.
+                if let Expr::Variable(orig) = &args[0] {
+                    let vname = normalize_name(orig);
+                    if let Some(info) = self.symbols.lookup(&vname) {
+                        if matches!(info.pb_type, PbType::FixedString(_)) {
+                            return Some(Err(PbError::parser(
+                                "STRPTR may not be used with fixed-length or ASCIIZ strings; use VARPTR",
+                                None,
+                                self.current_line,
+                            )));
+                        }
+                    }
+                }
                 let s = self.compile_expr(fb, &args[0]);
                 Some(s.map(|s| {
                     // The string value IS the pointer to char data
@@ -25233,6 +25760,13 @@ impl Compiler {
                 match &args[0] {
                     Expr::Variable(orig_name) => {
                         let vname = normalize_name(orig_name);
+                        // CHW error_491: VARPTR cannot be used on a register variable.
+                        if self.register_vars.contains(&vname) {
+                            return Some(Err(PbError::generic(format!(
+                                "Error 491: VARPTR cannot be used on a register variable ({})",
+                                orig_name
+                            ))));
+                        }
                         let ptr_name = match self.ensure_variable_ptr(fb, &vname, orig_name) {
                             Ok(p) => p,
                             Err(e) => return Some(Err(e)),
@@ -25252,7 +25786,7 @@ impl Compiler {
                             }
                             let flat_idx =
                                 self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                            let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                            let base = self.array_base(fb, &arr_info);
                             let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                             Some(Ok(fb.ptrtoint_native(&elem_ptr, self.module.is_32bit())))
                         } else {
@@ -25426,7 +25960,15 @@ impl Compiler {
                 let v = self.compile_expr(fb, &args[0]);
                 Some(v.map(|val| {
                     let f = self.to_i32(fb, &val);
-                    let fn_name = if name == "LOF" { "pb_lof" } else { "pb_loc" };
+                    // S1: SEEK(f) is its own CHW function (next I/O position,
+                    // 1-based byte/record), distinct from legacy LOC(f) (which on
+                    // sequential files reports ftell/128).  Previously both names
+                    // routed to pb_loc.
+                    let fn_name = match name {
+                        "LOF" => "pb_lof",
+                        "SEEK" => "pb_seek_pos",
+                        _ => "pb_loc",
+                    };
                     fb.call(&IrType::I64, fn_name, &[f])
                 }))
             }
@@ -25667,7 +26209,7 @@ impl Compiler {
                     compiled_indices.push(self.compile_expr(fb, idx).ok()?);
                 }
                 let flat_idx = self.compute_flat_index(fb, &compiled_indices, &arr_info);
-                let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                let base = self.array_base(fb, &arr_info);
                 let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &base, &flat_idx);
                 Some((
                     elem_ptr,
@@ -26821,7 +27363,7 @@ impl Compiler {
             .lookup_array(&arr_name)
             .cloned()
             .ok_or_else(|| PbError::runtime("JOIN$: unknown array"))?;
-        let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+        let base = self.array_base(fb, &arr_info);
         let count = fb.const_i64(arr_info.total_elements as i64);
         let delim = self.compile_expr(fb, &args[1])?;
         let delim_ptr = self.convert_value(fb, &delim, &IrType::Ptr, &PbType::String);
@@ -26890,41 +27432,64 @@ impl Compiler {
         &mut self,
         fb: &mut FunctionBuilder,
         args: &[Expr],
-        _name: &str,
+        is_str: bool,
     ) -> PbResult<Val> {
         if args.is_empty() || !args.len().is_multiple_of(2) {
             return Err(PbError::runtime(
                 "SWITCH: expected pairs of (condition, value)",
             ));
         }
-        // String vs numeric variant is decided by the first value's IR type
-        // (the lexer may or may not keep the trailing $ in the builtin name).
-        let is_str = self.compile_expr(fb, &args[1])?.ty == IrType::Ptr;
-        let mut conds = Vec::new();
-        let mut vals = Vec::new();
-        for pair in args.chunks(2) {
-            let c = self.compile_expr(fb, &pair[0])?;
+        // CHW SWITCH_function.htm Restriction: "only the chosen value ... is
+        // evaluated at run-time; the other value parameters are not", and the
+        // control expressions are short-circuited left-to-right.  Lower to a
+        // real CFG: each condition block condbrs to its value block when TRUE
+        // and to the next test block when FALSE; only the selected value block
+        // stores into the result slot.  No-match yields 0 (numeric) or the
+        // empty string (SWITCH$).
+        let rty = if is_str { IrType::Ptr } else { IrType::I64 };
+        let r_ptr = fb.alloca(&rty);
+        let default_val = if is_str {
+            let (s, _) = self.module.add_string_constant("");
+            Val::new(s, IrType::Ptr)
+        } else {
+            fb.const_i64(0)
+        };
+        let merge = fb.next_label("sw_merge");
+        let def_lbl = fb.next_label("sw_default");
+        let n = args.len() / 2;
+        for i in 0..n {
+            let cond_expr = &args[i * 2];
+            let val_expr = &args[i * 2 + 1];
+            let val_lbl = fb.next_label("sw_val");
+            let next_lbl = if i + 1 == n {
+                def_lbl.clone()
+            } else {
+                fb.next_label("sw_next")
+            };
+            // Evaluate THIS condition (short-circuit: later conditions only
+            // run when every earlier one was FALSE).
+            let c = self.compile_expr(fb, cond_expr)?;
             let c1 = self.convert_value(fb, &c, &IrType::I64, &PbType::Long);
             let cond = fb.icmp("ne", &c1, &fb.const_i64(0));
-            let v = self.compile_expr(fb, &pair[1])?;
+            fb.condbr(&cond, &val_lbl, &next_lbl);
+            // Value block: only reached when this condition is TRUE, so the
+            // unchosen value expressions never execute.
+            fb.label(&val_lbl);
+            let v = self.compile_expr(fb, val_expr)?;
             let vv = if is_str {
                 self.convert_value(fb, &v, &IrType::Ptr, &PbType::String)
             } else {
                 self.convert_value(fb, &v, &IrType::I64, &PbType::Long)
             };
-            conds.push(cond);
-            vals.push(vv);
+            fb.store(&vv, &r_ptr);
+            fb.br(&merge);
+            fb.label(&next_lbl);
         }
-        let default = if is_str {
-            fb.const_null_ptr()
-        } else {
-            fb.const_i64(0)
-        };
-        let mut acc = default;
-        for (cond, val) in conds.iter().zip(vals.iter()).rev() {
-            acc = fb.select(cond, val, &acc);
-        }
-        Ok(acc)
+        // Default block: no condition was TRUE.
+        fb.store(&default_val, &r_ptr);
+        fb.br(&merge);
+        fb.label(&merge);
+        Ok(fb.load(&rty, &r_ptr))
     }
 
     fn builtin_hilo(
@@ -27157,30 +27722,31 @@ impl Compiler {
     }
 
     fn builtin_rnd(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // All forms draw from the shared per-thread PRNG (pb_rnd_value), so
+        // RANDOMIZE n drives the whole RND family reproducibly.
         if args.is_empty() {
-            // RND() → random double 0.0 to <1.0
-            let raw = fb.call(&IrType::I32, "rand", &[]);
-            let raw_f64 = fb.sitofp(&raw, &IrType::Double);
-            let max_val = fb.const_f64(32768.0);
-            Ok(fb.fdiv(&raw_f64, &max_val))
+            // RND() -> random double in [0.0, 1.0)
+            Ok(fb.call(&IrType::Double, "pb_rnd_value", &[]))
         } else if args.len() == 1 {
-            // RND(n) → random int 0 to n-1
+            // RND(n) CHW: n>0 next float; n==0 repeat last; n<0 reseed then
+            // next. The old "random int in [0,n)" is not CHW.
             let n = self.compile_expr(fb, &args[0])?;
-            let n_i32 = self.to_i32(fb, &n);
-            let raw = fb.call(&IrType::I32, "rand", &[]);
-            Ok(fb.srem(&raw, &n_i32))
+            let n_f64 = self.to_f64(fb, &n);
+            Ok(fb.call(&IrType::Double, "pb_rnd_1arg", &[n_f64]))
         } else {
-            // RND(lo, hi) → random int lo to hi inclusive
+            // RND(lo, hi) -> random integer lo..hi inclusive
             let lo = self.compile_expr(fb, &args[0])?;
             let hi = self.compile_expr(fb, &args[1])?;
+            let lo_f64 = self.to_f64(fb, &lo);
+            let hi_f64 = self.to_f64(fb, &hi);
+            let r = fb.call(&IrType::Double, "pb_rnd_value", &[]);
+            let range = fb.fsub(&hi_f64, &lo_f64);
+            let one = fb.const_f64(1.0);
+            let range_plus = fb.fadd(&range, &one);
+            let prod = fb.fmul(&r, &range_plus);
+            let off = fb.fptosi(&prod, &IrType::I32);
             let lo_i32 = self.to_i32(fb, &lo);
-            let hi_i32 = self.to_i32(fb, &hi);
-            let raw = fb.call(&IrType::I32, "rand", &[]);
-            let range = fb.sub(&hi_i32, &lo_i32);
-            let one = fb.const_i32(1);
-            let range_plus = fb.add(&range, &one);
-            let modded = fb.srem(&raw, &range_plus);
-            Ok(fb.add(&lo_i32, &modded))
+            Ok(fb.add(&lo_i32, &off))
         }
     }
 
@@ -27188,17 +27754,20 @@ impl Compiler {
         let val = self.compile_expr(fb, &args[0])?;
         let f64_val = self.to_f64(fb, &val);
         if args.len() >= 2 {
-            // ROUND(x, n) → round to n decimal places
+            // ROUND(x, n) -> round to n decimal places. CHW requires banker's
+            // rounding (ties to even); llvm.round.f64 rounds half away from
+            // zero, so use llvm.roundeven.f64 (the same intrinsic already used
+            // by CINT/ROUND elsewhere in this file).
             let n = self.compile_expr(fb, &args[1])?;
             let n_f64 = self.to_f64(fb, &n);
             let ten = fb.const_f64(10.0);
             let factor = fb.call(&IrType::Double, "llvm.pow.f64", &[ten, n_f64]);
             let scaled = fb.fmul(&f64_val, &factor);
-            let rounded = fb.call(&IrType::Double, "llvm.round.f64", &[scaled]);
+            let rounded = fb.call(&IrType::Double, "llvm.roundeven.f64", &[scaled]);
             Ok(fb.fdiv(&rounded, &factor))
         } else {
-            // ROUND(x) → round to nearest integer
-            Ok(fb.call(&IrType::Double, "llvm.round.f64", &[f64_val]))
+            // ROUND(x) -> round to nearest integer (ties to even)
+            Ok(fb.call(&IrType::Double, "llvm.roundeven.f64", &[f64_val]))
         }
     }
 
@@ -27531,7 +28100,7 @@ impl Compiler {
         if let Some(Expr::FunctionCall(arr_name, indices)) = call.args.first() {
             let an = normalize_name(arr_name);
             if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
-                let base = Val::new(arr_info.ptr_name.clone(), IrType::Ptr);
+                let base = self.array_base(fb, &arr_info);
                 let elem_size = match &arr_info.elem_ir_type {
                     IrType::I8 | IrType::I1 => 1,
                     IrType::I16 => 2,
@@ -27663,8 +28232,16 @@ impl Compiler {
             }
         } else {
             let f64_val = self.to_f64(fb, &val);
-            // pb_str_dbl returns a ready BSTR (PBWin10 double formatting).
-            let res = fb.call(&IrType::Ptr, "pb_str_dbl", std::slice::from_ref(&f64_val));
+            // CHW STR_function.htm: optional digits = max significant digits
+            // (1..18); absent -> the default 15. pb_str_dbl_d clamps and
+            // renders with the same leading-space/PBWin format as pb_str_dbl.
+            let res = if args.len() >= 2 {
+                let d = self.compile_expr(fb, &args[1])?;
+                let di = self.to_i32(fb, &d);
+                fb.call(&IrType::Ptr, "pb_str_dbl_d", &[f64_val, di])
+            } else {
+                fb.call(&IrType::Ptr, "pb_str_dbl", std::slice::from_ref(&f64_val))
+            };
             return Ok(res);
         }
         let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&buf));
@@ -28232,6 +28809,54 @@ impl Compiler {
         Ok(self.bstr_from_buf(fb, &buf))
     }
 
+    /// STRING$$(Count&, Character%) / Character$$ — CHW STRING$/STRING$$
+    /// function.htm: the WIDE form creates a 2-byte (UTF-16) string of Count&
+    /// copies of a code in the range 0..65535 (not truncated to i8 like the
+    /// ANSI STRING$ form).
+    fn builtin_string_wide(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        let n = self.compile_expr(fb, &args[0])?;
+        let n_i32 = self.to_i32(fb, &n);
+        let char_val = self.compile_expr(fb, &args[1])?;
+        // 16-bit code unit: numeric argument masked to 0..65535; a string
+        // argument (Character$$) contributes its first UTF-16 code unit.
+        let code_u16 = if char_val.ty == IrType::Ptr {
+            fb.load(&IrType::I16, &char_val)
+        } else {
+            let code_i32 = self.to_i32(fb, &char_val);
+            let masked = fb.and(&code_i32, &fb.const_i32(0xFFFF));
+            fb.trunc(&masked, &IrType::I16)
+        };
+        let two = fb.const_i32(2);
+        let buf_bytes = fb.mul(&n_i32, &two);
+        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_bytes));
+
+        let cond_label = fb.next_label("strw.cond");
+        let body_label = fb.next_label("strw.body");
+        let exit_label = fb.next_label("strw.exit");
+        let i_ptr = fb.alloca(&IrType::I32);
+        fb.store(&fb.const_i32(0), &i_ptr);
+        fb.br(&cond_label);
+
+        fb.label(&cond_label);
+        let i = fb.load(&IrType::I32, &i_ptr);
+        let cmp = fb.icmp("slt", &i, &n_i32);
+        fb.condbr(&cmp, &body_label, &exit_label);
+
+        fb.label(&body_label);
+        let off = fb.mul(&i, &two);
+        let slot = fb.gep_byte(&buf, &off);
+        fb.store(&code_u16, &slot);
+        let next = fb.add(&i, &fb.const_i32(1));
+        fb.store(&next, &i_ptr);
+        fb.br(&cond_label);
+
+        fb.label(&exit_label);
+        // NUL-terminate with a 16-bit zero at buf + n*2.
+        let term_slot = fb.gep_byte(&buf, &buf_bytes);
+        fb.store(&fb.const_i16(0), &term_slot);
+        Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, buf_bytes]))
+    }
+
     // ========== PB Runtime builtins ==========
 
     fn builtin_format(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -28339,8 +28964,13 @@ impl Compiler {
         if args.len() < 2 {
             return Err(PbError::runtime("REMAIN$ requires at least 2 arguments"));
         }
-        // Determine if first arg is Start (integer literal) or MainStr
-        let (start_idx, main_idx): (Option<usize>, usize) = if let Expr::IntegerLit(_) = args[0] {
+        // Determine if first arg is Start (integer literal, signed via UnaryOp Neg
+        // or Negate) or MainStr. CHW REMAIN_function.htm documents Start=0 and negative
+        // Start (counted from right) — both must be accepted.
+        let starts_with_int = matches!(args[0], Expr::IntegerLit(_))
+            || matches!(args[0], Expr::UnaryOp(UnaryOp::Neg, _))
+            || matches!(args[0], Expr::Negate(_));
+        let (start_idx, main_idx): (Option<usize>, usize) = if starts_with_int {
             (Some(0), 1)
         } else {
             (None, 0)
@@ -28519,6 +29149,7 @@ impl Compiler {
                     pb_type: pb_type.clone(),
                     dims,
                     total_elements: total,
+                    indirect_base: false,
                 },
             );
             self.pending_global_arrays.remove(&norm_name);
@@ -28622,6 +29253,7 @@ impl Compiler {
                         pb_type: field.pb_type.clone(),
                         dims,
                         total_elements: total,
+                        indirect_base: false,
                     },
                 );
             } else {

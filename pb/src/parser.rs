@@ -1140,6 +1140,8 @@ impl Parser {
                 is_redim: false,
                 is_array,
                 preserve: false,
+                is_register: false,
+                at_address: None,
             });
 
             if self.peek() == &Token::Comma {
@@ -1193,6 +1195,16 @@ impl Parser {
             }
         };
 
+        // CHW REDIM_statement.htm: `REDIM arr(bounds) AT address&` declares an
+        // absolute array. The backing store is the given address.
+        let at_address = if matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("AT"))
+        {
+            self.advance();
+            Some(Box::new(self.parse_expression()?))
+        } else {
+            None
+        };
+
         self.consume_to_eol();
         Ok(DimStatement {
             scope: DimScope::Dim,
@@ -1203,6 +1215,8 @@ impl Parser {
             is_redim: true,
             is_array,
             preserve,
+            is_register: false,
+            at_address,
         })
     }
 
@@ -4142,8 +4156,12 @@ impl Parser {
                 }
             }
             // REGISTER var [AS type] [, ...] 鈥?optimization hint; accepted as LOCAL
+            // but marked is_register so codegen can reject VARPTR and Error 491.
             Token::Register => {
-                let dims = self.parse_local_decl()?;
+                let mut dims = self.parse_local_decl()?;
+                for d in dims.iter_mut() {
+                    d.is_register = true;
+                }
                 if dims.len() == 1 {
                     Ok(Statement::Dim(dims.into_iter().next().unwrap()))
                 } else {
@@ -4387,8 +4405,15 @@ impl Parser {
                 }))
             }
             Token::Replace => {
-                // REPLACE old$ WITH new$ IN target$
+                // REPLACE [ANY] old$ WITH new$ IN target$
                 self.advance();
+                // CHW REPLACE_statement.htm: optional ANY prefix (one-to-one
+                // char-class replacement; old$ and new$ must be equal length).
+                let any_flag =
+                    matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("ANY"));
+                if any_flag {
+                    self.advance();
+                }
                 let old = self.parse_expression()?;
                 if matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("WITH")) {
                     self.advance();
@@ -4399,9 +4424,13 @@ impl Parser {
                 }
                 let target = self.parse_expression()?;
                 self.consume_to_eol();
+                let mut args = vec![target, old, new_s];
+                if any_flag {
+                    args.push(Expr::IntegerLit(1));
+                }
                 Ok(Statement::Call(CallStmt {
                     name: "REPLACE".to_string(),
-                    args: vec![target, old, new_s],
+                    args,
                     line,
                 }))
             }
@@ -4491,6 +4520,13 @@ impl Parser {
             }
             Token::Return => {
                 self.advance();
+                // CHW RETURN FLUSH: pop the most recent GOSUB return address
+                // and continue at the next statement (do not jump back).
+                if self.peek_plain_upper() == "FLUSH" {
+                    self.advance();
+                    self.consume_to_eol();
+                    return Ok(Statement::ReturnFlush);
+                }
                 self.consume_to_eol();
                 Ok(Statement::Return)
             }
@@ -12271,8 +12307,10 @@ impl Parser {
                 // SPLIT [WORD] MainStr, Part1Len TO Part1Var, Part2Var
                 if name_upper == "SPLIT" {
                     self.advance(); // consume SPLIT
+                    let mut word = false;
                     if matches!(self.peek(), Token::Identifier(w) if w.to_uppercase() == "WORD") {
-                        self.advance(); // consume optional WORD (ignored)
+                        word = true;
+                        self.advance(); // consume optional WORD
                     }
                     let mut args = vec![self.parse_expression()?];
                     self.expect(&Token::Comma)?;
@@ -12283,10 +12321,57 @@ impl Parser {
                     args.push(self.parse_expression()?);
                     self.expect(&Token::Comma)?;
                     args.push(self.parse_expression()?);
+                    // Trailing WORD flag: 1 adjusts Part1 to a word boundary
+                    // (CHW SPLIT_statement.htm: Part1 will not end on a partial
+                    // word). Routed as a 5th argument to pb_split.
+                    args.push(Expr::IntegerLit(if word { 1 } else { 0 }));
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "SPLIT".to_string(),
                         args,
+                        line,
+                    }));
+                }
+                // SHELL [HANDLES,] cmd$ [, mode&] [, EXIT TO exitcode&]
+                // CHW SHELL_statement.htm: synchronous; EXIT TO captures the child
+                // process exit code.  HANDLES (optional) requests inherited handles.
+                if name_upper == "SHELL" {
+                    self.advance(); // consume SHELL
+                    if let Token::Identifier(w) = self.peek() {
+                        if w.to_uppercase() == "HANDLES" {
+                            self.advance();
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                            }
+                        }
+                    }
+                    let cmd = self.parse_expression()?;
+                    let mut mode: Option<Expr> = None;
+                    let mut exitvar: Option<Expr> = None;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        if self.peek() != &Token::Exit {
+                            mode = Some(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                            }
+                        }
+                    }
+                    if self.peek() == &Token::Exit {
+                        self.advance(); // EXIT
+                        if self.peek() == &Token::To {
+                            self.advance();
+                        }
+                        exitvar = Some(self.parse_expression()?);
+                    }
+                    let mut final_args = vec![cmd, mode.unwrap_or(Expr::IntegerLit(1))];
+                    if let Some(ev) = exitvar {
+                        final_args.push(ev);
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "SHELL".to_string(),
+                        args: final_args,
                         line,
                     }));
                 }
@@ -13503,6 +13588,8 @@ impl Parser {
                 is_redim: false,
                 is_array,
                 preserve: false,
+                is_register: false,
+                at_address: None,
             });
 
             if self.peek() == &Token::Comma {
@@ -13831,11 +13918,30 @@ impl Parser {
         let line = self.current_line();
         self.advance(); // SELECT
         self.expect(&Token::Case)?;
-        // Optional AS LONG / AS QUAD type specifier
+        // Optional AS LONG / AS CONST / AS CONST$ / AS CONST$$ modifier
+        // (CHW SELECT_CASE_END_SELECT_block.htm).  The modifier was previously
+        // parsed (one token advanced) then silently ignored.
+        let mut modifier = SelectModifier::None;
         if matches!(self.peek(), Token::As) {
             self.advance(); // AS
-                            // Skip the type keyword (LONG, QUAD, SINGLE, etc.)
-            self.advance();
+            match self.peek() {
+                Token::Long => {
+                    modifier = SelectModifier::Long;
+                    self.advance();
+                }
+                Token::Identifier(w) => {
+                    match w.to_uppercase().as_str() {
+                        "CONST" => modifier = SelectModifier::Const,
+                        "CONST$" => modifier = SelectModifier::ConstDollar,
+                        "CONST$$" => modifier = SelectModifier::ConstDollarDollar,
+                        _ => {}
+                    }
+                    self.advance();
+                }
+                _ => {
+                    self.advance();
+                }
+            }
         }
         let expr = self.parse_expression()?;
         self.consume_to_eol();
@@ -13895,6 +14001,7 @@ impl Parser {
             cases,
             else_body,
             line,
+            modifier,
         }))
     }
 

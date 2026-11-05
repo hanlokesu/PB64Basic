@@ -538,6 +538,10 @@ impl Interpreter {
             }
             Statement::OnCall { .. } => Ok(Flow::Normal), // interp: approximate no-op
             Statement::Return => Ok(Flow::GoSubReturn),
+            // CHW RETURN FLUSH: discard the most recent return address and
+            // continue at the next statement (interp approximation: fall
+            // through without popping the gosub stack).
+            Statement::ReturnFlush => Ok(Flow::Normal),
             Statement::ClipboardSet { .. }
             | Statement::ClipboardGet { .. }
             | Statement::ClipboardReset { .. }

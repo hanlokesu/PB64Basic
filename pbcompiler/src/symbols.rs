@@ -30,6 +30,10 @@ pub struct ArrayInfo {
     pub dims: Vec<(i64, i64)>,
     /// Total number of elements (product of all counts)
     pub total_elements: usize,
+    /// CHW `REDIM ... AT address`: ptr_name is a slot that holds the runtime
+    /// base pointer (inttoptr of the address expression); element access must
+    /// load it before GEP rather than GEP on the slot itself.
+    pub indirect_base: bool,
 }
 
 /// Tracks variables during codegen.

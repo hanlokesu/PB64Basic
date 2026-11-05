@@ -102,7 +102,15 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
         }
         "RIGHT" => {
             let s = args.first().map(|a| a.to_string_val()).unwrap_or_default();
-            let n = args.get(1).map(|a| a.to_i32()).unwrap_or(0) as usize;
+            let n_raw = args.get(1).map(|a| a.to_i64()).unwrap_or(0);
+            // CHW RIGHT_function.htm: n<0 -> LEN(s) - ABS(n). Example:
+            // RIGHT$("1234567890", -2) = "34567890".
+            let n = if n_raw < 0 {
+                s.len() as i64 - n_raw.abs()
+            } else {
+                n_raw
+            };
+            let n = if n < 0 { 0 } else { n as usize };
             if n >= s.len() {
                 Some(Value::Str(s))
             } else {
@@ -153,8 +161,63 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
             Some(Value::Str(s.trim_start().to_string()))
         }
         "RTRIM" => {
+            // CHW RTRIM_function.htm: no match -> trailing spaces. With ANY,
+            // drop any trailing char that appears in the match list. With a
+            // literal MatchString, strip repeated trailing occurrences of the
+            // whole substring.
             let s = args.first().map(|a| a.to_string_val()).unwrap_or_default();
-            Some(Value::Str(s.trim_end().to_string()))
+            if s.is_empty() {
+                return Some(Value::Str(s));
+            }
+            let mut chars: Vec<char> = s.chars().collect();
+            let has_any = args
+                .get(1)
+                .map(|a| a.to_string_val())
+                .map(|m| m == "__ANY__")
+                .unwrap_or(false);
+            let match_str: Option<String> = if has_any {
+                args.get(2).map(|a| a.to_string_val())
+            } else {
+                args.get(1)
+                    .map(|a| a.to_string_val())
+                    .filter(|m| !m.is_empty())
+            };
+            match match_str {
+                None => {
+                    while let Some(c) = chars.last() {
+                        if c.is_whitespace() {
+                            chars.pop();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Some(m) if has_any => {
+                    let mchars: std::collections::HashSet<char> = m.chars().collect();
+                    while let Some(c) = chars.last() {
+                        if mchars.contains(c) {
+                            chars.pop();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                Some(m) => {
+                    // Repeated whole-substring from the end.
+                    let mchars: Vec<char> = m.chars().collect();
+                    while chars.len() >= mchars.len() {
+                        let start = chars.len() - mchars.len();
+                        if chars[start..] == mchars[..] {
+                            for _ in 0..mchars.len() {
+                                chars.pop();
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            Some(Value::Str(chars.into_iter().collect()))
         }
         "CHR" => {
             let n = args.first().map(|a| a.to_i32()).unwrap_or(0);
@@ -278,10 +341,86 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
             Some(Value::Long(0))
         }
         "ROUND" => {
+            // CHW ROUND_function.htm: banker's rounding (ties to even). Rust's
+            // f64::round() rounds half away from zero, which diverges on ties
+            // like ROUND(0.5,0)=1 vs CHW=0. Implement round-to-nearest,
+            // ties-to-even on the scaled value.
             let v = args.first().map(|a| a.to_f64()).unwrap_or(0.0);
             let decimals = args.get(1).map(|a| a.to_i64()).unwrap_or(0);
             let factor = 10f64.powi(decimals as i32);
-            Some(Value::Double((v * factor).round() / factor))
+            let scaled = v * factor;
+            let rounded = round_ties_even(scaled);
+            Some(Value::Double(rounded / factor))
+        }
+        "RETAIN" => {
+            // CHW RETAIN_function.htm: retain chars/substrings from mainstr.
+            let main = args.first().map(|a| a.to_string_val()).unwrap_or_default();
+            let has_any = args
+                .get(1)
+                .map(|a| a.to_string_val())
+                .map(|m| m == "__ANY__")
+                .unwrap_or(false);
+            let match_str: String = if has_any {
+                args.get(2).map(|a| a.to_string_val()).unwrap_or_default()
+            } else {
+                args.get(1).map(|a| a.to_string_val()).unwrap_or_default()
+            };
+            if match_str.is_empty() {
+                return Some(Value::Str(String::new()));
+            }
+            if has_any {
+                let mchars: std::collections::HashSet<char> = match_str.chars().collect();
+                Some(Value::Str(
+                    main.chars().filter(|c| mchars.contains(c)).collect(),
+                ))
+            } else {
+                // Non-overlapping whole-substring occurrences.
+                let mut out = String::new();
+                let mut i = 0;
+                let mc: Vec<char> = match_str.chars().collect();
+                let sc: Vec<char> = main.chars().collect();
+                while i + mc.len() <= sc.len() {
+                    if sc[i..i + mc.len()] == mc[..] {
+                        out.push_str(&match_str);
+                        i += mc.len();
+                    } else {
+                        i += 1;
+                    }
+                }
+                Some(Value::Str(out))
+            }
+        }
+        "RGB" => {
+            // CHW RGB_function.htm: 3-arg packs r,g,b (low/mid/high bytes,
+            // high byte 0). 1-arg swaps byte 1 <-> byte 3.
+            if args.len() >= 3 {
+                let r = args[0].to_i64() & 0xFF;
+                let g = args[1].to_i64() & 0xFF;
+                let b = args[2].to_i64() & 0xFF;
+                Some(Value::Long((r | (g << 8) | (b << 16)) as i32))
+            } else if args.len() == 1 {
+                let x = args[0].to_i64() as u32;
+                let swapped = ((x & 0xFF) << 16) | (x & 0xFF00) | ((x >> 16) & 0xFF);
+                Some(Value::Long(swapped as i32))
+            } else {
+                Some(Value::Long(0))
+            }
+        }
+        "RSET" => {
+            // CHW RSET_function.htm: right-justify s into strlen& chars, pad
+            // with first char of USING pad (default space).
+            let s = args.first().map(|a| a.to_string_val()).unwrap_or_default();
+            let n = args.get(1).map(|a| a.to_i64()).unwrap_or(0).max(0) as usize;
+            let pad: Option<String> = args.get(2).map(|a| a.to_string_val());
+            let padc = pad.as_ref().and_then(|p| p.chars().next()).unwrap_or(' ');
+            let take = s.len().min(n);
+            let padn = n - take;
+            let mut out = String::new();
+            for _ in 0..padn {
+                out.push(padc);
+            }
+            out.push_str(&s[..take]);
+            Some(Value::Str(out))
         }
         "USING" => {
             // USING$(format, value) — similar to FORMAT$
@@ -298,6 +437,37 @@ pub fn call_builtin(name: &str, args: &[Value]) -> Option<Value> {
             Some(Value::Str(val))
         }
         _ => None,
+    }
+}
+
+/// Round to nearest integer, ties to even (banker's rounding), matching
+/// LLVM's llvm.round.f64 that the LLVM codegen path already uses. CHW
+/// ROUND_function.htm requires this; Rust's f64::round() rounds half away
+/// from zero and diverges on exact ties.
+fn round_ties_even(x: f64) -> f64 {
+    let floor = x.floor();
+    let diff = x - floor;
+    if diff > 0.5 {
+        floor + 1.0
+    } else if diff < 0.5 {
+        floor
+    } else {
+        // Exactly 0.5: round to even.
+        let lower_even = if floor as i64 % 2 == 0 {
+            floor
+        } else {
+            floor + 1.0
+        };
+        let upper_even = if (floor + 1.0) as i64 % 2 == 0 {
+            floor + 1.0
+        } else {
+            floor
+        };
+        if (x - lower_even).abs() < (x - upper_even).abs() {
+            lower_even
+        } else {
+            upper_even
+        }
     }
 }
 

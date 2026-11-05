@@ -118,6 +118,14 @@ pub struct DimStatement {
     /// REDIM PRESERVE - keep existing element values (CHW: plain REDIM is
     /// ERASE+DIM and zeroes; PRESERVE keeps old elements, new ones zeroed).
     pub preserve: bool,
+    /// CHW REGISTER statement: variable is a register-class optimization hint.
+    /// It is allocated as an ordinary local, but VARPTR is rejected and a
+    /// variable used in `DIALOG SHOW MODAL/MODELESS ... TO regvar` triggers
+    /// compile-time Error 491.
+    pub is_register: bool,
+    /// CHW REDIM `... AT address` absolute array overlay: the backing store is
+    /// the given address expression, not a freshly allocated buffer.
+    pub at_address: Option<Box<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -326,6 +334,11 @@ pub enum Statement {
     FunctionReturn(FunctionReturnStmt),
     GoSub(String),
     Return,
+    // CHW RETURN_statement.htm: "RETURN FLUSH removes the most recent return
+    // address from the system stack and program flow continues normally after
+    // the RETURN FLUSH" - i.e. discard the return address and fall through,
+    // do NOT jump back to the GOSUB caller.
+    ReturnFlush,
     GoTo(String),
     Label(String),
     OnGoTo {
@@ -511,12 +524,24 @@ pub struct WhileWendStmt {
     pub line: usize,
 }
 
+/// SELECT CASE [AS LONG | CONST | CONST$ | CONST$$] (CHW
+/// SELECT_CASE_END_SELECT_block.htm).  Default = no modifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectModifier {
+    None,
+    Long,
+    Const,
+    ConstDollar,
+    ConstDollarDollar,
+}
+
 #[derive(Debug, Clone)]
 pub struct SelectCaseStmt {
     pub expr: Expr,
     pub cases: Vec<CaseClause>,
     pub else_body: Vec<Statement>,
     pub line: usize,
+    pub modifier: SelectModifier,
 }
 
 #[derive(Debug, Clone)]

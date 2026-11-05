@@ -1,4 +1,4 @@
-# Last updated from batch 317 (v0.2.108) - 2026-11-05,,,,
+# Last updated from batch 318 (v0.2.109) - 2026-11-06,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -700,7 +700,7 @@ PUT_WSTR,FUNCTION,codegen builtin,Implemented
 QUAD,FUNCTION,codegen builtin,Implemented
 RAISEEVENT,STATEMENT,PB/Win + PB/CC,Implemented
 RANDOMIZE,STATEMENT,PB/Win + PB/CC,Implemented
-READ,FUNCTION,codegen builtin,Implemented
+READ,STATEMENT,PB/Win + PB/CC,Implemented
 READ$,FUNCTION,Win32,Implemented
 REDIM,STATEMENT,PB/Win + PB/CC,Implemented
 REGEXPR,STATEMENT,PB/Win + PB/CC,Implemented
@@ -715,7 +715,7 @@ REPEAT,FUNCTION,codegen builtin,Implemented
 REPEAT$,FUNCTION,Win32,Implemented
 REPLACE,STATEMENT,PB/Win + PB/CC,Implemented
 RESET,STATEMENT,PB/Win + PB/CC,Implemented
-RESOURCE SAVE FILE,STATEMENT,PB/Win + PB/CC,Implemented
+RESOURCE SAVE FILE,FORK EXTENSION,PB/Win + PB/CC,Implemented
 RESOURCE$,FUNCTION,Win32,Implemented
 RESUME,STATEMENT,PB/Win + PB/CC,Implemented
 RETAIN,FUNCTION,codegen builtin,Implemented
@@ -751,7 +751,7 @@ SHIFT,STATEMENT,PB/Win + PB/CC,Implemented
 SHRINK,FUNCTION,codegen builtin,Implemented
 SHRINK$,FUNCTION,Win32,Implemented
 SIN,FUNCTION,LLVM intrinsic,Implemented
-SINGLE,FUNCTION,codegen builtin,Implemented
+SINGLE,TYPE KEYWORD,CHW DIM type (conversion builtin is CSNG; no SINGLE() function),Implemented
 SINH,FORK EXTENSION,LLVM intrinsic,Implemented
 SIZEOF,FUNCTION,codegen builtin,Implemented
 SLEEP,STATEMENT,PB/Win + PB/CC,Implemented
