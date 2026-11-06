@@ -21,7 +21,19 @@
 %JKCOMP_RUN_DEFAULT = %IDC_Userbase + 18   ' compile (sync, default compiler) then run
 %JKCOMP_PBHELP  = %IDC_Userbase + 19   ' open the PowerBASIC help file (PB.chm) via hh.exe (HAN 2026-11-03)
 %JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
+%JKIDE_Close    = 102                  ' WM_COPYDATA dwData: close file in JK-IDE (VCS protocol, HAN 2026-11-06)
 %JKIDE_Save     = 103                  ' WM_COPYDATA dwData: save active file in JK-IDE (VCS protocol, HAN 2026-11-01)
+
+' ============ Context (right-click) menu - HAN 2026-11-06 ============
+' Replicates the PB_IDE tab right-click menu (7 items). IDs start at the
+' first free slot after the compiler/help menu (55019).
+%JKCTX_COPYPATH  = %IDC_Userbase + 20   ' Copy Path
+%JKCTX_COPYNAME  = %IDC_Userbase + 21   ' Copy File Name
+%JKCTX_COPY      = %IDC_Userbase + 22   ' Copy (file itself, CF_HDROP)
+%JKCTX_OPENWITH  = %IDC_Userbase + 23   ' Open with...
+%JKCTX_EXPLORER  = %IDC_Userbase + 24   ' Open in Explorer
+%JKCTX_RENAME    = %IDC_Userbase + 25   ' Rename...
+%JKCTX_CLOSETAB  = %IDC_Userbase + 26   ' Close Tab
 
 ' ============ JKIDE.ini reader - HAN 2026-10-28 ============
 ' Every compiler path comes from JKIDE.ini (the file next to userdll.dll),
@@ -812,6 +824,243 @@ FUNCTION JK_DeleteStaleExe(BYVAL exePath AS STRING, BYVAL stem AS STRING) AS LON
 KillFail:
   RESUME NEXT
 END FUNCTION
+
+' ============ Context menu actions (replicate PB_IDE) - HAN 2026-11-06 ============
+
+TYPE JK_DROPFILES
+  pFiles AS DWORD
+  x AS LONG
+  y AS LONG
+  fNC AS LONG
+  fWide AS LONG
+END TYPE
+
+GLOBAL gRnOk AS LONG
+GLOBAL gRnInitial AS STRING
+GLOBAL gRnResult AS STRING
+
+FUNCTION JK_MenuHasId(BYVAL hMenu AS DWORD, BYVAL targetId AS DWORD) AS LONG
+' TRUE when hMenu already contains an item with the given command id.
+' Used to stop the context menu from stacking duplicate items when
+' usercontextmenu fires on every right-click.
+  LOCAL cnt AS LONG, i AS LONG, itemId AS DWORD
+  cnt = GetMenuItemCount(hMenu)
+  FOR i = 0 TO cnt - 1
+    itemId = GetMenuItemID(hMenu, i)
+    IF itemId = targetId THEN
+      FUNCTION = 1
+      EXIT FUNCTION
+    END IF
+  NEXT
+END FUNCTION
+
+SUB JK_ClipSetText(BYVAL s AS STRING)
+' Put text on the clipboard as CF_UNICODETEXT (same idea as PB_IDE, which
+' uses the Win32 clipboard directly). The ANSI string is widened to
+' UTF-16 so non-ASCII paths round-trip cleanly.
+  LOCAL w AS WSTRINGZ * 1024
+  LOCAL cb AS LONG, hMem AS DWORD, pMem AS DWORD
+  IF LEN(s) = 0 THEN EXIT SUB
+  w = s
+  cb = (LEN(w) + 1) * 2
+  IF OpenClipboard(0) = 0 THEN
+    JK_SendOutput "Clipboard busy, retry.", &HFF
+    EXIT SUB
+  END IF
+  EmptyClipboard
+  hMem = GlobalAlloc(%GMEM_MOVEABLE, cb)
+  IF hMem THEN
+    pMem = GlobalLock(hMem)
+    CopyMemory pMem, VARPTR(w), cb
+    GlobalUnlock hMem
+    SetClipboardData %CF_UNICODETEXT, hMem
+  END IF
+  CloseClipboard
+END SUB
+
+SUB JK_ClipSetFile(BYVAL p AS STRING)
+' Put the FILE ITSELF on the clipboard as CF_HDROP, so it can be pasted
+' into Explorer as a file (this is PB_IDE's "Copy", not selected text).
+' The file list is DROPFILES (20 bytes) + wide path + NUL + extra NUL.
+  LOCAL w AS WSTRINGZ * 1024
+  LOCAL df AS JK_DROPFILES
+  LOCAL cb AS LONG, total AS LONG, hMem AS DWORD, pMem AS DWORD
+  IF LEN(p) = 0 THEN
+    JK_SendOutput "Copy: empty path.", &HFF
+    EXIT SUB
+  END IF
+  IF ISFALSE ISFILE(p) THEN
+    JK_SendOutput "Copy: file not found: " + p, &HFF
+    EXIT SUB
+  END IF
+  w = p
+  cb = (LEN(w) + 1) * 2                  ' wide path + one NUL
+  total = 20 + cb + 2                    ' DROPFILES + path + end-of-list NUL
+  IF OpenClipboard(0) = 0 THEN
+    JK_SendOutput "Clipboard busy, retry.", &HFF
+    EXIT SUB
+  END IF
+  EmptyClipboard
+  hMem = GlobalAlloc(%GMEM_MOVEABLE OR %GMEM_ZEROINIT, total)
+  IF hMem THEN
+    pMem = GlobalLock(hMem)
+    df.pFiles = 20
+    df.x = 0
+    df.y = 0
+    df.fNC = 0
+    df.fWide = 1
+    CopyMemory pMem, VARPTR(df), 20
+    CopyMemory pMem + 20, VARPTR(w), cb
+    GlobalUnlock hMem
+    SetClipboardData %CF_HDROP, hMem
+  END IF
+  CloseClipboard
+END SUB
+
+SUB JK_OpenWith()
+' Save first, then the system "Open with" dialog via
+' rundll32 shell32.dll,OpenAs_RunDLL.
+  LOCAL f AS STRING
+  LOCAL cds AS COPYDATASTRUCT, fp AS ASCIIZ * 1024
+  LOCAL zVerb AS ASCIIZ * 16, zFile AS ASCIIZ * 64, zPar AS ASCIIZ * 2048
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Open with: no active file with a full path.", &HFF
+    EXIT SUB
+  END IF
+  fp = f
+  cds.dwData = %JKIDE_Save
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+  zVerb = "open"
+  zFile = "rundll32.exe"
+  zPar = "shell32.dll,OpenAs_RunDLL " + $DQ + f + $DQ
+  ShellExecuteA 0, zVerb, zFile, zPar, "", %SW_SHOW
+END SUB
+
+SUB JK_OpenInExplorer()
+' Open the containing folder (matches PB_IDE os.startfile on the folder).
+  LOCAL f AS STRING, folder AS STRING
+  LOCAL zVerb AS ASCIIZ * 16, zDir AS ASCIIZ * 1024
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Open in Explorer: no active file.", &HFF
+    EXIT SUB
+  END IF
+  folder = PATHNAME$(PATH, f)
+  IF LEN(folder) = 0 THEN
+    JK_SendOutput "Open in Explorer: no folder in path.", &HFF
+    EXIT SUB
+  END IF
+  zVerb = "open"
+  zDir = folder
+  ShellExecuteA 0, zVerb, zDir, "", "", %SW_SHOW
+END SUB
+
+CALLBACK FUNCTION JK_RenameDlgProc()
+  LOCAL s AS STRING
+  SELECT CASE CB.MSG
+    CASE %WM_INITDIALOG
+      CONTROL SET TEXT CB.HNDL, 1001, gRnInitial
+    CASE %WM_COMMAND
+      SELECT CASE CB.CTL
+        CASE %IDOK
+          CONTROL GET TEXT CB.HNDL, 1001 TO s
+          gRnResult = s
+          gRnOk = 1
+          DIALOG END CB.HNDL, %IDOK
+        CASE %IDCANCEL
+          gRnOk = 0
+          DIALOG END CB.HNDL, %IDCANCEL
+      END SELECT
+  END SELECT
+END FUNCTION
+
+SUB JK_DoRename()
+' Modal name prompt, then save -> close old tab -> rename on disk ->
+' open new tab. The old tab is closed before the disk rename so the IDE
+' does not pop a "file changed externally" modal for the missing file.
+  LOCAL f AS STRING, newName AS STRING, newPath AS STRING, folder AS STRING
+  LOCAL hDlg AS DWORD
+  LOCAL cds AS COPYDATASTRUCT, fp AS ASCIIZ * 1024
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Rename: no active file with a full path.", &HFF
+    EXIT SUB
+  END IF
+  gRnOk = 0
+  gRnResult = ""
+  gRnInitial = PATHNAME$(NAMEX, f)
+  DIALOG NEW @hw.main, "Rename", , , 380, 100, _
+    %DS_MODALFRAME OR %WS_CAPTION OR %WS_SYSMENU, 0 TO hDlg
+  CONTROL ADD LABEL, hDlg, 1000, "New file name:", 12, 12, 200, 14
+  CONTROL ADD TEXTBOX, hDlg, 1001, "", 12, 30, 352, 16
+  CONTROL ADD BUTTON, hDlg, %IDOK, "OK", 236, 60, 58, 20
+  CONTROL ADD BUTTON, hDlg, %IDCANCEL, "Cancel", 306, 60, 58, 20
+  DIALOG SHOW MODAL hDlg, CALL JK_RenameDlgProc
+  IF gRnOk = 0 THEN EXIT SUB
+  newName = TRIM$(gRnResult)
+  IF LEN(newName) = 0 THEN
+    JK_SendOutput "Rename: empty name.", &HFF
+    EXIT SUB
+  END IF
+  IF INSTR(newName, "\") > 0 OR INSTR(newName, "/") > 0 OR INSTR(newName, ":") > 0 _
+     OR INSTR(newName, "*") > 0 OR INSTR(newName, "?") > 0 OR INSTR(newName, $DQ) > 0 _
+     OR INSTR(newName, "<") > 0 OR INSTR(newName, ">") > 0 OR INSTR(newName, "|") > 0 THEN
+    JK_SendOutput "Rename: name contains invalid characters.", &HFF
+    EXIT SUB
+  END IF
+  folder = PATHNAME$(PATH, f)
+  newPath = folder + newName
+  IF ISFILE(newPath) THEN
+    JK_SendOutput "Rename: target already exists: " + newPath, &HFF
+    EXIT SUB
+  END IF
+  fp = f
+  cds.dwData = %JKIDE_Save
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+  fp = f
+  cds.dwData = %JKIDE_Close
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+  ON ERROR GOTO RenameFail
+  NAME f AS newPath
+  ON ERROR GOTO 0
+  fp = newPath
+  cds.dwData = %JKIDE_Open
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+  JK_SendOutput "Rename done: " + newPath, &HFF00
+  EXIT SUB
+RenameFail:
+  JK_SendOutput "Rename: disk rename failed (" + ERROR$ + "). Reopening original: " + f, &HFF
+  fp = f
+  cds.dwData = %JKIDE_Open
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+END SUB
+
+SUB JK_CloseTab()
+' Close the active tab; the IDE itself prompts to save unsaved changes.
+  LOCAL f AS STRING
+  LOCAL cds AS COPYDATASTRUCT, fp AS ASCIIZ * 1024
+  f = JK_ActiveFile$()
+  IF LEN(f) = 0 THEN
+    JK_SendOutput "Close Tab: no active file.", &HFF
+    EXIT SUB
+  END IF
+  fp = f
+  cds.dwData = %JKIDE_Close
+  cds.cbData = LEN(fp) + 1
+  cds.lpData = VARPTR(fp)
+  IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
+END SUB
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 ' they were added to separate "no change" areas (left for better readabilty) from areas for
 ' user code.

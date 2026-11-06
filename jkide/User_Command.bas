@@ -72,6 +72,27 @@ local ztext as asciiz * 260
 
     CASE %JKCOMP_PBHELP
       JK_OpenPbHelp
+
+    CASE %JKCTX_COPYPATH
+      JK_ClipSetText JK_ActiveFile$
+
+    CASE %JKCTX_COPYNAME
+      JK_ClipSetText PATHNAME$(NAMEX, JK_ActiveFile$)
+
+    CASE %JKCTX_COPY
+      JK_ClipSetFile JK_ActiveFile$
+
+    CASE %JKCTX_OPENWITH
+      JK_OpenWith
+
+    CASE %JKCTX_EXPLORER
+      JK_OpenInExplorer
+
+    CASE %JKCTX_RENAME
+      JK_DoRename
+
+    CASE %JKCTX_CLOSETAB
+      JK_CloseTab
 #utility end usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 #if 0
   end select
