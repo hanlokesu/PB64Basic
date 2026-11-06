@@ -2518,7 +2518,24 @@ impl Parser {
                     "CDECL" => Some(CallConv::CDecl),
                     "STDCALL" | "SDECL" => Some(CallConv::StdCall),
                     "BDECL" => Some(CallConv::BDecl),
-                    _ => None,
+                    // An identifier in the calling-convention slot that is not a
+                    // recognized convention is a real error (e.g. the misspelled
+                    // "cdelc"). Reject it clearly instead of breaking out and
+                    // letting consume_to_eol() swallow the rest of the line, which
+                    // silently degenerated the DECLARE to a parameterless stdcall
+                    // and later failed at link with a misleading `_NAME@0`.
+                    _ => {
+                        return Err(PbError::parser(
+                            format!(
+                                "Unknown DECLARE calling convention '{}': the valid DECLARE \
+                                 calling conventions are CDECL, SDECL (STDCALL) and BDECL. \
+                                 Check the spelling (for example 'CDECL', not '{}')",
+                                s, s
+                            ),
+                            self.current_file(),
+                            self.current_line(),
+                        ));
+                    }
                 },
                 _ => None,
             };
