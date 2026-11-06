@@ -2617,94 +2617,251 @@ char* pb_format_digits(double val, int digits) {
  * When index <= 0, returns the count of fields as a string-encoded integer.
  * When called with 3 args from PB: index is the field number (1-based).
  * ============================================================ */
-char* pb_parse(const char* str, const char* delim, int index) {
-    if (str == NULL || delim == NULL) {
-        char* empty = (char*)malloc(1);
-        empty[0] = '\0';
-        return bstr_from_buf(empty);
-    }
+/* ============================================================
+ * PARSE$ / PARSECOUNT shared field walker
+ *
+ * Walk the fields of str per mode and record the processed field ranges
+ * (pointers into str) in fstart[]/fend[], up to cap. Returns the total
+ * number of fields (which may exceed cap). Modes:
+ *   0 exact delimiter (empty/NULL delim -> default comma, mode 3)
+ *   1 ANY (any single char in delim is a separator)
+ *   2 BINARY (packed WORD/DWORD length-prefixed fields)
+ *   3 default comma (optionally quoted; unquoted trimmed)
+ * ============================================================ */
+#define PB_PARSE_MAX_FIELDS 1024
+static int pb_split_fields(const char* str, const char* delim, int mode,
+                           const char** fstart, const char** fend, int cap) {
+    if (str == NULL) str = "";
+    if (delim == NULL) delim = "";
+    int dlen = (int)strlen(delim);
+    if (mode == 0 && dlen == 0) mode = 3;
 
-    int delim_len = (int)strlen(delim);
-    if (delim_len == 0) {
-        char* result = (char*)malloc(strlen(str) + 1);
-        strcpy(result, str);
-        return bstr_from_buf(result);
-    }
+    int n = 0;
 
-    /* Count fields and find the index'th one */
-    int field_num = 0;
-    const char* p = str;
-    const char* field_start = str;
-
-    while (1) {
-        /* Check for delimiter match (single-char: match any char in delim) */
-        int found_delim = 0;
-        if (delim_len == 1) {
-            if (*p == delim[0]) found_delim = 1;
-        } else {
-            /* Multi-char delimiter: match exact substring */
-            if (strncmp(p, delim, delim_len) == 0) found_delim = 1;
-        }
-
-        if (found_delim || *p == '\0') {
-            field_num++;
-            if (field_num == index) {
-                /* Found the field we want */
-                int len = (int)(p - field_start);
-                char* result = (char*)malloc(len + 1);
-                memcpy(result, field_start, len);
-                result[len] = '\0';
-                return bstr_from_buf(result);
+    /* ---- BINARY: each field is length-prefixed ---- */
+    if (mode == 2) {
+        size_t total_bytes = pb_str_len(str);
+        const char* p = str;
+        const char* end = str + total_bytes;
+        while (p < end) {
+            unsigned int flen;
+            unsigned short wlen;
+            memcpy(&wlen, p, sizeof(wlen));
+            p += sizeof(wlen);
+            if (wlen == 65535) {
+                unsigned long dword;
+                memcpy(&dword, p, sizeof(dword));
+                p += sizeof(dword);
+                flen = dword;
+            } else {
+                flen = wlen;
             }
-            if (*p == '\0') break;
-            p += (delim_len == 1) ? 1 : delim_len;
-            field_start = p;
+            if (n < cap) { fstart[n] = p; fend[n] = p + flen; }
+            n++;
+            p += flen;
+        }
+        return n;
+    }
+
+    /* ---- text modes ---- */
+    const char* p = str;
+    const char* start = str;
+    while (1) {
+        int at_delim = 0;
+        int adv = 0;
+        if (mode == 1) {
+            if (dlen > 0 && memchr(delim, *p, dlen) != NULL) { at_delim = 1; adv = 1; }
+        } else if (mode == 0) {
+            if (dlen > 0 && strncmp(p, delim, dlen) == 0) { at_delim = 1; adv = dlen; }
+        } else if (mode == 3) {
+            if (*p == ',') { at_delim = 1; adv = 1; }
+        }
+        int at_end = (*p == '\0');
+
+        if (at_delim || at_end) {
+            const char* fs = start;
+            const char* fe = p;
+            if (mode == 3) {
+                /* default comma: quoted field -> inner content; else trim */
+                if (fs < fe && *fs == '"') {
+                    const char* q = fs + 1;
+                    while (q < fe && *q != '"') q++;
+                    fs = fs + 1;
+                    fe = q;                      /* chars after quote discarded */
+                } else {
+                    while (fs < fe && (*fs == ' ' || *fs == '"')) fs++;
+                    while (fe > fs && (*(fe - 1) == ' ' || *(fe - 1) == '"')) fe--;
+                }
+            }
+            if (n < cap) { fstart[n] = fs; fend[n] = fe; }
+            n++;
+            if (at_end) break;
+            p += adv;
+            start = p;
         } else {
             p++;
         }
     }
+    return n;
+}
 
-    if (index <= 0) {
-        /* Return field count */
-        char buf[16];
-        snprintf(buf, sizeof(buf), "%d", field_num);
-        char* result = (char*)malloc(strlen(buf) + 1);
-        strcpy(result, buf);
-        return bstr_from_buf(result);
-    }
+/* Helper: build a BSTR from a field range [fs, fe). */
+static char* pb_field_bstr(const char* fs, const char* fe) {
+    return pb_bstr_alloc(fs, (unsigned int)(fe - fs));
+}
 
-    /* Field index out of range � return empty */
-    char* empty = (char*)malloc(1);
-    empty[0] = '\0';
-    return bstr_from_buf(empty);
+char* pb_parse(const char* str, const char* delim, int mode, int index) {
+    const char* fstart[PB_PARSE_MAX_FIELDS];
+    const char* fend[PB_PARSE_MAX_FIELDS];
+    int total = pb_split_fields(str, delim, mode, fstart, fend, PB_PARSE_MAX_FIELDS);
+
+    /* CHW: index 0 always returns empty; negative counts from the right. */
+    if (index == 0) return pb_bstr_alloc("", 0);
+    int wanted = index;
+    if (index < 0) wanted = total + index + 1;
+    if (wanted < 1 || wanted > total) return pb_bstr_alloc("", 0);
+    return pb_field_bstr(fstart[wanted - 1], fend[wanted - 1]);
 }
 
 /* ============================================================
- * PARSECOUNT � Return number of fields in a delimited string
+ * PARSECOUNT - Return number of fields in a delimited string
  * ============================================================ */
-int pb_parsecount(const char* str, const char* delim) {
-    if (str == NULL || delim == NULL || str[0] == '\0') return 0;
+int pb_parsecount(const char* str, const char* delim, int mode) {
+    const char* fstart[PB_PARSE_MAX_FIELDS];
+    const char* fend[PB_PARSE_MAX_FIELDS];
+    return pb_split_fields(str, delim, mode, fstart, fend, PB_PARSE_MAX_FIELDS);
+}
 
-    int delim_len = (int)strlen(delim);
-    if (delim_len == 0) return 1;
+/* ============================================================
+ * PARSE statement - split a whole string into successive array elements
+ *
+ *   mode 0: exact delimiter (empty/NULL delim -> default comma mode)
+ *   mode 1: ANY (any single char in delim is a separator)
+ *   mode 2: BINARY (packed WORD/DWORD length-prefixed fields)
+ *   mode 3: default comma (optionally quoted; unquoted trimmed)
+ *
+ * target is the address of the first destination BSTR slot; capacity is the
+ * number of slots available. Fields beyond capacity are ignored.
+ * ============================================================ */
+void pb_parse_array(const char* str, const char* delim, int mode,
+                    char** target, int capacity) {
+    if (target == NULL || capacity <= 0) return;
+    if (str == NULL) str = "";
+    if (delim == NULL) delim = "";
 
-    int count = 1;
-    const char* p = str;
-    while (*p) {
-        if (delim_len == 1) {
-            if (*p == delim[0]) count++;
-            p++;
-        } else {
-            if (strncmp(p, delim, delim_len) == 0) {
-                count++;
-                p += delim_len;
+    int filled = 0;
+
+    /* Store one field given its raw bytes [fs, fe). The codegen's string model
+       never frees old slots (a slot may hold a static literal, which
+       SysFreeString would corrupt), so overwrite the pointer like pb_replace. */
+    #define PB_STORE_FIELD(fs, fe) do {                                   \
+        if (filled < capacity) {                                          \
+            target[filled] = pb_bstr_alloc((fs),                          \
+                (unsigned int)((fe) - (fs)));                             \
+            filled++;                                                     \
+        }                                                                \
+    } while (0)
+
+    if (mode == 2) {
+        /* BINARY: packed length-prefixed fields. */
+        const char* p = str;
+        while (*p != '\0') {
+            const unsigned char* q = (const unsigned char*)p;
+            unsigned int flen = (unsigned int)(
+                (unsigned char)q[0] | ((unsigned char)q[1] << 8));
+            q += 2;
+            if (flen == 65535) {
+                flen = (unsigned int)(
+                    (unsigned char)q[0] | ((unsigned char)q[1] << 8)
+                    | ((unsigned char)q[2] << 16) | ((unsigned char)q[3] << 24));
+                q += 4;
+            }
+            PB_STORE_FIELD((const char*)q, (const char*)q + flen);
+            p = (const char*)(q + flen);
+            if (filled >= capacity) break;
+        }
+        return;
+    }
+
+    if (mode == 3 || (mode == 0 && delim[0] == '\0')) {
+        /* Default comma-delimited, optionally quoted. */
+        const char* p = str;
+        while (1) {
+            const char* q = p;
+            while (*q == ' ') q++;
+            if (*q == '"') {
+                q++;  /* opening quote */
+                char* buf = (char*)malloc(strlen(q) + 1);
+                int n = 0;
+                while (*q != '\0') {
+                    if (*q == '"') {
+                        if (*(q + 1) == '"') { buf[n++] = '"'; q += 2; continue; }
+                        q++;  /* closing quote */
+                        break;
+                    }
+                    buf[n++] = *q++;
+                }
+                PB_STORE_FIELD(buf, buf + n);
+                free(buf);
+                /* Discard any characters until the next comma / end. */
+                while (*q != '\0' && *q != ',') q++;
+                if (*q == ',') {
+                    p = q + 1;
+                    if (filled >= capacity) break;
+                } else {
+                    break;
+                }
             } else {
-                p++;
+                /* Unquoted: collect to comma, then trim surrounding spaces. */
+                const char* start = p;
+                const char* e = p;
+                while (*e != '\0' && *e != ',') e++;
+                const char* ts = start;
+                const char* te = e;
+                while (ts < e && *ts == ' ') ts++;
+                while (te > ts && *(te - 1) == ' ') te--;
+                PB_STORE_FIELD(ts, te);
+                if (*e == ',') {
+                    p = e + 1;
+                    if (filled >= capacity) break;
+                } else {
+                    break;
+                }
             }
         }
+        return;
     }
-    return count;
+
+    /* Exact (mode 0, non-empty delim) or ANY (mode 1). */
+    int delim_len = (int)strlen(delim);
+    const char* p = str;
+    while (1) {
+        const char* fs = p;
+        int found = 0;
+        while (*p != '\0') {
+            int hit = 0;
+            if (mode == 1) {
+                for (int i = 0; i < delim_len; i++) {
+                    if (*p == delim[i]) { hit = 1; break; }
+                }
+            } else if (strncmp(p, delim, delim_len) == 0) {
+                hit = 1;
+            }
+            if (hit) { found = 1; break; }
+            p++;
+        }
+        PB_STORE_FIELD(fs, p);
+        if (!found) break;
+        p += (mode == 1) ? 1 : delim_len;
+        if (filled >= capacity) break;
+        /* A trailing delimiter yields one final empty field. */
+        if (*p == '\0') {
+            PB_STORE_FIELD(p, p);
+            break;
+        }
+    }
 }
+#undef PB_STORE_FIELD
 
 /* ============================================================
  * REPLACE � Replace all occurrences of old_str with new_str in target
@@ -3769,6 +3926,14 @@ int pb_play_wave(const char* path) {
     return PlaySoundA(path, NULL, PB_SND_FILENAME) ? 0 : -1;
 #else
     pb_err_var = pb_err = 68; return -1;
+#endif
+}
+
+/* PLAY WAVE END - stop any currently playing waveform. A NULL pszSound tells
+PlaySound to stop playback; it is safe (no error) when nothing is playing. */
+void pb_play_wave_end(void) {
+#ifdef _WIN32
+    PlaySoundA(NULL, NULL, 0);
 #endif
 }
 
@@ -5537,6 +5702,57 @@ void pb_poke64(void* a, long long v) { *(long long*)a = v; }
 void pb_pokef(void* a, float v) { memcpy(a, &v, 4); }
 void pb_poked(void* a, double v) { memcpy(a, &v, 8); }
 
+/* PEEK$ / POKE$ - raw byte memory access (CHW PEEK/POKE pages).
+ * PEEK$ returns a BSTR holding exactly `count` bytes; the STRINGZ form scans
+ * for a NUL and returns at most count-1 bytes.  POKE$ writes the BSTR's raw
+ * bytes; STRINGZ additionally appends a NUL terminator. */
+char* pb_peek_str(void* addr, int count) {
+    if (count <= 0) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc((const char*)addr, (unsigned int)count);
+}
+char* pb_peek_str_stringz(void* addr, int count) {
+    if (count <= 0) return pb_bstr_alloc("", 0);
+    int n = 0;
+    const unsigned char* p = (const unsigned char*)addr;
+    while (n < count - 1 && p[n] != 0) n++;
+    return pb_bstr_alloc((const char*)addr, (unsigned int)n);
+}
+void pb_poke_str(void* addr, const char* s) {
+    if (s == NULL) return;
+    unsigned int n = (unsigned int)pb_str_len(s);
+    memcpy(addr, s, n);
+}
+void pb_poke_str_stringz(void* addr, const char* s) {
+    unsigned int n = (s == NULL) ? 0 : (unsigned int)pb_str_len(s);
+    if (n) memcpy(addr, s, n);
+    ((unsigned char*)addr)[n] = 0;
+}
+
+/* PEEK$$ / POKE$$ - raw wide-character memory access.  `count` is a number of
+ * wide characters; the BSTR byte length is count*2.  WSTRINGZ scans for a
+ * NUL wide char and returns at most count-1 wide chars. */
+char* pb_peek_wstr(void* addr, int count) {
+    if (count <= 0) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc((const char*)addr, (unsigned int)(count * 2));
+}
+char* pb_peek_wstr_wstringz(void* addr, int count) {
+    if (count <= 0) return pb_bstr_alloc("", 0);
+    int n = 0;
+    const unsigned short* p = (const unsigned short*)addr;
+    while (n < count - 1 && p[n] != 0) n++;
+    return pb_bstr_alloc((const char*)addr, (unsigned int)(n * 2));
+}
+void pb_poke_wstr(void* addr, const char* s) {
+    if (s == NULL) return;
+    unsigned int n = (unsigned int)pb_str_len(s);
+    memcpy(addr, s, n);
+}
+void pb_poke_wstr_wstringz(void* addr, const char* s) {
+    unsigned int n = (s == NULL) ? 0 : (unsigned int)pb_str_len(s);
+    if (n) memcpy(addr, s, n);
+    ((unsigned short*)addr)[n / 2] = 0;
+}
+
 /* ===== Stubs for external DLL functions not yet available ===== */
 
 #ifdef _WIN32
@@ -5865,10 +6081,14 @@ void pb_get(int filenum, long long pos, char* buf, long long size) {
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
         /* PBWin: on a RANDOM file, pos is the 1-based RECORD number ->
            byte offset (pos-1)*rec_len; on a BINARY file it is a 1-based
-           byte offset (PBWin-measured record layout, batch 269 probe). */
-        long long off = (pos > 0) ? (pos - 1) : 0;
-        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
-        _fseeki64(file_handles[filenum], off, SEEK_SET);
+           byte offset (PBWin-measured record layout, batch 269 probe).
+           An omitted position (pos <= 0) reads at the CURRENT file pointer,
+           so no seek is issued. */
+        if (pos > 0) {
+            long long off = pos - 1;
+            if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+            _fseeki64(file_handles[filenum], off, SEEK_SET);
+        }
         fread(buf, 1, (size_t)size, file_handles[filenum]);
     }
 }
@@ -5878,9 +6098,12 @@ void pb_put(int filenum, long long pos, char* buf, long long size) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* CHW error 54: PUT on a file opened in sequential mode -> ERR 54 */
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
-        long long off = (pos > 0) ? (pos - 1) : 0;
-        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
-        _fseeki64(file_handles[filenum], off, SEEK_SET);
+        /* Omitted position (pos <= 0) writes at the CURRENT file pointer. */
+        if (pos > 0) {
+            long long off = pos - 1;
+            if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+            _fseeki64(file_handles[filenum], off, SEEK_SET);
+        }
         fwrite(buf, 1, (size_t)size, file_handles[filenum]);
         fflush(file_handles[filenum]);
     }
@@ -5892,11 +6115,14 @@ void pb_put(int filenum, long long pos, char* buf, long long size) {
 void pb_put_str(int filenum, long long pos, const char* s) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
-        long long off = (pos > 0) ? (pos - 1) : 0;
-        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+        /* Omitted position (pos <= 0) writes at the CURRENT file pointer. */
+        if (pos > 0) {
+            long long off = pos - 1;
+            if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+            _fseeki64(file_handles[filenum], off, SEEK_SET);
+        }
         unsigned long n = (s != NULL) ? SysStringByteLen(s) : 0;
         unsigned char hdr[2] = { (unsigned char)(n & 0xFF), (unsigned char)((n >> 8) & 0xFF) };
-        _fseeki64(file_handles[filenum], off, SEEK_SET);
         fwrite(hdr, 1, 2, file_handles[filenum]);
         if (n > 0) fwrite(s, 1, n, file_handles[filenum]);
         fflush(file_handles[filenum]);
@@ -5911,9 +6137,12 @@ void pb_put_str(int filenum, long long pos, const char* s) {
 void pb_get_str(int filenum, long long pos, char** dest) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum] && dest) {
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
-        long long off = (pos > 0) ? (pos - 1) : 0;
-        if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
-        _fseeki64(file_handles[filenum], off, SEEK_SET);
+        /* Omitted position (pos <= 0) reads at the CURRENT file pointer. */
+        if (pos > 0) {
+            long long off = pos - 1;
+            if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
+            _fseeki64(file_handles[filenum], off, SEEK_SET);
+        }
         unsigned char hdr[2] = { 0, 0 };
         size_t got = fread(hdr, 1, 2, file_handles[filenum]);
         unsigned long n = 0;
@@ -7220,6 +7449,7 @@ __declspec(dllimport) long __stdcall RegOpenKeyExA(HKEY_PB, const char*, unsigne
 __declspec(dllimport) long __stdcall RegQueryInfoKeyA(HKEY_PB, char*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, unsigned long*, void*);
 __declspec(dllimport) long __stdcall RegQueryValueExA(HKEY_PB, const char*, unsigned long*, unsigned long*, unsigned char*, unsigned long*);
 __declspec(dllimport) long __stdcall RegCloseKey(HKEY_PB);;
+__declspec(dllimport) long __stdcall RegEnumKeyExA(HKEY_PB, unsigned long, char*, unsigned long*, unsigned long*, unsigned long*, void*, void*);
 
 /* CLSID$(ProgramID$) - batch259 C batch, CHW CLSID$ function:
    Look up HKCR\<progid>\CLSID default value, parse the GUID string
@@ -7234,7 +7464,7 @@ static int pb_hexv(char c) {
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
-char* __stdcall pb_clsid_get(const char* progid) {
+char* pb_clsid_get(const char* progid) {
     char keybuf[512];
     unsigned char valbuf[128];
     unsigned long type = 1;                 /* REG_SZ */
@@ -7289,7 +7519,7 @@ char* __stdcall pb_clsid_get(const char* progid) {
    string (and does NOT set ERR) when the CLSID is not found or any error
    occurs.  The 4-byte BSTR length prefix is used so embedded NULs in the
    16-byte GUID are preserved; inputs shorter than 16 bytes return "". */
-char* __stdcall pb_progid_get(const char* clsid) {
+char* pb_progid_get(const char* clsid) {
     unsigned char b[16];
     char guid[40], key[80], valbuf[256];
     unsigned long type = 1;                 /* REG_SZ */
@@ -7345,13 +7575,13 @@ char* __stdcall pb_progid_get(const char* clsid) {
    helpers above. */
 __declspec(dllimport) long __stdcall CoCreateGuid(void* pguid);
 
-char* __stdcall pb_guid_new(void) {
+char* pb_guid_new(void) {
     char g[16];
     if (CoCreateGuid(g) != 0) return pb_bstr_alloc("", 0);
     return pb_bstr_alloc(g, 16);
 }
 
-char* __stdcall pb_guid_fromtxt(const char* txt) {
+char* pb_guid_fromtxt(const char* txt) {
     unsigned char raw[16];
     int idx = 0, half = 0;
     unsigned char cur = 0;
@@ -7379,7 +7609,7 @@ char* __stdcall pb_guid_fromtxt(const char* txt) {
     }
 }
 
-char* __stdcall pb_guid_txt(const char* guid16) {
+char* pb_guid_txt(const char* guid16) {
     unsigned char b[16];
     char guid[40];
     if (!guid16) return pb_bstr_alloc("", 0);
@@ -7404,7 +7634,7 @@ char* __stdcall pb_guid_txt(const char* guid16) {
    variable.  VARIANT$ returns the ANSI (narrow) form, VARIANT$$ the WSTRING
    (UTF-16 BSTR) form — both share the BSTR value union slot at +8.  Any other
    VT type returns an empty string (ANSI "") / null wide pointer. */
-char* __stdcall pb_variant_str(const void* v) {
+char* pb_variant_str(const void* v) {
     unsigned short vt;
     const char* s;
     if (!v) return pb_bstr_alloc("", 0);
@@ -7421,7 +7651,7 @@ char* __stdcall pb_variant_str(const void* v) {
 /* VARIANT$$ returns the WSTRING form: the fork's WSTRING variables are UTF-16
    BSTRs (batch 281), so convert the stored ANSI string to UTF-16 and hand back
    a BSTR that the assignment stores directly.  Any other VT returns NULL. */
-const void* __stdcall pb_variant_wstr(const void* v) {
+const void* pb_variant_wstr(const void* v) {
     unsigned short vt;
     const char* s;
     int n;
@@ -7446,7 +7676,7 @@ const void* __stdcall pb_variant_wstr(const void* v) {
    data type code stored in a 16-byte PB Variant variable (equates: 0
    VT_EMPTY, 1 VT_NULL, 2 VT_I2, 3 VT_I4, 5 VT_R8, 8 VT_BSTR, ...).  Layout:
    word VT code at +0, reserved words +2..+7, 8-byte value union at +8. */
-long __stdcall pb_variant_vt(const void* v) {
+long pb_variant_vt(const void* v) {
     if (!v) return 0;
     return ((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8);
 }
@@ -7457,7 +7687,7 @@ long __stdcall pb_variant_vt(const void* v) {
    arrays) and empty/null variants return 0.  The result is a DOUBLE, so the
    caller's destination type performs the final conversion (CHW itself warns
    that QUAD/CURRENCY can exceed DOUBLE precision). */
-double __stdcall pb_variant_num(const void* v) {
+double pb_variant_num(const void* v) {
     unsigned short vt;
     double d;
     long long i;
@@ -7486,7 +7716,7 @@ double __stdcall pb_variant_num(const void* v) {
    (10) and an error value of %DISP_E_PARAMNOTFOUND (0x80020004).  A NULL
    pointer is treated as missing too (defensive - a caller that skipped a
    BYREF variant argument passes the marker below, never NULL). */
-long __stdcall pb_variant_missing(const void* v) {
+long pb_variant_missing(const void* v) {
     unsigned short vt;
     unsigned int sc;
     if (!v) return -1;
@@ -7499,7 +7729,7 @@ long __stdcall pb_variant_missing(const void* v) {
 /* Initialise a 16-byte PB Variant container to the "missing" marker:
    VT_ERROR at +0, DISP_E_PARAMNOTFOUND in the +8 union slot.  The call side
    uses this for an omitted optional VARIANT argument. */
-void __stdcall pb_variant_missing_init(void* v) {
+void pb_variant_missing_init(void* v) {
     unsigned char* b = (unsigned char*)v;
     unsigned int sc = 0x80020004u;
     b[0] = 10; b[1] = 0;              /* VT_ERROR */
@@ -7685,6 +7915,47 @@ long long pb_printer_count(void) {
     RegQueryInfoKeyA(hk, 0, 0, 0, &count, 0, 0, 0, 0, 0, 0, 0);
     RegCloseKey(hk);
     return (long long)count;
+}
+
+/* PRINTER$: PRINTER$([NAME|PORT], printernum&).  Enumerate the printer subkeys
+ * under the same registry path pb_printer_count uses (1-based).  NAME/default
+ * returns the printer (subkey) name; PORT reads that subkey's "Port" value.
+ * An out-of-range index (or any failure) returns an empty BSTR. */
+char* pb_printer(const char* director, long long printernum) {
+    HKEY_PB hk = 0;
+    if (RegOpenKeyExA((HKEY_PB)0x80000002L,
+                      "SYSTEM\\CurrentControlSet\\Control\\Print\\Printers",
+                      0, 0x20019L, &hk))
+        return pb_bstr_alloc("", 0);
+    unsigned long total = 0;
+    RegQueryInfoKeyA(hk, 0, 0, 0, &total, 0, 0, 0, 0, 0, 0, 0);
+    char* result = pb_bstr_alloc("", 0);
+    if (printernum >= 1 && (unsigned long long)printernum <= (unsigned long long)total) {
+        char namebuf[256];
+        unsigned long nlen = sizeof(namebuf);
+        if (RegEnumKeyExA(hk, (unsigned long)(printernum - 1), namebuf, &nlen,
+                          0, 0, 0, 0) == 0) {
+            int want_port = director && strcmp(director, "PORT") == 0;
+            if (!want_port) {
+                result = pb_bstr_alloc(namebuf, nlen);
+            } else {
+                HKEY_PB sub = 0;
+                char portbuf[256];
+                unsigned long plen = sizeof(portbuf);
+                unsigned long ptype = 0;
+                if (RegOpenKeyExA(hk, namebuf, 0, 0x20019L, &sub) == 0
+                    && RegQueryValueExA(sub, "Port", 0, &ptype,
+                                        (unsigned char*)portbuf, &plen) == 0) {
+                    unsigned long blen = plen;
+                    if (blen && portbuf[blen - 1] == 0) blen--;
+                    result = pb_bstr_alloc(portbuf, blen);
+                }
+                if (sub) RegCloseKey(sub);
+            }
+        }
+    }
+    RegCloseKey(hk);
+    return result;
 }
 
 /* ---- Batch 23: WINDOW SET/GET TEXT (console title) + TYPE SET ---- */
@@ -9988,7 +10259,7 @@ void pb_com_init(void) {
    DLL/OCX-based servers always return FALSE because GetActiveObject has no
    running EXE instance to find.  The acquired active-object reference is
    released before returning. */
-long __stdcall pb_objactive(const char* progid) {
+long pb_objactive(const char* progid) {
     PB_GUID cg;
     wchar_t wbuf[256];
     void* obj = NULL;

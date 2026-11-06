@@ -2851,6 +2851,29 @@ impl Parser {
         self.tokens.get(self.pos + offset).map(|t| &t.token)
     }
 
+    /// Whether the LParen at offset 1 directly follows the identifier at
+    /// offset 0 with NO whitespace between them.  PowerBASIC distinguishes
+    /// `SubName(args)` (parenthesized call, LParen adjacent) from
+    /// `SubName (expr), arg2` (no-paren call whose first argument is a
+    /// parenthesized expression, LParen separated by a space).  The lexer
+    /// advances the column once per source character (including tabs), so the
+    /// LParen is adjacent exactly when its column equals the identifier's
+    /// column plus the identifier's character count.
+    fn lparen_is_adjacent(&self, id_text: &str) -> bool {
+        let id_col = match self.tokens.get(self.pos) {
+            Some(t) => t.col,
+            None => return true,
+        };
+        let lp = match self.tokens.get(self.pos + 1) {
+            Some(t) => t,
+            None => return true,
+        };
+        if !matches!(lp.token, Token::LParen) {
+            return true;
+        }
+        lp.col == id_col + id_text.chars().count()
+    }
+
     fn parse_data_items(&mut self) -> Vec<DataItem> {
         let mut items = Vec::new();
         loop {
@@ -4672,6 +4695,48 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::FunctionReturn(FunctionReturnStmt {
                         value,
+                        line,
+                    }));
+                }
+
+                // PARSE statement (CHW PARSE_statement.htm):
+                //   PARSE start$, target$() [, {[ANY] delim$ | BINARY}]
+                // Emitted as CallStmt "PARSE ARRAY" with args
+                //   [start, target-array-ref, mode, delim]; mode: 0 exact,
+                //   1 ANY, 2 BINARY, 3 default comma (no/empty delim).
+                if name_upper == "PARSE" {
+                    self.advance(); // consume PARSE
+                    let start = self.parse_expression()?;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
+                    let target = self.parse_expression()?;
+                    let mut mode: i64 = 3;
+                    let mut delim: Expr = Expr::StringLit(String::new());
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        if matches!(
+                            self.peek(),
+                            Token::Identifier(ref s) if s.eq_ignore_ascii_case("BINARY")
+                        ) {
+                            self.advance();
+                            mode = 2;
+                        } else if matches!(
+                            self.peek(),
+                            Token::Identifier(ref s) if s.eq_ignore_ascii_case("ANY")
+                        ) {
+                            self.advance();
+                            mode = 1;
+                            delim = self.parse_expression()?;
+                        } else {
+                            mode = 0;
+                            delim = self.parse_expression()?;
+                        }
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "PARSE ARRAY".to_string(),
+                        args: vec![start, target, Expr::IntegerLit(mode), delim],
                         line,
                     }));
                 }
@@ -8276,6 +8341,16 @@ impl Parser {
                 {
                     self.advance(); // consume PLAY
                     self.advance(); // consume WAVE
+                                    // PLAY WAVE END - stop any currently playing waveform, no args
+                    if self.peek() == &Token::End {
+                        self.advance(); // consume END
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "PLAY WAVE END".to_string(),
+                            args: vec![],
+                            line,
+                        }));
+                    }
                     let mut args = vec![self.parse_expression()?];
                     while self.peek() == &Token::Comma {
                         self.advance();
@@ -12958,6 +13033,12 @@ impl Parser {
                     let mut args = vec![self.parse_expression()?];
                     while self.peek() == &Token::Comma {
                         self.advance();
+                        // Empty record-position slot: PUT #f, , var means the
+                        // current file position. Omit the empty slot so the
+                        // codegen sees the current-position (2-arg) form.
+                        if self.peek() == &Token::Comma || self.at_eol_or_eof() {
+                            continue;
+                        }
                         args.push(self.parse_expression()?);
                     }
                     self.consume_to_eol();
@@ -13437,10 +13518,13 @@ impl Parser {
                     return Ok(Statement::Noop(name_clone.clone(), line));
                 }
 
-                if self.peek_at(1) == Some(&Token::LParen) {
+                if self.peek_at(1) == Some(&Token::LParen) && self.lparen_is_adjacent(name) {
                     // Could be: arr(idx) = expr  (array assignment)
                     // Or:       Sub(args)        (sub call)
                     // Or:       arr(idx).member = expr (UDT array member)
+                    // A space before the LParen (`Sub (expr), arg2`) is NOT a
+                    // parenthesized call: the LParen starts a parenthesized
+                    // first argument, which the no-paren call path below handles.
                     // Parse just the primary expression (no comparison operators)
                     let primary = self.parse_primary()?;
 

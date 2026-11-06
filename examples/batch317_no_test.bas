@@ -64,6 +64,14 @@ FUNCTION PBMAIN()
     e3 = ERR
     PRINT #1, "NAME"; e1; e2; e3
 
+    ' --- clean up the scratch files used by the OPEN/NAME tests.
+    ' ON ERROR RESUME NEXT is active, so a missing file is ignored. ---
+    KILL "batch317_rnd.tmp"
+    KILL "batch317_src.tmp"
+    KILL "batch317_newname.tmp"
+    KILL "batch317_dst_existing.tmp"
+    KILL "batch317_z.tmp"
+
     ' --- OBJRESULT$ bare (no prior COM call => hr=0 => system text) ---
     PRINT #1, "OBJRES"; OBJRESULT$()
 

@@ -2110,13 +2110,25 @@ impl Compiler {
         self.module.declare_function(
             "pb_parse",
             &IrType::Ptr,
-            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            &[IrType::Ptr, IrType::Ptr, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_parsecount",
             &IrType::I32,
-            &[IrType::Ptr, IrType::Ptr],
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_parse_array",
+            &IrType::Void,
+            &[
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
             false,
         );
         self.module.declare_function(
@@ -4306,6 +4318,12 @@ impl Compiler {
         self.module
             .declare_function("pb_printer_count", &IrType::I64, &[], false);
         self.module.declare_function(
+            "pb_printer",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
             "pb_fileattr",
             &IrType::I64,
             &[IrType::I32, IrType::I32],
@@ -5999,6 +6017,8 @@ impl Compiler {
             .declare_function("pb_seteof", &IrType::I32, &[IrType::I32], false);
         self.module
             .declare_function("pb_play_wave", &IrType::I32, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_play_wave_end", &IrType::Void, &[], false);
         self.module.declare_function(
             "pb_array_reverse",
             &IrType::Void,
@@ -6480,6 +6500,55 @@ impl Compiler {
             "pb_poked",
             &IrType::Void,
             &[IrType::Ptr, IrType::Double],
+            false,
+        );
+        // PEEK$/POKE$ (raw bytes) and PEEK$$/POKE$$ (raw wide chars)
+        self.module.declare_function(
+            "pb_peek_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_peek_str_stringz",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_poke_str",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_poke_str_stringz",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_peek_wstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_peek_wstr_wstringz",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_poke_wstr",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_poke_wstr_wstringz",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
             false,
         );
         self.module
@@ -13206,6 +13275,45 @@ impl Compiler {
                 return Ok(());
             }
             "POKE" => {
+                // The match key is normalized (strips $), so distinguish the
+                // string forms on the raw spelling first.
+                // POKE$ [STRINGZ,] addr, s$  / POKE$$ [WSTRINGZ,] addr, s$
+                let raw_upper = call.name.to_uppercase();
+                if raw_upper == "POKE$" || raw_upper == "POKE$$" {
+                    let (zform, addr_arg, str_arg) = match call.args.first() {
+                        Some(Expr::Variable(n))
+                            if matches!(normalize_name(n).as_str(), "STRINGZ" | "WSTRINGZ") =>
+                        {
+                            (true, call.args.get(1), call.args.get(2))
+                        }
+                        _ => (false, call.args.first(), call.args.get(1)),
+                    };
+                    if let Some(addr_expr) = addr_arg {
+                        let av = self.compile_expr(fb, addr_expr)?;
+                        let av64 = if av.ty == IrType::I32 {
+                            fb.sext(&av, &IrType::I64)
+                        } else {
+                            av
+                        };
+                        let addr = fb.inttoptr(&av64);
+                        if let Some(s) = str_arg {
+                            let sv = self.compile_expr(fb, s)?;
+                            let fn_name = if raw_upper == "POKE$" {
+                                if zform {
+                                    "pb_poke_str_stringz"
+                                } else {
+                                    "pb_poke_str"
+                                }
+                            } else if zform {
+                                "pb_poke_wstr_wstringz"
+                            } else {
+                                "pb_poke_wstr"
+                            };
+                            fb.call_void(fn_name, &[addr, sv]);
+                        }
+                    }
+                    return Ok(());
+                }
                 // POKE [DataType,] Address, Value [, Value...] — default BYTE
                 let (dt, rest) = match call.args.first() {
                     Some(Expr::Variable(n))
@@ -13329,6 +13437,32 @@ impl Compiler {
                             ],
                         );
                     }
+                }
+                return Ok(());
+            }
+            "PARSE ARRAY" => {
+                // PARSE statement: args = [start, target-array-ref, mode, delim].
+                // mode: 0 exact, 1 ANY, 2 BINARY, 3 default comma.
+                if call.args.len() != 4 {
+                    return Ok(());
+                }
+                let start = self.compile_expr(fb, &call.args[0])?;
+                let delim = self.compile_expr(fb, &call.args[3])?;
+                let mode = match call.args[2] {
+                    Expr::IntegerLit(m) => fb.const_i32(m as i32),
+                    _ => {
+                        let mv = self.compile_expr(fb, &call.args[2])?;
+                        self.to_i32(fb, &mv)
+                    }
+                };
+                let arr_name = match self.array_ref_name(&call.args[1]) {
+                    Some(n) => n,
+                    None => return Ok(()),
+                };
+                if let Some(info) = self.symbols.lookup_array(&arr_name).cloned() {
+                    let base = self.array_base(fb, &info);
+                    let cap = fb.const_i32(info.total_elements as i32);
+                    fb.call_void("pb_parse_array", &[start, delim, mode, base, cap]);
                 }
                 return Ok(());
             }
@@ -19830,6 +19964,11 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "PLAY WAVE END" => {
+                // PLAY WAVE END - stop any currently playing waveform (safe when idle)
+                fb.call_void("pb_play_wave_end", &[]);
+                return Ok(());
+            }
             "CHDRIVE" => {
                 // CHDRIVE drv$ — change current drive
                 if let Some(arg) = call.args.first() {
@@ -23829,6 +23968,56 @@ impl Compiler {
                         ));
                     }
                 }
+                // PEEK$/PEEK$$ (CHW PEEK page): raw byte/wchar memory read.
+                //   PEEK$([STRINGZ,] addr, count)   PEEK$$([WSTRINGZ,] addr, count)
+                // The optional STRINGZ/WSTRINGZ first arg scans for a NUL.
+                if raw_upper == "PEEK$" || raw_upper == "PEEK$$" {
+                    let (zform, addr_arg, count_arg) = match args.first() {
+                        Some(Expr::Variable(n))
+                            if matches!(normalize_name(n).as_str(), "STRINGZ" | "WSTRINGZ") =>
+                        {
+                            (true, args.get(1), args.get(2))
+                        }
+                        _ => (false, args.first(), args.get(1)),
+                    };
+                    let addr = match addr_arg {
+                        Some(a) => {
+                            let av = self.compile_expr(fb, a)?;
+                            let av64 = if av.ty == IrType::I32 {
+                                fb.sext(&av, &IrType::I64)
+                            } else {
+                                av
+                            };
+                            fb.inttoptr(&av64)
+                        }
+                        None => {
+                            return Err(PbError::parser(
+                                format!("{} requires an address", raw_upper),
+                                None,
+                                self.current_line,
+                            ))
+                        }
+                    };
+                    let count = match count_arg {
+                        Some(c) => {
+                            let cv = self.compile_expr(fb, c)?;
+                            self.to_i32(fb, &cv)
+                        }
+                        None => fb.const_i32(0),
+                    };
+                    let fn_name = if raw_upper == "PEEK$" {
+                        if zform {
+                            "pb_peek_str_stringz"
+                        } else {
+                            "pb_peek_str"
+                        }
+                    } else if zform {
+                        "pb_peek_wstr_wstringz"
+                    } else {
+                        "pb_peek_wstr"
+                    };
+                    return Ok(fb.call(&IrType::Ptr, fn_name, &[addr, count]));
+                }
                 // OBJRESULT$ (CHW OBJRESULT$_function.htm): returns a string
                 // describing an hResult. `text$ = OBJRESULT$([nexp&])`; with no
                 // argument it equals OBJRESULT$(OBJRESULT). normalize_name would
@@ -25044,8 +25233,9 @@ impl Compiler {
             "BUILD" => Some(self.builtin_build(fb, args)),
             "DAYNAME" => Some(self.builtin_name1(fb, args, "pb_dayname")),
             "BITS" => Some(self.builtin_bits(fb, args)),
-            "PATHNAME" => Some(self.builtin_str2(fb, args, "pb_pathname")),
+            "PATHNAME" => Some(self.builtin_pathname(fb, args)),
             "PRINTERCOUNT" => Some(self.builtin_count0(fb, "pb_printer_count")),
+            "PRINTER" => Some(self.builtin_printer(fb, args)),
             "THREADID" => Some(self.builtin_threadid(fb)),
             "CHRBYTES" => {
                 // CHRBYTES(var) — returns 1 for ANSI strings, 2 for wide strings
@@ -25071,7 +25261,7 @@ impl Compiler {
             "HI" | "LO" => Some(self.builtin_hilo(fb, args, name)),
             "FILEATTR" => Some(self.builtin_fileattr(fb, args)),
             "FILENAME" => Some(self.builtin_filename(fb, args)),
-            "PATHSCAN" => Some(self.builtin_strn(fb, args, "pb_pathscan", 2)),
+            "PATHSCAN" => Some(self.builtin_pathscan(fb, args)),
             "ERL" => Some(self.builtin_str0(fb, "pb_erl_str")),
             "CBOOL" => Some(self.builtin_cbool(fb, args)),
             "ERROR" => Some(self.builtin_error_str(fb, args)),
@@ -27328,18 +27518,82 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, fname, std::slice::from_ref(&n)))
     }
 
-    fn builtin_str2(
-        &mut self,
-        fb: &mut FunctionBuilder,
-        args: &[Expr],
-        fname: &str,
-    ) -> PbResult<Val> {
-        if args.len() != 2 {
-            return Err(PbError::runtime(format!("{fname} requires 2 arguments")));
+    /// Lower a PATHNAME/PATHSCAN director argument. The CHW director is a
+    /// keyword (FULL/PATH/NAME/EXTN/NAMEX), not a string variable, so map it to
+    /// a string constant instead of compiling it as an undeclared variable
+    /// (which #DIM ALL would reject with Error 519).
+    fn compile_director_const(&mut self, fb: &mut FunctionBuilder, e: &Expr) -> PbResult<Val> {
+        if let Expr::Variable(n) = e {
+            let d = normalize_name(n);
+            if matches!(d.as_str(), "FULL" | "PATH" | "NAME" | "EXTN" | "NAMEX") {
+                let (sname, _) = self.module.add_string_constant(&d);
+                return Ok(Val::new(sname, IrType::Ptr));
+            }
         }
-        let a0 = self.compile_expr(fb, &args[0])?;
-        let a1 = self.compile_expr(fb, &args[1])?;
-        let v = fb.call(&IrType::Ptr, fname, &[a0, a1]);
+        let v = self.compile_expr(fb, e)?;
+        Ok(self.convert_value(fb, &v, &IrType::Ptr, &PbType::String))
+    }
+
+    /// PATHNAME$(director, filespec$) - text-only path parse.
+    fn builtin_pathname(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() != 2 {
+            return Err(PbError::runtime("PATHNAME$ requires 2 arguments"));
+        }
+        let d = self.compile_director_const(fb, &args[0])?;
+        let s = self.compile_expr(fb, &args[1])?;
+        let v = fb.call(&IrType::Ptr, "pb_pathname", &[d, s]);
+        Ok(self.null_guard_string(fb, &v))
+    }
+
+    /// PATHSCAN$(director, filespec$ [, pathspec$]) - real disk scan.
+    fn builtin_pathscan(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.len() < 2 {
+            return Err(PbError::runtime("PATHSCAN$ requires at least 2 arguments"));
+        }
+        let d = self.compile_director_const(fb, &args[0])?;
+        let f = self.compile_expr(fb, &args[1])?;
+        let p = if let Some(third) = args.get(2) {
+            let tv = self.compile_expr(fb, third)?;
+            self.convert_value(fb, &tv, &IrType::Ptr, &PbType::String)
+        } else {
+            // No pathspec: pass an empty string constant.
+            let (en, _) = self.module.add_string_constant("");
+            Val::new(en, IrType::Ptr)
+        };
+        Ok(fb.call(&IrType::Ptr, "pb_pathscan", &[d, f, p]))
+    }
+
+    /// PRINTER$([NAME|PORT,] printernum&) - printer/port name.
+    fn builtin_printer(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        if args.is_empty() {
+            return Err(PbError::runtime("PRINTER$ requires a printer number"));
+        }
+        let (director_expr, num_expr) = match &args[0] {
+            Expr::Variable(n) if matches!(normalize_name(n).as_str(), "NAME" | "PORT") => {
+                (args.first(), args.get(1))
+            }
+            _ => (None, args.first()),
+        };
+        let d = match director_expr {
+            Some(Expr::Variable(n)) => {
+                let d = normalize_name(n);
+                let (sname, _) = self.module.add_string_constant(&d);
+                Val::new(sname, IrType::Ptr)
+            }
+            _ => {
+                // Default director = NAME.
+                let (sname, _) = self.module.add_string_constant("NAME");
+                Val::new(sname, IrType::Ptr)
+            }
+        };
+        let num = match num_expr {
+            Some(e) => {
+                let nv = self.compile_expr(fb, e)?;
+                self.to_i64(fb, &nv)
+            }
+            None => fb.const_i64(0),
+        };
+        let v = fb.call(&IrType::Ptr, "pb_printer", &[d, num]);
         Ok(self.null_guard_string(fb, &v))
     }
 
@@ -27548,27 +27802,6 @@ impl Compiler {
         let a0 = self.compile_expr(fb, &args[0])?;
         let f = self.convert_value(fb, &a0, &IrType::I32, &PbType::Long);
         Ok(fb.call(&IrType::Ptr, "pb_filename", &[f]))
-    }
-
-    fn builtin_strn(
-        &mut self,
-        fb: &mut FunctionBuilder,
-        args: &[Expr],
-        fname: &str,
-        min: usize,
-    ) -> PbResult<Val> {
-        if args.len() < min {
-            return Err(PbError::runtime(format!(
-                "{fname} requires at least {min} arguments"
-            )));
-        }
-        let mut a = Vec::new();
-        for e in args {
-            let v = self.compile_expr(fb, e)?;
-            let p = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
-            a.push(p);
-        }
-        Ok(fb.call(&IrType::Ptr, fname, &a))
     }
 
     fn builtin_str0(&mut self, fb: &mut FunctionBuilder, fname: &str) -> PbResult<Val> {
@@ -28882,43 +29115,118 @@ impl Compiler {
         }
     }
 
+    /* Decode the PARSE$/PARSECOUNT argument list.
+    Returns (mode, optional delimiter expr, index expr), where mode is:
+    0 exact, 1 ANY, 2 BINARY, 3 default comma (no delimiter). The parser
+    turns ANY into a StringLit("__ANY__") sentinel; BINARY arrives as a
+    bare Variable. */
+    fn decode_parse_args(args: &[Expr]) -> (i32, Option<&Expr>, Option<&Expr>) {
+        let rest: Vec<&Expr> = args.iter().skip(1).collect();
+        let mut special: Option<i32> = None;
+        let mut filtered: Vec<&Expr> = Vec::new();
+        for e in &rest {
+            if let Expr::StringLit(s) = e {
+                if s == "__ANY__" {
+                    special = Some(1);
+                    continue;
+                }
+            }
+            if let Expr::Variable(v) = e {
+                if v.eq_ignore_ascii_case("BINARY") {
+                    special = Some(2);
+                    continue;
+                }
+            }
+            filtered.push(e);
+        }
+        match special {
+            Some(2) => (2, None, filtered.first().copied()),
+            Some(1) => (1, filtered.first().copied(), filtered.get(1).copied()),
+            _ => {
+                // No special keyword. Two remaining exprs -> exact delimiter;
+                // one -> default comma (index only).
+                if filtered.len() >= 2 {
+                    (0, Some(filtered[0]), Some(filtered[1]))
+                } else if filtered.len() == 1 {
+                    (3, None, Some(filtered[0]))
+                } else {
+                    (3, None, None)
+                }
+            }
+        }
+    }
+
+    /* Decode PARSECOUNT args. PARSECOUNT has no index: a single positional
+    after the string is an explicit delimiter (mode 0), not an index.
+    Returns (mode, optional delimiter expr). */
+    fn decode_parsecount_args(args: &[Expr]) -> (i32, Option<&Expr>) {
+        let rest: Vec<&Expr> = args.iter().skip(1).collect();
+        let mut special: Option<i32> = None;
+        let mut filtered: Vec<&Expr> = Vec::new();
+        for e in &rest {
+            if let Expr::StringLit(s) = e {
+                if s == "__ANY__" {
+                    special = Some(1);
+                    continue;
+                }
+            }
+            if let Expr::Variable(v) = e {
+                if v.eq_ignore_ascii_case("BINARY") {
+                    special = Some(2);
+                    continue;
+                }
+            }
+            filtered.push(e);
+        }
+        match special {
+            Some(2) => (2, None),
+            Some(1) => (1, filtered.first().copied()),
+            _ => {
+                if filtered.is_empty() {
+                    // PARSECOUNT(str): default comma, no delimiter.
+                    (3, None)
+                } else {
+                    // PARSECOUNT(str, delim): exact delimiter.
+                    (0, Some(filtered[0]))
+                }
+            }
+        }
+    }
+
     fn builtin_parse(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // PARSE$(string, delimiter, index) — 3-arg form (official)
-        // PARSE$(string, index)          — 2-arg form: default delimiter = comma
-        // PARSE$(string)                 — 1-arg form: default delimiter = comma
-        // (PBWin10 measured: PARSECOUNT("one two three four") = 1, so the
-        //  omitted delimiter is "," not " ".)
+        // CHW PARSE$: PARSE$(string [, {[ANY] delim | BINARY}], index).
+        // Omitted delimiter -> default comma. Negative index counts from the
+        // right; index 0 / out of range returns empty.
         let s = self.compile_expr(fb, &args[0])?;
-        let (delim, index) = if args.len() >= 3 {
-            (
-                self.compile_expr(fb, &args[1])?,
-                self.compile_expr(fb, &args[2])?,
-            )
-        } else if args.len() == 2 {
-            let (n, _) = self.module.add_string_constant(",");
-            (Val::new(n, IrType::Ptr), self.compile_expr(fb, &args[1])?)
-        } else {
-            let (n, _) = self.module.add_string_constant(",");
-            (Val::new(n, IrType::Ptr), fb.const_i32(0))
+        let (mode, delim_expr, index_expr) = Self::decode_parse_args(args);
+        let (delim_name, _) = self.module.add_string_constant(",");
+        let delim = match delim_expr {
+            Some(d) => self.compile_expr(fb, d)?,
+            None => Val::new(delim_name, IrType::Ptr),
+        };
+        let mode_v = fb.const_i32(mode);
+        let index = match index_expr {
+            Some(i) => self.compile_expr(fb, i)?,
+            None => fb.const_i32(0),
         };
         let index_i32 = self.to_i32(fb, &index);
-        Ok(fb.call(&IrType::Ptr, "pb_parse", &[s, delim, index_i32]))
+        Ok(fb.call(&IrType::Ptr, "pb_parse", &[s, delim, mode_v, index_i32]))
     }
 
     fn builtin_parsecount(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
-        // PARSECOUNT(string)         — default delimiter = comma
-        // PARSECOUNT(string, delim)  — explicit delimiter
+        // CHW PARSECOUNT: same field rules as PARSE$; empty/no-delimiter = 1.
         if args.is_empty() {
             return Ok(fb.const_i32(0));
         }
         let s = self.compile_expr(fb, &args[0])?;
-        let delim = if args.len() >= 2 {
-            self.compile_expr(fb, &args[1])?
-        } else {
-            let (n, _) = self.module.add_string_constant(",");
-            Val::new(n, IrType::Ptr)
+        let (mode, delim_expr) = Self::decode_parsecount_args(args);
+        let (delim_name, _) = self.module.add_string_constant(",");
+        let delim = match delim_expr {
+            Some(d) => self.compile_expr(fb, d)?,
+            None => Val::new(delim_name, IrType::Ptr),
         };
-        Ok(fb.call(&IrType::I32, "pb_parsecount", &[s, delim]))
+        let mode_v = fb.const_i32(mode);
+        Ok(fb.call(&IrType::I32, "pb_parsecount", &[s, delim, mode_v]))
     }
 
     fn builtin_remove(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
