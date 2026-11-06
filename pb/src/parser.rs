@@ -2498,6 +2498,21 @@ impl Parser {
                 self.advance();
                 continue;
             }
+            // CHW DECLARE: FASTPROC is a procedure block (FASTPROC...END
+            // FASTPROC), not a calling-convention descriptor. The legal DECLARE
+            // descriptors are CDECL / SDECL(STDCALL) / BDECL, so reject it with
+            // a clear error instead of silently swallowing the keyword and
+            // emitting a wrong `_NAME@0` call that only fails at link time.
+            if self.peek() == &Token::FastProc {
+                return Err(PbError::parser(
+                    "FASTPROC is not a valid DECLARE calling convention: FASTPROC is a \
+                     procedure block (FASTPROC...END FASTPROC), not an external calling \
+                     convention. Use CDECL, SDECL (STDCALL), or BDECL in a DECLARE statement"
+                        .to_string(),
+                    self.current_file(),
+                    self.current_line(),
+                ));
+            }
             let conv = match self.peek() {
                 Token::Identifier(ref s) => match s.to_uppercase().as_str() {
                     "CDECL" => Some(CallConv::CDecl),
