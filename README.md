@@ -19,6 +19,33 @@ JK-IDE can compile a source file with either this compiler (**PB64Basic**) or th
 
 This branch also integrates PowerBASIC Help. Put the mouse pointer over any word or keyword in your source and press **F1** to open the help topic for that word directly (context-sensitive help). If you prefer to browse, you can open the PowerBASIC compiled help file (**PB.chm**) on its own — from the add-on's **Open PB Help** menu or by double-clicking the file — and use its contents, index, and full-text search to look up any keyword. The matching index file (**PB.chw**) is loaded automatically when it sits next to the `.chm` file.
 
+### Right-click context menu (editor tabs and editor area)
+
+The add-on adds a context menu that you can open in two places, both listing the same seven commands:
+
+- **Tab context menu** — right-click a document tab along the top of the editor. It lets you act on that file without first switching to it: copy its path or name, copy the whole file, open its folder, rename it, or close the tab.
+- **Editor context menu** — right-click anywhere in the editor's text area. It offers the same commands for the file you are currently editing, so you do not need to move the pointer up to the tab.
+
+The seven commands are grouped by purpose:
+
+*Clipboard*
+
+- **Copy Path** — copy the full absolute path of the active file.
+- **Copy File Name** — copy just the file name, without the folder.
+- **Copy File** — copy the file itself as a real file object (CF_HDROP), so you can paste it directly into an Explorer folder; the source folder is also opened for you automatically.
+
+*Open*
+
+- **Open with** — choose an installed application to open the file, through the system "Open with" dialog.
+- **Open in Explorer** — open the folder that contains the file.
+
+*File management*
+
+- **Rename...** — rename the file on disk and update the editor tab title to match.
+- **Close Tab** — close the active document.
+
+These commands keep the everyday file operations — copying, opening, renaming, and closing — a single right-click away, entirely inside the editor, so you spend less time switching between JK-IDE and Explorer. As described above, any source can still be compiled from the JK-IDE menu with either **PB64Basic** or the separate **PBXB64.exe** PowerBASIC compiler.
+
 ---
 
 ## What's New vs. Upstream
@@ -260,7 +287,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (946 rows, deduplicated). **0** official keywords are not implemented yet; **29** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 322 (v0.2.113). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 323 (v0.2.114). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 323 (v0.2.114) - JK-IDE addon release: Copy File now opens the source folder automatically. After the file is copied to the clipboard as a wide CF_HDROP descriptor, the folder containing the active file is opened so the file can be pasted immediately without browsing manually. The temporary diagnostic logging was removed for a clean final build, while the permanent MDI and tab subclassing and all seven context-menu actions are retained. The same seven actions are available from both the tab context menu (right-click a document tab) and the editor context menu (right-click in the editor area). No keyword coverage change (946 rows, 915 implemented). Smoke example: `examples/batch323_test.bas`.
 > batch 322 (v0.2.113) - JK-IDE addon release: editor tab context menu. Right-clicking an editor tab now opens a menu mirroring the legacy PB_IDE tab menu, with seven actions (Copy Path, Copy File Name, Copy, Open with, Open in Explorer, Rename, Close Tab) and two separators. Copy Path and Copy File Name place the full path or only the file name on the clipboard; Copy places a wide CF_HDROP file descriptor that can be pasted into Explorer; Open with runs the system "Open with" dialog; Open in Explorer opens the file's folder; Rename renames the file on disk and updates the tab title; Close Tab closes the active document. The menu is built through the addon usercontextmenu hook without modifying the signed JK-IDE executable. No keyword coverage change (946 rows, 915 implemented). Smoke example: `examples/batch322_test.bas`.
 > batch 321 (v0.2.112) - Parser fix for a parenthesized expression as the first SUB argument. A statement such as `Check (1 = 1), "label", nfail` (a space before the LParen) was misread as a parenthesized call `Check(1=1)`, so only one argument was parsed and the end-of-line recovery silently discarded the rest, leaving the callee with garbage pointers and an access violation (0xC0000005). A new column-based adjacency check (`lparen_is_adjacent`) routes only an adjacent LParen (`SubName(args)`) to the parenthesized-call path; a space-separated LParen now goes through the no-paren call path that parses every argument. The minimal probes and the new self-check `examples/batch321_test.bas` run with exit 0; the full regression is green and adjacent calls/array indexes are unchanged.
 > batch 320 (v0.2.111) - DECLARE hardening follow-up: an unrecognized identifier in the DECLARE calling-convention position now produces a clear parse error naming the bad token, instead of being silently swallowed so the DECLARE degenerated to a parameterless default stdcall and later failed at link with a misleading `_NAME@0`. This covers a misspelled convention such as `cdelc` (the correct spelling is `CDECL`). Non-identifier tokens (ALIAS, LIB, parameter list, end of line) still flow through as before. The valid conventions remain CDECL, SDECL (STDCALL) and BDECL; the correct CDECL external-object path and the internal FASTPROC block are unaffected. Smoke example: `examples/batch320_test.bas`.
@@ -811,6 +839,13 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.114 (2026-11-08) - JK-IDE addon: Copy File opens the source folder
+
+- JK-IDE addon release. The bundled `jkide/userdll.dll` is updated; the compiler itself is unchanged and keyword coverage stays at 946 rows / 915 implemented.
+- **Copy File now opens the source folder automatically.** After the file is copied to the clipboard as a wide CF_HDROP descriptor, the folder that contains the active file is opened, so you can paste it immediately without browsing to the folder manually.
+- **Clean final build.** The temporary diagnostic logging used during troubleshooting was removed, so the addon no longer writes any debug log; the permanent MDI and tab subclassing and all seven context-menu actions are retained.
+- The same seven actions are available from both the tab context menu (right-click a document tab) and the editor context menu (right-click in the editor area). Smoke example: `examples/batch323_test.bas`.
+
 ### v0.2.113 (2026-11-07) - JK-IDE addon: editor tab context menu
 
 - JK-IDE addon release. This version ships the new editor tab right-click context menu in the bundled `jkide/userdll.dll`; the compiler itself is unchanged and keyword coverage stays at 946 rows / 915 implemented.

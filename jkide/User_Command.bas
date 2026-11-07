@@ -81,6 +81,7 @@ local ztext as asciiz * 260
 
     CASE %JKCTX_COPY
       JK_ClipSetFile JK_ActiveFile$
+      JK_OpenInExplorer
 
     CASE %JKCTX_OPENWITH
       JK_OpenWith

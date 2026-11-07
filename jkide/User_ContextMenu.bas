@@ -26,6 +26,12 @@ function usercontextmenu alias "usercontextmenu" (byval hmenu as dword) export a
 #endif
 #utility begin usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+  ' Subclass the active MDI child frame so our menu commands reach usercommand.
+  JK_SubclassActiveMDI
+
+  ' Ensure the file tab bar is subclassed (fallback for the startup path).
+  JK_SubclassTab
+
   ' ===== Right-click menu replicating the PB_IDE tab menu (HAN 2026-11-06) =====
   ' Guard against duplicate stacking: usercontextmenu fires on every
   ' right-click, so only append when our first item is not already present.
@@ -33,7 +39,7 @@ function usercontextmenu alias "usercontextmenu" (byval hmenu as dword) export a
     AppendMenu hmenu, %MF_SEPARATOR, 0, ""
     AppendMenu hmenu, %MF_STRING, %JKCTX_COPYPATH, "Copy Path"
     AppendMenu hmenu, %MF_STRING, %JKCTX_COPYNAME, "Copy File Name"
-    AppendMenu hmenu, %MF_STRING, %JKCTX_COPY,     "Copy"
+    AppendMenu hmenu, %MF_STRING, %JKCTX_COPY,     "Copy File"
     AppendMenu hmenu, %MF_STRING, %JKCTX_OPENWITH, "Open with..."
     AppendMenu hmenu, %MF_STRING, %JKCTX_EXPLORER, "Open in Explorer"
     AppendMenu hmenu, %MF_STRING, %JKCTX_RENAME,   "Rename..."

@@ -10,6 +10,9 @@
 ' you should add own code only in special areas of this file embordered by these two lines:
 #utility begin usercode area +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
+  ' Subclass the file tab bar so right-click shows our 7-item menu.
+  JK_SubclassTab
+
   ' ===== Compilers submenu (HAN 2026-10-27, startup install) =====
   ' Each compiler entry is now a popup submenu holding "Compile" and "Run"
   ' (HAN 2026-11-01): clicking the entry opens { Compile, Run }.

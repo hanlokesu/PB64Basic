@@ -839,6 +839,144 @@ GLOBAL gRnOk AS LONG
 GLOBAL gRnInitial AS STRING
 GLOBAL gRnResult AS STRING
 
+' ===== In-process subclass of the MDI child frame (JK_PBFrameClass) =====
+' The context menu WM_COMMAND is delivered to the active MDI child frame, which
+' does not forward the 55000-range user commands to usercommand. We subclass each
+' MDI child frame and forward our menu commands to the main frame, whose WndProc
+' routes them correctly through usercommand.
+FUNCTION JK_MDIChildProc(BYVAL hWin AS DWORD, BYVAL uMsg AS DWORD, _
+                         BYVAL wParam AS DWORD, BYVAL lParam AS LONG) AS LONG
+  LOCAL id AS DWORD, ntf AS DWORD, oldProc AS DWORD
+  IF uMsg = %WM_COMMAND THEN
+    id = (wParam AND &H0000FFFF)
+    ntf = ((wParam AND &HFFFF0000) \ 65536)
+    IF ntf = 0 AND id >= %JKCTX_COPYPATH AND id <= %JKCTX_CLOSETAB THEN
+      FUNCTION = SendMessage(@hw.main, %WM_COMMAND, wParam, lParam)
+      EXIT FUNCTION
+    END IF
+  END IF
+  oldProc = GetProp(hWin, "JK_OLDPROC")
+  FUNCTION = CallWindowProc(oldProc, hWin, uMsg, wParam, lParam)
+END FUNCTION
+
+SUB JK_SubclassActiveMDI
+  LOCAL hChild AS DWORD, oldProc AS DWORD
+  hChild = SendMessage(@hw.mdi, %WM_MDIGETACTIVE, 0, 0)
+  IF hChild = 0 THEN EXIT SUB
+  IF GetProp(hChild, "JK_SUBCLASS") = 0 THEN
+    oldProc = SetWindowLongPtr(hChild, %GWLP_WNDPROC, CODEPTR(JK_MDIChildProc))
+    SetProp hChild, "JK_OLDPROC", oldProc
+    SetProp hChild, "JK_SUBCLASS", 1
+  END IF
+END SUB
+
+' ===== Tab control subclass: right-click a file tab to show the same menu =====
+' The tab bar is a standard SysTabControl32 (control id 106). It does not
+' invoke usercontextmenu, so we subclass it and show our own popup menu.
+%JK_TAB_ID = 106
+' Deferred rename: the DDT modal dialog must run from a clean message-loop
+' stack, not nested inside a menu/context call. Post this to the (subclassed)
+' tab control and show the dialog once the menu has fully unwound.
+%JK_WM_DO_RENAME = %WM_APP + 100
+
+FUNCTION JK_TabProc(BYVAL hWin AS DWORD, BYVAL uMsg AS DWORD, _
+                    BYVAL wParam AS DWORD, BYVAL lParam AS LONG) AS LONG
+  LOCAL oldProc AS DWORD
+  IF uMsg = %WM_CONTEXTMENU THEN
+    JK_TabMenu hWin, lParam
+    FUNCTION = 0
+    EXIT FUNCTION
+  END IF
+  IF uMsg = %JK_WM_DO_RENAME THEN
+    JK_DoRenameImpl
+    FUNCTION = 0
+    EXIT FUNCTION
+  END IF
+  oldProc = GetProp(hWin, "JK_TABOLDPROC")
+  FUNCTION = CallWindowProc(oldProc, hWin, uMsg, wParam, lParam)
+END FUNCTION
+
+SUB JK_SubclassTab
+  LOCAL hTab AS DWORD, oldProc AS DWORD
+  IF @hw.main = 0 THEN EXIT SUB
+  hTab = GetDlgItem(@hw.main, %JK_TAB_ID)
+  IF hTab = 0 THEN EXIT SUB
+  IF GetProp(hTab, "JK_TABSUBCLASS") = 0 THEN
+    oldProc = SetWindowLongPtr(hTab, %GWLP_WNDPROC, CODEPTR(JK_TabProc))
+    SetProp hTab, "JK_TABOLDPROC", oldProc
+    SetProp hTab, "JK_TABSUBCLASS", 1
+  END IF
+END SUB
+
+SUB JK_TabMenu(BYVAL hTab AS DWORD, BYVAL ctxlParam AS LONG)
+  LOCAL pt AS POINT, cp AS POINT, idx AS LONG, hflags AS DWORD
+  LOCAL ht AS TC_HITTESTINFO, hMenu AS DWORD, n AS LONG, k AS LONG
+  LOCAL tci AS TCITEMW, zlab AS WSTRINGZ * 260
+  LOCAL mdi AS DWORD, walk AS DWORD, target AS DWORD
+  LOCAL wBuf AS ASCIIZ * 1024, wCls AS ASCIIZ * 64
+  LOCAL sBase AS STRING, sFull AS STRING, p2 AS LONG, sel AS LONG
+  GetCursorPos pt
+  cp = pt
+  ScreenToClient hTab, cp
+  ht.pt = cp
+  ht.flags = 0
+  idx = SendMessage(hTab, %TCM_HITTEST, 0, VARPTR(ht))
+  hflags = ht.flags
+  IF idx < 0 THEN EXIT SUB
+  ' Enumerate every tab with its label.
+  n = SendMessage(hTab, %TCM_GETITEMCOUNT, 0, 0)
+  FOR k = 0 TO n - 1
+    tci.Mask = %TCIF_TEXT
+    tci.pszText = VARPTR(zlab)
+    tci.cchTextMax = 260
+    SendMessage hTab, %TCM_GETITEMW, k, VARPTR(tci)
+  NEXT
+  ' Read the label of the hit tab.
+  tci.Mask = %TCIF_TEXT
+  tci.pszText = VARPTR(zlab)
+  tci.cchTextMax = 260
+  SendMessage hTab, %TCM_GETITEMW, idx, VARPTR(tci)
+  sBase = zlab
+  ' Find the MDI child whose basename matches the tab label.
+  mdi = @hw.mdi
+  IF mdi = 0 THEN mdi = GetDlgItem(@hw.main, 101)
+  target = 0
+  walk = GetWindow(mdi, %GW_CHILD)
+  DO WHILE walk
+    GetWindowText walk, wBuf, 1024
+    GetClassName walk, wCls, 64
+    sFull = wBuf
+    p2 = 0
+    FOR k = 1 TO LEN(sFull)
+      IF MID$(sFull, k, 1) = "\" THEN p2 = k
+    NEXT
+    IF MID$(sFull, p2 + 1) = sBase THEN target = walk
+    walk = GetWindow(walk, %GW_HWNDNEXT)
+  LOOP
+  IF target THEN SendMessage mdi, %WM_MDIACTIVATE, target, 0
+  ' Build the same 7-item popup menu.
+  hMenu = CreatePopupMenu()
+  IF hMenu = 0 THEN EXIT SUB
+  AppendMenu hMenu, %MF_STRING, %JKCTX_COPYPATH, "Copy Path"
+  AppendMenu hMenu, %MF_STRING, %JKCTX_COPYNAME, "Copy File Name"
+  AppendMenu hMenu, %MF_STRING, %JKCTX_COPY,     "Copy File"
+  AppendMenu hMenu, %MF_STRING, %JKCTX_OPENWITH, "Open with..."
+  AppendMenu hMenu, %MF_STRING, %JKCTX_EXPLORER, "Open in Explorer"
+  AppendMenu hMenu, %MF_STRING, %JKCTX_RENAME,   "Rename..."
+  AppendMenu hMenu, %MF_SEPARATOR, 0, ""
+  AppendMenu hMenu, %MF_STRING, %JKCTX_CLOSETAB, "Close Tab"
+  ' TPM_RETURNCMD returns the chosen id instead of sending WM_COMMAND, so the
+  ' command is dispatched only after the menu modal loop has exited. This keeps
+  ' the DDT rename dialog from running nested inside TrackPopupMenu.
+  sel = TrackPopupMenu(hMenu, %TPM_RIGHTBUTTON OR %TPM_RETURNCMD, _
+                       pt.x, pt.y, 0, @hw.main, BYVAL 0)
+  DestroyMenu hMenu
+  IF sel = 0 THEN
+    EXIT SUB
+  END IF
+  SendMessage @hw.main, %WM_COMMAND, sel, 0
+END SUB
+
 FUNCTION JK_MenuHasId(BYVAL hMenu AS DWORD, BYVAL targetId AS DWORD) AS LONG
 ' TRUE when hMenu already contains an item with the given command id.
 ' Used to stop the context menu from stacking duplicate items when
@@ -879,12 +1017,19 @@ SUB JK_ClipSetText(BYVAL s AS STRING)
 END SUB
 
 SUB JK_ClipSetFile(BYVAL p AS STRING)
-' Put the FILE ITSELF on the clipboard as CF_HDROP, so it can be pasted
-' into Explorer as a file (this is PB_IDE's "Copy", not selected text).
-' The file list is DROPFILES (20 bytes) + wide path + NUL + extra NUL.
+' Put the FILE ITSELF on the clipboard exactly the way Explorer does.
+' Three formats are provided: CF_HDROP, "Shell IDList Array" (the CIDA
+' PIDL list, which Explorer prefers) and "Preferred DropEffect".
   LOCAL w AS WSTRINGZ * 1024
   LOCAL df AS JK_DROPFILES
   LOCAL cb AS LONG, total AS LONG, hMem AS DWORD, pMem AS DWORD
+  LOCAL zFmt AS ASCIIZ * 32, uFmt AS DWORD
+  LOCAL hEff AS DWORD, pEff AS DWORD
+  LOCAL pFull AS DWORD, pIT AS ITEMIDLIST PTR, pChild AS DWORD
+  LOCAL parentRaw AS LONG, parentLen AS LONG, childLen AS LONG
+  LOCAL cidaLen AS LONG, idaFmt AS DWORD
+  LOCAL hIda AS DWORD, pIda AS DWORD
+  LOCAL zIda AS ASCIIZ * 32
   IF LEN(p) = 0 THEN
     JK_SendOutput "Copy: empty path.", &HFF
     EXIT SUB
@@ -893,14 +1038,31 @@ SUB JK_ClipSetFile(BYVAL p AS STRING)
     JK_SendOutput "Copy: file not found: " + p, &HFF
     EXIT SUB
   END IF
+  ' Build the absolute PIDL, then split it into parent folder and the
+  ' last (relative) SHITEMID that identifies the file.
   w = p
-  cb = (LEN(w) + 1) * 2                  ' wide path + one NUL
-  total = 20 + cb + 2                    ' DROPFILES + path + end-of-list NUL
-  IF OpenClipboard(0) = 0 THEN
+  pFull = ILCreateFromPathW(w)
+  IF pFull = 0 THEN
+    JK_SendOutput "Copy: ILCreateFromPath failed.", &HFF
+    EXIT SUB
+  END IF
+  pIT = pFull
+  pChild = ILFindLastID(@pIT)
+  childLen = PEEK(WORD, pChild) + 2
+  parentRaw = pChild - pFull
+  parentLen = parentRaw + 2              ' parent PIDL + NUL terminator
+  cidaLen = 12 + parentLen + childLen
+  LOCAL oc AS LONG
+  oc = OpenClipboard(0)
+  IF oc = 0 THEN
     JK_SendOutput "Clipboard busy, retry.", &HFF
+    CoTaskMemFree BYVAL pFull
     EXIT SUB
   END IF
   EmptyClipboard
+  ' 1) CF_HDROP
+  cb = (LEN(w) + 1) * 2                  ' wide path + one NUL
+  total = 20 + cb + 2                    ' DROPFILES + path + end-of-list NUL
   hMem = GlobalAlloc(%GMEM_MOVEABLE OR %GMEM_ZEROINIT, total)
   IF hMem THEN
     pMem = GlobalLock(hMem)
@@ -914,15 +1076,61 @@ SUB JK_ClipSetFile(BYVAL p AS STRING)
     GlobalUnlock hMem
     SetClipboardData %CF_HDROP, hMem
   END IF
+  ' 2) Shell IDList Array (CIDA): cidl + (cidl+1) offsets + PIDL data
+  zIda = "Shell IDList Array"
+  idaFmt = RegisterClipboardFormatA(zIda)
+  hIda = GlobalAlloc(%GMEM_MOVEABLE OR %GMEM_ZEROINIT, cidaLen)
+  IF hIda THEN
+    pIda = GlobalLock(hIda)
+    POKE DWORD, pIda, 1
+    POKE DWORD, pIda + 4, 12
+    POKE DWORD, pIda + 8, 12 + parentLen
+    CopyMemory pIda + 12, pFull, parentRaw
+    POKE WORD, pIda + 12 + parentRaw, 0
+    CopyMemory pIda + 12 + parentLen, pChild, childLen
+    GlobalUnlock hIda
+    SetClipboardData idaFmt, hIda
+  END IF
+  ' 3) Preferred DropEffect = COPY(1) | LINK(4) = 5
+  zFmt = "Preferred DropEffect"
+  uFmt = RegisterClipboardFormatA(zFmt)
+  hEff = GlobalAlloc(%GMEM_MOVEABLE OR %GMEM_ZEROINIT, 4)
+  IF hEff THEN
+    pEff = GlobalLock(hEff)
+    POKE DWORD, pEff, 5
+    GlobalUnlock hEff
+    SetClipboardData uFmt, hEff
+  END IF
   CloseClipboard
+  CoTaskMemFree BYVAL pFull
+END SUB
+
+SUB JK_RestoreOW(BYVAL h AS DWORD)
+' Force a minimized interim "Open With" window to the foreground and restore it.
+' AttachThreadInput shares the input state so SetForegroundWindow is allowed.
+  LOCAL tid AS DWORD, pid AS DWORD, curT AS DWORD
+  tid = GetWindowThreadProcessId(h, pid)
+  curT = GetCurrentThreadId()
+  AllowSetForegroundWindow %ASFW_ANY
+  AttachThreadInput curT, tid, 1
+  SetForegroundWindow h
+  ShowWindow h, 9                      ' SW_RESTORE
+  SetWindowPos h, 0, 400, 250, 520, 460, &H0040
+  AttachThreadInput curT, tid, 0
 END SUB
 
 SUB JK_OpenWith()
-' Save first, then the system "Open with" dialog via
-' rundll32 shell32.dll,OpenAs_RunDLL.
+' Save first, then launch the native Windows "Open with" picker through
+' rundll32 OpenAs_RunDLL - the same reliable entry point PB_IDE uses.
   LOCAL f AS STRING
   LOCAL cds AS COPYDATASTRUCT, fp AS ASCIIZ * 1024
-  LOCAL zVerb AS ASCIIZ * 16, zFile AS ASCIIZ * 64, zPar AS ASCIIZ * 2048
+  LOCAL cmd AS ASCIIZ * 2048, argPath AS STRING
+  LOCAL si AS STARTUPINFOA, pi AS PROCESS_INFORMATION
+  LOCAL ok AS LONG
+  LOCAL t0 AS DWORD, hReal AS DWORD, hDummy AS DWORD
+  LOCAL zReal AS WSTRINGZ * 40, zDummy AS WSTRINGZ * 120, zEmpty AS WSTRINGZ * 4
+  zReal = "Open With"
+  zDummy = "Open With Dummy Window Class For Interim Dialog"
   f = JK_ActiveFile$()
   IF LEN(f) = 0 THEN
     JK_SendOutput "Open with: no active file with a full path.", &HFF
@@ -933,10 +1141,30 @@ SUB JK_OpenWith()
   cds.cbData = LEN(fp) + 1
   cds.lpData = VARPTR(fp)
   IF @hw.main > 0 THEN SendMessage @hw.main, %WM_COPYDATA, LEN(cds), VARPTR(cds)
-  zVerb = "open"
-  zFile = "rundll32.exe"
-  zPar = "shell32.dll,OpenAs_RunDLL " + $DQ + f + $DQ
-  ShellExecuteA 0, zVerb, zFile, zPar, "", %SW_SHOW
+  IF INSTR(f, " ") > 0 THEN
+    argPath = CHR$(34) + f + CHR$(34)
+  ELSE
+    argPath = f
+  END IF
+  ' 32-bit addon: use the Sysnative alias to launch the 64-bit rundll32. The
+  ' 32-bit (SysWOW64) rundll32 creates only an invisible RunDLL helper window.
+  cmd = "C:\Windows\Sysnative\rundll32.exe shell32.dll,OpenAs_RunDLL " + argPath
+  si.cb = SIZEOF(si)
+  ok = CreateProcessA(BYVAL 0, cmd, BYVAL 0, BYVAL 0, 0, 0, 0, BYVAL 0, si, pi)
+  IF ok THEN
+    CloseHandle pi.hProcess
+    CloseHandle pi.hThread
+    ' Bounded ensure loop: wait for the real picker, restoring any minimized
+    ' interim window. The real picker (class "Open With") is not EnumWindows.
+    t0 = GetTickCount()
+    DO
+      hReal = FindWindowW(zReal, zEmpty)
+      IF hReal AND IsWindowVisible(hReal) AND (IsIconic(hReal) = 0) THEN EXIT DO
+      hDummy = FindWindowW(zDummy, zEmpty)
+      IF hDummy AND IsIconic(hDummy) THEN JK_RestoreOW hDummy
+      apiSleep 50
+    LOOP WHILE (GetTickCount() - t0) < 5000
+  END IF
 END SUB
 
 SUB JK_OpenInExplorer()
@@ -958,32 +1186,115 @@ SUB JK_OpenInExplorer()
   ShellExecuteA 0, zVerb, zDir, "", "", %SW_SHOW
 END SUB
 
-CALLBACK FUNCTION JK_RenameDlgProc()
-  LOCAL s AS STRING
-  SELECT CASE CB.MSG
+' Native Win32 modal dialog (independent of the DDT engine). Standard control
+' class atoms used inside in-memory dialog templates.
+%JK_CLS_BUTTON = &H0080
+%JK_CLS_EDIT   = &H0081
+%JK_CLS_STATIC = &H0082
+
+DECLARE FUNCTION JK_DialogBoxIndirectW LIB "User32.dll" _
+  ALIAS "DialogBoxIndirectParamW" (BYVAL hInstance AS DWORD, _
+  BYVAL lpTemplate AS DWORD, BYVAL hWndParent AS DWORD, _
+  BYVAL lpDialogFunc AS DWORD, BYVAL dwInitParam AS DWORD) AS LONG
+
+FUNCTION JK_NativeRenameProc(BYVAL hDlg AS DWORD, BYVAL uMsg AS DWORD, _
+                             BYVAL wParam AS DWORD, BYVAL lParam AS LONG) AS LONG
+  LOCAL z AS WSTRINGZ * 1024, zi AS WSTRINGZ * 1024
+  SELECT CASE uMsg
     CASE %WM_INITDIALOG
-      CONTROL SET TEXT CB.HNDL, 1001, gRnInitial
+      zi = gRnInitial
+      SetDlgItemTextW hDlg, 1001, zi
+      FUNCTION = 1
     CASE %WM_COMMAND
-      SELECT CASE CB.CTL
+      SELECT CASE wParam AND &HFFFF
         CASE %IDOK
-          CONTROL GET TEXT CB.HNDL, 1001 TO s
-          gRnResult = s
+          GetDlgItemTextW hDlg, 1001, z, SIZEOF(z)
+          gRnResult = z
           gRnOk = 1
-          DIALOG END CB.HNDL, %IDOK
+          EndDialog hDlg, %IDOK
+          FUNCTION = 1
         CASE %IDCANCEL
           gRnOk = 0
-          DIALOG END CB.HNDL, %IDCANCEL
+          EndDialog hDlg, %IDCANCEL
+          FUNCTION = 1
       END SELECT
+    CASE %WM_CLOSE
+      gRnOk = 0
+      EndDialog hDlg, %IDCANCEL
+      FUNCTION = 1
   END SELECT
 END FUNCTION
 
+SUB JK_AddDlgItem(buf() AS BYTE, offp AS LONG, BYVAL id AS WORD, BYVAL cls AS WORD, _
+                   BYVAL x AS LONG, BYVAL y AS LONG, BYVAL cx AS LONG, BYVAL cy AS LONG, _
+                   BYVAL style AS DWORD, z AS WSTRINGZ)
+  LOCAL item AS DLGITEMTEMPLATE, wv AS WORD, ff AS WORD, wn AS LONG
+  WHILE (offp AND 3) <> 0: offp += 1: WEND
+  item.style = style OR %WS_VISIBLE
+  item.ExtendedStyle = 0
+  item.x = x: item.y = y: item.cx = cx: item.cy = cy
+  item.id = id
+  CopyMemory VARPTR(buf(offp)), VARPTR(item), SIZEOF(item)
+  offp += SIZEOF(item)
+  wv = &HFFFF
+  CopyMemory VARPTR(buf(offp)), VARPTR(wv), 2: offp += 2
+  CopyMemory VARPTR(buf(offp)), VARPTR(cls), 2: offp += 2
+  wn = (LEN(z) + 1) * 2
+  CopyMemory VARPTR(buf(offp)), VARPTR(z), wn: offp += wn
+  ff = 0
+  CopyMemory VARPTR(buf(offp)), VARPTR(ff), 2: offp += 2
+END SUB
+
+SUB JK_BuildRenameTemplate(buf() AS BYTE, n AS LONG)
+  LOCAL dlg AS DLGTEMPLATE, offp AS LONG
+  LOCAL zStatic AS WSTRINGZ * 64, zEdit AS WSTRINGZ * 64
+  LOCAL zOk AS WSTRINGZ * 16, zCancel AS WSTRINGZ * 16, wv AS WORD, z AS WSTRINGZ * 32
+  LOCAL wn AS LONG
+  dlg.style = %WS_POPUP OR %WS_CAPTION OR %WS_SYSMENU OR %DS_MODALFRAME OR %DS_CENTER
+  dlg.dwExtendedStyle = 0
+  dlg.cdit = 4
+  dlg.x = 0: dlg.y = 0: dlg.cx = 190: dlg.cy = 50
+  CopyMemory VARPTR(buf(0)), VARPTR(dlg), SIZEOF(dlg)
+  offp = SIZEOF(dlg)
+  wv = 0
+  CopyMemory VARPTR(buf(offp)), VARPTR(wv), 2: offp += 2
+  CopyMemory VARPTR(buf(offp)), VARPTR(wv), 2: offp += 2
+  z = "Rename"
+  wn = (LEN(z) + 1) * 2
+  CopyMemory VARPTR(buf(offp)), VARPTR(z), wn: offp += wn
+  zStatic = "New file name:"
+  zEdit = ""
+  zOk = "OK"
+  zCancel = "Cancel"
+  JK_AddDlgItem buf(), offp, 1000, %JK_CLS_STATIC, 7, 5, 100, 10, %SS_LEFT, zStatic
+  JK_AddDlgItem buf(), offp, 1001, %JK_CLS_EDIT, 7, 15, 176, 12, _
+    %WS_TABSTOP OR %ES_AUTOHSCROLL OR %WS_BORDER, zEdit
+  JK_AddDlgItem buf(), offp, %IDOK, %JK_CLS_BUTTON, 120, 32, 30, 14, _
+    %WS_TABSTOP OR %BS_DEFPUSHBUTTON, zOk
+  JK_AddDlgItem buf(), offp, %IDCANCEL, %JK_CLS_BUTTON, 155, 32, 30, 14, _
+    %WS_TABSTOP OR %BS_PUSHBUTTON, zCancel
+  n = offp
+END SUB
+
 SUB JK_DoRename()
+' Entry point from a menu command. Defer the modal dialog to a clean stack by
+' posting a message to the subclassed tab control, so it runs after the menu
+' has fully unwound (avoids nested modal loops that break DDT).
+  LOCAL hTab AS DWORD
+  IF @hw.main = 0 THEN EXIT SUB
+  hTab = GetDlgItem(@hw.main, %JK_TAB_ID)
+  IF hTab = 0 THEN EXIT SUB
+  PostMessage hTab, %JK_WM_DO_RENAME, 0, 0
+END SUB
+
+SUB JK_DoRenameImpl()
 ' Modal name prompt, then save -> close old tab -> rename on disk ->
 ' open new tab. The old tab is closed before the disk rename so the IDE
 ' does not pop a "file changed externally" modal for the missing file.
   LOCAL f AS STRING, newName AS STRING, newPath AS STRING, folder AS STRING
-  LOCAL hDlg AS DWORD
   LOCAL cds AS COPYDATASTRUCT, fp AS ASCIIZ * 1024
+  DIM buf(0 TO 2047) AS BYTE
+  LOCAL n AS LONG, hInst AS DWORD
   f = JK_ActiveFile$()
   IF LEN(f) = 0 THEN
     JK_SendOutput "Rename: no active file with a full path.", &HFF
@@ -992,13 +1303,10 @@ SUB JK_DoRename()
   gRnOk = 0
   gRnResult = ""
   gRnInitial = PATHNAME$(NAMEX, f)
-  DIALOG NEW @hw.main, "Rename", , , 380, 100, _
-    %DS_MODALFRAME OR %WS_CAPTION OR %WS_SYSMENU, 0 TO hDlg
-  CONTROL ADD LABEL, hDlg, 1000, "New file name:", 12, 12, 200, 14
-  CONTROL ADD TEXTBOX, hDlg, 1001, "", 12, 30, 352, 16
-  CONTROL ADD BUTTON, hDlg, %IDOK, "OK", 236, 60, 58, 20
-  CONTROL ADD BUTTON, hDlg, %IDCANCEL, "Cancel", 306, 60, 58, 20
-  DIALOG SHOW MODAL hDlg, CALL JK_RenameDlgProc
+  JK_BuildRenameTemplate buf(), n
+  hInst = GetModuleHandleA("")
+  JK_DialogBoxIndirectW hInst, VARPTR(buf(0)), @hw.main, _
+                        CODEPTR(JK_NativeRenameProc), 0
   IF gRnOk = 0 THEN EXIT SUB
   newName = TRIM$(gRnResult)
   IF LEN(newName) = 0 THEN
