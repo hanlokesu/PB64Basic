@@ -1970,6 +1970,13 @@ impl Parser {
             Vec::new()
         };
 
+        // Optional THREADSAFE descriptor (CHW THREADSAFE: after the param list).
+        let mut threadsafe = false;
+        if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE")) {
+            self.advance();
+            threadsafe = true;
+        }
+
         // A METHOD declared inside a CLASS takes an implicit BYREF receiver as its
         // first parameter (batch 216).  Two things depend on it:
         //   * a bare INSTANCE field name in the body means `this.<field>` -- before
@@ -2035,6 +2042,7 @@ impl Parser {
                 body,
                 alias: None,
                 export,
+                threadsafe,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2043,6 +2051,7 @@ impl Parser {
                 body,
                 alias: None,
                 export,
+                threadsafe,
                 line,
             }),
         })
@@ -2071,12 +2080,11 @@ impl Parser {
             Vec::new()
         };
 
-        // THREADSAFE decoration (ignored, same as the METHOD form).
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "THREADSAFE"
-        }) {
+        // THREADSAFE decoration (CHW THREADSAFE: after the param list).
+        let mut threadsafe = false;
+        if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE")) {
             self.advance();
+            threadsafe = true;
         }
 
         let mut params = params;
@@ -2123,6 +2131,7 @@ impl Parser {
                 body,
                 alias: None,
                 export: false,
+                threadsafe,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2131,6 +2140,7 @@ impl Parser {
                 body,
                 alias: None,
                 export: false,
+                threadsafe,
                 line,
             }),
         })
@@ -2204,6 +2214,13 @@ impl Parser {
             Vec::new()
         };
 
+        // Optional THREADSAFE descriptor (CHW THREADSAFE: after the param list).
+        let mut threadsafe = false;
+        if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE")) {
+            self.advance();
+            threadsafe = true;
+        }
+
         // Optional COMMON / EXPORT descriptors (SLL sharing, CHW
         // "Creating a Static Link Library"): both may appear, in any order,
         // e.g. `SUB xxx() COMMON EXPORT`. fork links statically, so the
@@ -2225,6 +2242,7 @@ impl Parser {
             body,
             alias,
             export,
+            threadsafe,
             line,
         })
     }
@@ -2246,10 +2264,12 @@ impl Parser {
             self.advance();
         }
 
-        // Optional THREADSAFE descriptor (CHW FASTPROC header)
-        while matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE"))
-        {
+        // Optional THREADSAFE descriptor (CHW FASTPROC header).  CHW places it
+        // after the param list, but accept it here too for tolerance.
+        let mut threadsafe = false;
+        if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE")) {
             self.advance();
+            threadsafe = true;
         }
 
         let alias = if self.peek() == &Token::Alias {
@@ -2278,6 +2298,14 @@ impl Parser {
             Vec::new()
         };
 
+        // CHW position: THREADSAFE after the param list (fallback if not seen earlier).
+        if !threadsafe
+            && matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE"))
+        {
+            self.advance();
+            threadsafe = true;
+        }
+
         let mut export = false;
         while matches!(self.peek(), Token::Common | Token::Export) {
             if self.peek() == &Token::Export {
@@ -2305,6 +2333,7 @@ impl Parser {
             body,
             alias,
             export,
+            threadsafe,
             line,
         })
     }
@@ -2349,6 +2378,13 @@ impl Parser {
             Vec::new()
         };
 
+        // Optional THREADSAFE descriptor (CHW THREADSAFE: after the param list).
+        let mut threadsafe = false;
+        if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("THREADSAFE")) {
+            self.advance();
+            threadsafe = true;
+        }
+
         // Optional COMMON / EXPORT descriptors — come BEFORE the AS return
         // type in PB: `FUNCTION Foo (x AS LONG) COMMON EXPORT AS STRING`
         let mut export = false;
@@ -2378,6 +2414,7 @@ impl Parser {
             body,
             alias,
             export,
+            threadsafe,
             line,
         })
     }
@@ -14535,9 +14572,36 @@ impl Parser {
         self.advance(); // consume op
         match op.as_str() {
             "CREATE" => {
-                // THREAD CREATE func [TO id&]  /  THREAD CREATE func(args) TO id&
+                // CHW: THREAD CREATE func(param) [StackSize,] [SUSPEND] TO hThread
                 let func = self.parse_primary()?;
-                let mut args = vec![func];
+                let mut stack_size: Expr = Expr::IntegerLit(0);
+                let mut suspend = false;
+                // Optional StackSize expression and/or SUSPEND keyword precede TO.
+                loop {
+                    match self.peek() {
+                        Token::To => break,
+                        // No TO clause: the line ends right after the function
+                        // (legacy form used by the early thread tests).
+                        Token::Eol | Token::Eof => break,
+                        Token::Identifier(w) if w.eq_ignore_ascii_case("SUSPEND") => {
+                            self.advance();
+                            suspend = true;
+                        }
+                        _ => {
+                            // Numeric expression: the optional StackSize.
+                            stack_size = self.parse_expression()?;
+                            if matches!(self.peek(), Token::Comma) {
+                                self.advance();
+                            }
+                        }
+                    }
+                }
+                // Fixed layout: [func, stack_size, suspend_flag, (id)]
+                let mut args = vec![
+                    func,
+                    stack_size,
+                    Expr::IntegerLit(if suspend { 1 } else { 0 }),
+                ];
                 if matches!(self.peek(), Token::To) {
                     self.advance();
                     let id = self.parse_expression()?;
@@ -14553,9 +14617,9 @@ impl Parser {
             "CLOSE" | "SUSPEND" | "RESUME" => {
                 let id = self.parse_expression()?;
                 let mut args = vec![id];
-                // CHW THREAD CLOSE requires a TO result: THREAD CLOSE h TO lResult.
-                // SUSPEND/RESUME take only the handle.
-                if op == "CLOSE" && matches!(self.peek(), Token::To) {
+                // CHW: THREAD CLOSE/SUSPEND/RESUME h TO lResult.  The TO result
+                // receives the previous suspend count (or -1 on failure).
+                if matches!(self.peek(), Token::To) {
                     self.advance();
                     args.push(self.parse_expression()?);
                 }
@@ -15166,17 +15230,26 @@ impl Parser {
                         }
                     }
                 }
-                if let Token::Identifier(w) = self.peek() {
-                    if w.eq_ignore_ascii_case("PORT") {
+                match self.peek() {
+                    Token::Identifier(w) if w.eq_ignore_ascii_case("PORT") => {
                         self.advance();
                         port = Some(self.parse_expression()?);
-                    } else if !w.eq_ignore_ascii_case("AT")
-                        && !w.eq_ignore_ascii_case("AS")
-                        && !w.eq_ignore_ascii_case("TIMEOUT")
+                    }
+                    Token::Identifier(w)
+                        if !w.eq_ignore_ascii_case("AT")
+                            && !w.eq_ignore_ascii_case("AS")
+                            && !w.eq_ignore_ascii_case("TIMEOUT") =>
                     {
-                        // service name or numeric service string
+                        // bare service-name identifier (CHW srvc$ without quotes)
                         port = Some(self.parse_expression()?);
                     }
+                    // Quoted service name (CHW srvc$). A StringLiteral is not an
+                    // Identifier, so the previous check silently skipped it and
+                    // port defaulted to 0; the runtime resolves it via getservbyname.
+                    Token::StringLiteral(_) | Token::WideStringLiteral(_) => {
+                        port = Some(self.parse_expression()?);
+                    }
+                    _ => {}
                 }
                 let port_v = port.unwrap_or(Expr::IntegerLit(0));
                 if let Token::Identifier(w) = self.peek() {

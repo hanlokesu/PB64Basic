@@ -437,6 +437,21 @@ impl ModuleBuilder {
 }
 
 /// Builds a single LLVM IR function.
+/// State for a THREADSAFE procedure's lock guard.  When active, every `ret`
+/// inside the function is redirected (store + branch) to a single exit block
+/// that releases the SRW lock before performing the real return, so the lock
+/// is correctly released on every return path, including EXIT FUNCTION.
+pub struct LockGuard {
+    /// Operand name of the global SRWLOCK (e.g. "@foo.lock").
+    lock_name: String,
+    /// Unified exit block label.
+    exit_label: String,
+    /// Entry-block alloca that holds the value to return (None for void).
+    exit_slot: Option<String>,
+    /// Function return type.
+    ret_ty: IrType,
+}
+
 pub struct FunctionBuilder {
     body: String,
     /// Alloca instructions — always emitted in the entry block
@@ -451,6 +466,8 @@ pub struct FunctionBuilder {
     pub current_label: String,
     /// Whether the current block has been terminated
     terminated: bool,
+    /// Optional THREADSAFE lock guard.
+    lock_guard: Option<LockGuard>,
 }
 
 impl FunctionBuilder {
@@ -475,6 +492,7 @@ impl FunctionBuilder {
             label_counter: 0,
             current_label: "entry".to_string(),
             terminated: false,
+            lock_guard: None,
         };
         writeln!(fb.body, "entry:").unwrap();
         fb.entry_end_pos = fb.body.len();
@@ -902,7 +920,15 @@ impl FunctionBuilder {
 
     /// Return void.
     pub fn ret_void(&mut self) {
-        if !self.terminated {
+        if self.terminated {
+            return;
+        }
+        if let Some(LockGuard { ref exit_label, .. }) = self.lock_guard {
+            // THREADSAFE: redirect to the unified exit block (releases the lock).
+            let label = exit_label.clone();
+            writeln!(self.body, "  br label %{}", label).unwrap();
+            self.terminated = true;
+        } else {
             writeln!(self.body, "  ret void").unwrap();
             self.terminated = true;
         }
@@ -910,9 +936,84 @@ impl FunctionBuilder {
 
     /// Return a value.
     pub fn ret(&mut self, val: &Val) {
-        if !self.terminated {
+        if self.terminated {
+            return;
+        }
+        if let Some(LockGuard {
+            ref exit_label,
+            exit_slot: Some(ref slot),
+            ..
+        }) = self.lock_guard
+        {
+            // THREADSAFE: store the value, then branch to the exit block.
+            writeln!(self.body, "  store {} {}, ptr {}", val.ty, val.name, slot).unwrap();
+            writeln!(self.body, "  br label %{}", exit_label).unwrap();
+            self.terminated = true;
+        } else {
             writeln!(self.body, "  ret {} {}", val.ty, val.name).unwrap();
             self.terminated = true;
+        }
+    }
+
+    /// Enable the THREADSAFE lock guard.  Must be called at the very start of
+    /// the function, before any user logic.  `lock_name` is the operand name
+    /// of the global zero-initialized SRWLOCK (e.g. "@foo.lock").
+    pub fn begin_lock_guard(&mut self, lock_name: &str, ret_ty: &IrType) {
+        // Return-value slot in the entry block (non-void only).
+        let exit_slot = if matches!(ret_ty, IrType::Void) {
+            None
+        } else {
+            let r = format!("%r{}", self.reg_counter);
+            self.reg_counter += 1;
+            writeln!(self.allocas, "  {} = alloca {}", r, ret_ty).unwrap();
+            Some(r)
+        };
+        let exit_label = self.next_label("lock.exit");
+        // Acquire the lock immediately (first body instruction).
+        writeln!(
+            self.body,
+            "  call void @pb_threadsafe_enter(ptr {})",
+            lock_name
+        )
+        .unwrap();
+        self.lock_guard = Some(LockGuard {
+            lock_name: lock_name.to_string(),
+            exit_label,
+            exit_slot,
+            ret_ty: ret_ty.clone(),
+        });
+    }
+
+    /// Emit the unified exit block: release the lock, then perform the real
+    /// return.  Called once after all function logic has been emitted.
+    pub fn end_lock_guard(&mut self) {
+        let guard = match self.lock_guard.take() {
+            Some(g) => g,
+            None => return,
+        };
+        // Safety net: if the current block is still open, branch into the exit
+        // block so it stays reachable.
+        if !self.terminated {
+            writeln!(self.body, "  br label %{}", guard.exit_label).unwrap();
+            self.terminated = true;
+        }
+        // Exit block.
+        writeln!(self.body, "{}:", guard.exit_label).unwrap();
+        writeln!(
+            self.body,
+            "  call void @pb_threadsafe_leave(ptr {})",
+            guard.lock_name
+        )
+        .unwrap();
+        match guard.exit_slot {
+            Some(slot) => {
+                let r = self.next_reg();
+                writeln!(self.body, "  {} = load {}, ptr {}", r, guard.ret_ty, slot).unwrap();
+                writeln!(self.body, "  ret {} {}", guard.ret_ty, r).unwrap();
+            }
+            None => {
+                writeln!(self.body, "  ret void").unwrap();
+            }
         }
     }
 

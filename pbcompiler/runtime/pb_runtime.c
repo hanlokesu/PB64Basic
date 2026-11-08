@@ -349,6 +349,12 @@ __declspec(dllimport) int __stdcall TerminateThread(void* hThread, unsigned long
 __declspec(dllimport) int __stdcall GetExitCodeThread(void* hThread, unsigned long* lpExitCode);
 __declspec(dllimport) int __stdcall GetThreadPriority(void* hThread);
 __declspec(dllimport) int __stdcall SetThreadPriority(void* hThread, int nPriority);
+/* Slim Reader/Writer (SRW) locks for THREADSAFE procedures (kernel32).
+   An SRWLOCK is one pointer-sized object that is zero-initialized
+   (SRWLOCK_INIT == 0), so a global zero-initialized variable needs no
+   explicit Initialize call.  THREADSAFE uses the exclusive mode. */
+__declspec(dllimport) void __stdcall AcquireSRWLockExclusive(void* SRWLock);
+__declspec(dllimport) void __stdcall ReleaseSRWLockExclusive(void* SRWLock);
 #endif
 
 /* ===== Debug/crash reporting ===== */
@@ -6780,6 +6786,25 @@ __declspec(dllimport) unsigned long __stdcall inet_addr(const char* cp);
 __declspec(dllimport) int __stdcall setsockopt(pb_sock_t s, int level, int optname, const char* optval, int optlen);
 __declspec(dllimport) int __stdcall ioctlsocket(pb_sock_t s, long cmd, unsigned long* argp);
 __declspec(dllimport) int __stdcall WSAGetLastError(void);
+__declspec(dllimport) unsigned short __stdcall ntohs(unsigned short netshort);
+
+/* servent layout returned by getservbyname (winsock.h struct servent). Only
+   s_port is read, but the full field order is declared so the offset is correct.
+   winsock.h swaps s_proto/s_port under _WIN64 for pointer alignment: on 64-bit
+   s_proto precedes s_port, on 32-bit the classic order is used. A fixed order
+   put s_port at the wrong offset and yielded garbage port numbers. */
+struct pb_servent {
+    char* s_name;
+    char** s_aliases;
+#ifdef _WIN64
+    char* s_proto;
+    short s_port;
+#else
+    short s_port;
+    char* s_proto;
+#endif
+};
+__declspec(dllimport) struct pb_servent* __stdcall getservbyname(const char* name, const char* proto);
 
 #define PB_MAX_SOCK 256
 /* FIONREAD: ioctlsocket command returning the number of bytes available to read
@@ -6835,10 +6860,29 @@ static void pb_net_fill_addr(struct pb_sockaddr_in* a, unsigned long ip, int por
     a->sin_addr = ip;
 }
 
+/* Resolve a TCP service-name string (srvc$) to a numeric port number. CHW TCP
+   OPEN accepts a numeric port expression or a service-name string. Measured on
+   PBWin10: a string port is ALWAYS resolved via getservbyname, with no
+   numeric-string atoi - "48731" is not a registered service name and fails.
+   The returned s_port is network order and must be converted. Returns -1 and
+   sets Error 57 when the string is empty or the name is not found. */
+int pb_resolve_service(const char* name) {
+    if (pb_winsock_init() != 0) { pb_err_var = pb_err = 57; return -1; }
+    if (!name) { pb_err_var = pb_err = 57; return -1; }
+    struct pb_servent* se = getservbyname(name, "tcp");
+    if (!se) { pb_err_var = pb_err = 57; return -1; }
+    return (int)ntohs((unsigned short)se->s_port);
+}
+
 int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout, unsigned long bind_addr) {
     if (pb_winsock_init() != 0) { pb_err_var = pb_err = 57; return -1; }
     if (filenum < 1 || filenum >= PB_MAX_SOCK) { pb_err_var = pb_err = 52; return -1; }
     if (pb_sock_state[filenum] != 0) { pb_err_var = pb_err = 52; return -1; }
+    /* A service-name string is resolved by pb_resolve_service before this call;
+       it returns -1 and sets Error 57 when the name is unknown. Reject the
+       invalid port here so no socket is created (PBWin leaves the file closed on
+       a bad service name), instead of binding/connecting to htons(-1). */
+    if (port < 0 || port > 65535) { pb_err_var = pb_err = 57; return -1; }
     if (timeout <= 0) timeout = PB_TCP_DEFAULT_TIMEOUT; /* CHW default 60s */
     pb_sock_t s = socket(2, 1, 6); /* AF_INET, SOCK_STREAM, TCP */
     if (s == PB_SOCK_INVALID) { pb_err_var = pb_err = 57; return -1; }
@@ -6929,10 +6973,22 @@ int pb_tcp_recv(int f, long count, char** out) {
 }
 
 int pb_tcp_line_input(int f, char** out) {
-    if (f < 1 || f >= PB_MAX_SOCK || (pb_sock_state[f] != 1 && pb_sock_state[f] != 3)) { pb_err_var = pb_err = 52; return -1; }
-    char tmp[4096];
+    if (f < 1 || f >= PB_MAX_SOCK || (pb_sock_state[f] != 1 && pb_sock_state[f] != 3)) {
+        pb_err_var = pb_err = 52;
+        /* Measured on PBWin10: a failed TCP LINE INPUT clears the target string
+           instead of leaving its previous value in place. */
+        if (out) *out = pb_bstr_alloc(NULL, 0);
+        return -1;
+    }
+    /* Dynamic buffer: the old fixed 4096-byte stack buffer silently truncated
+       lines longer than 4095 bytes. Grow on demand so a line of any length is
+       returned in full; the blocking byte-at-a-time recv, timeout/error and
+       CRLF handling below are unchanged. */
+    long cap = 256;
+    char* tmp = (char*)malloc((size_t)cap);
+    if (!tmp) { pb_err_var = pb_err = 7; return -1; }
     int n = 0;
-    while (n < 4095) {
+    for (;;) {
         char c = 0;
         int r = recv(pb_sock[f], &c, 1, 0);
         if (r == 0) break;                 /* graceful close: no error */
@@ -6941,11 +6997,19 @@ int pb_tcp_line_input(int f, char** out) {
             break;
         }
         if (c == '\n') break;
-        if (c != '\r') tmp[n++] = c;
+        if (c == '\r') continue;
+        if (n == cap) {
+            long ncap = cap * 2;
+            char* nb = (char*)realloc(tmp, (size_t)ncap);
+            if (!nb) { free(tmp); pb_err_var = pb_err = 7; return -1; }
+            tmp = nb; cap = ncap;
+        }
+        tmp[n++] = c;
     }
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
+    free(tmp);
     *out = buf;
     return n;
 }
@@ -7498,7 +7562,9 @@ typedef struct _pb_thread_slot {
 
 static pb_thread_slot pb_thr[256];
 
-int pb_thread_create(void* func, unsigned long param, unsigned long* out_id) {
+int pb_thread_create(void* func, unsigned long param,
+                     unsigned long stack_size, unsigned long create_flags,
+                     unsigned long* out_id) {
     int i;
     unsigned long tid = 0;
     if (func == NULL) { pb_err_var = pb_err = 5; return -1; }
@@ -7510,8 +7576,10 @@ int pb_thread_create(void* func, unsigned long param, unsigned long* out_id) {
     /* CHW THREAD CREATE: the thread function takes one BYVAL LONG/DWORD passed
        by value.  CreateThread hands it over as lpParameter; on x64 the PB
        function reads its single i32 argument from the low 32 bits of RCX. */
-    pb_thr[i].h = CreateThread(NULL, 0, (void* (__stdcall*)(void*))func,
-                               (void*)(unsigned long long)param, 0, &tid);
+    /* dwStackSize is the optional StackSize (0 = main thread size);
+       dwCreationFlags carries CREATE_SUSPENDED (0x4) when SUSPEND is used. */
+    pb_thr[i].h = CreateThread(NULL, stack_size, (void* (__stdcall*)(void*))func,
+                               (void*)(unsigned long long)param, create_flags, &tid);
     if (!pb_thr[i].h) { pb_err_var = pb_err = 7; return -1; }
     pb_thr[i].tid = tid;
     pb_thr[i].state = 1;
@@ -7523,6 +7591,8 @@ int pb_thread_create(void* func, unsigned long param, unsigned long* out_id) {
     /* 32-bit: PB functions use cdecl but CreateThread requires stdcall �
        calling a cdecl function through a stdcall pointer corrupts the stack. */
     (void)param;
+    (void)stack_size;
+    (void)create_flags;
     if (out_id) *out_id = 0;
     pb_err_var = pb_err = 7; return -1;
 #endif
@@ -7554,18 +7624,24 @@ int pb_thread_close(unsigned long id) {
 
 int pb_thread_suspend(unsigned long id) {
     pb_thread_slot* t = pb_thread_slot_of(id);
+    unsigned long prev;
     if (t == NULL) return -1;
-    if (SuspendThread(t->h) == (unsigned long)-1) return -1;
+    /* CHW: lResult is the thread's previous suspend count (-1 on failure). */
+    prev = SuspendThread(t->h);
+    if (prev == (unsigned long)-1) return -1;
     t->state = 2;
-    return 0;
+    return (int)prev;
 }
 
 int pb_thread_resume(unsigned long id) {
     pb_thread_slot* t = pb_thread_slot_of(id);
+    unsigned long prev;
     if (t == NULL) return -1;
-    if (ResumeThread(t->h) == (unsigned long)-1) return -1;
+    /* CHW: lResult is the thread's previous suspend count (-1 on failure). */
+    prev = ResumeThread(t->h);
+    if (prev == (unsigned long)-1) return -1;
     t->state = 1;
-    return 0;
+    return (int)prev;
 }
 
 int pb_thread_status(unsigned long id) {
@@ -7593,6 +7669,32 @@ int pb_thread_set_priority(unsigned long id, int prio) {
     pb_thread_slot* t = pb_thread_slot_of(id);
     if (t == NULL) { pb_err_var = pb_err = 5; return -1; }
     return SetThreadPriority(t->h, prio) ? 0 : -1;
+}
+
+/* THREADSAFE procedure guard (CHW THREADSAFE).  The code generator emits one
+   global zero-initialized SRWLOCK per THREADSAFE procedure and passes its
+   address; exclusive acquisition lets only one thread execute the procedure
+   at a time, and the paired release runs on every return path. */
+void pb_threadsafe_enter(void* lock) {
+    AcquireSRWLockExclusive(lock);
+}
+
+void pb_threadsafe_leave(void* lock) {
+    ReleaseSRWLockExclusive(lock);
+}
+
+/* THREADED array backing storage (CHW THREADED).  Each thread owns an
+   independent buffer; the code generator keeps a thread-local pointer slot and
+   calls this on DIM to obtain a zero-initialized heap block.  calloc yields
+   zeroed numeric elements and NULL BSTR slots for string arrays.  A later
+   DIM/REDIM frees the calling thread's previous block first. */
+void* pb_threaded_array_alloc(long long nbytes) {
+    if (nbytes <= 0) { return NULL; }
+    return calloc((size_t)nbytes, 1);
+}
+
+void pb_threaded_array_free(void* block) {
+    if (block != NULL) { free(block); }
 }
 
 /* ================= Batch 22: LPRINT / TRACE / IMPORT ================= */

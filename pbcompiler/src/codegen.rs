@@ -1504,6 +1504,10 @@ struct FieldInfo {
     bit: Option<(u32, u32, bool)>,
 }
 
+// THREADED array pre-scan: name -> observed (dims, total) shapes; each dim is
+// (lower bound, element count).
+type ThreadedShapeMap = HashMap<String, Vec<(Vec<(i64, i64)>, usize)>>;
+
 impl Compiler {
     /// Returns true if the DLL is stubbed in pb_runtime.c (not available at link time).
     fn is_stubbed_dll(lib_name: &str) -> bool {
@@ -6445,6 +6449,8 @@ impl Compiler {
             .declare_function("pb_peekf", &IrType::Float, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_peekd", &IrType::Double, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_resolve_service", &IrType::I32, &[IrType::Ptr], false);
         self.module.declare_function(
             "pb_tcp_open",
             &IrType::I32,
@@ -6732,11 +6738,17 @@ impl Compiler {
             &[IrType::I32, IrType::I64],
             false,
         );
-        // THREAD (batch 21)
+        // THREAD (batch 21; StackSize/SUSPEND added in T-family work)
         self.module.declare_function(
             "pb_thread_create",
             &IrType::I32,
-            &[IrType::Ptr, IrType::I32, IrType::Ptr],
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
             false,
         );
         self.module
@@ -6757,6 +6769,24 @@ impl Compiler {
             "pb_thread_set_priority",
             &IrType::I32,
             &[IrType::I32, IrType::I32],
+            false,
+        );
+        // THREADSAFE procedure guard (SRW lock; one Ptr arg)
+        self.module
+            .declare_function("pb_threadsafe_enter", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_threadsafe_leave", &IrType::Void, &[IrType::Ptr], false);
+        // THREADED array backing storage (one I64 byte count -> Ptr; free takes Ptr)
+        self.module.declare_function(
+            "pb_threaded_array_alloc",
+            &IrType::Ptr,
+            &[IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_array_free",
+            &IrType::Void,
+            &[IrType::Ptr],
             false,
         );
         // LPRINT (batch 22)
@@ -7078,6 +7108,10 @@ impl Compiler {
         if self.session_mode {
             self.emit_session_struct();
         }
+
+        // Bake the compile-time shape of every THREADED array into the global
+        // ArrayInfo before any body is compiled (cross-procedure reads).
+        self.prescan_threaded_arrays(program);
 
         // Second pass: compile function/sub bodies
         let mut codegen_errors = 0usize;
@@ -8102,6 +8136,127 @@ impl Compiler {
         );
     }
 
+    /// Declare a THREADED array with empty parentheses (`THREADED arr()`).
+    /// A thread-local Ptr slot holds the per-thread base pointer (NULL until
+    /// DIM allocates it); the array is registered in global_arrays so it is
+    /// visible from every Sub/Function, with indirect_base=true so element
+    /// access loads the calling thread's pointer from the TLS slot.
+    fn declare_threaded_array(&mut self, vd: &VarDecl) {
+        let name = normalize_name(&vd.name);
+        if self.threaded_declared.contains(&name) {
+            // Repeated THREADED declaration is legal; do not re-emit the slot.
+            return;
+        }
+        self.threaded_declared.insert(name.clone());
+        let elem_ir = Self::ir_type_for(&vd.pb_type);
+        let tname = format!("__threaded_{}", name);
+        // One thread-local pointer slot, NULL until the first DIM.
+        self.module
+            .add_global_thread_local(&tname, &IrType::Ptr, "null");
+        self.symbols.insert_global_array(
+            name,
+            ArrayInfo {
+                ptr_name: format!("@{}", tname),
+                array_ir_type: IrType::Array(0, Box::new(elem_ir.clone())),
+                elem_ir_type: elem_ir,
+                pb_type: vd.pb_type.clone(),
+                dims: Vec::new(),
+                total_elements: 0,
+                indirect_base: true,
+            },
+        );
+    }
+
+    /// Dimension a THREADED array (`DIM arr(bounds)` after `THREADED arr()`).
+    /// Evaluates the bounds at compile time, then emits the per-thread heap
+    /// allocation: free the calling thread's previous block (re-DIM), calloc a
+    /// zeroed block and store its address in the TLS pointer slot.  The array
+    /// stays in global_arrays with indirect_base=true.
+    fn dim_threaded_array(&mut self, fb: &mut FunctionBuilder, dim: &DimStatement) -> PbResult<()> {
+        let name = normalize_name(&dim.name);
+        let prev = self.symbols.lookup_array(&name).cloned().ok_or_else(|| {
+            PbError::parser(
+                format!("THREADED array `{}` is not declared", name),
+                None,
+                dim.line,
+            )
+        })?;
+        // Inherit the declared element type when the DIM carries no explicit
+        // type.  A type suffix in the name is explicit; a bare name with the
+        // default Long (the parser's default for an untyped name) is not, so
+        // `THREADED a%()` + `DIM a(1 TO 5)` keeps the Integer (i16) element
+        // type instead of silently widening to Long.  Any other pb_type on a
+        // bare name can only come from an explicit AS clause.
+        let arr_pb_type = if name_has_type_suffix(&dim.name) {
+            dim.pb_type.clone()
+        } else {
+            match &dim.pb_type {
+                PbType::Long | PbType::Variant => prev.pb_type.clone(),
+                other => other.clone(),
+            }
+        };
+        let elem_ir = Self::ir_type_for(&arr_pb_type);
+        let mut dims = Vec::new();
+        let mut total = 1usize;
+        for bound in &dim.bounds {
+            let lower = Self::eval_const_expr(&bound.lower).unwrap_or(0);
+            let upper = Self::eval_const_expr(&bound.upper).unwrap_or(0);
+            let count = (upper - lower + 1) as usize;
+            dims.push((lower, count as i64));
+            total *= count;
+        }
+        let elem_size = Self::array_elem_size(&elem_ir) as i64;
+        let nbytes = (total as i64) * elem_size;
+        let slot = Val::new(prev.ptr_name.clone(), IrType::Ptr);
+        let old = fb.load(&IrType::Ptr, &slot);
+        if dim.preserve {
+            // REDIM PRESERVE (CHW): allocate the new block first, copy the
+            // overlapping prefix of the old block, then release the old one.
+            let block = fb.call(
+                &IrType::Ptr,
+                "pb_threaded_array_alloc",
+                &[fb.const_i64(nbytes)],
+            );
+            let old_bytes = (prev.total_elements as i64) * elem_size;
+            let copy_bytes = old_bytes.min(nbytes);
+            fb.call(
+                &IrType::Ptr,
+                "memcpy",
+                &[
+                    block.clone(),
+                    old.clone(),
+                    fb.const_int(&IrType::I32, copy_bytes),
+                ],
+            );
+            fb.call_void("pb_threaded_array_free", &[old]);
+            fb.store(&block, &slot);
+        } else {
+            // DIM / REDIM without PRESERVE: release the old block, then
+            // allocate a fresh zeroed block for the calling thread.
+            fb.call_void("pb_threaded_array_free", &[old]);
+            let block = fb.call(
+                &IrType::Ptr,
+                "pb_threaded_array_alloc",
+                &[fb.const_i64(nbytes)],
+            );
+            fb.store(&block, &slot);
+        }
+        let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
+        self.symbols.insert_global_array(
+            name,
+            ArrayInfo {
+                ptr_name: prev.ptr_name.clone(),
+                array_ir_type: array_ir,
+                elem_ir_type: elem_ir,
+                pb_type: arr_pb_type,
+                dims,
+                total_elements: total,
+                indirect_base: true,
+            },
+        );
+        Ok(())
+    }
+
     // ========== Function/Sub compilation ==========
 
     /// Returns true if the function/sub should be nooped (compiled as an empty stub).
@@ -8127,6 +8282,20 @@ impl Compiler {
             info.export,
         );
         self.defined_ir.insert(info.ir_name.clone());
+
+        // THREADSAFE: one global zero-initialized SRWLOCK per procedure; the
+        // guard redirects every return path through a single exit block.
+        let lock_operand = if fd.threadsafe {
+            let lock_name = format!("{}.lock", info.ir_name);
+            self.module
+                .add_global(&lock_name, &IrType::Ptr, "zeroinitializer");
+            Some(format!("@{}", lock_name))
+        } else {
+            None
+        };
+        if let Some(ref lock_operand) = lock_operand {
+            fb.begin_lock_guard(lock_operand, &info.ret_type);
+        }
 
         // Debug: record current function name
         let (fn_name_str, _) = self.module.add_string_constant(&fd.name);
@@ -8221,6 +8390,9 @@ impl Compiler {
             fb.ret(&ret_val);
         }
 
+        // THREADSAFE: emit the unified exit block (release + real return).
+        fb.end_lock_guard();
+
         self.current_fn_name = None;
         self.current_fn_return_type = None;
         self.current_fn_retval_ptr = None;
@@ -8251,6 +8423,20 @@ impl Compiler {
             info.export,
         );
         self.defined_ir.insert(info.ir_name.clone());
+
+        // THREADSAFE: one global zero-initialized SRWLOCK per sub; the guard
+        // redirects every return path through a single exit block.
+        let lock_operand = if sd.threadsafe {
+            let lock_name = format!("{}.lock", info.ir_name);
+            self.module
+                .add_global(&lock_name, &IrType::Ptr, "zeroinitializer");
+            Some(format!("@{}", lock_name))
+        } else {
+            None
+        };
+        if let Some(ref lock_operand) = lock_operand {
+            fb.begin_lock_guard(lock_operand, &IrType::Void);
+        }
 
         // Debug: record current function name
         let (fn_name_str, _) = self.module.add_string_constant(&sd.name);
@@ -8318,6 +8504,9 @@ impl Compiler {
             fb.call_void("pb_callstk_pop", &[]);
             fb.ret_void();
         }
+
+        // THREADSAFE: emit the unified exit block (release + real return).
+        fb.end_lock_guard();
 
         self.current_fn_name = None;
         self.current_fn_params = None;
@@ -10328,21 +10517,98 @@ impl Compiler {
             };
             self.declare_global(&vd);
         } else if dim.scope == DimScope::Threaded {
-            // THREADED: thread-local storage variable, global to every
-            // Sub/Function but with one independent copy per thread.
-            // Scalars only for now; THREADED arr() arrays are not yet
-            // supported (they need the pending-array path + TLS arrays).
+            // THREADED: thread-local storage, global to every Sub/Function but
+            // with one independent copy per thread.  Empty parentheses mark a
+            // THREADED array (its TLS pointer slot + metadata); anything else
+            // is a THREADED scalar.
             let vd = VarDecl {
                 name: dim.name.clone(),
                 pb_type: dim.pb_type.clone(),
-                is_array: false,
+                is_array: dim.is_array,
                 line: dim.line,
             };
-            self.declare_threaded_global(&vd);
+            if dim.is_array {
+                self.declare_threaded_array(&vd);
+            } else {
+                self.declare_threaded_global(&vd);
+            }
         }
     }
 
     // ========== DIM ==========
+
+    /// Pre-scan the whole program for DIM/REDIM bounds on a THREADED array and
+    /// bake the compile-time shape (dims, total) into the global ArrayInfo
+    /// *before* any function body is compiled.  Without this, a procedure that
+    /// only reads the array (never DIMs it) still sees the empty-parens
+    /// declaration state (dims=[], total=0), so compute_flat_index finds zero
+    /// dimensions and returns a constant 0 and every read hits element 0.
+    /// The first observed bounded shape wins; all DIMs in a program normally
+    /// share one shape (each thread merely gets its own heap block).
+    fn prescan_threaded_arrays(&mut self, program: &Program) {
+        // name -> list of (dims, total) observed across every body.
+        let mut shapes: ThreadedShapeMap = HashMap::new();
+        fn walk(stmts: &[Statement], symbols: &SymbolTable, shapes: &mut ThreadedShapeMap) {
+            for stmt in stmts {
+                match stmt {
+                    Statement::Dim(d) | Statement::Redim(d) if !d.bounds.is_empty() => {
+                        let n = normalize_name(&d.name);
+                        let is_threaded = symbols
+                            .lookup_array(&n)
+                            .map(|a| a.indirect_base)
+                            .unwrap_or(false);
+                        if is_threaded {
+                            let mut dims = Vec::new();
+                            let mut total = 1usize;
+                            for b in &d.bounds {
+                                let lo = Compiler::eval_const_expr(&b.lower).unwrap_or(0);
+                                let up = Compiler::eval_const_expr(&b.upper).unwrap_or(0);
+                                let count = (up - lo + 1) as usize;
+                                dims.push((lo, count as i64));
+                                total *= count;
+                            }
+                            shapes.entry(n).or_default().push((dims, total));
+                        }
+                    }
+                    Statement::Block(inner) => walk(inner, symbols, shapes),
+                    _ => {}
+                }
+            }
+        }
+        for item in &program.items {
+            match item {
+                TopLevel::DimDecl(dim) => {
+                    walk(&[Statement::Dim(dim.clone())], &self.symbols, &mut shapes);
+                }
+                TopLevel::SubDecl(sd) => walk(&sd.body, &self.symbols, &mut shapes),
+                TopLevel::FunctionDecl(fd) => walk(&fd.body, &self.symbols, &mut shapes),
+                _ => {}
+            }
+        }
+        for (name, candidates) in shapes {
+            if candidates.is_empty() {
+                continue;
+            }
+            let prev = match self.symbols.lookup_array(&name).cloned() {
+                Some(a) => a,
+                None => continue,
+            };
+            let (dims, total) = candidates.into_iter().next().unwrap();
+            let array_ir = IrType::Array(total, Box::new(prev.elem_ir_type.clone()));
+            self.symbols.insert_global_array(
+                name,
+                ArrayInfo {
+                    ptr_name: prev.ptr_name,
+                    array_ir_type: array_ir,
+                    elem_ir_type: prev.elem_ir_type,
+                    pb_type: prev.pb_type,
+                    dims,
+                    total_elements: total,
+                    indirect_base: true,
+                },
+            );
+        }
+    }
 
     /// Pre-scan a function body for every REDIM so each array is stack-allocated
     /// at its maximum declared size. Fixes re-REDIM being silently dropped
@@ -10469,6 +10735,45 @@ impl Compiler {
         // `DIALOG SHOW ... TO <name>` raises Error 491 (see error_491 page).
         if dim.is_register {
             self.register_vars.insert(name.clone());
+        }
+
+        // THREADED: handle before the ordinary empty-array branch below, which
+        // would otherwise register a local array instead of the TLS global.
+        // A DIM/REDIM that dimensions an already-registered THREADED array has
+        // scope Dim (not Threaded), so detect it by the indirect_base marker.
+        let threaded_existing = dim.is_array
+            && !dim.bounds.is_empty()
+            && self
+                .symbols
+                .lookup_array(&name)
+                .map(|a| a.indirect_base)
+                .unwrap_or(false);
+        if dim.scope == DimScope::Threaded || threaded_existing {
+            if dim.is_array {
+                if dim.bounds.is_empty() {
+                    // Empty-parens THREADED declaration: TLS pointer slot +
+                    // metadata (idempotent via threaded_declared).
+                    let vd = VarDecl {
+                        name: dim.name.clone(),
+                        pb_type: dim.pb_type.clone(),
+                        is_array: true,
+                        line: dim.line,
+                    };
+                    self.declare_threaded_array(&vd);
+                    return Ok(());
+                }
+                // DIM/REDIM with bounds: allocate the calling thread's block.
+                return self.dim_threaded_array(fb, dim);
+            }
+            // THREADED scalar (a REDIM can never reach here).
+            let vd = VarDecl {
+                name: dim.name.clone(),
+                pb_type: dim.pb_type.clone(),
+                is_array: false,
+                line: dim.line,
+            };
+            self.declare_threaded_global(&vd);
+            return Ok(());
         }
 
         // CHW `DIM x() AS type`: undimensioned (dynamic) array. Metadata-only
@@ -10750,20 +11055,6 @@ impl Compiler {
                 ir_type,
                 dim.pb_type.clone(),
             );
-            return Ok(());
-        }
-        if dim.scope == DimScope::Threaded {
-            // THREADED: thread-local storage variable, global to every
-            // Sub/Function but with one independent copy per thread.
-            // Scalars only for now; THREADED arr() arrays are not yet
-            // supported (they need the pending-array path + TLS arrays).
-            let vd = VarDecl {
-                name: dim.name.clone(),
-                pb_type: dim.pb_type.clone(),
-                is_array: false,
-                line: dim.line,
-            };
-            self.declare_threaded_global(&vd);
             return Ok(());
         }
         // FixedString(N) / ASCIIZ*N: allocate [N+1 x i8] buffer on stack.
@@ -20939,8 +21230,25 @@ impl Compiler {
                 // TCP OPEN [SERVER] [ADDR ip&] {PORT p | srvc} [AT addr$] AS #f [TIMEOUT t]
                 let _e0 = self.compile_expr(fb, &call.args[0])?;
                 let mode = self.to_i32(fb, &_e0);
-                let _e1 = self.compile_expr(fb, &call.args[1])?;
-                let port = self.to_i32(fb, &_e1);
+                // Numeric port keeps the existing path; a string (StringLit or a
+                // string variable, CHW srvc$) is resolved via getservbyname.
+                let port_expr = &call.args[1];
+                let is_service = match port_expr {
+                    Expr::StringLit(_) => true,
+                    Expr::Variable(v) => Self::is_string_name(v),
+                    _ => matches!(
+                        self.expr_pb_type(port_expr).as_ref(),
+                        Some(t) if Self::is_string_pb(t)
+                    ),
+                };
+                let port = if is_service {
+                    let sv = self.compile_expr(fb, port_expr)?;
+                    let resolved = fb.call(&IrType::I32, "pb_resolve_service", &[sv]);
+                    self.to_i32(fb, &resolved)
+                } else {
+                    let _e1 = self.compile_expr(fb, port_expr)?;
+                    self.to_i32(fb, &_e1)
+                };
                 let addr = self.compile_expr(fb, &call.args[2])?;
                 let _e3 = self.compile_expr(fb, &call.args[3])?;
                 let fnum = self.to_i32(fb, &_e3);
@@ -21487,13 +21795,27 @@ impl Compiler {
                         }
                         _ => fb.const_i32(0),
                     };
-                    if call.args.len() >= 2 {
-                        if let Some((id_ptr, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                            fb.call_void("pb_thread_create", &[fp, thread_param, id_ptr]);
+                    // Fixed parser layout: [func, stack_size, suspend_flag, (id)]
+                    let ss = self.compile_expr(fb, &call.args[1])?;
+                    let stack_size = self.to_i32(fb, &ss);
+                    // SUSPEND -> CREATE_SUSPENDED (0x4); otherwise run immediately.
+                    let create_flags = match &call.args[2] {
+                        Expr::IntegerLit(1) => fb.const_i32(0x4),
+                        _ => fb.const_i32(0),
+                    };
+                    if call.args.len() >= 4 {
+                        if let Some((id_ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
+                            fb.call_void(
+                                "pb_thread_create",
+                                &[fp, thread_param, stack_size, create_flags, id_ptr],
+                            );
                         }
                     } else {
                         let nul = Val::new("null".to_string(), IrType::Ptr);
-                        fb.call_void("pb_thread_create", &[fp, thread_param, nul]);
+                        fb.call_void(
+                            "pb_thread_create",
+                            &[fp, thread_param, stack_size, create_flags, nul],
+                        );
                     }
                 }
                 return Ok(());
@@ -21521,7 +21843,16 @@ impl Compiler {
                         "THREAD SUSPEND" => "pb_thread_suspend",
                         _ => "pb_thread_resume",
                     };
-                    fb.call_void(fn_name, std::slice::from_ref(&id));
+                    if let Some(to_arg) = call.args.get(1) {
+                        // CHW: TO lResult receives the previous suspend count (-1 on failure).
+                        if let Some((ptr, ir, pb)) = self.lvalue_ptr(fb, to_arg) {
+                            let rc = fb.call(&IrType::I32, fn_name, &[id]);
+                            let converted = self.convert_value(fb, &rc, &ir, &pb);
+                            fb.store(&converted, &ptr);
+                        }
+                    } else {
+                        fb.call_void(fn_name, std::slice::from_ref(&id));
+                    }
                 }
                 return Ok(());
             }

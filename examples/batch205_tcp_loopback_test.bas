@@ -11,7 +11,10 @@
 '     Expected output (both sides verified identical):
 '       client got: pong / server read: ping / accepted flag: 1
 '       === FAILURES: 0
-
+'     Updated 2026-11-08: removed the blocking ConWaitKey tail and replaced
+'     the two fixed SLEEP handshake delays with g_accept_ready/g_accept_done
+'     flags polled with bounded waits, so the run is deterministic and never
+'     blocks on stdin.
 
 
 ' === console emulation for dual-compiler compatibility ===
@@ -20,7 +23,6 @@ DECLARE FUNCTION AllocConsole LIB "KERNEL32.DLL" ALIAS "AllocConsole" () AS LONG
 DECLARE FUNCTION AttachConsole LIB "KERNEL32.DLL" ALIAS "AttachConsole" (BYVAL dwProcessId AS DWORD) AS LONG
 DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
 DECLARE FUNCTION WriteFile LIB "KERNEL32.DLL" ALIAS "WriteFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToWrite AS DWORD, lpBytesWritten AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
-DECLARE FUNCTION ReadFile LIB "KERNEL32.DLL" ALIAS "ReadFile" (BYVAL hFile AS LONG, lpBuffer AS ANY, BYVAL nBytesToRead AS DWORD, lpBytesRead AS DWORD, BYVAL lpOverlapped AS LONG) AS LONG
 SUB ConPrint(BYVAL s AS STRING)
     LOCAL h AS LONG
     LOCAL n AS DWORD
@@ -31,15 +33,6 @@ SUB ConPrint(BYVAL s AS STRING)
     END IF
     IF h <> 0 THEN
         WriteFile h, BYVAL STRPTR(s), LEN(s), n, 0
-    END IF
-END SUB
-SUB ConWaitKey()
-    LOCAL h AS LONG
-    LOCAL c AS STRING * 1
-    LOCAL n AS DWORD
-    h = GetStdHandle(-10)
-    IF h <> 0 THEN
-        ReadFile h, c, 1, n, 0
     END IF
 END SUB
 
@@ -75,47 +68,58 @@ END SUB
 '=====================================================================
 GLOBAL g_accepted AS LONG
 GLOBAL g_server_line AS STRING
+GLOBAL g_accept_ready AS LONG    ' acceptor is parked on TCP ACCEPT
+GLOBAL g_accept_done AS LONG     ' acceptor fully processed the conversation
 
 THREAD FUNCTION Acceptor(byval dummy AS LONG) AS LONG
     LOCAL s AS STRING
     LOCAL newf AS LONG
+    g_accept_ready = 1
     TCP ACCEPT #1 AS newf
     g_accepted = 1
     TCP LINE INPUT newf, s
     g_server_line = s
     TCP PRINT newf, "pong"
     TCP CLOSE newf
+    g_accept_done = 1
     FUNCTION = 0
 END FUNCTION
 
 FUNCTION PBMAIN () AS LONG
     LOCAL s AS STRING
-    LOCAL newf AS LONG
     LOCAL fails AS LONG
     LOCAL th AS LONG
+    LOCAL waits AS LONG
+    LOCAL rc AS LONG
     fails = 0
     TCP OPEN SERVER ADDR &H0100007F PORT 46219 AS #1
     THREAD CREATE Acceptor(0) TO th
-    SLEEP 400
+    ' Wait until the acceptor is parked on TCP ACCEPT.  This deterministic
+    ' handshake replaces the old fixed SLEEP 400.
+    waits = 0
+    DO WHILE g_accept_ready = 0 AND waits < 100
+        SLEEP 20
+        waits = waits + 1
+    LOOP
     TCP OPEN PORT 46219 AT "127.0.0.1" AS #3
     TCP PRINT #3, "ping"
     TCP LINE INPUT #3, s
     ConPrint "client got: " & s
     IF s <> "pong" THEN fails = fails + 1
-    SLEEP 500
+    ' Wait until the acceptor has read and replied (replaces the old fixed
+    ' SLEEP 500) before reading its shared line.
+    waits = 0
+    DO WHILE g_accept_done = 0 AND waits < 100
+        SLEEP 20
+        waits = waits + 1
+    LOOP
     ConPrint "server read: " & g_server_line
     IF g_server_line <> "ping" THEN fails = fails + 1
     ConPrint "accepted flag: " & STR$(g_accepted)
     IF g_accepted <> 1 THEN fails = fails + 1
+    THREAD CLOSE th TO rc
     TCP CLOSE #3
     TCP CLOSE #1
     ConPrint "=== FAILURES: " & STR$(fails)
     FUNCTION = 0
-' Press any key to exit...
-ConWaitKey
 END FUNCTION
-
-
-
-
-

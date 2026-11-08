@@ -247,6 +247,7 @@ pub struct SubDecl {
     pub body: Vec<Statement>,
     pub alias: Option<String>,
     pub export: bool,
+    pub threadsafe: bool,
     pub line: usize,
 }
 
@@ -258,6 +259,7 @@ pub struct FunctionDecl {
     pub body: Vec<Statement>,
     pub alias: Option<String>,
     pub export: bool,
+    pub threadsafe: bool,
     pub line: usize,
 }
 
