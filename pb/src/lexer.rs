@@ -451,7 +451,7 @@ impl Lexer {
                         self.consume_numeric_suffix();
                         let val: f64 = pb_float_value(&num_str, forced);
                         tokens.push(self.make_located(
-                            Token::FloatLiteral(val),
+                            Token::FloatLiteral(val, num_str),
                             start_line,
                             start_col,
                         ));
@@ -697,7 +697,7 @@ impl Lexer {
 
         if is_float {
             let val: f64 = pb_float_value(&num_str, forced);
-            Ok(self.make_located(Token::FloatLiteral(val), start_line, start_col))
+            Ok(self.make_located(Token::FloatLiteral(val, num_str), start_line, start_col))
         } else {
             let val: i64 = num_str.parse().unwrap_or(0);
             Ok(self.make_located(Token::IntegerLiteral(val), start_line, start_col))

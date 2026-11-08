@@ -34,10 +34,10 @@ FUNCTION PBMAIN() AS LONG
   END IF
 
   ' Test BYREF sub call
-  LOCAL val AS LONG
-  val = 21
-  CALL DoubleIt(val)
-  IF val <> 42 THEN
+  LOCAL inval AS LONG
+  inval = 21
+  CALL DoubleIt(inval)
+  IF inval <> 42 THEN
     FUNCTION = 3
     EXIT FUNCTION
   END IF

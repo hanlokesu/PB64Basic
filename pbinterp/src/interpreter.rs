@@ -139,7 +139,7 @@ impl Interpreter {
     fn eval_const_expr(&self, expr: &Expr) -> i64 {
         match expr {
             Expr::IntegerLit(n) => *n,
-            Expr::FloatLit(f) => *f as i64,
+            Expr::FloatLit(f, _) => *f as i64,
             Expr::PercentConst(name) => self.env.get_constant(name).unwrap_or(0),
             Expr::Negate(inner) => -self.eval_const_expr(inner),
             Expr::BinaryOp(op, a, b) => {
@@ -405,6 +405,7 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
             Statement::Call(c) => self.exec_call(c),
+            Statement::WriteRec { .. } => Ok(Flow::Normal),
             Statement::If(i) => self.exec_if(i),
             Statement::For(f) => self.exec_for(f),
             Statement::ForEach(_) => {
@@ -603,6 +604,9 @@ impl Interpreter {
             Statement::Asm(_) => Ok(Flow::Normal),
             // TIX cycle timing is not executed by the interpreter.
             Statement::Tix { .. } => Ok(Flow::Normal),
+            // VAL statement is executed by the compiled backend, not the
+            // interpreter.
+            Statement::ValStmt { .. } => Ok(Flow::Normal),
         }
     }
 
@@ -910,7 +914,7 @@ impl Interpreter {
     pub fn eval_expr(&mut self, expr: &Expr) -> PbResult<Value> {
         match expr {
             Expr::IntegerLit(n) => Ok(Value::Long(*n as i32)),
-            Expr::FloatLit(f) => Ok(Value::Double(*f)),
+            Expr::FloatLit(f, _) => Ok(Value::Double(*f)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::WideStringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Empty => Ok(Value::Null),

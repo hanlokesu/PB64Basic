@@ -573,6 +573,43 @@ fn generate_stub_module(original_ll: &Path, obj_path: &Path, target: &str) -> Pb
 /// so there is no name-only fallback to fall back on.  The toolset is discovered
 /// by reading the Visual Studio install level rather than a hard-coded year - CI
 /// moved to Visual Studio 2026 and the old year list found nothing there.
+/// Normalize the fixed-point part of a float literal: drop a single leading
+/// integer zero ("0.5" -> ".5", "0.0001234" -> ".0001234"). Other forms are
+/// returned unchanged (CHW WRITE# numeric literal formatting).
+fn pb_write_fixed_lead(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix("0.") {
+        format!(".{}", rest)
+    } else {
+        s.to_string()
+    }
+}
+
+/// Convert a float literal's source text to the exact form WRITE# emits.
+/// PBWin preserves the source fixed/scientific form rather than applying the
+/// runtime R4/R8 conversion, so the source text is required (e.g. "100000000"
+/// stays fixed while "1E+8" stays scientific, though both are the same f64).
+fn pb_write_float_lit_text(src: &str) -> String {
+    if let Some(pos) = src.find(['e', 'E']) {
+        let mantissa = pb_write_fixed_lead(&src[..pos]);
+        let exp_rest = &src[pos + 1..];
+        let digits: Vec<char> = exp_rest.chars().collect();
+        let mut sign = String::new();
+        let mut i = 0;
+        if matches!(digits.first(), Some('+') | Some('-')) {
+            sign.push(digits[0]);
+            i = 1;
+        }
+        let mut start = i;
+        while start + 1 < digits.len() && digits[start] == '0' {
+            start += 1;
+        }
+        let exp_digits: String = digits[start..].iter().collect();
+        format!("{}E{}{}", mantissa, sign, exp_digits)
+    } else {
+        pb_write_fixed_lead(src)
+    }
+}
+
 fn detect_legacy_stdio_lib(target: &str) -> Option<String> {
     let arch = if target.contains("i686") || target.contains("i386") {
         "x86"
@@ -2182,9 +2219,15 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
-            "pb_using",
+            "pb_using_multi",
             &IrType::Ptr,
-            &[IrType::Ptr, IrType::Double],
+            &[
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::I32,
+            ],
             false,
         );
 
@@ -2445,8 +2488,24 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::Ptr],
             true,
         );
-        self.module
-            .declare_function("atof", &IrType::Double, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_val",
+            &IrType::Double,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_val_full",
+            &IrType::Void,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+            ],
+            false,
+        );
         self.module.declare_function(
             "memcpy",
             &IrType::Ptr,
@@ -2644,6 +2703,26 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
             ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_window_get_long",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module
+            .declare_function("pb_window_get_parent", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_window_get_handle",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_window_set_long",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I32, IrType::I64],
             false,
         );
         self.module
@@ -6505,13 +6584,25 @@ impl Compiler {
         self.module.declare_function(
             "pb_udp_send",
             &IrType::I32,
-            &[IrType::I32, IrType::I32, IrType::I32, IrType::Ptr],
+            &[
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
             false,
         );
         self.module.declare_function(
             "pb_udp_send_str",
             &IrType::I32,
-            &[IrType::I32, IrType::Ptr, IrType::I32, IrType::Ptr],
+            &[
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
             false,
         );
         self.module.declare_function(
@@ -6621,6 +6712,8 @@ impl Compiler {
             .declare_function("pb_name", &IrType::I32, &[IrType::Ptr, IrType::Ptr], false);
         self.module
             .declare_function("pb_write_file_begin", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_write_file_keep", &IrType::Void, &[IrType::I32], false);
         self.module.declare_function(
             "pb_write_file_str",
             &IrType::Void,
@@ -6631,6 +6724,18 @@ impl Compiler {
             "pb_write_file_int",
             &IrType::Void,
             &[IrType::I32, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_write_file_raw",
+            &IrType::Void,
+            &[IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_write_file_sng",
+            &IrType::Void,
+            &[IrType::I32, IrType::Float],
             false,
         );
         self.module.declare_function(
@@ -8822,6 +8927,7 @@ impl Compiler {
         let line = match stmt {
             Statement::Assign(a) => a.line,
             Statement::Call(c) => c.line,
+            Statement::WriteRec { line, .. } => *line,
             Statement::If(i) => i.line,
             Statement::For(f) => f.line,
             Statement::ForEach(fe) => fe.line,
@@ -8845,6 +8951,10 @@ impl Compiler {
                 self.compile_call_stmt(fb, c)?;
                 // ON ERROR GOTO: test for a run-time error after the statement
                 self.emit_error_check(fb)?;
+                Ok(())
+            }
+            Statement::WriteRec { args, trailing, .. } => {
+                self.compile_write_rec(fb, args, *trailing)?;
                 Ok(())
             }
             Statement::Data(items) => {
@@ -9241,6 +9351,41 @@ impl Compiler {
                 fb.store(&converted, &ptr);
                 Ok(())
             }
+            Statement::ValStmt {
+                source,
+                offset,
+                value_var,
+                digits_var,
+                unused_var,
+                line: _,
+            } => {
+                // CHW Val_statement.htm: pb_val_full writes the converted value,
+                // mantissa digit count and unused-character count through the
+                // output pointers. Missing outputs get a throwaway alloca.
+                let src = self.compile_expr(fb, source)?;
+                let off = if let Some(off_expr) = offset {
+                    let ov = self.compile_expr(fb, off_expr)?;
+                    self.to_i32(fb, &ov)
+                } else {
+                    fb.const_i32(1)
+                };
+                let (value_ptr, _) = self.compile_lvalue_ptr(fb, value_var)?;
+                let digits_ptr = if let Some(dv) = digits_var {
+                    self.compile_lvalue_ptr(fb, dv)?.0
+                } else {
+                    fb.alloca(&IrType::I32)
+                };
+                let unused_ptr = if let Some(uv) = unused_var {
+                    self.compile_lvalue_ptr(fb, uv)?.0
+                } else {
+                    fb.alloca(&IrType::I32)
+                };
+                fb.call_void(
+                    "pb_val_full",
+                    &[src, off, value_ptr, digits_ptr, unused_ptr],
+                );
+                Ok(())
+            }
             Statement::Asm(text) => {
                 self.compile_asm_block(fb, std::slice::from_ref(text))?;
                 Ok(())
@@ -9600,6 +9745,15 @@ impl Compiler {
                 }
             }
             Expr::BinaryOp(_, l, r) => self.expr_is_wstring(l) || self.expr_is_wstring(r),
+            // `@p` where p is a WSTRINGZ/WSTRING PTR: the dereferenced value is
+            // a wide string, so LEN must count code units (pb_wstr_len), not bytes.
+            Expr::Deref(inner) => {
+                if let Some(t) = self.expr_pb_type(inner) {
+                    matches!(t, PbType::Pointer(it) if *it == PbType::WString)
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
@@ -11124,6 +11278,51 @@ impl Compiler {
             let target = self.compile_lvalue_ptr(fb, t)?;
             let converted = self.convert_value(fb, val, &target.0.ty, &target.1);
             fb.store(&converted, &target.0);
+        }
+        Ok(())
+    }
+
+    /// Compile a WRITE# record. args[0] is the file number; the rest are output
+    /// expressions. A trailing comma/semicolon suppresses the closing CRLF.
+    fn compile_write_rec(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        trailing: bool,
+    ) -> PbResult<()> {
+        if args.is_empty() {
+            return Ok(());
+        }
+        let sv0 = self.compile_expr(fb, &args[0])?;
+        let f = self.to_i32(fb, &sv0);
+        fb.call_void("pb_write_file_begin", std::slice::from_ref(&f));
+        for arg in args.iter().skip(1) {
+            // Float literal: PBWin emits the source form (fixed vs scientific),
+            // not the runtime R4/R8 conversion.
+            if let Expr::FloatLit(_, src) = arg {
+                let lit_text = pb_write_float_lit_text(src);
+                let (str_name, _) = self.module.add_string_constant(&lit_text);
+                let sv = Val::new(str_name, IrType::Ptr);
+                fb.call_void("pb_write_file_raw", &[f.clone(), sv]);
+                continue;
+            }
+            let v = self.compile_expr(fb, arg)?;
+            match &v.ty {
+                IrType::I32 | IrType::I64 => {
+                    let vi = self.to_i64(fb, &v);
+                    fb.call_void("pb_write_file_int", &[f.clone(), vi]);
+                }
+                IrType::Float => {
+                    fb.call_void("pb_write_file_sng", &[f.clone(), v]);
+                }
+                IrType::Double => fb.call_void("pb_write_file_dbl", &[f.clone(), v]),
+                _ => fb.call_void("pb_write_file_str", &[f.clone(), v]),
+            }
+        }
+        if trailing {
+            fb.call_void("pb_write_file_keep", &[f]);
+        } else {
+            fb.call_void("pb_write_file_newline", &[f]);
         }
         Ok(())
     }
@@ -14221,8 +14420,75 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "WINDOW GET HANDLE" | "WINDOW GET ID" | "WINDOW GET PARENT" | "WINDOW GET STYLE"
+            | "WINDOW GET STYLEX" | "WINDOW GET USER" | "WINDOW SET ID" | "WINDOW SET STYLE"
+            | "WINDOW SET STYLEX" | "WINDOW SET USER" => {
+                let is_get = call.name.starts_with("WINDOW GET");
+                let sub = call.name.rsplit(' ').next().unwrap_or("");
+                // GWL indices: STYLE=-16, EXSTYLE=-20, ID=-12, USERDATA=-21.
+                let gwl_idx: i32 = match sub {
+                    "STYLE" => -16,
+                    "STYLEX" => -20,
+                    "ID" => -12,
+                    "USER" => -21,
+                    _ => 0,
+                };
+                if is_get {
+                    if sub == "HANDLE" {
+                        // args = [parent, id, target]
+                        let mut parent = self.compile_expr(fb, &call.args[0])?;
+                        if parent.ty != IrType::Ptr {
+                            parent = fb.inttoptr(&parent);
+                        }
+                        let idv = self.compile_expr(fb, &call.args[1])?;
+                        let id32 = self.to_i32(fb, &idv);
+                        let h = fb.call(&IrType::Ptr, "pb_window_get_handle", &[parent, id32]);
+                        if let Some(target) = call.args.get(2) {
+                            if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, target) {
+                                let cv = self.convert_value(fb, &h, &ty, &pty);
+                                fb.store(&cv, &ptr);
+                            }
+                        }
+                    } else {
+                        // args = [hwin, target]
+                        let mut hwin = self.compile_expr(fb, &call.args[0])?;
+                        if hwin.ty != IrType::Ptr {
+                            hwin = fb.inttoptr(&hwin);
+                        }
+                        let idx = fb.const_i32(gwl_idx);
+                        let result = if sub == "PARENT" {
+                            fb.call(&IrType::Ptr, "pb_window_get_parent", &[hwin])
+                        } else {
+                            fb.call(&IrType::I64, "pb_window_get_long", &[hwin, idx])
+                        };
+                        if let Some(target) = call.args.get(1) {
+                            if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, target) {
+                                let cv = self.convert_value(fb, &result, &ty, &pty);
+                                fb.store(&cv, &ptr);
+                            }
+                        }
+                    }
+                } else {
+                    // SET: args = [hwin, newval, oldvar]
+                    let mut hwin = self.compile_expr(fb, &call.args[0])?;
+                    if hwin.ty != IrType::Ptr {
+                        hwin = fb.inttoptr(&hwin);
+                    }
+                    let nv = self.compile_expr(fb, &call.args[1])?;
+                    let nv64 = self.to_i64(fb, &nv);
+                    let idx = fb.const_i32(gwl_idx);
+                    let old = fb.call(&IrType::I64, "pb_window_set_long", &[hwin, idx, nv64]);
+                    if let Some(oldvar) = call.args.get(2) {
+                        if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, oldvar) {
+                            let cv = self.convert_value(fb, &old, &ty, &pty);
+                            fb.store(&cv, &ptr);
+                        }
+                    }
+                }
+                return Ok(());
+            }
             "WINDOW SET TEXT" => {
-                // WINDOW SET TEXT hwnd, text$ 鈥?console title (hwnd ignored)
+                // WINDOW SET TEXT hwnd, text$ - console title (hwnd ignored)
                 if let Some(text) = call.args.get(1) {
                     let tv = self.compile_expr(fb, text)?;
                     fb.call_void("pb_console_set_title", std::slice::from_ref(&tv));
@@ -21336,11 +21602,13 @@ impl Compiler {
                 let _e2 = self.compile_expr(fb, &call.args[2])?;
                 let port = self.to_i32(fb, &_e2);
                 let data = self.compile_expr(fb, &call.args[3])?;
+                // BSTR length prefix (NUL-safe), matching the TCP SEND fix.
+                let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&data));
                 if ip.ty == IrType::Ptr {
-                    fb.call_void("pb_udp_send_str", &[fnum, ip, port, data]);
+                    fb.call_void("pb_udp_send_str", &[fnum, ip, port, data, slen]);
                 } else {
                     let ip32 = self.to_i32(fb, &ip);
-                    fb.call_void("pb_udp_send", &[fnum, ip32, port, data]);
+                    fb.call_void("pb_udp_send", &[fnum, ip32, port, data, slen]);
                 }
                 return Ok(());
             }
@@ -22083,23 +22351,7 @@ impl Compiler {
                 return Ok(());
             }
             "WRITE" => {
-                if !call.args.is_empty() {
-                    let sv0 = self.compile_expr(fb, &call.args[0])?;
-                    let f = self.to_i32(fb, &sv0);
-                    fb.call_void("pb_write_file_begin", std::slice::from_ref(&f));
-                    for arg in call.args.iter().skip(1) {
-                        let v = self.compile_expr(fb, arg)?;
-                        match &v.ty {
-                            IrType::I32 | IrType::I64 => {
-                                let vi = self.to_i64(fb, &v);
-                                fb.call_void("pb_write_file_int", &[f.clone(), vi]);
-                            }
-                            IrType::Double => fb.call_void("pb_write_file_dbl", &[f.clone(), v]),
-                            _ => fb.call_void("pb_write_file_str", &[f.clone(), v]),
-                        }
-                    }
-                    fb.call_void("pb_write_file_newline", &[f]);
-                }
+                self.compile_write_rec(fb, &call.args, false)?;
                 return Ok(());
             }
             "SEEK" => {
@@ -23011,7 +23263,7 @@ impl Compiler {
             .iter()
             .map(|p| match p {
                 CasePattern::Value(Expr::IntegerLit(n)) => format!("{}", n),
-                CasePattern::Value(Expr::FloatLit(f)) => format!("{}", f),
+                CasePattern::Value(Expr::FloatLit(f, _)) => format!("{}", f),
                 CasePattern::Value(Expr::StringLit(s)) => format!("\"{}\"", s),
                 CasePattern::Value(_) => "<expr>".to_string(),
                 CasePattern::Range(Expr::IntegerLit(lo), Expr::IntegerLit(hi)) => {
@@ -24388,7 +24640,7 @@ impl Compiler {
                     Ok(fb.const_i64(*n))
                 }
             }
-            Expr::FloatLit(f) => Ok(fb.const_f64(*f)),
+            Expr::FloatLit(f, _) => Ok(fb.const_f64(*f)),
             Expr::StringLit(s) => {
                 let (str_name, _) = self.module.add_string_constant(s);
                 Ok(Val::new(str_name, IrType::Ptr))
@@ -24559,14 +24811,26 @@ impl Compiler {
             Expr::Deref(_inner) => {
                 // `@ptr` — read the value the PTR variable points to (batch306).
                 // compile_lvalue_ptr(Deref) returns the pointed-to address with
-                // the pointed-to type; load that address once more.
+                // the pointed-to type.
                 let (ptr_val, target) = self.compile_lvalue_ptr(fb, expr)?;
-                let ty = Self::ir_type_for(&target);
-                let v = fb.load(&ty, &ptr_val);
-                if ty == IrType::Ptr {
-                    Ok(self.null_guard_string(fb, &v))
+                // For a string/UDT/interface target the pointed-to value is itself
+                // represented by a pointer (its data address): `@p` yields that
+                // address directly, with NO extra load (loading would reinterpret
+                // the first character/field as a pointer and crash). Numeric
+                // targets need a real load of the scalar.
+                let is_ref_like = matches!(
+                    target,
+                    PbType::String
+                        | PbType::WString
+                        | PbType::FixedString(_)
+                        | PbType::Interface(_)
+                        | PbType::UserDefined(_)
+                );
+                if is_ref_like {
+                    Ok(self.null_guard_string(fb, &ptr_val))
                 } else {
-                    Ok(v)
+                    let ty = Self::ir_type_for(&target);
+                    Ok(fb.load(&ty, &ptr_val))
                 }
             }
             Expr::FunctionCall(name, args) => {
@@ -27203,23 +27467,89 @@ impl Compiler {
         if info.dims.is_empty() {
             return Ok(fb.const_i64(if upper { -1 } else { 0 }));
         }
-        let dim = if let Some(d) = bracket_dim {
-            Self::eval_const_expr(d).unwrap_or(1) as usize
-        } else if args.len() >= 2 {
-            Self::eval_const_expr(&args[1]).unwrap_or(1) as usize
-        } else {
-            1
+        // Resolve the dimension expression: bracket form a(d) takes precedence,
+        // then the second argument a, d; otherwise dimension 1 by default.
+        let dim_expr: Option<&Expr> = match bracket_dim.as_ref() {
+            Some(d) => Some(d),
+            None if args.len() >= 2 => Some(&args[1]),
+            None => None,
         };
-        if dim < 1 || dim > info.dims.len() {
-            return Err(PbError::parser(
-                format!("{}: dimension {} out of range", fname, dim),
-                None,
-                self.current_line,
-            ));
+        // Constant dimension path (including the default dimension 1).
+        let const_dim: Option<i64> = match dim_expr {
+            Some(d) => Self::eval_const_expr(d).ok(),
+            None => Some(1),
+        };
+        if let Some(cd) = const_dim {
+            let dim = cd as usize;
+            // Measured PBWin: LBOUND(arr, 0) reads the descriptor field at
+            // index 0, which holds the total array size in bytes; UBOUND
+            // (arr, 0) returns 0.
+            if cd == 0 && !upper {
+                let total_bytes =
+                    (info.total_elements as u32) * Self::ir_size_bytes(&info.elem_ir_type);
+                return Ok(fb.const_i64(total_bytes as i64));
+            }
+            if dim < 1 || dim > info.dims.len() {
+                // Measured PBWin: an out-of-range constant dimension returns 0
+                // with no compile-time or runtime error.
+                return Ok(fb.const_i64(0));
+            }
+            let (lower, count) = info.dims[dim - 1];
+            let v = if upper { lower + count - 1 } else { lower };
+            return Ok(fb.const_i64(v));
         }
-        let (lower, count) = info.dims[dim - 1];
-        let v = if upper { lower + count - 1 } else { lower };
-        Ok(fb.const_i64(v))
+        // Dynamic dimension: compile at runtime, range-check, then select the
+        // bound of the chosen dimension. CHW allows a non-constant dimension.
+        let dim_raw = self.compile_expr(fb, dim_expr.unwrap())?;
+        let dim64 = self.to_i64(fb, &dim_raw);
+        let ndims = info.dims.len() as i64;
+        let lt1 = fb.icmp("slt", &dim64, &fb.const_i64(1));
+        let gt_n = fb.icmp("sgt", &dim64, &fb.const_i64(ndims));
+        let out_of_range = fb.or(&lt1, &gt_n);
+        let err_lbl = fb.next_label("bound.err");
+        let ok_lbl = fb.next_label("bound.ok");
+        let merge_lbl = fb.next_label("bound.merge");
+        let result_slot = fb.alloca(&IrType::I64);
+        fb.condbr(&out_of_range, &err_lbl, &ok_lbl);
+        fb.label(&err_lbl);
+        // Measured PBWin behavior: no runtime error is raised (ERR stays 0).
+        // LBOUND with dimension exactly 0 reads the descriptor field that
+        // holds the total array byte size; every other invalid dimension
+        // returns 0. UBOUND always returns 0 here.
+        if !upper {
+            let total_bytes =
+                (info.total_elements as u32) * Self::ir_size_bytes(&info.elem_ir_type);
+            let is_zero = fb.icmp("eq", &dim64, &fb.const_i64(0));
+            let fallback = fb.select(
+                &is_zero,
+                &fb.const_i64(total_bytes as i64),
+                &fb.const_i64(0),
+            );
+            fb.store(&fallback, &result_slot);
+        } else {
+            fb.store(&fb.const_i64(0), &result_slot);
+        }
+        fb.br(&merge_lbl);
+        fb.label(&ok_lbl);
+        // Select the bound: start from the last dimension, then fold earlier
+        // dimensions in with nested selects.
+        let bound_of = |i: usize| -> i64 {
+            let (lower, count) = info.dims[i];
+            if upper {
+                lower + count - 1
+            } else {
+                lower
+            }
+        };
+        let mut result = fb.const_i64(bound_of(info.dims.len() - 1));
+        for i in (0..info.dims.len() - 1).rev() {
+            let is_this = fb.icmp("eq", &dim64, &fb.const_i64((i + 1) as i64));
+            result = fb.select(&is_this, &fb.const_i64(bound_of(i)), &result);
+        }
+        fb.store(&result, &result_slot);
+        fb.br(&merge_lbl);
+        fb.label(&merge_lbl);
+        Ok(fb.load(&IrType::I64, &result_slot))
     }
 
     /// ARRAYATTR(arr(), AttrNum) - CHW ARRAYATTR_function.htm (batch 256A).
@@ -29272,7 +29602,14 @@ impl Compiler {
 
     fn builtin_val(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
-        Ok(fb.call(&IrType::Double, "atof", &[s]))
+        // Optional 1-based offset (CHW VAL_function.htm); defaults to 1.
+        let off = if args.len() >= 2 {
+            let ov = self.compile_expr(fb, &args[1])?;
+            self.to_i32(fb, &ov)
+        } else {
+            fb.const_i32(1)
+        };
+        Ok(fb.call(&IrType::Double, "pb_val", &[s, off]))
     }
 
     fn builtin_left(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -30043,9 +30380,36 @@ impl Compiler {
 
     fn builtin_using(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let fmt = self.compile_expr(fb, &args[0])?;
-        let val = self.compile_expr(fb, &args[1])?;
-        let f64_val = self.to_f64(fb, &val);
-        Ok(fb.call(&IrType::Ptr, "pb_using", &[fmt, f64_val]))
+        let n = args.len() - 1;
+        // Backing stack arrays: kind (1=string, 0=numeric), double, BSTR.
+        let kind_ty = IrType::Array(n, Box::new(IrType::I32));
+        let num_ty = IrType::Array(n, Box::new(IrType::Double));
+        let str_ty = IrType::Array(n, Box::new(IrType::Ptr));
+        let kind_slot = fb.alloca(&kind_ty);
+        let num_slot = fb.alloca(&num_ty);
+        let str_slot = fb.alloca(&str_ty);
+        for (i, expr) in args.iter().skip(1).enumerate() {
+            let v = self.compile_expr(fb, expr)?;
+            let idx = fb.const_i32(i as i32);
+            let kp = fb.gep_array(&kind_ty, &kind_slot, &idx);
+            let mp = fb.gep_array(&num_ty, &num_slot, &idx);
+            let sp = fb.gep_array(&str_ty, &str_slot, &idx);
+            if v.ty == IrType::Ptr {
+                fb.store(&fb.const_i32(1), &kp);
+                fb.store(&fb.const_f64(0.0), &mp);
+                fb.store(&v, &sp);
+            } else {
+                let d = self.to_f64(fb, &v);
+                fb.store(&fb.const_i32(0), &kp);
+                fb.store(&d, &mp);
+                fb.store(&fb.const_null_ptr(), &sp);
+            }
+        }
+        Ok(fb.call(
+            &IrType::Ptr,
+            "pb_using_multi",
+            &[fmt, kind_slot, num_slot, str_slot, fb.const_i32(n as i32)],
+        ))
     }
 
     // ========== Array helpers ==========
@@ -30054,7 +30418,7 @@ impl Compiler {
     fn eval_const_expr(expr: &Expr) -> Result<i64, &'static str> {
         match expr {
             Expr::IntegerLit(n) => Ok(*n),
-            Expr::FloatLit(f) => Ok(*f as i64),
+            Expr::FloatLit(f, _) => Ok(*f as i64),
             Expr::Negate(inner) | Expr::UnaryOp(UnaryOp::Neg, inner) => {
                 Ok(-Self::eval_const_expr(inner)?)
             }

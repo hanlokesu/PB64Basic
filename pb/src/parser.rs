@@ -830,7 +830,7 @@ impl Parser {
                 self.consume_to_eol();
                 Ok(None)
             }
-            Token::FloatLiteral(f) => {
+            Token::FloatLiteral(f, _) => {
                 eprintln!(
                     "Error: Parse error at line {}: unexpected number at top level: {}",
                     line, f
@@ -1490,7 +1490,7 @@ impl Parser {
     fn eval_const_expr(&self, e: &Expr) -> Option<i64> {
         match e {
             Expr::IntegerLit(i) => Some(*i),
-            Expr::FloatLit(f) => Some(*f as i64),
+            Expr::FloatLit(f, _) => Some(*f as i64),
             Expr::PercentConst(name) => self.percent_consts.get(name).copied().or_else(|| {
                 let bare = name.trim_start_matches('%');
                 self.percent_consts
@@ -2942,7 +2942,7 @@ impl Parser {
                     });
                     self.advance();
                 }
-                Token::FloatLiteral(f) => {
+                Token::FloatLiteral(f, _) => {
                     items.push(DataItem {
                         text: f.to_string(),
                         quoted: false,
@@ -2966,7 +2966,7 @@ impl Parser {
                             });
                             self.advance();
                         }
-                        Token::FloatLiteral(f) => {
+                        Token::FloatLiteral(f, _) => {
                             items.push(DataItem {
                                 text: format!("-{}", f),
                                 quoted: false,
@@ -7901,6 +7901,75 @@ impl Parser {
 
                 // MAT a() = CON | CON(expr) | IDN | ZER | src() | src()+src() |
                 //      src()-src() | src()*src() | (expr)*src() | INV(src()) | TRN(src())
+                // VAL source [, offset] TO value_var [, digits_var, unused_var]
+                // (CHW Val_statement.htm). Distinguish from the VAL() function:
+                // the statement form has a TO after the source expression.
+                if name_upper == "VAL" {
+                    self.advance(); // consume VAL
+                    let source = self.parse_expression()?;
+                    let mut offset = None;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        // The comma is either the offset (followed by TO) or the
+                        // first output variable. Only treat it as an offset if
+                        // TO appears after the next expression.
+                        let cand = self.parse_expression()?;
+                        if self.peek() == &Token::To {
+                            offset = Some(cand);
+                        } else {
+                            // cand is the value_var; parse the optional digits
+                            // and unused output variables.
+                            let mut digits_var = None;
+                            let mut unused_var = None;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                digits_var = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    self.advance();
+                                    unused_var = Some(self.parse_expression()?);
+                                }
+                            }
+                            self.consume_to_eol();
+                            return Ok(Statement::ValStmt {
+                                source,
+                                offset,
+                                value_var: cand,
+                                digits_var,
+                                unused_var,
+                                line,
+                            });
+                        }
+                    }
+                    if self.peek() != &Token::To {
+                        return Err(PbError::parser(
+                            "VAL statement: expected TO".to_string(),
+                            self.current_file(),
+                            self.current_line(),
+                        ));
+                    }
+                    self.advance(); // consume TO
+                    let value_var = self.parse_expression()?;
+                    let mut digits_var = None;
+                    let mut unused_var = None;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        digits_var = Some(self.parse_expression()?);
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            unused_var = Some(self.parse_expression()?);
+                        }
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::ValStmt {
+                        source,
+                        offset,
+                        value_var,
+                        digits_var,
+                        unused_var,
+                        line,
+                    });
+                }
+
                 if name_upper == "MAT" {
                     self.advance(); // consume MAT
                     return self.parse_mat_statement(line);
@@ -8400,16 +8469,28 @@ impl Parser {
                     self.advance(); // consume #
                     let file_num = self.parse_expression()?;
                     let mut args = vec![file_num];
+                    let mut trailing = false;
                     while self.peek() == &Token::Comma {
                         self.advance();
+                        // A trailing comma with no expression ends the record.
+                        if matches!(self.peek(), Token::Eol | Token::Colon) {
+                            trailing = true;
+                            break;
+                        }
                         args.push(self.parse_expression()?);
+                        // A trailing semicolon after an expression ends the record.
+                        if self.peek() == &Token::Semicolon {
+                            self.advance();
+                            trailing = true;
+                            break;
+                        }
                     }
                     self.consume_to_eol();
-                    return Ok(Statement::Call(CallStmt {
-                        name: "WRITE".to_string(),
+                    return Ok(Statement::WriteRec {
                         args,
+                        trailing,
                         line,
-                    }));
+                    });
                 }
                 // RESOURCE SAVE FILE resname$, filename$ (batch 118 wiring fix)
                 if name_upper == "RESOURCE"
@@ -8485,6 +8566,67 @@ impl Parser {
                         args: vec![],
                         line,
                     }));
+                }
+                // WINDOW GET HANDLE|ID|PARENT|STYLE|STYLEX|USER ...
+                // WINDOW SET ID|STYLE|STYLEX|USER ... (CHW WINDOW statements)
+                if name_upper == "WINDOW"
+                    && matches!(self.peek_at(1), Some(Token::Identifier(w))
+                        if w.to_uppercase() == "GET" || w.to_uppercase() == "SET")
+                    && matches!(self.peek_at(2), Some(Token::Identifier(w))
+                        if matches!(w.to_uppercase().as_str(),
+                            "HANDLE" | "ID" | "PARENT" | "STYLE" | "STYLEX" | "USER"))
+                {
+                    let dir = if let Token::Identifier(d) = self.peek_at(1).unwrap() {
+                        d.to_uppercase()
+                    } else {
+                        unreachable!()
+                    };
+                    let sub = if let Token::Identifier(s) = self.peek_at(2).unwrap() {
+                        s.to_uppercase()
+                    } else {
+                        unreachable!()
+                    };
+                    self.advance(); // WINDOW
+                    self.advance(); // GET/SET
+                    self.advance(); // sub keyword
+                    let call_name = format!("WINDOW {} {}", dir, sub);
+                    if dir == "GET" {
+                        let hwin = self.parse_expression()?;
+                        if sub == "HANDLE" {
+                            // WINDOW GET HANDLE parent, id TO target
+                            self.expect(&Token::Comma)?;
+                            let id = self.parse_expression()?;
+                            self.expect(&Token::To)?;
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: call_name,
+                                args: vec![hwin, id, target],
+                                line,
+                            }));
+                        }
+                        self.expect(&Token::To)?;
+                        let target = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: call_name,
+                            args: vec![hwin, target],
+                            line,
+                        }));
+                    } else {
+                        // WINDOW SET sub hwin, newval TO oldvar
+                        let hwin = self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                        let newval = self.parse_expression()?;
+                        self.expect(&Token::To)?;
+                        let oldvar = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: call_name,
+                            args: vec![hwin, newval, oldvar],
+                            line,
+                        }));
+                    }
                 }
                 // WINDOW SET TEXT hwnd, text$ / WINDOW GET TEXT hwnd TO var$
                 if name_upper == "WINDOW"
@@ -13239,9 +13381,34 @@ impl Parser {
                     self.advance(); // consume #
                     let file_num = self.parse_expression()?;
                     let mut args = vec![file_num];
-                    while self.peek() == &Token::Comma {
+                    if self.peek() == &Token::Comma {
                         self.advance();
-                        args.push(self.parse_expression()?);
+                        let start = self.parse_expression()?;
+                        if self.peek() == &Token::To {
+                            // start TO finish: fold into (start, length) where
+                            // length = finish - start + 1, matching the runtime
+                            // pb_lock/pb_unlock (filenum, record, length) form.
+                            self.advance(); // consume TO
+                            let finish = self.parse_expression()?;
+                            let length = Expr::BinaryOp(
+                                BinaryOp::Add,
+                                Box::new(Expr::BinaryOp(
+                                    BinaryOp::Sub,
+                                    Box::new(finish),
+                                    Box::new(start.clone()),
+                                )),
+                                Box::new(Expr::IntegerLit(1)),
+                            );
+                            args.push(start);
+                            args.push(length);
+                        } else {
+                            args.push(start);
+                            // optional explicit length (legacy comma form)
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
+                        }
                     }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
@@ -15195,7 +15362,8 @@ impl Parser {
                         }
                         filenum = self.parse_expression()?;
                     }
-                    let mut timeout = Expr::IntegerLit(-1);
+                    // CHW UDP OPEN: default TIMEOUT is 60000 ms.
+                    let mut timeout = Expr::IntegerLit(60000);
                     if let Token::Identifier(w) = self.peek() {
                         if w.eq_ignore_ascii_case("TIMEOUT") {
                             self.advance();
@@ -16389,9 +16557,9 @@ impl Parser {
                 self.advance();
                 Ok(Expr::IntegerLit(n))
             }
-            Token::FloatLiteral(f) => {
+            Token::FloatLiteral(f, src) => {
                 self.advance();
-                Ok(Expr::FloatLit(f))
+                Ok(Expr::FloatLit(f, src))
             }
             Token::StringLiteral(s) => {
                 self.advance();

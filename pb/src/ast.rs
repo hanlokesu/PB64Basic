@@ -319,6 +319,14 @@ pub enum Statement {
     },
     Assign(AssignStmt),
     Call(CallStmt),
+    /* WRITE# record: args[0] = file number, the rest = output expressions.
+    `trailing` records a trailing comma/semicolon, which suppresses the
+    closing CRLF (the next WRITE# continues the same record). */
+    WriteRec {
+        args: Vec<Expr>,
+        trailing: bool,
+        line: usize,
+    },
     If(IfStmt),
     For(ForStmt),
     ForEach(ForEachStmt),
@@ -415,6 +423,17 @@ pub enum Statement {
     Tix {
         target: String,
         is_end: bool,
+        line: usize,
+    },
+    // CHW Val_statement.htm: VAL source [, offset] TO value_var
+    // [, digits_var, unused_var]. digits_var counts valid digits, unused_var
+    // counts the trailing characters not consumed by the conversion.
+    ValStmt {
+        source: Expr,
+        offset: Option<Expr>,
+        value_var: Expr,
+        digits_var: Option<Expr>,
+        unused_var: Option<Expr>,
         line: usize,
     },
 }
@@ -744,7 +763,10 @@ pub struct OnCallTarget {
 #[derive(Debug, Clone)]
 pub enum Expr {
     IntegerLit(i64),
-    FloatLit(f64),
+    /// Floating-point literal: rounded f64 value plus the original source text
+    /// (no type suffix). WRITE# uses the source text to preserve the literal's
+    /// fixed/scientific form (CHW WRITE# numeric literal formatting).
+    FloatLit(f64, String),
     StringLit(String),
     /// `"..."$$` — a WIDE (UTF-16) string literal (batch280).  Lowered to a
     /// UTF-16 BSTR constant; WSTRING variables hold UTF-16 BSTR pointers.

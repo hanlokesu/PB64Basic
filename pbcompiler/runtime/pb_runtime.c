@@ -790,14 +790,17 @@ char* pb_retain_string(char* main, char* match, int any_flag) {
     buf[o] = 0;
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
+/* Forward declaration: BSTR length (NUL-safe), defined later. */
+int pb_str_len(const char* s);
 /* LCASE$ / UCASE$ with optional ANSI (mode=0) / OEM (mode=1).
  * ANSI: CharLowerBuffA / CharUpperBuffA handle DBCS correctly.
  * OEM: DBCS pairs are preserved untouched; only ASCII letters are folded.
  * Verified against PBWin 10 on a 936 DBCS system (lm_lcase* probes). */
 char* pb_lcase(char* s, int mode) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
-    memcpy(buf, s, n + 1);
+    memcpy(buf, s, n);
+    buf[n] = 0;
     if (mode == 0) {
         CharLowerBuffA(buf, (unsigned long)n);
     } else {
@@ -818,9 +821,10 @@ char* pb_lcase(char* s, int mode) {
 }
 
 char* pb_ucase(char* s, int mode) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
-    memcpy(buf, s, n + 1);
+    memcpy(buf, s, n);
+    buf[n] = 0;
     if (mode == 0) {
         CharUpperBuffA(buf, (unsigned long)n);
     } else {
@@ -1611,7 +1615,9 @@ char* pb_radix_fmt(long long v, long long base, long long digits,
 long long pb_verify(char* s, char* m, long long start) {
     long long sl = (long long)strlen(s);
     long long i;
-    if (start < 1) start = 1;
+    /* CHW VERIFY_function.htm: a start position outside the string on either
+     * side (including start=0) returns zero. */
+    if (start < 1 || start > sl) return 0;
     for (i = start; i <= sl; i++) {
         if (!strchr(m, s[i - 1])) return i;
     }
@@ -1937,6 +1943,196 @@ int pb_str_len(const char* s) {
     return (int)*p;
 }
 
+/* VAL: convert a text string to a number (CHW VAL_function.htm).
+ * offset is 1-based; pass 0/1 to start at the first character.
+ * Supports leading whitespace skip, &H/&B/&O/&Q/& base-prefixed integers
+ * (leading zero -> unsigned, otherwise 32-bit signed), decimal floating point
+ * with e/d exponent, comma and other non-numeric characters terminate. */
+double pb_val(const char* s, int offset) {
+    if (!s) return 0.0;
+    int n = pb_str_len(s);
+    int p = offset - 1;
+    if (p < 0) p = 0;
+    if (p >= n) return 0.0;
+    while (p < n) {
+        char c = s[p];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') p++;
+        else break;
+    }
+    if (p >= n) return 0.0;
+    /* base-prefixed integer */
+    if (s[p] == '&' && p + 1 < n) {
+        char bc = s[p + 1];
+        int base = 8;
+        if (bc == 'H' || bc == 'h') base = 16;
+        else if (bc == 'B' || bc == 'b') base = 2;
+        else if (bc == 'O' || bc == 'o' || bc == 'Q' || bc == 'q') base = 8;
+        int q = p + 2;
+        unsigned long long acc = 0;
+        int any = 0;
+        while (q < n) {
+            char c = s[q];
+            int d = -1;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (base == 16 && c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else if (base == 16 && c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            if (d < 0 || d >= base) break;
+            acc = acc * (unsigned)base + (unsigned)d;
+            any = 1;
+            q++;
+        }
+        if (!any) return 0.0;
+        if (s[p + 2] == '0') {
+            return (double)acc;  /* leading zero -> unsigned */
+        }
+        /* signed: smallest signed width is 16-bit (no 8-bit signed integer
+         * type), then 32/64-bit. Sign-extend at the boundary whose top bit
+         * is set. Verified against PBWin (CHW VAL_function.htm). */
+        if (acc < 0x8000ull) return (double)acc;            /* < 2^15 positive */
+        if (acc < 0x10000ull) return -(double)(0x10000ull - acc);     /* 16-bit neg */
+        if (acc < 0x80000000ull) return (double)acc;        /* < 2^31 positive */
+        if (acc < 0x100000000ull) return -(double)(0x100000000ull - acc); /* 32-bit neg */
+        if (acc < 0x8000000000000000ull) return (double)acc; /* < 2^63 positive */
+        return -(double)(0xFFFFFFFFFFFFFFFFull - acc + 1);  /* 64-bit neg */
+    }
+    /* decimal floating point: build a NUL-terminated working copy, map d/D
+     * exponent to e/E, stop at the first non-numeric character (comma etc). */
+    char* work = (char*)malloc((size_t)(n - p) + 1);
+    if (!work) return 0.0;
+    int w = 0;
+    int seen_digit = 0;
+    while (p < n) {
+        char c = s[p];
+        if (c >= '0' && c <= '9') { work[w++] = c; seen_digit = 1; }
+        else if (c == '.') work[w++] = c;
+        else if (c == 'd' || c == 'D') work[w++] = 'e';
+        else if (c == 'e' || c == 'E') work[w++] = c;
+        else if (c == '+' || c == '-') work[w++] = c;
+        else break;  /* comma and any other non-numeric character */
+        p++;
+    }
+    work[w] = 0;
+    double r = seen_digit ? strtod(work, NULL) : 0.0;
+    free(work);
+    return r;
+}
+
+/* VAL statement backend: same conversion as pb_val, but also report the
+ * mantissa digit count and the count of unused trailing characters (CHW
+ * Val_statement.htm). Results are written through the output pointers.
+ * unused skips whitespace immediately following the number, then counts
+ * everything to the end (trailing whitespace is retained); a dangling
+ * exponent marker with no digits is consumed and does not count as
+ * unused. */
+void pb_val_full(const char* s, int offset, double* pv, int* pd, int* pu) {
+    *pv = 0.0;
+    *pd = 0;
+    *pu = 0;
+    if (!s) return;
+    int n = pb_str_len(s);
+    int p = offset - 1;
+    if (p < 0) p = 0;
+    if (p >= n) return;
+    while (p < n) {
+        char c = s[p];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') p++;
+        else break;
+    }
+    if (p >= n) return;  /* all whitespace */
+    /* base-prefixed integer */
+    if (s[p] == '&' && p + 1 < n) {
+        char bc = s[p + 1];
+        int base = 8;
+        if (bc == 'H' || bc == 'h') base = 16;
+        else if (bc == 'B' || bc == 'b') base = 2;
+        else if (bc == 'O' || bc == 'o' || bc == 'Q' || bc == 'q') base = 8;
+        int q = p + 2;
+        unsigned long long acc = 0;
+        int any = 0;
+        int digits = 0;
+        while (q < n) {
+            char c = s[q];
+            int d = -1;
+            if (c >= '0' && c <= '9') d = c - '0';
+            else if (base == 16 && c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else if (base == 16 && c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            if (d < 0 || d >= base) break;
+            acc = acc * (unsigned)base + (unsigned)d;
+            any = 1;
+            digits++;
+            q++;
+        }
+        if (!any) return;  /* bare prefix: no digits, no unused */
+        double val;
+        if (s[p + 2] == '0') {
+            val = (double)acc;
+        } else if (acc < 0x8000ull) {
+            val = (double)acc;
+        } else if (acc < 0x10000ull) {
+            val = -(double)(0x10000ull - acc);
+        } else if (acc < 0x80000000ull) {
+            val = (double)acc;
+        } else if (acc < 0x100000000ull) {
+            val = -(double)(0x100000000ull - acc);
+        } else if (acc < 0x8000000000000000ull) {
+            val = (double)acc;
+        } else {
+            val = -(double)(0xFFFFFFFFFFFFFFFFull - acc + 1);
+        }
+        *pv = val;
+        *pd = digits;
+        /* unused: skip whitespace immediately after the number, then count
+         * everything to the end (trailing whitespace is retained). */
+        int st = q;
+        while (st < n && (s[st] == ' ' || s[st] == '\t' ||
+                          s[st] == '\r' || s[st] == '\n')) st++;
+        *pu = n - st;
+        return;
+    }
+    /* decimal floating point */
+    int q = p;
+    int mdigits = 0;
+    if (q < n && (s[q] == '+' || s[q] == '-')) q++;
+    while (q < n) {
+        char c = s[q];
+        if (c >= '0' && c <= '9') { mdigits++; q++; }
+        else if (c == '.') q++;
+        else break;
+    }
+    int scan_end = q;  /* unused starts here unless an exponent is consumed */
+    if (q < n && (s[q] == 'e' || s[q] == 'E' || s[q] == 'd' || s[q] == 'D')) {
+        int eq = q + 1;
+        if (eq < n && (s[eq] == '+' || s[eq] == '-')) eq++;
+        if (eq < n && s[eq] >= '0' && s[eq] <= '9') {
+            q = eq;
+            while (q < n && s[q] >= '0' && s[q] <= '9') q++;
+            scan_end = q;  /* full exponent consumed */
+        } else {
+            scan_end = q + 1;  /* dangling marker: consume it, no unused */
+        }
+    }
+    if (mdigits > 0) {
+        char* work = (char*)malloc((size_t)(scan_end - p) + 1);
+        if (work) {
+            int w = 0;
+            for (int i = p; i < scan_end; i++) {
+                char c = s[i];
+                work[w++] = (c == 'd' || c == 'D') ? 'e' : c;
+            }
+            work[w] = 0;
+            *pv = strtod(work, NULL);
+            free(work);
+        }
+    }
+    *pd = mdigits;
+    /* unused: skip whitespace immediately after the number, then count
+     * everything to the end (trailing whitespace is retained). */
+    int st = scan_end;
+    while (st < n && (s[st] == ' ' || s[st] == '\t' ||
+                      s[st] == '\r' || s[st] == '\n')) st++;
+    *pu = n - st;
+}
+
 /* GLOBALMEM: allocate moveable global memory, return 1-based slot id so the
  * handle fits a PB LONG/DWORD on 64-bit. Slot table avoids truncation. */
 #define GMEM_MOVEABLE 0x0002u
@@ -2124,8 +2320,8 @@ char* pb_format_digits(double val, int digits);   /* forward decl */
 #define FMT_MAX_SLOTS 128
 
 typedef struct {
-    char  tok[FMT_MAX_SLOTS];   /* '0' '#' 'F' 'L' 'D' 'C' 'P' 'S' */
-    char  lit[FMT_MAX_SLOTS];   /* literal / fill / sci-case char */
+    char  tok[FMT_MAX_SLOTS];   /* '0' '#' 'F' 'L' 'D' 'C' 'P' 'S' 'M' 'H' 'T' */
+    char  lit[FMT_MAX_SLOTS];   /* literal / fill / sci-case / tail-sign char */
     int   n;
     int   int_slots, frac_slots;
     int   has_dot, comma, percent, sci;
@@ -2134,13 +2330,23 @@ typedef struct {
     int   exp_slots;
     int   has_fill;
     char  fillch;
-    int   has_neg_lit;          /* mask contains a literal '-' */
+    int   fill_specs;           /* count of '*x' fill specifiers in the mask */
+    char  first_fillch;         /* fill char of the leftmost (first) fill spec */
+    int   has_neg_lit;          /* mask contains a literal '-' (FORMAT$) */
+    /* USING$ (um=1) only fields */
+    int   has_dollar;           /* '$$' floating dollar present */
+    int   head_sign;            /* leading '+' floating sign present */
+    int   tail_sign;            /* trailing '+'/'-' fixed sign present */
+    char  tail_sign_ch;         /* '+' or '-' for the trailing sign slot */
 } fmt_mask_t;
 
-/* Scan one mask (up to ';' or NUL). Returns chars consumed. */
-static int fmt_scan_mask(const char* m, fmt_mask_t* fm) {
+/* Scan one mask (up to ';' or NUL). um=0 FORMAT$ rules, um=1 USING$ rules
+ * (recognises '$$', leading/trailing sign slots and '^' scientific). Returns
+ * chars consumed. */
+static int fmt_scan_mask(const char* m, fmt_mask_t* fm, int um) {
     memset(fm, 0, sizeof(*fm));
     int i = 0, n = 0;
+    int seen_digit = 0;          /* any digit-bearing slot encountered yet */
     fm->fillch = ' ';
     while (m[i] && m[i] != ';') {
         char c = m[i];
@@ -2163,6 +2369,7 @@ static int fmt_scan_mask(const char* m, fmt_mask_t* fm) {
                 fm->tok[n] = c; n++;
                 if (fm->has_dot) fm->frac_slots++; else fm->int_slots++;
             }
+            seen_digit = 1;
             i++;
             continue;
         }
@@ -2172,8 +2379,11 @@ static int fmt_scan_mask(const char* m, fmt_mask_t* fm) {
                 fm->tok[n] = 'F'; fm->lit[n] = f; n++;
                 fm->tok[n] = 'F'; fm->lit[n] = f; n++;
             }
+            if (fm->fill_specs == 0) fm->first_fillch = f;
+            fm->fill_specs++;
             fm->has_fill = 1; fm->fillch = f;
             if (fm->has_dot) fm->frac_slots += 2; else fm->int_slots += 2;
+            seen_digit = 1;
             i += 2;
             continue;
         }
@@ -2197,6 +2407,56 @@ static int fmt_scan_mask(const char* m, fmt_mask_t* fm) {
             fm->sci = 1; fm->sci_case = c; fm->sci_sign = m[i + 1];
             i += 2;
             continue;
+        }
+        /* ---- USING$ numeric mask rules (um=1) ---- */
+        if (um) {
+            if (c == '$' && m[i + 1] == '$') {
+                /* floating dollar: two integer slots; the dollar renders next
+                 * to the first significant digit at apply time */
+                if (n + 1 < FMT_MAX_SLOTS) { fm->tok[n] = 'M'; n++; fm->tok[n] = 'M'; n++; }
+                fm->has_dollar = 1; fm->int_slots += 2; seen_digit = 1;
+                i += 2;
+                continue;
+            }
+            if (c == '^') {
+                /* run of 3-6 carets: first two map to E + sign, the rest to
+                 * exponent digit slots */
+                int nc = 0;
+                while (m[i + nc] == '^' && nc < 6) nc++;
+                if (nc < 3) nc = 3;
+                fm->sci = 1; fm->sci_case = 'E'; fm->sci_sign = '+';
+                if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'S'; fm->lit[n] = 'E'; n++; }
+                fm->exp_slots = nc - 2;
+                for (int z = 0; z < nc - 2 && n < FMT_MAX_SLOTS; z++) { fm->tok[n] = '#'; n++; }
+                i += nc;
+                continue;
+            }
+            if (c == '+') {
+                if (!seen_digit) {
+                    /* leading floating sign: sign renders next to the digits */
+                    if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'H'; n++; }
+                    fm->head_sign = 1; fm->int_slots++; seen_digit = 1;
+                } else {
+                    /* trailing fixed sign slot */
+                    if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'T'; fm->lit[n] = '+'; n++; }
+                    fm->tail_sign = 1; fm->tail_sign_ch = '+';
+                }
+                i++;
+                continue;
+            }
+            if (c == '-') {
+                /* trailing fixed sign: '-' for negative, space for positive */
+                if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'T'; fm->lit[n] = '-'; n++; }
+                fm->tail_sign = 1; fm->tail_sign_ch = '-';
+                i++;
+                continue;
+            }
+            if (c == '$') {
+                /* lone '$' (no pair): pass through as a literal */
+                if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'L'; fm->lit[n] = '$'; n++; }
+                i++;
+                continue;
+            }
         }
         if (c == '$' || c == '(' || c == ')' || c == '+' || c == '-' || c == ' ') {
             if (n < FMT_MAX_SLOTS) { fm->tok[n] = 'L'; fm->lit[n] = c; n++; }
@@ -2276,7 +2536,7 @@ static char fmt_int_kind(const fmt_mask_t* fm, int idx) {
     for (int t = 0; t < fm->n; t++) {
         char k = fm->tok[t];
         if (k == 'D' || k == 'S') break;
-        if (k == '0' || k == '#' || k == 'F') {
+        if (k == '0' || k == '#' || k == 'F' || k == 'M' || k == 'H') {
             if (c == idx) return k;
             c++;
         }
@@ -2297,7 +2557,13 @@ static int fmt_int_slots(const fmt_mask_t* fm, const char* digits, char* slots, 
         } else {
             char k = fmt_int_kind(fm, e);
             if (k == '0') slots[e] = '0';
-            else if (k == 'F' || fm->has_fill) slots[e] = fm->fillch;
+            else if (k == 'F') slots[e] = fm->fillch;
+            else if (k == '#' && fm->has_fill) {
+                /* #-region empty slot: with 2+ fill specs the char that floats
+                 * in front is the first (leftmost) fill char; a single fill
+                 * spec uses its own fill char. */
+                slots[e] = fm->fill_specs >= 2 ? fm->first_fillch : fm->fillch;
+            }
             else slots[e] = 0;
         }
     }
@@ -2367,8 +2633,11 @@ static int fmt_frac_slots(const fmt_mask_t* fm, const char* frac_digits,
     return n;
 }
 
-/* build the formatted string for one mask */
-static char* fmt_apply(const fmt_mask_t* fm, double val) {
+/* build the formatted string for one mask.
+ * um=0 FORMAT$ semantics (leading '#' slots omitted, trailing fraction '#'
+ * zeros trimmed); um=1 USING$ fixed-width semantics (leading integer '#'
+ * slots render as spaces, empty fraction '#' slots render as zeros). */
+static char* fmt_apply(const fmt_mask_t* fm, double val, int um) {
     char out[FMT_MAX_SLOTS * 2 + 64];
     int oi = 0;
     int neg = val < 0;
@@ -2377,10 +2646,13 @@ static char* fmt_apply(const fmt_mask_t* fm, double val) {
 
     char fixed[1024];
     if (fm->sci) {
-        int sig = fm->int_slots + fm->frac_slots;
-        if (sig < 1) sig = 1;
+        /* Scientific mantissa always has one integer digit plus frac_slots
+         * fraction digits, so the %e precision is frac_slots. This lets the
+         * library round the last kept digit (e.g. 123456 -> 1.2346E+5). */
+        int prec = fm->frac_slots;
+        if (prec < 0) prec = 0;
         char ebuf[160];
-        snprintf(ebuf, sizeof(ebuf), "%.*e", sig - 1, av);
+        snprintf(ebuf, sizeof(ebuf), "%.*e", prec, av);
         char mant[96]; char esign; int expo;
         sscanf(ebuf, "%95[^e]e%c%d", mant, &esign, &expo);
         char mdig[96]; int md = 0;
@@ -2466,16 +2738,19 @@ static char* fmt_apply(const fmt_mask_t* fm, double val) {
                         char c = islots[ii];
                         ii++;
                         if (c) out[oi++] = c;
+                        else if (um) out[oi++] = ' ';
                     }
                 }
                 else if (phase == 1) {
                     if (ff < flen) {
                         if (fslots[ff]) out[oi++] = fslots[ff];
+                        else if (um) out[oi++] = '0';
                         ff++;
                     }
                 }
                 else if (phase == 2) {
                     if (ee < elen && eslots[ee]) out[oi++] = eslots[ee++];
+                    else if (um && ee < elen) { out[oi++] = '0'; ee++; }
                     else ee++;
                 }
             }
@@ -2511,6 +2786,39 @@ static char* fmt_apply(const fmt_mask_t* fm, double val) {
     char fslots[FMT_MAX_SLOTS];
     int flen = fmt_frac_slots(fm, frac_raw, fslots, (int)sizeof(fslots));
 
+    /* Floating prefix slots (USING$ '$$' and/or leading '+'). The prefix is
+     * rendered immediately in front of the digits; dollar is closest. When
+     * digits + prefix exceed the integer width the whole prefix is prepended
+     * to the overflow run instead. */
+    int dlen_f = (int)strlen(int_raw);
+    int pref_dollar = fm->has_dollar ? 1 : 0;
+    int pref_sign = fm->head_sign ? 1 : 0;
+    int pref_neg = (neg && !fm->head_sign && fm->has_dollar) ? 1 : 0;
+    int pref_total = pref_dollar + pref_sign + pref_neg;
+    int pref_overflow = (dlen_f + pref_total) > ilen;
+    int dollar_slot = -1, sign_slot = -1, neg_slot = -1;
+    if (!pref_overflow) {
+        int cursor = ilen - dlen_f - 1;
+        if (pref_dollar) { dollar_slot = cursor; cursor--; }
+        if (pref_sign) { sign_slot = cursor; cursor--; }
+        if (pref_neg) { neg_slot = cursor; cursor--; }
+    }
+
+    /* Fill-spec folding. With 2+ '*x' specifiers the leading fill slots that
+     * fall before the right-aligned digit run collapse (no output), and the
+     * empty #-region slots render with the first fill char. With a single fill
+     * spec the field stays full width (fill slots render). */
+    int fcnt = fm->fill_specs * 2;             /* total 'F' integer slots */
+    int hash_w = ilen - fcnt;                  /* true #/0 integer slots */
+    int fill_fold = um && fm->has_fill && fm->fill_specs >= 2;
+    int int_start = 0;
+    if (fill_fold) {
+        int ds = ilen - dlen_f;
+        if (ds < 0) ds = 0;
+        int ds2 = ds < fcnt ? ds : fcnt;
+        int_start = ds2;
+    }
+
     int ii = 0, ff = 0, phase = 0;   /* 0 int, 1 frac */
     char dbuf[FMT_MAX_SLOTS * 2 + 64];
     int dn = 0;
@@ -2538,27 +2846,72 @@ static char* fmt_apply(const fmt_mask_t* fm, double val) {
                 ii = ilen;
             }
         }
+        else if (k == 'M' || k == 'H') {
+            /* Floating dollar ('M') or leading floating sign ('H'). In the
+             * non-overflow case the prefix slot may sit on this token or on a
+             * later digit slot; only an exact match here renders the prefix. */
+            if (phase == 0 && !pref_overflow) {
+                if (ii == dollar_slot) out[oi++] = '$';
+                else if (ii == neg_slot) out[oi++] = '-';
+                else if (ii == sign_slot) out[oi++] = neg ? '-' : '+';
+                else out[oi++] = ' ';
+            } else if (phase == 0) {
+                /* overflow prefix is emitted before the overflow run */
+                ii++;
+                continue;
+            }
+            ii++;
+        }
+        else if (k == 'T') {
+            /* Trailing fixed sign slot: '+' shows +/- , '-' shows '-' or space. */
+            if (fm->tail_sign_ch == '+') out[oi++] = neg ? '-' : '+';
+            else out[oi++] = neg ? '-' : ' ';
+        }
         else if (k == '0' || k == '#' || k == 'F') {
-            if (neg && !neg_out && !fm->has_neg_lit) { out[oi++] = '-'; neg_out = 1; }
+            if (neg && !neg_out && !fm->has_neg_lit && !pref_dollar && !pref_sign &&
+                !fm->tail_sign) {
+                out[oi++] = '-'; neg_out = 1;
+            }
             if (phase == 0) {
-                if (!ovf_emitted && ovf > 0) {
+                if (pref_overflow && !ovf_emitted) {
+                    if (pref_neg) out[oi++] = '-';
+                    if (pref_sign) out[oi++] = neg ? '-' : '+';
+                    if (pref_dollar) out[oi++] = '$';
+                    fmt_emit_int_run(fm, int_raw, ovf, islots, ilen, out, &oi);
+                    ovf_emitted = 1;
+                    ii = ilen;
+                } else if (!ovf_emitted && ovf > 0) {
                     fmt_emit_int_run(fm, int_raw, ovf, islots, ilen, out, &oi);
                     ovf_emitted = 1;
                     ii = ilen;
                 } else if (ii < ilen) {
-                    char c = islots[ii];
-                    char kk = fmt_int_kind(fm, ii);
-                    ii++;
-                    if (!c) { /* '#' omit: nothing */ }
-                    else if ((kk == 'F' || (kk == '#' && fm->has_fill)) && c == fm->fillch) {
-                        out[oi++] = c;              /* fill stays out of the digit run */
+                    if (ii < int_start) { ii++; }        /* folded leading fill slot */
+                    else if (ii == dollar_slot) { out[oi++] = '$'; ii++; }
+                    else if (ii == neg_slot) { out[oi++] = '-'; ii++; }
+                    else if (ii == sign_slot) { out[oi++] = neg ? '-' : '+'; ii++; }
+                    else {
+                        char c = islots[ii];
+                        char kk = fmt_int_kind(fm, ii);
+                        int slot = ii;
+                        ii++;
+                        if (!c) {
+                            /* empty integer slot: in the # region with fill
+                             * folding use the first fill char, else space */
+                            if (fill_fold && slot >= fcnt) out[oi++] = fm->first_fillch;
+                            else if (um) out[oi++] = ' ';
+                        }
+                        else if ((kk == 'F' || (kk == '#' && fm->has_fill)) &&
+                                 (c == fm->fillch || c == fm->first_fillch)) {
+                            out[oi++] = c;              /* fill stays out of the digit run */
+                        }
+                        else if (fm->comma) dbuf[dn++] = c;
+                        else out[oi++] = c;
                     }
-                    else if (fm->comma) dbuf[dn++] = c;
-                    else out[oi++] = c;
                 }
             } else {
                 if (ff < flen) {
                     if (fslots[ff]) out[oi++] = fslots[ff];
+                    else if (um) out[oi++] = '0';  /* USING: empty fraction '#' = zero */
                     ff++;
                 }
             }
@@ -2578,7 +2931,10 @@ static char* fmt_apply(const fmt_mask_t* fm, double val) {
     }
 }
 
-char* pb_format(double val, const char* fmt) {
+/* Shared mask split/select for FORMAT$ (um=0) and USING$ numeric fields
+ * (um=1 fixed-width). The mask rules are identical except for how empty
+ * integer/fraction '#' slots render (see fmt_apply). */
+static char* format_with_mode(double val, const char* fmt, int um) {
     if (fmt == NULL || fmt[0] == '\0') {
         return pb_format_digits(val, 0);   /* default significant digits */
     }
@@ -2595,7 +2951,7 @@ char* pb_format(double val, const char* fmt) {
     }
     fmt_mask_t fm[3];
     for (int k = 0; k < nm; k++) {
-        fmt_scan_mask(m[k], &fm[k]);
+        fmt_scan_mask(m[k], &fm[k], um);
         fm[k].exp_slots = 0;
         int seen_s = 0;
         for (int t = 0; t < fm[k].n; t++) {
@@ -2608,7 +2964,16 @@ char* pb_format(double val, const char* fmt) {
     const fmt_mask_t* use = &fm[0];
     if (val < 0 && nm >= 2) use = &fm[1];
     if (val == 0 && nm >= 3) use = &fm[2];
-    return fmt_apply(use, val);
+    return fmt_apply(use, val, um);
+}
+
+char* pb_format(double val, const char* fmt) {
+    return format_with_mode(val, fmt, 0);
+}
+
+/* USING$ numeric field: fixed-width, leading '#' spaces / trailing zeros. */
+char* pb_format_using(double val, const char* fmt) {
+    return format_with_mode(val, fmt, 1);
 }
 
 /* digits form: 1..18 significant digits (default 16 for fork's double) */
@@ -3006,12 +3371,116 @@ void pb_replace_any(char** target, const char* old_set, const char* new_set) {
 }
 
 /* ============================================================
- * USING$ � Format number using a PRINT USING-style format string
- *
- * For now, delegates to pb_format (which handles the common cases).
+ * USING$ - Format one or more string/numeric expressions with a
+ * PRINT USING-style mask. Backing arrays are aligned by original
+ * argument index; output is hard capped at 1024 bytes (CHW).
  * ============================================================ */
-char* pb_using(const char* fmt, double val) {
-    return pb_format(val, fmt);
+typedef struct {
+    char* data;
+    size_t len;
+    size_t cap;
+} using_buf;
+
+static void ub_init(using_buf* b) {
+    b->cap = 256;
+    b->len = 0;
+    b->data = (char*)malloc(b->cap);
+}
+static void ub_ensure(using_buf* b, size_t extra) {
+    if (b->len + extra + 1 > b->cap) {
+        while (b->len + extra + 1 > b->cap) b->cap *= 2;
+        b->data = (char*)realloc(b->data, b->cap);
+    }
+}
+static void ub_put(using_buf* b, const char* p, size_t n) {
+    if (n == 0) return;
+    ub_ensure(b, n);
+    memcpy(b->data + b->len, p, n);
+    b->len += n;
+}
+
+static int pb_using_is_num_char(char c) {
+    return c == '#' || c == '.' || c == ',' || c == '$' ||
+           c == '*' || c == '+' || c == '-' || c == '^';
+}
+
+char* pb_using_multi(const char* fmt, const int* kinds, const double* nums,
+                     const char* const* strs, int n) {
+    using_buf b;
+    ub_init(&b);
+    int ai = 0;                 /* next argument index (mask order) */
+    const char* p = fmt;
+    while (*p) {
+        if (*p == '_' && p[1]) {
+            ub_put(&b, p + 1, 1);
+            p += 2;
+        } else if (*p == '!') {
+            if (ai < n && kinds[ai] == 1 && strs[ai]) {
+                int sl = pb_str_len(strs[ai]);
+                if (sl > 0) ub_put(&b, strs[ai], 1);
+            }
+            ai++;
+            p++;
+        } else if (*p == '&') {
+            if (ai < n && kinds[ai] == 1 && strs[ai]) {
+                int sl = pb_str_len(strs[ai]);
+                if (sl > 0) ub_put(&b, strs[ai], (size_t)sl);
+            }
+            ai++;
+            p++;
+        } else if (*p == '\\') {
+            const char* q = p + 1;
+            int width;
+            if (*q == '\\') {
+                width = 2;
+                q++;
+            } else {
+                int spaces = 0;
+                while (*q == ' ') { spaces++; q++; }
+                if (*q == '\\') q++;
+                width = spaces + 2;
+            }
+            if (ai < n && kinds[ai] == 1 && strs[ai]) {
+                int sl = pb_str_len(strs[ai]);
+                int take = sl < width ? sl : width;
+                if (take > 0) ub_put(&b, strs[ai], (size_t)take);
+            }
+            ai++;
+            p = q;
+        } else if (pb_using_is_num_char(*p)) {
+            /* A numeric field may contain '*' followed by ANY fill character
+             * (including letters, which are not in the num-char set), so the
+             * segment scan consumes the fill char explicitly after each '*'. */
+            const char* q = p;
+            while (*q) {
+                if (*q == '*') {
+                    q++;
+                    if (*q) q++;
+                    continue;
+                }
+                if (pb_using_is_num_char(*q)) { q++; continue; }
+                break;
+            }
+            size_t mlen = (size_t)(q - p);
+            char* msk = (char*)malloc(mlen + 1);
+            memcpy(msk, p, mlen);
+            msk[mlen] = '\0';
+            if (ai < n && kinds[ai] == 0) {
+                char* piece = pb_format_using(nums[ai], msk);
+                if (piece) ub_put(&b, piece, (size_t)pb_str_len(piece));
+            }
+            free(msk);
+            ai++;
+            p = q;
+        } else {
+            ub_put(&b, p, 1);
+            p++;
+        }
+    }
+    size_t out_len = b.len < 1024 ? b.len : 1024;
+    char* result = pb_bstr_alloc(b.data, (unsigned int)out_len);
+    free(b.data);
+    return result;
 }
 
 /* ============================================================
@@ -3055,9 +3524,16 @@ static unsigned rec_len[MAX_FILE_HANDLES] = {0};
 static char* rec_buf[MAX_FILE_HANDLES] = {0};
 static long long rec_pos[MAX_FILE_HANDLES] = {0};
 
+/* Forward declaration: socket state array is defined in the Winsock section
+   (pb_sock_state). pb_freefile must account for occupied sockets. */
+static int pb_sock_state[256];
+
 int pb_freefile(void) {
     for (int i = 1; i < MAX_FILE_HANDLES; i++) {
-        if (file_handles[i] == NULL) return i;
+        // A number is free only when neither a regular file nor a socket
+        // (TCP/UDP) occupies it. pb_sock_state is defined later in this file,
+        // so a forward declaration is provided below.
+        if (file_handles[i] == NULL && pb_sock_state[i] == 0) return i;
     }
     return 0;
 }
@@ -6081,8 +6557,59 @@ int pb_name(const char* old_path, const char* new_path) {
 
 /* WRITE # support: per-file "first field" tracking */
 static int write_first_field[MAX_FILE_HANDLES] = {0};
+/* Set when a WRITE# ends with a trailing comma/semicolon: the record is not
+   closed, so the next WRITE# on this file continues it instead of resetting. */
+static int write_record_open[MAX_FILE_HANDLES] = {0};
+
+/* Convert a C %g-style numeric string into PowerBASIC WRITE# numeric style.
+ * CHW WRITE# outputs: uppercase E in scientific form, no leading zero on the
+ * exponent (e.g. "1.234E-5", "1E+8"), and no integer zero before a leading
+ * decimal point (e.g. ".5", "-.5", ".0001234"). The C library %g emits
+ * lowercase e, a padded two-digit exponent and a leading "0."; fix both. */
+static void pb_style_num(char* s) {
+    char* e = strchr(s, 'e');
+    if (e) {
+        *e = 'E';
+        char* mp = e + 1; /* exponent start: optional sign then digits */
+        char* dp = mp;
+        char* wp = mp; /* where normalized digits are written (after sign) */
+        if (*dp == '+' || *dp == '-') {
+            dp++;
+            wp++;
+        }
+        while (*dp == '0' && isdigit((unsigned char)dp[1])) dp++;
+        size_t k = 0;
+        while (dp[k]) {
+            wp[k] = dp[k];
+            k++;
+        }
+        wp[k] = 0;
+    }
+    if (s[0] == '0' && s[1] == '.') {
+        memmove(s, s + 1, strlen(s));
+    } else if (s[0] == '-' && s[1] == '0' && s[2] == '.') {
+        memmove(s + 1, s + 2, strlen(s + 2) + 1);
+    }
+}
+
 void pb_write_file_begin(int filenum) {
-    if (filenum >= 1 && filenum < MAX_FILE_HANDLES) write_first_field[filenum] = 1;
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES) {
+        if (write_record_open[filenum]) {
+            /* Continue the record: keep write_first_field cleared so the next
+               field emits the separating comma. */
+            write_record_open[filenum] = 0;
+            write_first_field[filenum] = 0;
+        } else {
+            write_first_field[filenum] = 1;
+        }
+    }
+}
+/* Trailing comma/semicolon: keep the record open for the next WRITE#. */
+void pb_write_file_keep(int filenum) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES) {
+        write_record_open[filenum] = 1;
+        write_first_field[filenum] = 0;
+    }
 }
 void pb_write_file_str(int filenum, const char* s) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
@@ -6093,24 +6620,47 @@ void pb_write_file_str(int filenum, const char* s) {
         fputc(34, file_handles[filenum]);
     }
 }
-void pb_write_file_int(int filenum, long v) {
+void pb_write_file_int(int filenum, long long v) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
         write_first_field[filenum] = 0;
-        fprintf(file_handles[filenum], "%ld", v);
+        fprintf(file_handles[filenum], "%lld", v);
+    }
+}
+/* Numeric literal path: emit the pre-normalized source-form text verbatim
+   (field separator handled, but no surrounding quotes). */
+void pb_write_file_raw(int filenum, const char* s) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        write_first_field[filenum] = 0;
+        fputs(s ? s : "", file_handles[filenum]);
+    }
+}
+void pb_write_file_sng(int filenum, float v) {
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
+        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        write_first_field[filenum] = 0;
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.7g", (double)v);
+        pb_style_num(buf);
+        fputs(buf, file_handles[filenum]);
     }
 }
 void pb_write_file_dbl(int filenum, double v) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
         write_first_field[filenum] = 0;
-        fprintf(file_handles[filenum], "%.14g", v);
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%.15g", v);
+        pb_style_num(buf);
+        fputs(buf, file_handles[filenum]);
     }
 }
 void pb_write_file_newline(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         fputs("\r\n", file_handles[filenum]);
         write_first_field[filenum] = 1;
+        write_record_open[filenum] = 0;
         fflush(file_handles[filenum]);
     }
 }
@@ -6741,17 +7291,17 @@ long long pb_array_unique(char* base, int elem_size, long long total, int is_str
 }
 
 /* LOCK/UNLOCK: lock a byte range of the file (C runtime _locking) */
-void pb_lock(int filenum, long record, long length) {
+void pb_lock(int filenum, long long record, long long length) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (record > 0) fseek(file_handles[filenum], (long)(record - 1), SEEK_SET);
-        long nb = (length > 0) ? length : 1;
+        long nb = (length > 0) ? (long)length : 1;
         _locking(_fileno(file_handles[filenum]), _LK_LOCK, nb);
     }
 }
-void pb_unlock(int filenum, long record, long length) {
+void pb_unlock(int filenum, long long record, long long length) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (record > 0) fseek(file_handles[filenum], (long)(record - 1), SEEK_SET);
-        long nb = (length > 0) ? length : 1;
+        long nb = (length > 0) ? (long)length : 1;
         _locking(_fileno(file_handles[filenum]), _LK_UNLCK, nb);
     }
 }
@@ -6815,7 +7365,8 @@ __declspec(dllimport) struct pb_servent* __stdcall getservbyname(const char* nam
 /* PBWin default TCP timeout is 60000 ms (CHW TCP_OPEN_statement.htm). */
 #define PB_TCP_DEFAULT_TIMEOUT 60000L
 static pb_sock_t pb_sock[PB_MAX_SOCK];
-static int pb_sock_state[PB_MAX_SOCK];  /* 0=free 1=tcp 2=udp 3=tcp-server */
+/* pb_sock_state is defined earlier (file/socket section) so pb_freefile can
+   reference it: 0=free 1=tcp 2=udp 3=tcp-server. */
 static long pb_sock_timeout[PB_MAX_SOCK];  /* per-socket SEND/RECV timeout in ms */
 #define PB_SOCK_INVALID ((pb_sock_t)-1)
 
@@ -7049,7 +7600,9 @@ int pb_udp_open(int port, int filenum, long timeout) {
     if (s == PB_SOCK_INVALID) { pb_err_var = pb_err = 57; return -1; }
     struct pb_sockaddr_in a;
     pb_net_fill_addr(&a, 0, port);
-    if (timeout > 0) {
+    // CHW: default UDP timeout is 60000 ms; guard against a non-positive value.
+    if (timeout <= 0) timeout = 60000;
+    {
         int t = (int)timeout;
         setsockopt(s, 0xFFFF, 0x1006, (const char*)&t, 4);
     }
@@ -7059,21 +7612,22 @@ int pb_udp_open(int port, int filenum, long timeout) {
     return 0;
 }
 
-int pb_udp_send(int f, unsigned long ip, int port, const char* data);
+int pb_udp_send(int f, unsigned long ip, int port, const char* data, int len);
 
-int pb_udp_send_str(int f, const char* ipstr, int port, const char* data) {
+int pb_udp_send_str(int f, const char* ipstr, int port, const char* data, int len) {
     /* inet_addr yields network order, same as PBWin's ipaddr& semantics;
      * pb_udp_send expects network order, so pass through unchanged. */
-    return pb_udp_send(f, inet_addr(ipstr ? ipstr : "0.0.0.0"), port, data);
+    return pb_udp_send(f, inet_addr(ipstr ? ipstr : "0.0.0.0"), port, data, len);
 }
 
-int pb_udp_send(int f, unsigned long ip, int port, const char* data) {
+int pb_udp_send(int f, unsigned long ip, int port, const char* data, int len) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] != 2) { pb_err_var = pb_err = 52; return -1; }
+    if (!data) { data = ""; len = 0; }
+    if (len < 0) len = 0;
     struct pb_sockaddr_in a;
     pb_net_fill_addr(&a, ip, port);
-    int len = (int)strlen(data ? data : "");
     int n = sendto(pb_sock[f], data, len, 0, &a, sizeof(a));
-    if (n < 0) { pb_err_var = pb_err = 57; return -1; } return 0;
+    if (n < 0) { pb_err_var = pb_err = pb_wsa_err_code(); return -1; } return 0;
 }
 
 
@@ -7087,7 +7641,12 @@ int pb_udp_recv(int f, unsigned long* ip, int* port, char** out) {
     struct pb_sockaddr_in a;
     int alen = sizeof(a);
     int n = recvfrom(pb_sock[f], tmp, 65535, 0, &a, &alen);
-    if (n <= 0) n = 0;
+    if (n <= 0) {
+        // CHW: a timed-out/failed UDP RECV returns an empty string and sets
+        // ERR (24 device timeout, otherwise 57).
+        pb_err_var = pb_err = pb_wsa_err_code();
+        n = 0;
+    }
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
@@ -13626,6 +14185,23 @@ static long long pb_set_winlong(void* h, int idx, long long v) { return SetWindo
 __declspec(dllimport) long __stdcall SetWindowLongA(void*, int, long);
 static long long pb_set_winlong(void* h, int idx, long long v) { return (long long)SetWindowLongA(h, idx, (long)v); }
 #endif
+
+/* --- WINDOW GET/SET (CHW WINDOW_GET/SET statements) ------------------
+   Exported wrappers over the width-portable helpers above. The GWL index
+   selects the field: STYLE=-16, EXSTYLE=-20, ID=-12, USERDATA=-21. */
+long long pb_window_get_long(void* h, int idx) {
+    return pb_get_winlong(h, idx);
+}
+void* pb_window_get_parent(void* h) {
+    return GetParent(h);
+}
+void* pb_window_get_handle(void* parent, int id) {
+    return GetDlgItem(parent, id);
+}
+/* Returns the prior value (CHW: old value assigned to OldValVar). */
+long long pb_window_set_long(void* h, int idx, long long newval) {
+    return pb_set_winlong(h, idx, newval);
+}
 
 /* --- DIALOG ENABLE hDlg / DIALOG DISABLE hDlg ----------------------- */
 void pb_dialog_enable(void* hDlg, int on) { EnableWindow(hDlg, on); }
