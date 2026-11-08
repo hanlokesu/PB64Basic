@@ -49,16 +49,16 @@ END SUB
 '=====================================================================
 ' PB64Basic Enhanced - batch 204 self-check - THREAD STATUS / CLOSE
 '---------------------------------------------------------------------
-' WHAT WAS MEASURED BEFORE THIS FILE WAS WRITTEN
-'   Worker sleeps 700 ms, main checks at 150 ms and again at 1350 ms:
-'       status while running: 1
-'       status after finish:  3
+' CHW-CORRECT BEHAVIOR (THREAD STATUS / THREAD CLOSE)
+'   Worker sleeps 700 ms; main checks at 150 ms (still running) and again at
+'   1350 ms (finished).  Per the CHW, THREAD STATUS returns:
+'       status while running: &H103 = 259  (STILL_ACTIVE)
+'       status after finish:  the thread function's return value (here 77)
 '       flag: 1
-'       close returned
-'   So 1 means "alive" and 3 means "finished" in this runtime, and the handle
-'   THREAD CREATE ... TO h hands back is a zero-based slot index (the first
-'   thread is 0, which is a valid handle - never test a handle against 0).
-'   THREAD CLOSE on a finished thread returns without complaint.
+'   THREAD CREATE ... TO h hands back the real Windows thread handle (never
+'   compare it against 0 inside the fork; the handle is a non-zero DWORD).
+'   THREAD CLOSE releases the handle only - it does not stop the thread - and
+'   returns PB TRUE (-1) on success.
 '
 ' WHY IT IS WORTH A SELF-CHECK
 '   `THREAD STATUS h TO st` is the only way a program can learn that a worker
@@ -73,8 +73,8 @@ END SUB
 '   yet understood and is recorded as an open item rather than papered over.
 '
 ' Expected output:
-'   status while running: 1
-'   status after finish: 3
+'   status while running: 259
+'   status after finish: 77
 '   flag: 1
 '   closes cleanly
 '   === FAILURES: 0
@@ -84,7 +84,7 @@ GLOBAL g_flag AS LONG
 FUNCTION Worker () AS LONG
     SLEEP 700
     g_flag = 1
-    FUNCTION = 0
+    FUNCTION = 77
 END FUNCTION
 
 FUNCTION PBMAIN () AS LONG
@@ -96,11 +96,11 @@ FUNCTION PBMAIN () AS LONG
     SLEEP 150
     THREAD STATUS h TO st
     ConPrint "status while running: " & STR$(st)
-    IF st <> 1 THEN fails = fails + 1
+    IF st <> 259 THEN fails = fails + 1
     SLEEP 1200
     THREAD STATUS h TO st
     ConPrint "status after finish: " & STR$(st)
-    IF st <> 3 THEN fails = fails + 1
+    IF st <> 77 THEN fails = fails + 1
     ConPrint "flag: " & STR$(g_flag)
     IF g_flag <> 1 THEN fails = fails + 1
     THREAD CLOSE h

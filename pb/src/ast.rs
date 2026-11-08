@@ -33,6 +33,16 @@ pub enum PbType {
     Pointer(Box<PbType>),
     Variant, // untyped / default
     Field,   // FIELD variable (16-byte: {ptr, len, pad})
+    /// BIT/SBIT bit-field member (CHW TYPE/END TYPE): `AS BIT * n
+    /// [IN BYTE|WORD|DWORD]`. Only meaningful as a TYPE/UNION member.
+    /// `width` is 1..=31 bits; `signed` is true for SBIT (sign-extended);
+    /// `base` is the explicit IN container that starts a new bit field,
+    /// None for a bare bit packed into the current field.
+    BitField {
+        width: u32,
+        signed: bool,
+        base: Option<Box<PbType>>,
+    },
 }
 
 impl PbType {
@@ -398,6 +408,13 @@ pub enum Statement {
      * expression args are rejected by the parser, matching CHW), `result` is
      * the optional result variable name. */
     ObjectCall(ObjectCallStmt),
+    // CHW TIX_statement.htm: TIX target reads the high-resolution counter;
+    // TIX END target stores the elapsed count (current counter - target).
+    Tix {
+        target: String,
+        is_end: bool,
+        line: usize,
+    },
 }
 
 /// OBJECT CALL/GET/LET/SET — DISPATCH interface access (batch278-74).
@@ -444,6 +461,8 @@ pub struct DataItem {
 pub enum IterateTarget {
     For,
     Do,
+    /// Bare ITERATE with no target: iterate the most recently executed structure.
+    Recent,
 }
 
 #[derive(Debug, Clone)]
@@ -510,9 +529,10 @@ pub struct ForEachStmt {
 
 #[derive(Debug, Clone)]
 pub struct DoLoopStmt {
-    pub condition: Option<Expr>,
-    pub is_while: bool,    // true=WHILE, false=UNTIL
-    pub is_pre_test: bool, // condition at DO vs LOOP
+    pub condition: Option<Expr>, // pre-test condition at DO (None = no top test)
+    pub is_while: bool,          // pre-test: true=WHILE, false=UNTIL
+    pub post_condition: Option<Expr>, // post-test condition at LOOP
+    pub post_is_while: bool,     // post-test: true=WHILE, false=UNTIL
     pub body: Vec<Statement>,
     pub line: usize,
 }

@@ -24,6 +24,8 @@ enum Flow {
     Return(Value),
     IterateFor,
     IterateDo,
+    /// Bare ITERATE: captured by the innermost (most recent) enclosing loop.
+    IterateRecent,
     GoTo(String),
     GoSub(String),
     GoSubReturn,
@@ -508,6 +510,7 @@ impl Interpreter {
             Statement::Iterate(target) => match target {
                 IterateTarget::For => Ok(Flow::IterateFor),
                 IterateTarget::Do => Ok(Flow::IterateDo),
+                IterateTarget::Recent => Ok(Flow::IterateRecent),
             },
             Statement::Label(_) => Ok(Flow::Normal), // labels are markers, skip during execution
             Statement::GoTo(label) => Ok(Flow::GoTo(label.clone())),
@@ -598,6 +601,8 @@ impl Interpreter {
             Statement::ObjectCall(_) => Ok(Flow::Normal),
             // Inline assembly is not executed by the interpreter.
             Statement::Asm(_) => Ok(Flow::Normal),
+            // TIX cycle timing is not executed by the interpreter.
+            Statement::Tix { .. } => Ok(Flow::Normal),
         }
     }
 
@@ -705,7 +710,7 @@ impl Interpreter {
 
             // Execute body
             match self.exec_body(&for_stmt.body)? {
-                Flow::Normal | Flow::IterateFor => {}
+                Flow::Normal | Flow::IterateFor | Flow::IterateRecent => {}
                 Flow::ExitFor => break,
                 other => return Ok(other),
             }
@@ -724,46 +729,37 @@ impl Interpreter {
 
     fn exec_do_loop(&mut self, do_loop: &DoLoopStmt) -> PbResult<Flow> {
         loop {
-            // Pre-test
-            if do_loop.is_pre_test {
-                if let Some(ref cond) = do_loop.condition {
-                    let val = self.eval_expr(cond)?;
-                    let should_continue = if do_loop.is_while {
-                        val.is_truthy()
-                    } else {
-                        !val.is_truthy()
-                    };
-                    if !should_continue {
-                        break;
-                    }
+            // Pre-test (condition at DO)
+            if let Some(ref cond) = do_loop.condition {
+                let val = self.eval_expr(cond)?;
+                let truthy = val.is_truthy();
+                let should_continue = if do_loop.is_while { truthy } else { !truthy };
+                if !should_continue {
+                    break;
                 }
             }
 
             match self.exec_body(&do_loop.body)? {
-                Flow::Normal | Flow::IterateDo => {}
+                Flow::Normal | Flow::IterateDo | Flow::IterateRecent => {}
                 Flow::ExitDo => break,
                 other => return Ok(other),
             }
 
-            // Post-test
-            if !do_loop.is_pre_test {
-                if let Some(ref cond) = do_loop.condition {
-                    let val = self.eval_expr(cond)?;
-                    let should_continue = if do_loop.is_while {
-                        val.is_truthy()
-                    } else {
-                        !val.is_truthy()
-                    };
-                    if !should_continue {
-                        break;
-                    }
+            // Post-test (condition at LOOP), independent of the pre-test
+            if let Some(ref cond) = do_loop.post_condition {
+                let val = self.eval_expr(cond)?;
+                let truthy = val.is_truthy();
+                let should_continue = if do_loop.post_is_while {
+                    truthy
+                } else {
+                    !truthy
+                };
+                if !should_continue {
+                    break;
                 }
             }
-
-            // Infinite DO/LOOP with no condition — shouldn't happen in well-formed code
-            if do_loop.condition.is_none() {
-                break;
-            }
+            // With no condition at all the loop repeats until the body returns
+            // ExitDo; that is the correct infinite-DO semantics.
         }
         Ok(Flow::Normal)
     }
@@ -775,7 +771,7 @@ impl Interpreter {
                 break;
             }
             match self.exec_body(&while_stmt.body)? {
-                Flow::Normal => {}
+                Flow::Normal | Flow::IterateRecent => {}
                 Flow::ExitDo | Flow::ExitFor => break,
                 other => return Ok(other),
             }

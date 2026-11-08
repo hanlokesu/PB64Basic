@@ -1400,6 +1400,11 @@ struct Compiler {
     // (batch 260; CHW #LINK metastatement — the fork additionally accepts
     // .obj/.lib so external object modules can be linked, Erol request).
     link_files: Vec<String>,
+
+    // Fatal codegen errors collected during layout (register_type runs in a
+    // non-Result context); compile_program turns these into a PbError after
+    // the layout pass. Used for bit-field Error 534.
+    fatal_errors: Vec<String>,
 }
 
 /// Tracks a global variable or array that will become a session struct field.
@@ -1493,6 +1498,10 @@ struct FieldInfo {
     /// index — otherwise fields after a padding slot are mis-addressed or
     /// fall out of bounds (lm_fill panic).
     gep_idx: usize,
+    /// Bit-field metadata `(bit_offset_within_container, width, signed)` for
+    /// a BIT/SBIT member. None for an ordinary byte-addressable field. The
+    /// ir_type is the whole container (i8/i16/i32); access applies shift/mask.
+    bit: Option<(u32, u32, bool)>,
 }
 
 impl Compiler {
@@ -1585,6 +1594,7 @@ impl Compiler {
             current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
+            fatal_errors: Vec::new(),
         }
     }
 
@@ -1610,6 +1620,8 @@ impl Compiler {
             // (word VT code at +0, 8-byte value union at +8), matching the
             // runtime PB_VARIANT layout used by COM marshalling.
             PbType::Variant => IrType::Array(16, Box::new(IrType::I8)),
+            // BitField is layout-only; ir_type_for_field handles its container.
+            PbType::BitField { .. } => IrType::I32,
         }
     }
 
@@ -1642,6 +1654,19 @@ impl Compiler {
             // Variant/UDT: caller resolves; default to pointer width.
             PbType::Variant => ptr_w,
             PbType::UserDefined(_) => ptr_w,
+            // BitField is a layout-only member, never sized as a scalar.
+            PbType::BitField { .. } => 0,
+        }
+    }
+
+    /// Resolve an explicit `IN BYTE|WORD|DWORD` bit-field container to its
+    /// PB type, IR type and total bit count. None for any other container.
+    fn bit_container(base: &PbType) -> Option<(PbType, IrType, u32)> {
+        match base {
+            PbType::Byte => Some((PbType::Byte, IrType::I8, 8)),
+            PbType::Word => Some((PbType::Word, IrType::I16, 16)),
+            PbType::Dword => Some((PbType::Dword, IrType::I32, 32)),
+            _ => None,
         }
     }
 
@@ -1706,6 +1731,13 @@ impl Compiler {
     fn ir_type_for_field(pb_type: &PbType) -> IrType {
         match pb_type {
             PbType::FixedString(n) => IrType::Array(*n, Box::new(IrType::I8)),
+            // A bit member occupies its whole container slot (i8/i16/i32).
+            PbType::BitField { base, .. } => match base.as_deref() {
+                Some(PbType::Byte) => IrType::I8,
+                Some(PbType::Word) => IrType::I16,
+                Some(PbType::Dword) => IrType::I32,
+                _ => IrType::I32,
+            },
             other => Self::ir_type_for(other),
         }
     }
@@ -3759,6 +3791,12 @@ impl Compiler {
         );
 
         self.module.declare_function(
+            "pb_tab_expand",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_tab_delete",
             &IrType::I64,
             &[IrType::Ptr, IrType::I32, IrType::I32],
@@ -4122,6 +4160,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_type_set_str_pad",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_dir_first",
             &IrType::Ptr,
             &[IrType::Ptr, IrType::I32, IrType::I32],
@@ -4179,6 +4223,12 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_tally", &IrType::I64, &[IrType::Ptr, IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_tally_any",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_strreverse", &IrType::Ptr, &[IrType::Ptr], false);
         self.module.declare_function(
@@ -6417,7 +6467,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_tcp_send",
             &IrType::I32,
-            &[IrType::I32, IrType::Ptr],
+            &[IrType::I32, IrType::Ptr, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -6686,7 +6736,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_thread_create",
             &IrType::I32,
-            &[IrType::Ptr, IrType::Ptr],
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
             false,
         );
         self.module
@@ -6949,6 +6999,10 @@ impl Compiler {
             if let TopLevel::TypeDecl(td) = item {
                 self.register_type(td);
             }
+        }
+        // Bit-field layout errors (Error 534) collected during register_type.
+        if !self.fatal_errors.is_empty() {
+            return Err(PbError::generic(self.fatal_errors.join("\n")));
         }
 
         for item in &program.items {
@@ -7282,6 +7336,10 @@ impl Compiler {
             // maps to index 0 — all members live at offset 0, exactly as the
             // CHW "members overlap in memory" rule requires.
             let mut largest: Option<(IrType, u32)> = None;
+            // Bit packing state for direct BIT/SBIT members inside the union:
+            // (container total bits, bits used). The container still occupies
+            // the single union slot (gep_idx 0); only the bit metadata varies.
+            let mut ubit_state: Option<(u32, u32)> = None;
             for field in td.fields.iter() {
                 // CHW: structures may also be embedded inside a UNION; their
                 // (flattened) members overlap at offset 0 like any member.
@@ -7301,6 +7359,7 @@ impl Compiler {
                                 ir_type,
                                 dims: m.dims.clone(),
                                 gep_idx: 0, // all union members share LLVM slot 0
+                                bit: m.bit,
                             });
                         }
                         continue;
@@ -7318,12 +7377,46 @@ impl Compiler {
                 }
                 let field_name = normalize_name(&field.name);
                 field_map.insert(field_name.clone(), fields.len()); // Vec index
+                                                                    // Bit-field member: compute its bit offset in the shared slot.
+                let bit_meta = if let PbType::BitField {
+                    width,
+                    signed,
+                    base,
+                } = &field.pb_type
+                {
+                    let width = *width;
+                    let signed = *signed;
+                    if base.is_some() {
+                        let total = Self::ir_size_bytes(&ir_type) * 8;
+                        ubit_state = Some((total, width));
+                        Some((0, width, signed))
+                    } else {
+                        match ubit_state {
+                            Some((total, used)) if width + used <= total => {
+                                let off = used;
+                                ubit_state = Some((total, used + width));
+                                Some((off, width, signed))
+                            }
+                            _ => {
+                                self.fatal_errors.push(format!(
+                                    "Bit field error (534): union member {} does not fit",
+                                    field.name
+                                ));
+                                None
+                            }
+                        }
+                    }
+                } else {
+                    ubit_state = None;
+                    None
+                };
                 fields.push(FieldInfo {
                     name: field_name,
                     pb_type: field.pb_type.clone(),
                     ir_type,
                     dims: field.dims.clone(),
                     gep_idx: 0, // all union members share LLVM slot 0
+                    bit: bit_meta,
                 });
             }
             let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
@@ -7370,6 +7463,11 @@ impl Compiler {
                 *cur_offset += pad;
             }
         };
+        // Bit-field packing state while a BIT/SBIT field is open:
+        // (container LLVM slot gep index, container total bits, bits used,
+        // container PB type, container IR type). None = no current bit field
+        // (a bare BIT then reports Error 534).
+        let mut bit_state: Option<(usize, u32, u32, PbType, IrType)> = None;
         if td.is_class {
             // Official CLASS object model (batch 305, legacy #2): the object
             // layout carries a hidden class-id header at offset 0 so an
@@ -7384,11 +7482,93 @@ impl Compiler {
                 ir_type: IrType::I64,
                 dims: Vec::new(),
                 gep_idx: 0, // hidden header occupies LLVM slot 0
+                bit: None,
             });
             idx = 1;
             cur_offset = Self::ir_size_bytes(&IrType::I64);
         }
         for field in td.fields.iter() {
+            // Bit-field member (BIT/SBIT): pack into a shared container slot.
+            if let PbType::BitField {
+                width,
+                signed,
+                base,
+            } = &field.pb_type
+            {
+                let width = *width;
+                let signed = *signed;
+                if let Some(base_pb) = base {
+                    // Explicit IN: start a new bit field/container.
+                    let (container_pb, container_ir, container_bits) =
+                        match Self::bit_container(base_pb) {
+                            Some(t) => t,
+                            None => {
+                                self.fatal_errors.push(format!(
+                                    "Bit field error (534): invalid IN container in {}",
+                                    field.name
+                                ));
+                                continue;
+                            }
+                        };
+                    emit_pad(
+                        &mut ir_types,
+                        &mut idx,
+                        &mut cur_offset,
+                        &container_ir,
+                        false,
+                    );
+                    let slot = idx;
+                    ir_types.push(container_ir.clone());
+                    field_map.insert(normalize_name(&field.name), fields.len());
+                    fields.push(FieldInfo {
+                        name: normalize_name(&field.name),
+                        pb_type: container_pb.clone(),
+                        ir_type: container_ir.clone(),
+                        dims: Vec::new(),
+                        gep_idx: slot,
+                        bit: Some((0, width, signed)),
+                    });
+                    cur_offset += Self::ir_size_bytes(&container_ir);
+                    idx += 1;
+                    bit_state = Some((slot, container_bits, width, container_pb, container_ir));
+                } else {
+                    // Bare bit: pack into the current field; Error 534 if it
+                    // does not fit or if no bit field is open. take() moves the
+                    // state out (resetting to None); the success path re-sets it.
+                    match bit_state.take() {
+                        Some((slot, total_bits, used, cpb, cir)) => {
+                            if width + used > total_bits {
+                                self.fatal_errors.push(format!(
+                                    "Bit field error (534): member {} does not fit in container",
+                                    field.name
+                                ));
+                                continue;
+                            }
+                            let bit_offset = used;
+                            field_map.insert(normalize_name(&field.name), fields.len());
+                            fields.push(FieldInfo {
+                                name: normalize_name(&field.name),
+                                pb_type: cpb.clone(),
+                                ir_type: cir.clone(),
+                                dims: Vec::new(),
+                                gep_idx: slot,
+                                bit: Some((bit_offset, width, signed)),
+                            });
+                            bit_state = Some((slot, total_bits, used + width, cpb, cir));
+                        }
+                        None => {
+                            self.fatal_errors.push(format!(
+                                "Bit field error (534): first bit member {} must use IN",
+                                field.name
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                continue;
+            }
+            // Any ordinary/nested field closes the open bit field.
+            bit_state = None;
             if let Some(nested_name) = &field.nested {
                 let sub = match self.type_layouts.get(nested_name) {
                     Some(s) => s,
@@ -7412,6 +7592,7 @@ impl Compiler {
                             ir_type: IrType::I32,
                             dims: Vec::new(),
                             gep_idx: idx,
+                            bit: None,
                         });
                         cur_offset += Self::ir_size_bytes(&IrType::I32);
                         idx += 1;
@@ -7437,6 +7618,7 @@ impl Compiler {
                             ir_type: m.ir_type.clone(),
                             dims: m.dims.clone(),
                             gep_idx: idx, // all overlap on this LLVM slot
+                            bit: m.bit,
                         });
                     }
                     cur_offset += Self::ir_size_bytes(&ir_type);
@@ -7462,6 +7644,7 @@ impl Compiler {
                             ir_type: m.ir_type.clone(),
                             dims: m.dims.clone(),
                             gep_idx: idx,
+                            bit: m.bit,
                         });
                         cur_offset += Self::ir_size_bytes(&m.ir_type);
                         idx += 1;
@@ -7488,6 +7671,7 @@ impl Compiler {
                     ir_type,
                     dims: field.dims.clone(),
                     gep_idx: idx,
+                    bit: None,
                 });
                 cur_offset += Self::ir_size_bytes(&fields.last().unwrap().ir_type);
                 idx += 1;
@@ -8633,13 +8817,14 @@ impl Compiler {
                 Ok(())
             }
             Statement::Iterate(target) => {
-                let is_for = matches!(target, IterateTarget::For);
-                for info in self.loop_stack.iter().rev() {
-                    if info.is_for == is_for {
-                        let cont = info.continue_label.clone();
-                        fb.br(&cont);
-                        break;
-                    }
+                let info = match target {
+                    // Bare ITERATE: most recently executed (innermost) structure.
+                    IterateTarget::Recent => self.loop_stack.last(),
+                    IterateTarget::For => self.loop_stack.iter().rev().find(|i| i.is_for),
+                    IterateTarget::Do => self.loop_stack.iter().rev().find(|i| !i.is_for),
+                };
+                if let Some(info) = info {
+                    fb.br(&info.continue_label);
                 }
                 Ok(())
             }
@@ -8838,6 +9023,33 @@ impl Compiler {
                 // pb_filecopy, so the return value is simply ignored.
                 let path = self.compile_expr(fb, expr)?;
                 fb.call_void("pb_kill", &[path]);
+                Ok(())
+            }
+            Statement::Tix {
+                target,
+                is_end,
+                line: _,
+            } => {
+                // CHW TIX_statement.htm: pb_tix reads the high-resolution
+                // counter; TIX END stores the elapsed count (current - old).
+                let name = normalize_name(target);
+                let info = self.symbols.lookup(&name).ok_or_else(|| {
+                    PbError::parser(
+                        format!("TIX: target variable `{}` not found", target),
+                        None,
+                        self.current_line,
+                    )
+                })?;
+                let ptr = Val::new(info.ptr_name.clone(), IrType::Ptr);
+                let cur = fb.call(&IrType::I64, "pb_tix", &[]);
+                let result = if *is_end {
+                    let old = fb.load(&IrType::I64, &ptr);
+                    fb.sub(&cur, &old)
+                } else {
+                    cur
+                };
+                let converted = self.convert_value(fb, &result, &info.ir_type, &info.pb_type);
+                fb.store(&converted, &ptr);
                 Ok(())
             }
             Statement::Asm(text) => {
@@ -9619,6 +9831,28 @@ impl Compiler {
                     let term_idx = fb.const_i32((*n as i32) - 1);
                     let term_ptr = fb.gep_byte(&field_ptr, &term_idx);
                     fb.store(&Val::new("0".to_string(), IrType::I8), &term_ptr);
+                } else if let Some((bit_off, width, _signed)) = self.member_bit_info(&assign.target)
+                {
+                    // Bit-field write: read-modify-write the whole container.
+                    let container_ir = Self::ir_type_for(&field_pb);
+                    let old = fb.load(&container_ir, &field_ptr);
+                    let field_mask: u32 = if width >= 32 {
+                        u32::MAX
+                    } else {
+                        (1u32 << width) - 1
+                    };
+                    let mask_v = fb.const_int(&container_ir, field_mask as i64);
+                    let off_v = fb.const_int(&container_ir, bit_off as i64);
+                    // clear the target bits in the old value
+                    let shifted_mask = fb.shl(&mask_v, &off_v);
+                    let clear_mask = fb.not(&shifted_mask);
+                    let cleared = fb.and(&old, &clear_mask);
+                    // new value masked to field width, then shifted into place
+                    let converted = self.convert_value(fb, &value, &container_ir, &field_pb);
+                    let new_masked = fb.and(&converted, &mask_v);
+                    let new_shifted = fb.shl(&new_masked, &off_v);
+                    let merged = fb.or(&cleared, &new_shifted);
+                    fb.store(&merged, &field_ptr);
                 } else {
                     let field_ir = Self::ir_type_for(&field_pb);
                     let converted = self.convert_value(fb, &value, &field_ir, &field_pb);
@@ -9809,6 +10043,18 @@ impl Compiler {
             Expr::Deref(inner) => self.expr_pb_type(inner),
             _ => None,
         }
+    }
+
+    /// Bit metadata `(bit_offset, width, signed)` for a TypeMember expression
+    /// whose field is a bit member; None for an ordinary byte-addressable field.
+    fn member_bit_info(&self, expr: &Expr) -> Option<(u32, u32, bool)> {
+        if let Expr::TypeMember(base, member) = expr {
+            let t = self.struct_type_of_expr(base)?;
+            let layout = self.type_layouts.get(&t)?;
+            let idx = *layout.field_map.get(&normalize_name(member))?;
+            return layout.fields[idx].bit;
+        }
+        None
     }
 
     // ========== Lvalue pointer ==========
@@ -19651,7 +19897,19 @@ impl Compiler {
                             }
                             // otherwise treat src as a STRING (payload pointer)
                             let sv = self.compile_expr(fb, src_expr)?;
-                            fb.call_void("pb_type_set_str", &[dest_ptr, sv, fb.const_i32(size)]);
+                            if let Some(pad_expr) = call.args.get(2) {
+                                // USING: pad remaining bytes with the first char
+                                let pv = self.compile_expr(fb, pad_expr)?;
+                                fb.call_void(
+                                    "pb_type_set_str_pad",
+                                    &[dest_ptr, sv, fb.const_i32(size), pv],
+                                );
+                            } else {
+                                fb.call_void(
+                                    "pb_type_set_str",
+                                    &[dest_ptr, sv, fb.const_i32(size)],
+                                );
+                            }
                         }
                     }
                 }
@@ -20711,7 +20969,8 @@ impl Compiler {
                 let _e0 = self.compile_expr(fb, &call.args[0])?;
                 let fnum = self.to_i32(fb, &_e0);
                 let data = self.compile_expr(fb, &call.args[1])?;
-                fb.call_void("pb_tcp_send", &[fnum, data]);
+                let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&data));
+                fb.call_void("pb_tcp_send", &[fnum, data, slen]);
                 return Ok(());
             }
             "TCP RECV" => {
@@ -21214,23 +21473,51 @@ impl Compiler {
                         return Ok(());
                     }
                     let fp = Val::new(format!("@{}", ir_name), IrType::Ptr);
+                    // CHW: the thread function's single BYVAL LONG/DWORD argument
+                    // is the parameter inside FuncName(param).  A no-argument
+                    // spelling (fork extension) passes 0.
+                    let thread_param = match &call.args[0] {
+                        Expr::FunctionCall(_, fn_args) => {
+                            if let Some(pe) = fn_args.first() {
+                                let pv = self.compile_expr(fb, pe)?;
+                                self.to_i32(fb, &pv)
+                            } else {
+                                fb.const_i32(0)
+                            }
+                        }
+                        _ => fb.const_i32(0),
+                    };
                     if call.args.len() >= 2 {
                         if let Some((id_ptr, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                            fb.call_void("pb_thread_create", &[fp, id_ptr]);
+                            fb.call_void("pb_thread_create", &[fp, thread_param, id_ptr]);
                         }
                     } else {
                         let nul = Val::new("null".to_string(), IrType::Ptr);
-                        fb.call_void("pb_thread_create", &[fp, nul]);
+                        fb.call_void("pb_thread_create", &[fp, thread_param, nul]);
                     }
                 }
                 return Ok(());
             }
-            "THREAD CLOSE" | "THREAD SUSPEND" | "THREAD RESUME" => {
+            "THREAD CLOSE" => {
+                // CHW: THREAD CLOSE hThread TO lResult (TO result optional in fork).
+                if let Some(arg) = call.args.first() {
+                    let v = self.compile_expr(fb, arg)?;
+                    let id = self.to_i32(fb, &v);
+                    let rc = fb.call(&IrType::I32, "pb_thread_close", &[id]);
+                    if let Some(res_expr) = call.args.get(1) {
+                        if let Some((ptr, ir, pb)) = self.lvalue_ptr(fb, res_expr) {
+                            let converted = self.convert_value(fb, &rc, &ir, &pb);
+                            fb.store(&converted, &ptr);
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            "THREAD SUSPEND" | "THREAD RESUME" => {
                 if let Some(arg) = call.args.first() {
                     let v = self.compile_expr(fb, arg)?;
                     let id = self.to_i32(fb, &v);
                     let fn_name = match name.as_str() {
-                        "THREAD CLOSE" => "pb_thread_close",
                         "THREAD SUSPEND" => "pb_thread_suspend",
                         _ => "pb_thread_resume",
                     };
@@ -22145,13 +22432,18 @@ impl Compiler {
     // ========== DO/LOOP ==========
 
     fn compile_do_loop(&mut self, fb: &mut FunctionBuilder, do_stmt: &DoLoopStmt) -> PbResult<()> {
-        let cond_label = fb.next_label("do.cond");
+        let pre_cond_label = fb.next_label("do.precond");
         let body_label = fb.next_label("do.body");
+        let post_cond_label = fb.next_label("do.postcond");
         let exit_label = fb.next_label("do.exit");
 
-        if let (true, Some(condition)) = (do_stmt.is_pre_test, do_stmt.condition.as_ref()) {
-            fb.br(&cond_label);
-            fb.label(&cond_label);
+        let has_pre = do_stmt.condition.is_some();
+        let has_post = do_stmt.post_condition.is_some();
+
+        // Entry -> pre-test block
+        fb.br(&pre_cond_label);
+        fb.label(&pre_cond_label);
+        if let Some(condition) = do_stmt.condition.as_ref() {
             let cond = self.compile_expr_as_bool(fb, condition)?;
             let cond = if !do_stmt.is_while {
                 // UNTIL: negate
@@ -22162,13 +22454,23 @@ impl Compiler {
             };
             fb.condbr(&cond, &body_label, &exit_label);
         } else {
+            // No top test: fall straight into the body
             fb.br(&body_label);
         }
 
         // Body
         fb.label(&body_label);
+        // ITERATE resumes at the first guard that gates the next pass:
+        // pre-test if present, otherwise post-test, otherwise the body itself.
+        let continue_label = if has_pre {
+            pre_cond_label.clone()
+        } else if has_post {
+            post_cond_label.clone()
+        } else {
+            body_label.clone()
+        };
         self.loop_stack.push(LoopInfo {
-            continue_label: cond_label.clone(),
+            continue_label,
             exit_label: exit_label.clone(),
             is_for: false,
         });
@@ -22176,22 +22478,30 @@ impl Compiler {
         self.loop_stack.pop();
 
         if !fb.is_terminated() {
-            if do_stmt.is_pre_test {
-                fb.br(&cond_label);
-            } else if let Some(ref cond_expr) = do_stmt.condition {
-                fb.br(&cond_label);
-                fb.label(&cond_label);
-                let cond = self.compile_expr_as_bool(fb, cond_expr)?;
-                let cond = if !do_stmt.is_while {
-                    let one = fb.const_i1(true);
-                    fb.xor(&cond, &one)
-                } else {
-                    cond
-                };
-                fb.condbr(&cond, &body_label, &exit_label);
+            fb.br(&post_cond_label);
+        }
+
+        // Post-test block
+        fb.label(&post_cond_label);
+        if let Some(post_cond_expr) = do_stmt.post_condition.as_ref() {
+            let cond = self.compile_expr_as_bool(fb, post_cond_expr)?;
+            let cond = if !do_stmt.post_is_while {
+                let one = fb.const_i1(true);
+                fb.xor(&cond, &one)
             } else {
-                fb.br(&body_label); // Infinite loop
-            }
+                cond
+            };
+            // A repeated pass must re-enter through the pre-test when one exists.
+            let repeat_target = if has_pre {
+                pre_cond_label.clone()
+            } else {
+                body_label.clone()
+            };
+            fb.condbr(&cond, &repeat_target, &exit_label);
+        } else if has_pre {
+            fb.br(&pre_cond_label);
+        } else {
+            fb.br(&body_label); // No condition at all: infinite loop, EXIT leaves it
         }
 
         fb.label(&exit_label);
@@ -24475,6 +24785,36 @@ impl Compiler {
                 if matches!(field_pb, PbType::FixedString(_)) {
                     return Ok(fb.call(&IrType::Ptr, "pb_fixed_to_bstr", &[field_ptr]));
                 }
+                // Bit-field: load the whole container, shift and mask.
+                if let Some((bit_off, width, signed)) = self.member_bit_info(expr) {
+                    let container_ir = Self::ir_type_for(&field_pb);
+                    let total = Self::ir_size_bytes(&container_ir) * 8;
+                    let raw = fb.load(&container_ir, &field_ptr);
+                    let shifted = fb.lshr(&raw, &fb.const_int(&container_ir, bit_off as i64));
+                    if signed {
+                        // Move the bit-field's sign bit to the container top,
+                        // arithmetic shift right to sign-extend within the
+                        // container, then sext to i32 (PB integer expression).
+                        let left = total - width;
+                        let left_val = fb.const_int(&container_ir, left as i64);
+                        let up = fb.shl(&shifted, &left_val);
+                        let wide = fb.sar(&up, &left_val);
+                        if container_ir == IrType::I32 {
+                            return Ok(wide);
+                        }
+                        return Ok(fb.sext(&wide, &IrType::I32));
+                    }
+                    let mask: u32 = if width >= 32 {
+                        u32::MAX
+                    } else {
+                        (1u32 << width) - 1
+                    };
+                    let narrow = fb.and(&shifted, &fb.const_int(&container_ir, mask as i64));
+                    if container_ir == IrType::I32 {
+                        return Ok(narrow);
+                    }
+                    return Ok(fb.zext(&narrow, &IrType::I32));
+                }
                 let field_ir = Self::ir_type_for(&field_pb);
                 Ok(fb.load(&field_ir, &field_ptr))
             }
@@ -24945,7 +25285,11 @@ impl Compiler {
         match &val.ty {
             IrType::Double => val.clone(),
             IrType::Float => fb.fpext(val, &IrType::Double),
-            // WORD (I16) is unsigned in PB: widen via uitofp (batch 285)
+            // BYTE (I8) and WORD (I16) are unsigned in PB: widen via uitofp.
+            // Without the I8 arm the catch-all returned the i8 value, which a
+            // Double callee then read as a subnormal bit pattern (TYPE SET
+            // USING -> TRIM$(byte_element) gave 6.95E-310 instead of 50).
+            IrType::I8 => fb.uitofp(val, &IrType::Double),
             IrType::I16 => fb.uitofp(val, &IrType::Double),
             // batch297: boolean TRUE is -1 in PBWin, so I1 must map through
             // an i32 select before sitofp (a direct sitofp would give 1.0).
@@ -25780,16 +26124,19 @@ impl Compiler {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
-                    let av = match self.compile_expr(fb, &args[1]) {
+                    // args: [mask, attr] (inclusive, only=0) |
+                    //       [mask, ONLY flag, attr] (only=1, normal excluded)
+                    let (only, attr_expr) = if args.len() >= 3 {
+                        (fb.const_i32(1), &args[2])
+                    } else {
+                        (fb.const_i32(0), &args[1])
+                    };
+                    let av = match self.compile_expr(fb, attr_expr) {
                         Ok(v) => v,
                         Err(e) => return Some(Err(e)),
                     };
                     let av32 = self.to_i32(fb, &av);
-                    return Some(Ok(fb.call(
-                        &IrType::Ptr,
-                        "pb_dir_first",
-                        &[m, fb.const_i32(1), av32],
-                    )));
+                    return Some(Ok(fb.call(&IrType::Ptr, "pb_dir_first", &[m, only, av32])));
                 }
                 Some(Ok(fb.call(&IrType::Ptr, "pb_dir_next", &[])))
             }
@@ -26463,6 +26810,13 @@ impl Compiler {
             PbType::WString => 23,        // WSTRING reports as STRING class (batch280)
             PbType::FixedString(_) => 22, // %VARCLASS_FIX
             PbType::Field => 24,          // %VARCLASS_FLD
+            // Bit-field reports the class of its IN container (BYTE/WORD/DWORD).
+            PbType::BitField { base, .. } => match base.as_deref() {
+                Some(PbType::Byte) => 0,
+                Some(PbType::Word) => 1,
+                Some(PbType::Dword) => 2,
+                _ => 5,
+            },
         }
     }
 
@@ -27000,12 +27354,34 @@ impl Compiler {
 
     // Batch 38: string / math builtins
     fn builtin_tally(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // CHW TALLY_function.htm: TALLY(MainString, [ANY] MatchString).
+        // The parser turns ANY into a StringLit("__ANY__") sentinel.
         if args.len() < 2 {
             return Err(PbError::runtime("TALLY requires 2 arguments"));
         }
-        let s = self.compile_expr(fb, &args[0])?;
-        let m = self.compile_expr(fb, &args[1])?;
-        Ok(fb.call(&IrType::I64, "pb_tally", &[s, m]))
+        let mut any = false;
+        let mut positional: Vec<&Expr> = Vec::new();
+        for e in args {
+            if let Expr::StringLit(s) = e {
+                if s == "__ANY__" {
+                    any = true;
+                    continue;
+                }
+            }
+            positional.push(e);
+        }
+        if positional.len() < 2 {
+            return Err(PbError::runtime(
+                "TALLY requires MainString and MatchString",
+            ));
+        }
+        let s = self.compile_expr(fb, positional[0])?;
+        let m = self.compile_expr(fb, positional[1])?;
+        if any {
+            Ok(fb.call(&IrType::I64, "pb_tally_any", &[s, m]))
+        } else {
+            Ok(fb.call(&IrType::I64, "pb_tally", &[s, m]))
+        }
     }
     fn builtin_strreverse(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         if args.is_empty() {
@@ -28596,6 +28972,27 @@ impl Compiler {
     /// official Function Form of the TAB statement (CHW TAB_statement.htm).
     /// The parser stores the director word as a StringLit in args[0].
     fn builtin_tab(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // TAB$(text, tabstop) - string tab expansion (CHW TAB_function.htm).
+        // The GUI control form always starts with a director-word StringLit
+        // (COUNT/DIALOG/IMAGE/PAGE/SELECT/TEXT); any other first argument is
+        // the string form and goes to pb_tab_expand.
+        let is_director = matches!(
+            &args.first(),
+            Some(Expr::StringLit(s))
+                if matches!(
+                    s.to_uppercase().as_str(),
+                    "COUNT" | "SELECT" | "DIALOG" | "IMAGE" | "PAGE" | "TEXT"
+                )
+        );
+        if !is_director {
+            if args.len() < 2 {
+                return Err(PbError::runtime("TAB$ requires (text, tabstop)"));
+            }
+            let s = self.compile_expr(fb, &args[0])?;
+            let stop_raw = self.compile_expr(fb, &args[1])?;
+            let stop = self.to_i32(fb, &stop_raw);
+            return Ok(fb.call(&IrType::Ptr, "pb_tab_expand", &[s, stop]));
+        }
         if args.len() < 2 {
             return Err(PbError::runtime(
                 "TAB: function form requires at least 2 arguments",

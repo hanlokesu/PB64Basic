@@ -1372,12 +1372,22 @@ static pb_x87_t pb_build_factor(unsigned long long mag) {
     return f;
 }
 
+static int pb_ull_digits(unsigned long long n) {
+    if (n == 0) return 1;
+    int d = 0;
+    while (n) { n /= 10ULL; d++; }
+    return d;
+}
+
 /* core scaling: returns the integer digits and the decimal exponent */
 static unsigned long long pb_x87_core(unsigned long long bits, int digits,
                                       int *out_de, int *out_sign) {
     pb_x87_t x = pb_x87_from_bits(bits);
-    int de = pb_imul_high(x.e, 0x4d10);
-    int ax = (digits + 2) - de;
+    int de_raw = pb_imul_high(x.e, 0x4d10);
+    /* Total power of 10 by which the value is scaled (preserved across the
+       0x1000 factor staging below). The rounded integer r = value*10^ax_total. */
+    int ax_total = (digits + 2) - de_raw;
+    int ax = ax_total;
     if (ax > 0x1000) {
         pb_x87_t t;
         t.m = pb_tbyte_sig[9]; t.e = pb_tbyte_exp[9]; t.sign = 0; t.zero = 0;
@@ -1396,13 +1406,21 @@ static unsigned long long pb_x87_core(unsigned long long bits, int digits,
     pb_x87_t r = pb_x87_frndint(x);
     pb_x87_t p18;
     p18.m = 0xDE0B6B3A76400000ULL; p18.e = 59; p18.sign = 0; p18.zero = 0;
+    int extra_div = 0;
     if (pb_x87_cmp(r, p18) >= 0) {
         r = pb_x87_div(r, pb_x87_from_int(10));
-        de++;
+        extra_div = 1;
     }
+    unsigned long long ri = pb_x87_to_int(r);
+    /* True decimal exponent derived from the actual integer. Because
+       ri = value * 10^ax_total (one extra /10 when the p18 guard fires),
+       floor(log10(value)) = digits(ri) - 1 - ax_total + extra_div. This
+       includes the mantissa contribution that e*log10(2) alone omitted,
+       which previously made every exponent one too small. */
+    int de = pb_ull_digits(ri) - 1 - ax_total + extra_div;
     *out_de = de;
     *out_sign = r.sign;
-    return pb_x87_to_int(r);
+    return ri;
 }
 
 static int pb_ull_str(unsigned long long n, char *out) {
@@ -1458,11 +1476,20 @@ static char* pb_num_render(double v, int digits, int lead_space) {
     }
     while (sl > 0 && s[sl - 1] == '0') s[--sl] = '\0';
     int ns = sl;
-    int e_adj = (de + 1) - ns;
+    /* CHW/PBWin scientific-notation rule (verified against PBWin):
+     * - de >= 0: scientific when the integral part cannot fit, de >= digits
+     *   (e.g. TRIM$(123.456,2)="1.2E+2").
+     * - de < 0: fixed-point needs (-de-1) leading zeros plus ns significant
+     *   digits; scientific only when that exceeds the budget, i.e.
+     *   ns-de-1 > digits (e.g. STR$(0.001234)=" .001234" fixed at digits=15,
+     *   but TRIM$(0.001234,2)="1.2E-3" scientific).
+     * At digits=15 both branches are exactly the old hard-coded thresholds. */
     int scientific;
-    if (e_adj > 0) scientific = (de >= 15);
-    else if (e_adj == 0) scientific = 0;
-    else scientific = ((ns - de) > 16);
+    if (de >= 0) {
+        scientific = (de >= digits) ? 1 : 0;
+    } else {
+        scientific = (ns - de - 1 > digits) ? 1 : 0;
+    }
 
     char out[80];
     int k = 0;
@@ -1629,6 +1656,48 @@ long long pb_tally(char* s, char* m) {
     char* p = s;
     while ((p = strstr(p, m)) != NULL) { c++; p += n; }
     return c;
+}
+/* TALLY ANY: count each byte of s that is a member of the single-character
+   set m. The inner break dedups a repeated char in m (CHW: TALLY("ABCD",
+   ANY "BDB")=2). Case-sensitive and BSTR-safe via byte lengths. */
+long long pb_tally_any(char* s, char* m) {
+    size_t sn = SysStringByteLen(s);
+    size_t mn = SysStringByteLen(m);
+    long long c = 0;
+    size_t i, j;
+    for (i = 0; i < sn; i++) {
+        for (j = 0; j < mn; j++) {
+            if (m[j] == s[i]) { c++; break; }
+        }
+    }
+    return c;
+}
+/* TAB$(strtotab, tabstop) - expand every tab (CHR$9 / $TAB) into spaces so
+   the next character lands one column past the next tab-stop boundary.
+   CHW TAB_function.htm: a tab stop below 1 or above 256 returns the original
+   string unchanged. BSTR-safe (uses the byte length, preserves embedded NULs). */
+char* pb_tab_expand(char* s, int tabstop) {
+    if (!s) return pb_bstr_alloc("", 0);
+    size_t n = SysStringByteLen(s);
+    if (tabstop < 1 || tabstop > 256) return pb_bstr_alloc(s, (unsigned int)n);
+    size_t cap = n * (size_t)tabstop + 1;
+    char* buf = (char*)malloc(cap);
+    if (!buf) return pb_bstr_alloc(s, (unsigned int)n);
+    size_t col = 0, out = 0, i;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 9u) {
+            int spaces = tabstop - (int)(col % tabstop);
+            int k;
+            for (k = 0; k < spaces; k++) { buf[out++] = ' '; col++; }
+        } else {
+            buf[out++] = (char)c;
+            col++;
+        }
+    }
+    char* r = pb_bstr_alloc(buf, (unsigned int)out);
+    free(buf);
+    return r;
 }
 char* pb_strreverse(char* s) {
     /* BSTR-safe: use the byte length, not strlen — CHR$(0 TO 255) starts with
@@ -3201,6 +3270,8 @@ char* pb_line_input(int filenum) {
 
 /* COMM LINE timeout EOF query (batch 260); defined in the COMM section. */
 int pb_comm_is_eof(int channel);
+/* TCP/UDP socket EOF probe; defined in the socket section. */
+int pb_socket_eof_state(int filenum);
 
 int pb_eof(int filenum) {
     /* Batch 260: EOF(channel) on an open COMM port reflects the COMM LINE
@@ -3208,6 +3279,8 @@ int pb_eof(int filenum) {
        partial line is returned and EOF becomes TRUE).  Non-COMM file numbers
        fall through to the file check below. */
     if (pb_comm_is_eof(filenum)) return -1;
+    int se = pb_socket_eof_state(filenum);
+    if (se != -2) return se;
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return -1;
     /* PB EOF() returns true when no more data to read � need to peek ahead */
     int ch = fgetc(file_handles[filenum]);
@@ -3801,7 +3874,9 @@ void pb_set_time(const char* s) {
 #ifdef _WIN32
     int h = 0, m = 0, sec = 0, n = 0;
     n = sscanf(s, "%d:%d:%d", &h, &m, &sec);
-    if (n == 2 || n == 3) {
+    /* CHW: minutes and seconds may be omitted, so n=1 (hour only), 2 or 3.
+     * Unparsed m/sec stay 0, e.g. TIME$="12" means 12:00:00. */
+    if (n >= 1 && n <= 3) {
         if (h >= 0 && h <= 23 && m >= 0 && m <= 59 && sec >= 0 && sec <= 59) {
             PB_SYSTEMTIME st;
             GetLocalTime(&st);
@@ -3876,12 +3951,20 @@ __declspec(dllimport) int __stdcall PlaySoundA(const char* pszSound, void* hmod,
 #define PB_SND_FILENAME 0x00020000
 
 /* TIX � high-resolution performance counter (QUAD) */
+/* TIX - read the CPU time-stamp counter (RDTSC). CHW TIX_statement.htm:
+ * "Measures elapsed CPU cycles", the smallest timing increment.  PBWin10 emits
+ * the raw rdtsc opcode (verified by disassembly), so we match that instead of
+ * QueryPerformanceCounter, whose coarse 100 ns ticks can read 0 for short code. */
+static __inline long long pb_rdtsc_counter(void) {
+    unsigned int lo, hi;
+    /* "memory" clobber makes rdtsc a compiler barrier: the code being timed
+     * must not be reordered or folded across the counter reads. */
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi) : : "memory");
+    return ((long long)hi << 32) | (long long)lo;
+}
+
 long long pb_tix(void) {
-#ifdef _WIN32
-    PB_LARGE_INTEGER c;
-    if (QueryPerformanceCounter(&c)) return c.QuadPart;
-#endif
-    return (long long)clock();
+    return pb_rdtsc_counter();
 }
 
 /* MKBYT$ (n) � one byte as a single-character string */
@@ -6695,11 +6778,36 @@ __declspec(dllimport) unsigned long __stdcall htonl(unsigned long hostlong);
 __declspec(dllimport) unsigned long __stdcall ntohl(unsigned long netlong);
 __declspec(dllimport) unsigned long __stdcall inet_addr(const char* cp);
 __declspec(dllimport) int __stdcall setsockopt(pb_sock_t s, int level, int optname, const char* optval, int optlen);
+__declspec(dllimport) int __stdcall ioctlsocket(pb_sock_t s, long cmd, unsigned long* argp);
+__declspec(dllimport) int __stdcall WSAGetLastError(void);
 
 #define PB_MAX_SOCK 256
+/* FIONREAD: ioctlsocket command returning the number of bytes available to read
+   (winsock2.h _IOR('f',127,u_long) = 0x4004667F). */
+#define PB_FIONREAD 0x4004667Fu
+/* WSAETIMEDOUT: blocking socket send/recv timeout (winsock2.h error 10060). */
+#define PB_WSAETIMEDOUT 10060
+/* PBWin default TCP timeout is 60000 ms (CHW TCP_OPEN_statement.htm). */
+#define PB_TCP_DEFAULT_TIMEOUT 60000L
 static pb_sock_t pb_sock[PB_MAX_SOCK];
 static int pb_sock_state[PB_MAX_SOCK];  /* 0=free 1=tcp 2=udp 3=tcp-server */
+static long pb_sock_timeout[PB_MAX_SOCK];  /* per-socket SEND/RECV timeout in ms */
 #define PB_SOCK_INVALID ((pb_sock_t)-1)
+
+/* Apply the SEND/RECV timeout to one socket (SO_RCVTIMEO/SO_SNDTIMEO). A
+   non-positive value falls back to the PBWin 60000 ms default. */
+static void pb_apply_socket_timeout(pb_sock_t s, long ms) {
+    if (ms <= 0) ms = PB_TCP_DEFAULT_TIMEOUT;
+    int t = (int)ms;
+    setsockopt(s, 0xFFFF, 0x1006, (const char*)&t, 4); /* SO_RCVTIMEO */
+    setsockopt(s, 0xFFFF, 0x1005, (const char*)&t, 4); /* SO_SNDTIMEO */
+}
+
+/* Map a failed blocking call to the PB error code: a Winsock timeout is PBWin
+   Error 24 (Device timeout); every other device failure stays Error 57. */
+static int pb_wsa_err_code(void) {
+    return (WSAGetLastError() == PB_WSAETIMEDOUT) ? 24 : 57;
+}
 
 static unsigned long pb_net_ip(const char* host) {
     unsigned long ip = inet_addr(host);
@@ -6731,6 +6839,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
     if (pb_winsock_init() != 0) { pb_err_var = pb_err = 57; return -1; }
     if (filenum < 1 || filenum >= PB_MAX_SOCK) { pb_err_var = pb_err = 52; return -1; }
     if (pb_sock_state[filenum] != 0) { pb_err_var = pb_err = 52; return -1; }
+    if (timeout <= 0) timeout = PB_TCP_DEFAULT_TIMEOUT; /* CHW default 60s */
     pb_sock_t s = socket(2, 1, 6); /* AF_INET, SOCK_STREAM, TCP */
     if (s == PB_SOCK_INVALID) { pb_err_var = pb_err = 57; return -1; }
     struct pb_sockaddr_in a;
@@ -6741,20 +6850,21 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
         if (bind(s, &a, sizeof(a)) != 0 || listen(s, 8) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
         pb_sock[filenum] = s;
         pb_sock_state[filenum] = 3;
+        pb_sock_timeout[filenum] = timeout;
         return 0;
     }
     /* connect */
     unsigned long ip = pb_net_ip(addr);
     if (ip == (unsigned long)-1) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
-    if (timeout > 0) {
-        int t = (int)timeout;
-        setsockopt(s, 0xFFFF, 0x1006, (const char*)&t, 4); /* SO_RCVTIMEO */
-        setsockopt(s, 0xFFFF, 0x1005, (const char*)&t, 4); /* SO_SNDTIMEO */
-    }
+    pb_apply_socket_timeout(s, timeout);
     pb_net_fill_addr(&a, ip, port);   /* pb_net_ip returns network order; fill_addr stores raw */
-    if (connect(s, &a, sizeof(a)) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
+    if (connect(s, &a, sizeof(a)) != 0) {
+        int e = pb_wsa_err_code();
+        closesocket(s); pb_err_var = pb_err = e; return -1;
+    }
     pb_sock[filenum] = s;
     pb_sock_state[filenum] = 1;
+    pb_sock_timeout[filenum] = timeout;
     return 0;
 }
 
@@ -6773,17 +6883,23 @@ int pb_tcp_accept(int srv, int* out_newf) {
     if (f >= PB_MAX_SOCK) { closesocket(s); pb_err_var = pb_err = 52; return -1; }
     pb_sock[f] = s;
     pb_sock_state[f] = 1;
+    /* Inherit the listening server's SEND/RECV timeout so the accepted socket
+       also times out (CHW TIMEOUT applies to SEND/RECV/PRINT/LINE). */
+    long t = pb_sock_timeout[srv];
+    pb_sock_timeout[f] = t;
+    pb_apply_socket_timeout(s, t);
     if (out_newf) *out_newf = f;
     return 0;
 }
 
-int pb_tcp_send(int f, const char* data) {
+int pb_tcp_send(int f, const char* data, int len) {
     if (f < 1 || f >= PB_MAX_SOCK || (pb_sock_state[f] != 1 && pb_sock_state[f] != 3)) { pb_err_var = pb_err = 52; return -1; }
-    int len = (int)strlen(data ? data : "");
+    if (!data) { data = ""; len = 0; }
+    if (len < 0) len = 0;
     int off = 0;
     while (off < len) {
         int n = send(pb_sock[f], data + off, len - off, 0);
-        if (n <= 0) { pb_err_var = pb_err = 57; return -1; }
+        if (n <= 0) { pb_err_var = pb_err = pb_wsa_err_code(); return -1; }
         off += n;
     }
     return 0;
@@ -6792,11 +6908,23 @@ int pb_tcp_send(int f, const char* data) {
 int pb_tcp_recv(int f, long count, char** out) {
     if (f < 1 || f >= PB_MAX_SOCK || (pb_sock_state[f] != 1 && pb_sock_state[f] != 3)) { pb_err_var = pb_err = 52; return -1; }
     if (count < 0) count = 0;
-    char* buf = pb_bstr_alloc(NULL, (unsigned int)count);
-    int n = recv(pb_sock[f], buf, (int)count, 0);
-    if (n <= 0) n = 0;
-    buf[n] = 0;
-    *out = buf;
+    /* Receive into a scratch buffer, then build a BSTR of the ACTUAL byte
+       count. A BSTR preallocated at the requested count would report LEN=count
+       even on a timeout or partial read. CHW: the result string length equals
+       the bytes actually received; a timeout returns an empty string. */
+    char* tmp = (char*)malloc((size_t)count + 1);
+    if (!tmp) { pb_err_var = pb_err = 7; return -1; }
+    int n = recv(pb_sock[f], tmp, (int)count, 0);
+    if (n == 0) {
+        /* graceful close: empty result, no error. */
+        n = 0;
+    } else if (n < 0) {
+        pb_err_var = pb_err = pb_wsa_err_code(); /* timeout=24, other=57 */
+        n = 0;
+    }
+    char* result = pb_bstr_alloc(n > 0 ? tmp : NULL, (unsigned int)n);
+    free(tmp);
+    *out = result;
     return n;
 }
 
@@ -6807,7 +6935,11 @@ int pb_tcp_line_input(int f, char** out) {
     while (n < 4095) {
         char c = 0;
         int r = recv(pb_sock[f], &c, 1, 0);
-        if (r <= 0) break;
+        if (r == 0) break;                 /* graceful close: no error */
+        if (r < 0) {                       /* timeout=24, other device error=57 */
+            pb_err_var = pb_err = pb_wsa_err_code();
+            break;
+        }
         if (c == '\n') break;
         if (c != '\r') tmp[n++] = c;
     }
@@ -6819,8 +6951,10 @@ int pb_tcp_line_input(int f, char** out) {
 }
 
 int pb_tcp_print(int f, const char* data, int newline) {
-    if (pb_tcp_send(f, data) != 0) { pb_err_var = pb_err = 57; return -1; }
-    if (newline) return pb_tcp_send(f, "\r\n");
+    if (!data) data = "";
+    int dlen = pb_str_len(data);            /* BSTR byte length, NUL-safe */
+    if (pb_tcp_send(f, data, dlen) != 0) return -1; /* error code already set */
+    if (newline) return pb_tcp_send(f, "\r\n", 2);
     return 0;
 }
 
@@ -6828,7 +6962,19 @@ int pb_tcp_close(int f) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] == 0) { pb_err_var = pb_err = 52; return -1; }
     closesocket(pb_sock[f]);
     pb_sock_state[f] = 0;
+    pb_sock_timeout[f] = 0;
     return 0;
+}
+
+/* EOF state for a TCP/UDP socket. PBWin EOF on a socket is a live, non-blocking
+   probe: ioctlsocket FIONREAD reports the bytes currently available. >0 -> 0
+   (FALSE), 0 -> -1 (TRUE). Returns -2 when filenum is not an open socket so
+   pb_eof can fall through to the file check. */
+int pb_socket_eof_state(int filenum) {
+    if (filenum < 1 || filenum >= PB_MAX_SOCK || pb_sock_state[filenum] == 0) return -2;
+    unsigned long avail = 0;
+    if (ioctlsocket(pb_sock[filenum], PB_FIONREAD, &avail) != 0) return -1;
+    return avail > 0 ? 0 : -1;
 }
 
 int pb_udp_open(int port, int filenum, long timeout) {
@@ -7352,7 +7498,7 @@ typedef struct _pb_thread_slot {
 
 static pb_thread_slot pb_thr[256];
 
-int pb_thread_create(void* func, unsigned long* out_id) {
+int pb_thread_create(void* func, unsigned long param, unsigned long* out_id) {
     int i;
     unsigned long tid = 0;
     if (func == NULL) { pb_err_var = pb_err = 5; return -1; }
@@ -7361,33 +7507,49 @@ int pb_thread_create(void* func, unsigned long* out_id) {
         if (!pb_thr[i].h) break;
     }
     if (i >= 256) { pb_err_var = pb_err = 5; return -1; }
-    pb_thr[i].h = CreateThread(NULL, 0, (void* (__stdcall*)(void*))func, NULL, 0, &tid);
+    /* CHW THREAD CREATE: the thread function takes one BYVAL LONG/DWORD passed
+       by value.  CreateThread hands it over as lpParameter; on x64 the PB
+       function reads its single i32 argument from the low 32 bits of RCX. */
+    pb_thr[i].h = CreateThread(NULL, 0, (void* (__stdcall*)(void*))func,
+                               (void*)(unsigned long long)param, 0, &tid);
     if (!pb_thr[i].h) { pb_err_var = pb_err = 7; return -1; }
     pb_thr[i].tid = tid;
     pb_thr[i].state = 1;
-    if (out_id) *out_id = (unsigned long)i;
+    /* CHW: hThread is the real Windows thread handle (a DWORD/LONG).  Real
+       handle values are small and fit in 32 bits even on x64. */
+    if (out_id) *out_id = (unsigned long)(uintptr_t)pb_thr[i].h;
     return 0;
 #else
     /* 32-bit: PB functions use cdecl but CreateThread requires stdcall �
        calling a cdecl function through a stdcall pointer corrupts the stack. */
+    (void)param;
     if (out_id) *out_id = 0;
     pb_err_var = pb_err = 7; return -1;
 #endif
 }
 
-static pb_thread_slot* pb_thread_slot_of(unsigned long id) {
-    if (id >= 256) return NULL;
-    if (!pb_thr[id].h) return NULL;
-    return &pb_thr[id];
+static pb_thread_slot* pb_thread_slot_of(unsigned long handle) {
+    int i;
+    /* THREAD CREATE hands back the real Windows handle, so locate the slot by
+       matching that handle value rather than indexing the array. */
+    for (i = 0; i < 256; i++) {
+        if (pb_thr[i].h &&
+            (unsigned long)(uintptr_t)pb_thr[i].h == handle) {
+            return &pb_thr[i];
+        }
+    }
+    return NULL;
 }
 
 int pb_thread_close(unsigned long id) {
     pb_thread_slot* t = pb_thread_slot_of(id);
-    if (t == NULL) return -1;
-    TerminateThread(t->h, 0);
-    CloseHandle(t->h);
+    int ok;
+    /* CHW THREAD CLOSE: release the handle only; it does NOT stop a running
+       thread.  Returns PB TRUE (-1) on success, FALSE (0) on failure. */
+    if (t == NULL) return 0;
+    ok = CloseHandle(t->h);
     memset(t, 0, sizeof(*t));
-    return 0;
+    return ok ? -1 : 0;
 }
 
 int pb_thread_suspend(unsigned long id) {
@@ -7409,13 +7571,16 @@ int pb_thread_resume(unsigned long id) {
 int pb_thread_status(unsigned long id) {
     pb_thread_slot* t = pb_thread_slot_of(id);
     unsigned long code = 0;
+    /* CHW THREAD STATUS: failure -> 0; still running -> &H103; once
+       terminated (and the handle is open) -> the thread function's return
+       value, which GetExitCodeThread reports as the exit code. */
     if (t == NULL) return 0;
-    GetExitCodeThread(t->h, &code);
+    if (!GetExitCodeThread(t->h, &code)) return 0;
     if (code == 0x00000103UL) { /* STILL_ACTIVE */
-        return t->state; /* 1 running or 2 suspended */
+        return 0x00000103;
     }
     t->state = 3;
-    return 3;
+    return (int)code;
 }
 
 int pb_thread_get_priority(unsigned long id) {
@@ -7859,6 +8024,12 @@ int pb_trace_new(char* fname) {
     if (pb_trace_fp) { fclose(pb_trace_fp); pb_trace_fp = NULL; }
     pb_trace_fp = fopen(fname ? fname : "", "w");
     pb_trace_enabled = (pb_trace_fp != NULL);
+    /* CHW TRACE: TRACE NEW always emits the banner line, even before TRACE ON.
+       Text mode turns the '\n' into CRLF, matching PBWin byte-for-byte. */
+    if (pb_trace_fp) {
+        fputs("Trace Begins...\n", pb_trace_fp);
+        fflush(pb_trace_fp);
+    }
     return pb_trace_fp ? 0 : -1;
 }
 void pb_trace_on(void) { pb_trace_enabled = 1; }
@@ -7985,6 +8156,17 @@ void pb_type_set_str(void* dest, const char* src, unsigned int size) {
     if (n < size) memset((char*)dest + n, 0, size - n);
 }
 
+/* TYPE SET with USING: bytes after the source are filled with the first
+   character of the USING string; a NULL/empty pad falls back to binary zeros. */
+void pb_type_set_str_pad(void* dest, const char* src, unsigned int size, const char* pad_str) {
+    if (!dest || size == 0) return;
+    unsigned char pad = (pad_str && pad_str[0]) ? (unsigned char)pad_str[0] : 0;
+    unsigned int n = src ? (unsigned int)strlen(src) : 0;
+    if (n > size) n = size;
+    if (n) memcpy(dest, src, n);
+    if (n < size) memset((char*)dest + n, pad, size - n);
+}
+
 /* ================= Batch 24: DIR$ / DIR statement (FindFirstFileA family) ================= */
 
 /* WIN32_FIND_DATAA layout (hand-rolled, no windows.h):
@@ -8031,9 +8213,14 @@ static int g_dir_match(void) {
     if (g_dir_is_dot()) return 0;
     unsigned long fa = g_dir_attrs();
     if (g_dir_only) return (fa & g_dir_attr) == g_dir_attr;
-    /* default: normal files only (not directory / hidden / system / label) */
-    if (fa & (PB_FILE_ATTRIBUTE_DIRECTORY | 0x2UL | 0x4UL | 0x8UL)) return 0;
-    return 1;
+    /* non-ONLY, no attribute: normal files only (not directory/hidden/system/label) */
+    if (g_dir_attr == 0) {
+        if (fa & (PB_FILE_ATTRIBUTE_DIRECTORY | 0x2UL | 0x4UL | 0x8UL)) return 0;
+        return 1;
+    }
+    /* non-ONLY with attribute: inclusive - normal files plus attribute matches */
+    if (!(fa & (PB_FILE_ATTRIBUTE_DIRECTORY | 0x2UL | 0x4UL | 0x8UL))) return 1;
+    return (fa & g_dir_attr) == g_dir_attr;
 }
 static char* g_dir_make_bstr(void) {
     const char* n = g_dir_name();

@@ -44,6 +44,9 @@ impl Value {
             // Pointer-typed (PTR suffix): interpreter has no address space,
             // approximate as a null Long, same as Interface.
             PbType::Pointer(_) => Value::Long(0),
+            // Bit-field: the interpreter has no bit-level storage; approximate
+            // the whole container as a null Long.
+            PbType::BitField { .. } => Value::Long(0),
         }
     }
 

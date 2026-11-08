@@ -1364,25 +1364,38 @@ impl Parser {
                         self.advance();
                         Ok(PbType::Field)
                     }
-                    // CHW bit-field: `AS BIT * n IN base_type` packs a bit
-                    // field into a base container (WinNT.inc
-                    // TP_CALLBACK_ENVIRON Union: `LongFunction AS BIT * 1
-                    // IN DWORD`). The fork has no bit-field access semantics,
-                    // so the member takes the base container's type — layout
-                    // compatible with the official headers (batch306 #5).
-                    "BIT" => {
+                    // CHW bit-field: `AS BIT * n [IN base_type]` (or SBIT)
+                    // packs one or more bit variables into a base container
+                    // (WinNT.inc LDT_ENTRY: 10 BIT members packed into one
+                    // DWORD). `width` is the bit count; an explicit IN starts
+                    // a new field, a bare bit packs into the current field.
+                    "BIT" | "SBIT" => {
+                        let signed = upper == "SBIT";
                         self.advance();
-                        if self.peek() == &Token::Star {
+                        // `* nlit` bit width (1..=31); a bare BIT defaults to 1.
+                        let width = if self.peek() == &Token::Star {
                             self.advance();
-                            let _bits = self.parse_expression()?; // bit width
-                        }
-                        if let Token::Identifier(k) = self.peek().clone() {
+                            let wexpr = self.parse_expression()?;
+                            self.eval_const_expr(&wexpr).unwrap_or(0) as u32
+                        } else {
+                            1
+                        };
+                        // Optional `IN BYTE|WORD|DWORD` starts a new bit field.
+                        let base = if let Token::Identifier(k) = self.peek().clone() {
                             if k.eq_ignore_ascii_case("IN") {
                                 self.advance();
-                                return self.parse_type_inner();
+                                Some(Box::new(self.parse_type_inner()?))
+                            } else {
+                                None
                             }
-                        }
-                        Ok(PbType::Long) // bare BIT defaults to LONG
+                        } else {
+                            None
+                        };
+                        Ok(PbType::BitField {
+                            width,
+                            signed,
+                            base,
+                        })
                     }
                     // batch293: VARIANT is a real PB type (16-byte container),
                     // not a user-defined type name.
@@ -4276,10 +4289,19 @@ impl Parser {
                     let dest = self.parse_primary()?;
                     self.expect(&Token::Eq)?;
                     let src = self.parse_expression()?;
+                    // Optional USING pad-expr: remaining target bytes are filled
+                    // with the first character of the USING string (CHW).
+                    let mut args = vec![dest, src];
+                    if let Token::Identifier(w) = self.peek() {
+                        if w.to_uppercase() == "USING" {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "TYPE SET".to_string(),
-                        args: vec![dest, src],
+                        args,
                         line,
                     }));
                 }
@@ -4587,16 +4609,19 @@ impl Parser {
             }
             Token::Iterate => {
                 self.advance();
+                // CHW ITERATE [DO | LOOP | FOR]: ITERATE DO and ITERATE LOOP are
+                // interchangeable for DO/LOOP (and WHILE/WEND) structures.
                 let target = match self.peek() {
                     Token::For => {
                         self.advance();
                         IterateTarget::For
                     }
-                    Token::Do => {
+                    Token::Do | Token::Loop => {
                         self.advance();
                         IterateTarget::Do
                     }
-                    _ => IterateTarget::For,
+                    // Bare ITERATE: iterate the most recently executed structure.
+                    _ => IterateTarget::Recent,
                 };
                 self.consume_to_eol();
                 Ok(Statement::Iterate(target))
@@ -4847,6 +4872,38 @@ impl Parser {
                     let filename = self.parse_expression()?;
                     self.consume_to_eol();
                     return Ok(Statement::Kill(filename));
+                }
+
+                // TIX QuadVar | TIX END QuadVar (CHW TIX_statement.htm)
+                if name_upper == "TIX" {
+                    self.advance(); // consume TIX
+                    let is_end = match self.peek() {
+                        Token::End => {
+                            self.advance(); // consume END
+                            true
+                        }
+                        Token::Identifier(s) if s.eq_ignore_ascii_case("END") => {
+                            self.advance(); // consume END
+                            true
+                        }
+                        _ => false,
+                    };
+                    let target = if let Token::Identifier(v) = self.peek().clone() {
+                        self.advance();
+                        v
+                    } else {
+                        return Err(PbError::parser(
+                            "TIX expects a Quad variable".to_string(),
+                            self.current_file(),
+                            line,
+                        ));
+                    };
+                    self.consume_to_eol();
+                    return Ok(Statement::Tix {
+                        target,
+                        is_end,
+                        line,
+                    });
                 }
 
                 // MENU NEW BAR TO hMenu | MENU NEW POPUP TO hPop
@@ -13966,37 +14023,35 @@ impl Parser {
 
         let mut condition = None;
         let mut is_while = true;
-        let mut is_pre_test = false;
 
         // DO WHILE/UNTIL cond
         if self.peek() == &Token::While {
             self.advance();
             condition = Some(self.parse_expression()?);
             is_while = true;
-            is_pre_test = true;
         } else if self.peek() == &Token::Until {
             self.advance();
             condition = Some(self.parse_expression()?);
             is_while = false;
-            is_pre_test = true;
         }
         self.consume_to_eol();
 
         let body = self.parse_body(&[BodyEnd::Loop])?;
 
-        // LOOP [WHILE/UNTIL cond]
+        // LOOP [WHILE/UNTIL cond] - parsed independently so a loop can carry
+        // both a pre-test (DO) and a post-test (LOOP) condition.
+        let mut post_condition = None;
+        let mut post_is_while = true;
         if self.peek() == &Token::Loop {
             self.advance();
-            if condition.is_none() {
-                if self.peek() == &Token::While {
-                    self.advance();
-                    condition = Some(self.parse_expression()?);
-                    is_while = true;
-                } else if self.peek() == &Token::Until {
-                    self.advance();
-                    condition = Some(self.parse_expression()?);
-                    is_while = false;
-                }
+            if self.peek() == &Token::While {
+                self.advance();
+                post_condition = Some(self.parse_expression()?);
+                post_is_while = true;
+            } else if self.peek() == &Token::Until {
+                self.advance();
+                post_condition = Some(self.parse_expression()?);
+                post_is_while = false;
             }
             self.consume_to_eol();
         }
@@ -14004,7 +14059,8 @@ impl Parser {
         Ok(Statement::DoLoop(DoLoopStmt {
             condition,
             is_while,
-            is_pre_test,
+            post_condition,
+            post_is_while,
             body,
             line,
         }))
@@ -14496,10 +14552,17 @@ impl Parser {
             }
             "CLOSE" | "SUSPEND" | "RESUME" => {
                 let id = self.parse_expression()?;
+                let mut args = vec![id];
+                // CHW THREAD CLOSE requires a TO result: THREAD CLOSE h TO lResult.
+                // SUSPEND/RESUME take only the handle.
+                if op == "CLOSE" && matches!(self.peek(), Token::To) {
+                    self.advance();
+                    args.push(self.parse_expression()?);
+                }
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: format!("THREAD {op}"),
-                    args: vec![id],
+                    args,
                     line,
                 }))
             }
@@ -15087,7 +15150,8 @@ impl Parser {
                 let mut port: Option<Expr> = None;
                 let mut addr = Expr::StringLit("".to_string());
                 let mut bind_addr = Expr::IntegerLit(0);
-                let mut timeout = Expr::IntegerLit(-1);
+                /* CHW default TCP timeout is 60000 ms (TCP_OPEN_statement.htm). */
+                let mut timeout = Expr::IntegerLit(60000);
                 if let Token::Identifier(w) = self.peek() {
                     if w.eq_ignore_ascii_case("SERVER") {
                         self.advance();
@@ -16309,7 +16373,21 @@ impl Parser {
                     self.advance();
                     args.push(Expr::StringLit("\u{0}DIRNEXT".to_string())); // sentinel
                 } else if self.peek() != &Token::RParen {
-                    args = self.parse_arg_list()?;
+                    // first arg: mask expression
+                    args.push(self.parse_expression()?);
+                    // optional [ONLY] attribute (CHW DIR$ function: DIR$(mask [, [ONLY] attr]))
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        if let Token::Identifier(w) = self.peek() {
+                            if w.eq_ignore_ascii_case("ONLY") {
+                                self.advance();
+                                args.push(Expr::IntegerLit(1)); // ONLY flag
+                                args.push(self.parse_expression()?);
+                                continue;
+                            }
+                        }
+                        args.push(self.parse_expression()?);
+                    }
                 }
                 self.expect(&Token::RParen)?;
                 Ok(Expr::FunctionCall("DIR$".to_string(), args))

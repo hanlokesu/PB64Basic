@@ -62,9 +62,8 @@ END SUB
 ' WHAT THIS PROGRAM CHECKS
 '   1. THREAD CREATE Worker          -> Worker really runs (g_ran becomes 1)
 '   2. THREAD CREATE Worker2 TO h    -> Worker2 really runs (g_two becomes 1)
-'   3. the handle slot is a small non-negative index (the runtime stores the
-'      slot number, so the FIRST thread's id is legitimately 0 - do not compare
-'      the handle against 0 to mean "failed")
+'   3. the TO form returns the real Windows thread handle (a non-zero DWORD;
+'      do not compare a handle against 0 to mean "failed")
 ' Expected output:
 '   no-TO thread ran:  1
 '   TO thread ran:  1

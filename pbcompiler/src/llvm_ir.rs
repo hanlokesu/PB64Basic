@@ -674,6 +674,13 @@ impl FunctionBuilder {
         Val::new(r, a.ty.clone())
     }
 
+    /// Arithmetic (sign-preserving) shift right, used for SBIT sign extension.
+    pub fn sar(&mut self, a: &Val, b: &Val) -> Val {
+        let r = self.next_reg();
+        writeln!(self.body, "  {} = ashr {} {}, {}", r, a.ty, a.name, b.name).unwrap();
+        Val::new(r, a.ty.clone())
+    }
+
     pub fn xor(&mut self, a: &Val, b: &Val) -> Val {
         let r = self.next_reg();
         writeln!(self.body, "  {} = xor {} {}, {}", r, a.ty, a.name, b.name).unwrap();
@@ -1077,6 +1084,19 @@ impl FunctionBuilder {
 
     pub fn const_i8(&self, val: u8) -> Val {
         Val::new(val.to_string(), IrType::I8)
+    }
+
+    /// Integer constant whose type matches a target integer IR type. Used by
+    /// bit-field access so the shift amount / mask share the container type
+    /// (LLVM requires both operands of a shift to have the same type).
+    pub fn const_int(&self, ty: &IrType, val: i64) -> Val {
+        match ty {
+            IrType::I8 => self.const_i8(val as u8),
+            IrType::I16 => self.const_i16(val as i16),
+            IrType::I32 => self.const_i32(val as i32),
+            IrType::I64 => self.const_i64(val),
+            _ => self.const_i32(val as i32),
+        }
     }
 
     pub fn const_null_ptr(&self) -> Val {
