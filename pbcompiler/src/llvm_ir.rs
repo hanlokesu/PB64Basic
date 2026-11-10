@@ -905,6 +905,18 @@ impl FunctionBuilder {
         }
     }
 
+    /// Emit a noreturn call to pb_raise_error(code) followed by unreachable.
+    pub fn raise_error(&mut self, code: i32) {
+        writeln!(
+            self.body,
+            "  call void @pb_raise_error(i32 {}) noreturn",
+            code
+        )
+        .unwrap();
+        writeln!(self.body, "  unreachable").unwrap();
+        self.terminated = true;
+    }
+
     /// Conditional branch.
     pub fn condbr(&mut self, cond: &Val, then_label: &str, else_label: &str) {
         if !self.terminated {

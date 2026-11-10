@@ -25832,8 +25832,7 @@ impl Compiler {
                         ovf_reg, l_ovf, l_ok
                     ));
                     fb.label(&l_ovf);
-                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
-                    fb.raw_line("unreachable");
+                    fb.raise_error(6);
                     fb.label(&l_ok);
                     Ok(Val::new(val_reg, l.ty.clone()))
                 } else {
@@ -25867,8 +25866,7 @@ impl Compiler {
                         ovf_reg, l_ovf, l_ok
                     ));
                     fb.label(&l_ovf);
-                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
-                    fb.raw_line("unreachable");
+                    fb.raise_error(6);
                     fb.label(&l_ok);
                     Ok(Val::new(val_reg, l.ty.clone()))
                 } else {
@@ -25903,8 +25901,7 @@ impl Compiler {
                         ovf_reg, l_ovf, l_ok
                     ));
                     fb.label(&l_ovf);
-                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
-                    fb.raw_line("unreachable");
+                    fb.raise_error(6);
                     fb.label(&l_ok);
                     Ok(Val::new(val_reg, l.ty.clone()))
                 } else {
@@ -25926,8 +25923,7 @@ impl Compiler {
                 let l_ok = fb.next_label("idiv.ok");
                 fb.condbr(&is_zero, &l_err, &l_ok);
                 fb.label(&l_err);
-                fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
-                fb.raw_line("unreachable");
+                fb.raise_error(11);
                 fb.label(&l_ok);
                 // INT_MIN / -1 overflow check (i32 and i64 only).
                 let w = l.ty.bit_width();
@@ -25949,8 +25945,7 @@ impl Compiler {
                     let l_ok2 = fb.next_label("idiv.ok2");
                     fb.condbr(&ovf, &l_ovf, &l_ok2);
                     fb.label(&l_ovf);
-                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
-                    fb.raw_line("unreachable");
+                    fb.raise_error(6);
                     fb.label(&l_ok2);
                 }
                 Ok(fb.sdiv(&l, &r))
@@ -25964,8 +25959,7 @@ impl Compiler {
                 let l_ok = fb.next_label("mod.ok");
                 fb.condbr(&is_zero, &l_err, &l_ok);
                 fb.label(&l_err);
-                fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
-                fb.raw_line("unreachable");
+                fb.raise_error(11);
                 fb.label(&l_ok);
                 let w = l.ty.bit_width();
                 if w == 32 || w == 64 {
@@ -25986,8 +25980,7 @@ impl Compiler {
                     let l_ok2 = fb.next_label("mod.ok2");
                     fb.condbr(&ovf, &l_ovf, &l_ok2);
                     fb.label(&l_ovf);
-                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
-                    fb.raw_line("unreachable");
+                    fb.raise_error(6);
                     fb.label(&l_ok2);
                 }
                 Ok(fb.srem(&l, &r))
@@ -28277,8 +28270,7 @@ impl Compiler {
             let l_err = fb.next_label("math.err");
             fb.condbr(&cmp, &l_err, &l_ok);
             fb.label(&l_err);
-            fb.raw_line("call void @pb_raise_error(i32 5) noreturn");
-            fb.raw_line("unreachable");
+            fb.raise_error(5);
             fb.label(&l_ok);
         }
         Ok(fb.call(&IrType::Double, func_name, &[f64_val]))
@@ -31012,8 +31004,7 @@ impl Compiler {
                 let l_oob = fb.next_label("idx.oob");
                 fb.condbr(&oob, &l_oob, &l_ok);
                 fb.label(&l_oob);
-                fb.raw_line("call void @pb_raise_error(i32 9) noreturn");
-                fb.raw_line("unreachable");
+                fb.raise_error(9);
                 fb.label(&l_ok);
             }
             let adjusted = if lower != 0 {
