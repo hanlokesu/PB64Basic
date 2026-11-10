@@ -968,6 +968,7 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 
 ## Changelog
 ### v0.2.124 (2026-11-12)
+
 - Feat: trap signed integer multiplication overflow as runtime Error 6 (PBWin Overflow).
 - Feat: trap array subscript out of range as runtime Error 9 (Subscript/Pointer out of range).
 - Both use the existing noreturn `pb_raise_error(code)` runtime helper.
