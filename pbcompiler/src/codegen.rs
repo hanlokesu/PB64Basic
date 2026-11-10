@@ -29767,6 +29767,20 @@ impl Compiler {
         Ok(fb.const_i32(if supported { -1 } else { 0 }))
     }
 
+    /// Call malloc(size) and trap NULL as runtime Error 7 (Out of memory).
+    fn malloc_or_raise(&mut self, fb: &mut FunctionBuilder, size: &Val) -> Val {
+        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(size));
+        let null = fb.const_null_ptr();
+        let is_null = fb.icmp("eq", &buf, &null);
+        let l_err = fb.next_label("malloc.oom");
+        let l_ok = fb.next_label("malloc.ok");
+        fb.condbr(&is_null, &l_err, &l_ok);
+        fb.label(&l_err);
+        fb.raise_error(7);
+        fb.label(&l_ok);
+        buf
+    }
+
     fn builtin_chr_range(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         // CHR$(a TO b) — a range of character codes, e.g. CHR$(0 TO 255).
         // (CHW CHR$_function.htm range form.)  Emits the byte sequence a..b.
@@ -29781,7 +29795,7 @@ impl Compiler {
         let zero_i32 = fb.const_i32(0);
         let neg_cmp = fb.icmp("slt", &raw_count, &zero_i32);
         let count = fb.select(&neg_cmp, &zero_i32, &raw_count);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&count));
+        let buf = self.malloc_or_raise(fb, &count);
         let loop_l = fb.next_label("chr.loop");
         let body_l = fb.next_label("chr.body");
         let done_l = fb.next_label("chr.done");
@@ -29813,7 +29827,7 @@ impl Compiler {
         // Multi-arg CHR$(a, b, c) concatenates one byte per argument
         let len = args.len() as i32;
         let len_val = fb.const_i32(len);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&len_val));
+        let buf = self.malloc_or_raise(fb, &len_val);
         for (i, arg) in args.iter().enumerate() {
             let code = self.compile_expr(fb, arg)?;
             let code_i32 = self.to_i32(fb, &code);
@@ -29836,7 +29850,7 @@ impl Compiler {
         }
         let bytes = (args.len() * 2) as i32;
         let bytes_val = fb.const_i32(bytes);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&bytes_val));
+        let buf = self.malloc_or_raise(fb, &bytes_val);
         let mask = fb.const_i32(0xFFFF);
         let eight = fb.const_i32(8);
         for (i, arg) in args.iter().enumerate() {
@@ -29984,7 +29998,7 @@ impl Compiler {
     fn builtin_str(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
         let buf_size = fb.const_i32(32);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_size));
+        let buf = self.malloc_or_raise(fb, &buf_size);
         if val.ty.is_int() {
             // PB STR$ semantics: full-precision decimal, leading space for
             // positive values (STR$(353) = " 353").  % d / % lld give exactly
@@ -30043,7 +30057,7 @@ impl Compiler {
             self.to_i64(fb, &val)
         };
         let buf_size = fb.const_i32(32);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_size));
+        let buf = self.malloc_or_raise(fb, &buf_size);
         let (fmt_name, _) = self.module.add_string_constant("%0*llX");
         let fmt_ptr = Val::new(fmt_name, IrType::Ptr);
         let width = if args.len() >= 2 {
@@ -30072,7 +30086,7 @@ impl Compiler {
     /// Convert a numeric value to a string (like STR$), for use in & concatenation
     fn num_to_string(&mut self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         let buf_size = fb.const_i32(32);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_size));
+        let buf = self.malloc_or_raise(fb, &buf_size);
         if val.ty.is_int() {
             // Integers keep exact formatting: % lld for QUAD, % d otherwise.
             // The space flag gives PB STR$ semantics (leading blank for >=0).
@@ -30538,7 +30552,7 @@ impl Compiler {
         let actual_n = fb.select(&neg_cmp, &zero_i32, &n_i32);
         let one = fb.const_i32(1);
         let buf_size = fb.add(&actual_n, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
+        let buf = self.malloc_or_raise(fb, &buf_size);
 
         // Loop: fill with spaces
         let cond_label = fb.next_label("space.cond");
@@ -30596,7 +30610,7 @@ impl Compiler {
 
         let one = fb.const_i32(1);
         let buf_size = fb.add(&actual_n, &one);
-        let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
+        let buf = self.malloc_or_raise(fb, &buf_size);
 
         // Loop: fill with character
         let cond_label = fb.next_label("stringfn.cond");
@@ -30650,7 +30664,7 @@ impl Compiler {
         };
         let two = fb.const_i32(2);
         let buf_bytes = fb.mul(&actual_n, &two);
-        let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_bytes));
+        let buf = self.malloc_or_raise(fb, &buf_bytes);
 
         let cond_label = fb.next_label("strw.cond");
         let body_label = fb.next_label("strw.body");
