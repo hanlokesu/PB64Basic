@@ -25807,7 +25807,42 @@ impl Compiler {
         match op {
             BinaryOp::Add => Ok(fb.add(&l, &r)),
             BinaryOp::Sub => Ok(fb.sub(&l, &r)),
-            BinaryOp::Mul => Ok(fb.mul(&l, &r)),
+            BinaryOp::Mul => {
+                // Signed integer overflow -> Error 6 (PBWin Overflow).
+                // Only for i32/i64 (LONG/QUAD); i8/i16 promote before arithmetic.
+                let w = l.ty.bit_width();
+                if w == 32 || w == 64 {
+                    let suffix = if w == 32 { "i32" } else { "i64" };
+                    let res_reg = fb.next_reg();
+                    let val_reg = fb.next_reg();
+                    let ovf_reg = fb.next_reg();
+                    let l_ok = fb.next_label("mul.ok");
+                    let l_ovf = fb.next_label("mul.ovf");
+                    fb.raw_line(&format!(
+                        "{} = call {{{}, i1}} @llvm.smul.with.overflow.{}({} {}, {} {})",
+                        res_reg, suffix, suffix, suffix, l.name, suffix, r.name
+                    ));
+                    fb.raw_line(&format!(
+                        "{} = extractvalue {{{}, i1}} {}, 0",
+                        val_reg, suffix, res_reg
+                    ));
+                    fb.raw_line(&format!(
+                        "{} = extractvalue {{{}, i1}} {}, 1",
+                        ovf_reg, suffix, res_reg
+                    ));
+                    fb.raw_line(&format!(
+                        "br i1 {}, label %{}, label %{}",
+                        ovf_reg, l_ovf, l_ok
+                    ));
+                    fb.label(&l_ovf);
+                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
+                    fb.raw_line("unreachable");
+                    fb.label(&l_ok);
+                    Ok(Val::new(val_reg, l.ty.clone()))
+                } else {
+                    Ok(fb.mul(&l, &r))
+                }
+            }
             BinaryOp::Div => {
                 // PB `/` produces float result
                 let lf = fb.sitofp(&l, &IrType::Double);
