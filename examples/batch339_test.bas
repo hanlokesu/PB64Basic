@@ -13,13 +13,16 @@ FUNCTION PBMAIN()
     
     ' If we reach here, Error 99 was not triggered
     PRINT "FAIL: Error 99 was not triggered"
+    PRINT "FAILURES: 1"
     EXIT FUNCTION
     
 ErrorHandler:
     PRINT "Error number:"; ERR
     IF ERR = 99 THEN
         PRINT "PASS: Error 99 (Object error) triggered correctly"
+        PRINT "FAILURES: 0"
     ELSE
         PRINT "FAIL: Expected Error 99, got"; ERR
+        PRINT "FAILURES: 1"
     END IF
 END FUNCTION
