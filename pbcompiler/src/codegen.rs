@@ -30865,6 +30865,22 @@ impl Compiler {
             }
             let idx_i32 = self.to_i32(fb, idx);
             let lower = arr_info.dims[i].0;
+            let count = arr_info.dims[i].1;
+            // Bounds check: idx must be in [lower, lower+count-1] -> Error 9.
+            {
+                let lower_val = fb.const_i32(lower as i32);
+                let upper_val = fb.const_i32((lower + count - 1) as i32);
+                let below = fb.icmp("slt", &idx_i32, &lower_val);
+                let above = fb.icmp("sgt", &idx_i32, &upper_val);
+                let oob = fb.or(&below, &above);
+                let l_ok = fb.next_label("idx.ok");
+                let l_oob = fb.next_label("idx.oob");
+                fb.condbr(&oob, &l_oob, &l_ok);
+                fb.label(&l_oob);
+                fb.raw_line("call void @pb_raise_error(i32 9) noreturn");
+                fb.raw_line("unreachable");
+                fb.label(&l_ok);
+            }
             let adjusted = if lower != 0 {
                 let lower_val = fb.const_i32(lower as i32);
                 fb.sub(&idx_i32, &lower_val)
