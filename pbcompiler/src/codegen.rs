@@ -922,6 +922,14 @@ fn link_exe(
         args.push("-Wl,/SUBSYSTEM:WINDOWS,/ENTRY:mainCRTStartup".to_string());
     }
 
+    // 32-bit only: lld-link enables /SAFESEH by default and rejects any object
+    // without a SafeSEH marker. A bin2coff object is pure data with no SEH
+    // handlers ("is not compatible with SEH"), so disable the SafeSEH check on
+    // i686. x64 has no SafeSEH (it uses table-based unwind), so it is untouched.
+    if opts.target.contains("i686") || opts.target.contains("i386") {
+        args.push("-Wl,/SAFESEH:NO".to_string());
+    }
+
     // #STACK num_expr (batch 299): request a custom runtime stack reserve.
     // CHW rounds up to the next 64 Kb boundary, minimum 128 Kb; the
     // preprocessor already did that, so pass the byte count straight to the
@@ -1438,6 +1446,12 @@ struct Compiler {
     // .obj/.lib so external object modules can be linked, Erol request).
     link_files: Vec<String>,
 
+    // EXTERN data symbols (FORK EXTENSION): normalized PB names whose value
+    // is the external symbol ADDRESS (a `... AS type PTR` declaration). Their
+    // Variable expression returns the global pointer directly without a load,
+    // unlike a scalar EXTERN which is loaded (e.g. bin2coff label_size).
+    extern_ptr_vars: std::collections::HashSet<String>,
+
     // Fatal codegen errors collected during layout (register_type runs in a
     // non-Result context); compile_program turns these into a PbError after
     // the layout pass. Used for bit-field Error 534.
@@ -1635,6 +1649,7 @@ impl Compiler {
             current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
+            extern_ptr_vars: std::collections::HashSet::new(),
             fatal_errors: Vec::new(),
         }
     }
@@ -7154,6 +7169,9 @@ impl Compiler {
                 TopLevel::DeclareStmt(ds) => {
                     self.register_declare(ds);
                 }
+                TopLevel::ExternDecl(ed) => {
+                    self.register_extern(ed);
+                }
                 TopLevel::LinkFile(path) => {
                     if !path.is_empty() {
                         self.link_files.push(path.clone());
@@ -8208,6 +8226,55 @@ impl Compiler {
             }
             self.symbols
                 .insert_global(name, ir_type, vd.pb_type.clone());
+        }
+    }
+
+    /// Register an `EXTERN name [ALIAS "sym"] AS type` external data symbol
+    /// (FORK EXTENSION; e.g. a bin2coff object). A PTR declaration names the
+    /// embedded data block (its value is the symbol address); a scalar
+    /// declaration names an external variable whose value is loaded (e.g. the
+    /// bin2coff `label_size`). COFF symbol matching is case-sensitive.
+    fn register_extern(&mut self, ed: &ExternDecl) {
+        let name = normalize_name(&ed.name);
+        let is_ptr = matches!(ed.pb_type, PbType::Pointer(_));
+
+        // Resolve the external COFF symbol spelling (case-sensitive matching).
+        // The lexer uppercases every PB identifier, so the original source
+        // casing is not recoverable without ALIAS (the same rule as DECLARE):
+        //  - explicit ALIAS "sym": use the string verbatim (it keeps casing);
+        //  - no ALIAS: use the normalized (upper-case) identifier.
+        // The IR name always carries NO leading underscore. On the 32-bit
+        // target clang adds the Win32 C leading underscore itself (verified:
+        // IR @ABC -> COFF _ABC), so writing one here would double it to
+        // __ABC. Hence a lower-case bin2coff label binds with ALIAS "mydata"
+        // on both targets: x64 -> mydata, Win32 -> _mydata automatically.
+        let sym = match ed.alias {
+            Some(ref a) => a.clone(),
+            None => ed.name.clone(),
+        };
+
+        if is_ptr {
+            // Data block: external i8 symbol; the global itself is the address.
+            self.module.declare_external_global(&sym, &IrType::I8);
+            let ptr_name = format!("@{}", sym);
+            self.symbols.insert_global_with_ptr(
+                name.clone(),
+                ptr_name,
+                IrType::Ptr,
+                ed.pb_type.clone(),
+            );
+            self.extern_ptr_vars.insert(name);
+        } else {
+            // External scalar: external global of its IR type, loaded on use.
+            let ir_type = Self::ir_type_for(&ed.pb_type);
+            self.module.declare_external_global(&sym, &ir_type);
+            let ptr_name = format!("@{}", sym);
+            self.symbols.insert_global_with_ptr(
+                name.clone(),
+                ptr_name,
+                ir_type,
+                ed.pb_type.clone(),
+            );
         }
     }
 
@@ -24754,6 +24821,12 @@ impl Compiler {
                 }
                 let ptr_name = self.ensure_variable_ptr(fb, &name, orig_name)?;
                 let info = self.symbols.lookup(&name).unwrap();
+                // EXTERN data symbol (`... AS type PTR`): the global itself is
+                // the external symbol ADDRESS — return it directly, no load
+                // (loading would reinterpret the first data bytes as a value).
+                if self.extern_ptr_vars.contains(&name) {
+                    return Ok(Val::new(ptr_name, IrType::Ptr));
+                }
                 // FixedString (ASCIIZ*N): alloca IS the buffer → create heap copy
                 // (stack buffer would be dangling after function return)
                 if matches!(info.pb_type, PbType::FixedString(_)) {
@@ -24888,12 +24961,17 @@ impl Compiler {
                     let addr = match addr_arg {
                         Some(a) => {
                             let av = self.compile_expr(fb, a)?;
-                            let av64 = if av.ty == IrType::I32 {
-                                fb.sext(&av, &IrType::I64)
-                            } else {
+                            if av.ty == IrType::Ptr {
+                                // Already a pointer (e.g. an EXTERN data symbol)
                                 av
-                            };
-                            fb.inttoptr(&av64)
+                            } else {
+                                let av64 = if av.ty == IrType::I32 {
+                                    fb.sext(&av, &IrType::I64)
+                                } else {
+                                    av
+                                };
+                                fb.inttoptr(&av64)
+                            }
                         }
                         None => {
                             return Err(PbError::parser(

@@ -1,14 +1,14 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 326 (v0.2.117)** — 2026-11-08. All statements through batch 326 are reflected in this matrix.
+> **Last updated from batch 327 (v0.2.118)** — 2026-11-10. All statements through batch 327 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
-- Rows in this matrix: **946** (14 BLOCK, 285 FUNCTION, 5 OPERATOR, 612 STATEMENT, 29 FORK EXTENSION).
+- Rows in this matrix: **947** (14 BLOCK, 285 FUNCTION, 5 OPERATOR, 612 STATEMENT, 30 FORK EXTENSION).
 - **917** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
-- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **29** fork extension (implemented here, not an official PB keyword).
+- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **30** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
@@ -18,11 +18,11 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **917** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
-| 🔧 Fork extension | 29 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
+| 🔧 Fork extension | 30 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, EXTERN, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
-## All keywords (946 rows)
+## All keywords (947 rows)
 
 |---------|------|----------|--------|
 | ABS | FUNCTION | LLVM intrinsic | Implemented |
@@ -334,6 +334,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | EXP2 | FUNCTION | LLVM intrinsic | Implemented |
 | EXPM1 | FORK EXTENSION | C runtime (MSVCRT) | Implemented |
 | EXPORT | STATEMENT | PB/Win only | Implemented |
+| EXTERN | FORK EXTENSION | external COFF symbol | Implemented |
 | EXTRACT | FUNCTION | codegen builtin | Implemented |
 | EXTRACT$ | FUNCTION | Win32 | Implemented |
 | FASTPROC | STATEMENT | PB/Win only | Implemented |

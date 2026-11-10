@@ -488,6 +488,10 @@ impl Parser {
                 Some(ds) => Ok(Some(TopLevel::DeclareStmt(ds))),
                 None => Ok(None),
             },
+            Token::Extern => match self.parse_extern_stmt(line)? {
+                Some(ed) => Ok(Some(TopLevel::ExternDecl(ed))),
+                None => Ok(None),
+            },
             Token::HashInclude
             | Token::HashCompile
             | Token::HashDim
@@ -2679,6 +2683,53 @@ impl Parser {
         }))
     }
 
+    /// `EXTERN name [ALIAS "sym"] AS type` (FORK EXTENSION; external data symbol).
+    /// A PTR type denotes the embedded data block (its value is the symbol
+    /// address); a scalar type denotes an external variable (its value is
+    /// loaded, e.g. the bin2coff `label_size`).
+    fn parse_extern_stmt(&mut self, line: usize) -> PbResult<Option<ExternDecl>> {
+        self.advance(); // consume EXTERN
+        let name = self.consume_identifier()?;
+
+        // Optional ALIAS "ExternalSymbol" (case-sensitive COFF spelling)
+        let alias = if self.peek() == &Token::Alias {
+            self.advance();
+            match self.peek().clone() {
+                Token::StringLiteral(s) => {
+                    self.advance();
+                    Some(s)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // AS type is mandatory for EXTERN.
+        let pb_type = if self.peek() == &Token::As {
+            self.advance();
+            self.parse_type()?
+        } else {
+            return Err(PbError::parser(
+                format!(
+                    "'AS' type required in EXTERN statement: EXTERN {} AS type",
+                    name
+                ),
+                self.current_file(),
+                self.current_line(),
+            ));
+        };
+
+        self.consume_to_eol();
+
+        Ok(Some(ExternDecl {
+            name,
+            alias,
+            pb_type,
+            line,
+        }))
+    }
+
     // ===== Body parsing (inside SUB/FUNCTION) =====
 
     fn parse_body(&mut self, terminators: &[BodyEnd]) -> PbResult<Vec<Statement>> {
@@ -2788,6 +2839,7 @@ impl Parser {
                 matches!(self.peek_at(1), Some(Token::Identifier(_)))
             }
             Token::Declare => true,
+            Token::Extern => true,
             Token::Type => {
                 // TYPE at start of line (new type decl, not inside body).
                 // TYPE SET (statement) is NOT a top-level keyword.

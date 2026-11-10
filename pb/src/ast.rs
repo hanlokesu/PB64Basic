@@ -79,9 +79,18 @@ pub enum TopLevel {
     SubDecl(SubDecl),
     FunctionDecl(FunctionDecl),
     DeclareStmt(DeclareStmt), // DECLARE SUB/FUNCTION — skip at runtime
+    ExternDecl(ExternDecl),   // EXTERN name [ALIAS "sym"] AS type — external data symbol
     Statement(Statement),     // top-level statements (before PBMAIN)
     AsmData(AsmDataDecl),     // ASMDATA ... END ASMDATA read-only data block
     LinkFile(String),         // #LINK "filespec" — extra object/library for the linker
+}
+
+#[derive(Debug, Clone)]
+pub struct ExternDecl {
+    pub name: String,          // PB identifier used in the source
+    pub alias: Option<String>, // explicit external symbol spelling (case-sensitive)
+    pub pb_type: PbType,       // declared type (scalar -> load; PTR -> data address)
+    pub line: usize,
 }
 
 #[derive(Debug, Clone)]

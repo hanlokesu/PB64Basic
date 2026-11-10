@@ -111,6 +111,7 @@ impl Interpreter {
                     self.functions.insert(normalize(&fd.name), fd.clone());
                 }
                 TopLevel::DeclareStmt(_) => {} // skip DECLARE
+                TopLevel::ExternDecl(_) => {}  // external data symbol; link-time only
                 TopLevel::Statement(_) => {}   // will execute below
                 TopLevel::AsmData(_) => {}     // data blob, no runtime effect in interp
                 TopLevel::LinkFile(_) => {}    // #LINK: link-time only, no interp effect
