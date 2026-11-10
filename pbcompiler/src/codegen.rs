@@ -4,7 +4,7 @@
 // See LICENSE for the full license terms.
 // =====================================================================
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use pb::ast::*;
 use pb::error::{PbError, PbResult};
@@ -197,6 +197,10 @@ pub struct CompileOptions {
     pub exe_mode: bool,
     pub sll_mode: bool, // #COMPILE SLL: archive the object into a .SLL static library
     pub sll_name: Option<String>, // #COMPILE SLL = "name.SLL" explicit output name
+    /// #COMPILE EXE explicit target: (case-preserved name, exact '=' flag).
+    pub exe_name: Option<(String, bool)>,
+    /// #COMPILE DLL explicit target: (case-preserved name, exact '=' flag).
+    pub dll_name: Option<(String, bool)>,
     pub session_mode: bool,
     pub emit_llvm: bool,
     pub debug_mode: bool, // enable verbose debug logging (modal text, assertions)
@@ -213,6 +217,57 @@ pub struct CompileOptions {
     /// subsystem.  Some(true) links /SUBSYSTEM:CONSOLE (PRINT/WRITE go to the
     /// owning console); None / Some(false) keeps the GUI subsystem.
     pub console_mode: Option<bool>,
+}
+
+/// Resolve the final EXE/DLL output path from the #COMPILE directive.
+///
+/// CHM rules:
+///   * with '=' the name is exact — nothing is appended or changed;
+///   * without '=' the file type is forced to match the target. A name whose
+///     extension already matches the target is kept (`"x.exe"` -> `"x.exe"`);
+///     a mismatched extension gets the type extension appended
+///     (`"ABC.BAS"` -> `"ABC.BAS.EXE"`); a name with no extension gets the
+///     type extension (`"ABC"` -> `"ABC.EXE"`);
+///   * with no explicit name the main source path is used with the extension.
+pub fn resolve_target_path(
+    default_path: &Path,
+    explicit: Option<&(String, bool)>,
+    ext: &str,
+) -> PathBuf {
+    match explicit {
+        Some((name, has_eq)) => {
+            if *has_eq {
+                return PathBuf::from(name);
+            }
+            let p = Path::new(name);
+            match p.extension().and_then(|e| e.to_str()) {
+                Some(e) if e.eq_ignore_ascii_case(ext) => PathBuf::from(name),
+                Some(_) => {
+                    let mut s = name.clone();
+                    s.push('.');
+                    s.push_str(ext);
+                    PathBuf::from(s)
+                }
+                None => p.with_extension(ext),
+            }
+        }
+        None => default_path.with_extension(ext),
+    }
+}
+
+/// Verify the destination can be written before invoking the linker. A missing
+/// target directory (or an invalid/locked path) is PBWin Error 496.
+fn ensure_destination_writable(target: &Path) -> PbResult<()> {
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            return Err(PbError::preprocessor(
+                "Error 496: Destination file write error",
+                None,
+                0,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Compile a parsed PB program to LLVM IR, then optionally to object code via clang.
@@ -318,7 +373,8 @@ pub fn compile(
 
     // Link if requested
     if opts.dll_mode {
-        let dll_path = output_path.with_extension("dll");
+        let dll_path = resolve_target_path(output_path, opts.dll_name.as_ref(), "dll");
+        ensure_destination_writable(&dll_path)?;
         link_dll(
             &obj_paths[0],
             &dll_path,
@@ -330,7 +386,8 @@ pub fn compile(
     }
 
     if opts.exe_mode {
-        let exe_path = output_path.with_extension("exe");
+        let exe_path = resolve_target_path(output_path, opts.exe_name.as_ref(), "exe");
+        ensure_destination_writable(&exe_path)?;
         let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
         link_exe(
             &obj_refs,

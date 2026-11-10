@@ -105,6 +105,15 @@ impl PbError {
     /// in PBWin are never invented here.
     pub fn pbwin_code(&self) -> i32 {
         let m = self.message.to_ascii_lowercase();
+        // Explicitly replicated PBWin errors are worded "Error NNN: ..."; trust
+        // that number directly so the process exit code matches PBWin exactly
+        // (e.g. Error 427 -> 427, Error 496 -> 496) regardless of ErrorKind.
+        if let Some(rest) = m.strip_prefix("error ") {
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(code) = digits.parse::<i32>() {
+                return code;
+            }
+        }
         // I/O family first: link/write/read failures are their own PBWin codes,
         // and must not be hijacked by keyword rules below (e.g. a linker message
         // containing "undefined symbol" is a LINK failure, not an equate error).

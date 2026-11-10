@@ -26,6 +26,71 @@ pub struct VersionInfo {
     pub strings: Vec<(String, String)>,
 }
 
+/// Win32 resource type for a file-based #RESOURCE item.
+/// Numeric types are the standard RT_* integers; named types are custom
+/// string type names (measured from PBWin10: WAVE and TYPELIB are stored
+/// under their own string type names, not RT_RCDATA).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawResType {
+    /// RT_BITMAP (2); the 14-byte BITMAPFILEHEADER is stripped at embed.
+    Bitmap,
+    /// RT_RCDATA (10); the whole file is stored byte-for-byte.
+    RcData,
+    /// Custom string type "WAVE"; whole file.
+    Wave,
+    /// Custom string type "TYPELIB"; whole file.
+    TypeLib,
+}
+
+impl RawResType {
+    /// Numeric RT_* id for integer types, or None for string-named types.
+    pub fn numeric_id(&self) -> Option<u32> {
+        match self {
+            RawResType::Bitmap => Some(2),
+            RawResType::RcData => Some(10),
+            RawResType::Wave | RawResType::TypeLib => None,
+        }
+    }
+    /// String type name for custom types, or None for integer types.
+    pub fn type_name(&self) -> Option<&'static str> {
+        match self {
+            RawResType::Wave => Some("WAVE"),
+            RawResType::TypeLib => Some("TYPELIB"),
+            RawResType::Bitmap | RawResType::RcData => None,
+        }
+    }
+}
+
+/// A file-based #RESOURCE item (BITMAP/RCDATA/WAVE/TYPELIB) collected for
+/// post-link embedding via UpdateResource.
+#[derive(Debug, Clone)]
+pub struct RawResource {
+    pub id: u32,
+    pub type_kind: RawResType,
+    pub path: PathBuf,
+}
+
+/// A #RESOURCE STRING table entry.  Windows stores string resources in
+/// blocks of 16 IDs (RT_STRING=6, resource name = block index = (id>>4)+1);
+/// these individual entries are grouped into blocks at embed time.
+#[derive(Debug, Clone)]
+pub struct StringResource {
+    pub id: u32,
+    pub text: String,
+    pub lang_id: u16,
+}
+
+/// A pre-compiled binary resource file referenced by
+/// `#RESOURCE RES, "file.RES"` or `#RESOURCE PBR, "file.PBR"`.  The binary
+/// is parsed into individual resource entries at embed time.  CHM hard rule:
+/// RES/PBR cannot be mixed with any other #RESOURCE form.
+#[derive(Debug, Clone)]
+pub struct ResFileEntry {
+    pub path: PathBuf,
+    /// true = legacy PBRES .PBR format, false = standard .RES format.
+    pub is_pbr: bool,
+}
+
 /// A MACRO definition (batch 27). Single-line macros have a 1-line body and
 /// expand anywhere in a line; multi-line macros expand at statement position.
 #[derive(Debug, Clone)]
@@ -158,6 +223,13 @@ pub struct Preprocessor {
     defined_this_pass: HashSet<String>,
     macros: HashMap<String, MacroDef>,
     pub resources: Vec<(u32, PathBuf)>,
+    /// #RESOURCE BITMAP/RCDATA/WAVE/TYPELIB — file-based raw resources.
+    pub raw_resources: Vec<RawResource>,
+    /// #RESOURCE STRING — individual string-table entries (grouped at embed).
+    pub string_resources: Vec<StringResource>,
+    /// #RESOURCE RES/PBR — pre-compiled binary resource files (parsed at
+    /// embed; cannot be mixed with any other resource form).
+    pub res_files: Vec<ResFileEntry>,
     /// #RESOURCE MANIFEST, id, "file.xml" — embedded as RT_MANIFEST so the
     /// EXE gets comctl32 v6 visual styles (flat buttons) like a PBWin build.
     pub manifests: Vec<(u32, PathBuf)>,
@@ -198,6 +270,24 @@ impl Preprocessor {
                 ("%WIN32_WINNT".to_string(), 0x0600),
                 ("%WINVER".to_string(), 0x0600),
                 ("%WIN32_IE".to_string(), 0x0700),
+                // Hash family step 2: CHM built-in compiler-identity equates.
+                // fork is an independent 64-bit compiler, so following the
+                // PBxB64 reference it defines all of them but assigns its real
+                // identity instead of claiming the 32-bit PB/Win product.
+                // PB_WIN32/PB_DLL32/PB_CC32 = 0 (not that product, not TRUE).
+                ("%PB_WIN32".to_string(), 0),
+                ("%PB_DLL32".to_string(), 0),
+                ("%PB_CC32".to_string(), 0),
+                // PB_REVISION: high byte = 2 (0.2 line), low byte = 119 (patch).
+                // 0x0277 = 631; its &H0FF00 part (0x0200) never matches the
+                // PBWin10 &H1000 or PBWin9 &H0900 guards, so the existing
+                // examples' fork branches are preserved.
+                ("%PB_REVISION".to_string(), 0x0277),
+                // PB_REVLETTER: no revision letter -> 0x20.
+                ("%PB_REVLETTER".to_string(), 0x20),
+                // PB_EXE: TRUE for an EXE target; set_build_mode flips it to
+                // 0 for a DLL. Defaults to EXE (the documented default).
+                ("%PB_EXE".to_string(), -1),
             ]),
             string_constants: HashMap::new(),
             included: HashSet::new(),
@@ -207,9 +297,18 @@ impl Preprocessor {
                 "%WIN32_WINNT".to_string(),
                 "%WINVER".to_string(),
                 "%WIN32_IE".to_string(),
+                "%PB_WIN32".to_string(),
+                "%PB_DLL32".to_string(),
+                "%PB_CC32".to_string(),
+                "%PB_REVISION".to_string(),
+                "%PB_REVLETTER".to_string(),
+                "%PB_EXE".to_string(),
             ]),
             macros: HashMap::new(),
             resources: Vec::new(),
+            raw_resources: Vec::new(),
+            string_resources: Vec::new(),
+            res_files: Vec::new(),
             manifests: Vec::new(),
             version_info: VersionInfo::default(),
             dim_all: false,
@@ -231,6 +330,17 @@ impl Preprocessor {
             .insert("%TARGET_64".to_string(), if is_64 { -1 } else { 0 });
         self.constants
             .insert("%TARGET_32".to_string(), if is_64 { 0 } else { -1 });
+    }
+
+    /// Configure the build output type before preprocessing so %PB_EXE carries
+    /// the CHM value: TRUE (non-zero) for an EXE, FALSE (zero) for a DLL. SLL
+    /// builds are not executables, so %PB_EXE is set to 0 there as well. The
+    /// equate stays defined in every mode (CHM: %DEF(%PB_EXE) is always TRUE);
+    /// only its assigned value changes.
+    pub fn set_build_mode(&mut self, exe_mode: bool, dll_mode: bool, sll_mode: bool) {
+        let val = if exe_mode { -1 } else { 0 };
+        let _ = (dll_mode, sll_mode);
+        self.constants.insert("%PB_EXE".to_string(), val);
     }
 
     /// Run the full two-pass preprocess (batch 306).  Pass 1 walks the source
@@ -257,7 +367,17 @@ impl Preprocessor {
     /// Restore `defined_this_pass` to just the built-in SDK defaults.
     fn reset_defined_this_pass(&mut self) {
         self.defined_this_pass.clear();
-        for k in ["%WIN32_WINNT", "%WINVER", "%WIN32_IE"] {
+        for k in [
+            "%WIN32_WINNT",
+            "%WINVER",
+            "%WIN32_IE",
+            "%PB_WIN32",
+            "%PB_DLL32",
+            "%PB_CC32",
+            "%PB_REVISION",
+            "%PB_REVLETTER",
+            "%PB_EXE",
+        ] {
             self.defined_this_pass.insert(k.to_string());
         }
     }
@@ -309,7 +429,15 @@ impl Preprocessor {
             // Handle #IF / #ELSEIF / #ELSE / #ENDIF
             let upper = trimmed.to_uppercase();
             if upper.starts_with("#IF ") || upper.starts_with("#IF\t") {
-                let condition = self.evaluate_if_condition(trimmed[3..].trim());
+                let raw_cond = trimmed[3..].trim();
+                if Self::contains_float_literal(&raw_cond.to_uppercase()) {
+                    return Err(PbError::preprocessor(
+                        "Error 427: Integer constant expected",
+                        file.to_str(),
+                        line_num,
+                    ));
+                }
+                let condition = self.evaluate_if_condition(raw_cond);
                 if active {
                     if_stack.push(condition);
                 } else {
@@ -344,7 +472,15 @@ impl Preprocessor {
                 } else {
                     true
                 };
-                let cond = self.evaluate_if_condition(trimmed[8..].trim());
+                let raw_cond = trimmed[8..].trim();
+                if Self::contains_float_literal(&raw_cond.to_uppercase()) {
+                    return Err(PbError::preprocessor(
+                        "Error 427: Integer constant expected",
+                        file.to_str(),
+                        line_num,
+                    ));
+                }
+                let cond = self.evaluate_if_condition(raw_cond);
                 if let Some(last) = if_stack.last_mut() {
                     if parent_active {
                         if *last {
@@ -607,6 +743,121 @@ impl Preprocessor {
             }
 
             // DEBUG
+            // #RESOURCE STRING, ResID, "text" [, LangID] — string-table entry.
+            // ResID must be numeric; text is 1..127 chars, no embedded nul.
+            // Collected individually and grouped into 16-ID RT_STRING blocks
+            // at embed time (block name = (id>>4)+1, slot = id&15).
+            if upper_full.starts_with("#RESOURCE STRING") {
+                let rest = trimmed_full
+                    .strip_prefix("#RESOURCE STRING")
+                    .or_else(|| trimmed_full.strip_prefix("#resource string"))
+                    .unwrap_or("")
+                    .trim()
+                    .trim_start_matches(",")
+                    .trim();
+                let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
+                if parts.len() >= 2 {
+                    if let Ok(sid) = parts[0].parse::<u32>() {
+                        if let Some(text) = extract_string(parts[1]) {
+                            // Optional LangID (4th comma field); default 1033.
+                            let lang = parts
+                                .get(2)
+                                .and_then(|l| l.trim().parse::<u16>().ok())
+                                .unwrap_or(1033);
+                            if !self.collect_only {
+                                self.string_resources.push(StringResource {
+                                    id: sid,
+                                    text,
+                                    lang_id: lang,
+                                });
+                            }
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            // #RESOURCE BITMAP/RCDATA/WAVE/TYPELIB, ResID, "file" — file-based
+            // raw resources, collected for post-link UpdateResource embedding.
+            // Type mapping measured from PBWin10 (llvm-readobj): BITMAP ->
+            // RT_BITMAP(2, 14-byte header stripped), RCDATA -> RT_RCDATA(10),
+            // WAVE -> custom "WAVE", TYPELIB -> custom "TYPELIB".
+            let file_kind = ["BITMAP", "RCDATA", "WAVE", "TYPELIB"]
+                .iter()
+                .find(|k| upper_full.starts_with(&format!("#RESOURCE {}", k)));
+            if let Some(kind_word) = file_kind {
+                let prefix_len = "#RESOURCE ".len() + kind_word.len();
+                let rest = trimmed_full[prefix_len..]
+                    .trim()
+                    .trim_start_matches(",")
+                    .trim();
+                let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
+                if parts.len() >= 2 {
+                    if let Ok(id) = parts[0].parse::<u32>() {
+                        if let Some(res_path) = extract_string(parts[1]) {
+                            let resolved = file.parent().unwrap_or(Path::new(".")).join(&res_path);
+                            if resolved.exists() && !self.collect_only {
+                                let type_kind = match *kind_word {
+                                    "BITMAP" => RawResType::Bitmap,
+                                    "RCDATA" => RawResType::RcData,
+                                    "WAVE" => RawResType::Wave,
+                                    _ => RawResType::TypeLib,
+                                };
+                                self.raw_resources.push(RawResource {
+                                    id,
+                                    type_kind,
+                                    path: resolved,
+                                });
+                            }
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+            // #RESOURCE RES, "file.RES" / #RESOURCE PBR, "file.PBR" — a
+            // pre-compiled binary resource file.  Only the file path is
+            // collected here; the binary is parsed into individual resource
+            // entries at embed time.  CHM hard rule: RES/PBR cannot be mixed
+            // with any other #RESOURCE form (enforced after preprocessing).
+            let res_kind = if upper_full.starts_with("#RESOURCE RES") {
+                Some(false)
+            } else if upper_full.starts_with("#RESOURCE PBR") {
+                Some(true)
+            } else {
+                None
+            };
+            if let Some(is_pbr) = res_kind {
+                let marker = if is_pbr {
+                    "#RESOURCE PBR"
+                } else {
+                    "#RESOURCE RES"
+                };
+                let rest = trimmed_full
+                    .strip_prefix(marker)
+                    .or_else(|| {
+                        trimmed_full.strip_prefix(if is_pbr {
+                            "#resource pbr"
+                        } else {
+                            "#resource res"
+                        })
+                    })
+                    .unwrap_or("")
+                    .trim()
+                    .trim_start_matches(",")
+                    .trim();
+                if let Some(res_path) = extract_string(rest) {
+                    let resolved = file.parent().unwrap_or(Path::new(".")).join(&res_path);
+                    if resolved.exists() && !self.collect_only {
+                        self.res_files.push(ResFileEntry {
+                            path: resolved,
+                            is_pbr,
+                        });
+                    }
+                }
+                i += 1;
+                continue;
+            }
             // #RESOURCE ICON, id, "file.ico" — collect for post-link embedding
             if upper_full.starts_with("#RESOURCE ICON") {
                 let rest = trimmed_full[14..].trim().trim_start_matches(",").trim();
@@ -1017,6 +1268,40 @@ impl Preprocessor {
         self.eval_bool_expr(&cond)
     }
 
+    /// Detect a floating-point literal (e.g. `3.5`) in a #IF condition.
+    /// PBWin rejects these with Error 427 "Integer constant expected".
+    /// String contents are masked so a '.' inside CVQ("..") is not flagged.
+    fn contains_float_literal(condition: &str) -> bool {
+        let bytes = condition.as_bytes();
+        let mut masked = Vec::with_capacity(bytes.len());
+        let mut quote: Option<u8> = None;
+        for &b in bytes {
+            match quote {
+                Some(q) => {
+                    masked.push(b' ');
+                    if b == q {
+                        quote = None;
+                    }
+                }
+                None => {
+                    if b == b'"' || b == b'\'' {
+                        quote = Some(b);
+                        masked.push(b' ');
+                    } else {
+                        masked.push(b);
+                    }
+                }
+            }
+        }
+        let s = masked;
+        for w in s.windows(3) {
+            if w[0].is_ascii_digit() && w[1] == b'.' && w[2].is_ascii_digit() {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Recursive boolean expression evaluator over an upper-cased condition.
     /// Grammar: expr ::= expr OR expr | expr AND expr | NOT expr
     ///                | '(' expr ')' | %DEF(name) | cmp | atom
@@ -1097,19 +1382,47 @@ impl Preprocessor {
         // "0 = 0" as the bare-constant truth test "is the %CONST non-zero?" ->
         // false, silently dropping every fork-only statement inside the block,
         // e.g. WINDOW SET/GET TEXT, ARRAY ASSIGN, TYPE SET.)
-        for (op, cmp) in [
-            (" <> ", (|a: i64, b: i64| a != b) as fn(i64, i64) -> bool),
-            (" = ", (|a: i64, b: i64| a == b) as fn(i64, i64) -> bool),
-            (" >= ", (|a: i64, b: i64| a >= b) as fn(i64, i64) -> bool),
-            (" <= ", (|a: i64, b: i64| a <= b) as fn(i64, i64) -> bool),
-            (" > ", (|a: i64, b: i64| a > b) as fn(i64, i64) -> bool),
-            (" < ", (|a: i64, b: i64| a < b) as fn(i64, i64) -> bool),
+        for (op, cmpf, cmpi) in [
+            (
+                " <> ",
+                (|a: f64, b: f64| a != b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a != b) as fn(i64, i64) -> bool,
+            ),
+            (
+                " = ",
+                (|a: f64, b: f64| a == b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a == b) as fn(i64, i64) -> bool,
+            ),
+            (
+                " >= ",
+                (|a: f64, b: f64| a >= b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a >= b) as fn(i64, i64) -> bool,
+            ),
+            (
+                " <= ",
+                (|a: f64, b: f64| a <= b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a <= b) as fn(i64, i64) -> bool,
+            ),
+            (
+                " > ",
+                (|a: f64, b: f64| a > b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a > b) as fn(i64, i64) -> bool,
+            ),
+            (
+                " < ",
+                (|a: f64, b: f64| a < b) as fn(f64, f64) -> bool,
+                (|a: i64, b: i64| a < b) as fn(i64, i64) -> bool,
+            ),
         ] {
             if let Some(pos) = find_top_level(s, op) {
-                return cmp(
-                    self.eval_operand(&s[..pos]),
-                    self.eval_operand(&s[pos + op.len()..]),
-                );
+                let lhs = &s[..pos];
+                let rhs = &s[pos + op.len()..];
+                // Arithmetic may produce fractional values (floating-point
+                // divide), so compare in f64 when both sides are expressions.
+                if let (Some(a), Some(b)) = (self.eval_arith_expr(lhs), self.eval_arith_expr(rhs)) {
+                    return cmpf(a, b);
+                }
+                return cmpi(self.eval_operand(lhs), self.eval_operand(rhs));
             }
         }
 
@@ -1174,6 +1487,11 @@ impl Preprocessor {
             end -= 1;
         }
         s = &s[start..end];
+        // Arithmetic expression (2 + 3, 17 \ 3, CVQ(".."), ...); a plain
+        // constant or number also parses to its own value.
+        if let Some(v) = self.eval_arith_expr(s) {
+            return v as i64;
+        }
         self.parse_constant_value(s)
     }
 
@@ -1198,6 +1516,33 @@ impl Preprocessor {
         s.parse::<i64>().unwrap_or(0)
     }
 
+    /// Evaluate a compile-time arithmetic expression (hash family step 2).
+    /// Returns `None` when the text is not an arithmetic expression, so the
+    /// caller can fall back to the legacy integer/constant path.
+    ///
+    /// PBWin #IF semantics reproduced here:
+    ///
+    /// - `+ - * /` ordinary floating-point arithmetic
+    /// - `\` floating-point divide followed by banker's rounding
+    ///   (round half to even), NOT run-time integer truncation
+    /// - `CVQ("..")` bytes packed little-endian into a 64-bit integer
+    ///
+    /// Operator precedence: `+,-` < `*,/,\`; parentheses override.
+    fn eval_arith_expr(&self, raw: &str) -> Option<f64> {
+        let mut p = ArithParser {
+            s: raw,
+            pos: 0,
+            pre: self,
+        };
+        p.skip_ws();
+        let v = p.parse_expr().ok()?;
+        p.skip_ws();
+        if p.pos != p.s.len() {
+            return None;
+        }
+        Some(v)
+    }
+
     pub fn get_constant(&self, name: &str) -> Option<i64> {
         self.constants.get(&name.to_uppercase()).copied()
     }
@@ -1208,6 +1553,18 @@ impl Preprocessor {
 
     pub fn resources(&self) -> &[(u32, PathBuf)] {
         &self.resources
+    }
+
+    pub fn raw_resources(&self) -> &[RawResource] {
+        &self.raw_resources
+    }
+
+    pub fn string_resources(&self) -> &[StringResource] {
+        &self.string_resources
+    }
+
+    pub fn res_files(&self) -> &[ResFileEntry] {
+        &self.res_files
     }
 
     pub fn manifests(&self) -> &[(u32, PathBuf)] {
@@ -1381,6 +1738,212 @@ fn replace_word(body: &str, param: &str, arg: &str) -> String {
 /// Split `s` at top-level (paren depth 0) occurrences of `sep`, returning the
 /// pieces when at least one split happened.  Parentheses (including %DEF(...))
 /// keep their interiors from being split.
+/// Round half to even (banker's rounding), the PBWin #IF `\` semantics.
+/// PBWin performs a floating-point divide then rounds .5 to the nearest even
+/// integer rather than always away from zero.
+fn banker_round(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let floor = x.floor();
+    let diff = x - floor;
+    if diff < 0.5 {
+        floor
+    } else if diff > 0.5 {
+        floor + 1.0
+    } else {
+        // exactly halfway: pick the even neighbour
+        let fl = floor as i64;
+        if fl % 2 == 0 {
+            floor
+        } else {
+            floor + 1.0
+        }
+    }
+}
+
+/// Recursive-descent parser for #IF compile-time arithmetic. The input is
+/// already upper-cased. Whitespace is allowed around tokens.
+struct ArithParser<'a> {
+    s: &'a str,
+    pos: usize,
+    pre: &'a Preprocessor,
+}
+
+impl<'a> ArithParser<'a> {
+    fn skip_ws(&mut self) {
+        while self.pos < self.s.len() {
+            let b = self.s.as_bytes()[self.pos];
+            if b == b' ' || b == b'\t' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.s.as_bytes().get(self.pos).copied()
+    }
+
+    // expr := term (('+' | '-') term)*
+    fn parse_expr(&mut self) -> Result<f64, ()> {
+        let mut v = self.parse_term()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'+') => {
+                    self.pos += 1;
+                    v += self.parse_term()?;
+                }
+                Some(b'-') => {
+                    self.pos += 1;
+                    v -= self.parse_term()?;
+                }
+                _ => break,
+            }
+        }
+        Ok(v)
+    }
+
+    // term := factor (('*' | '/' | '\') factor)*
+    fn parse_term(&mut self) -> Result<f64, ()> {
+        let mut v = self.parse_factor()?;
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some(b'*') => {
+                    self.pos += 1;
+                    v *= self.parse_factor()?;
+                }
+                Some(b'/') => {
+                    // PBWin #IF: both / and \ are a floating-point divide
+                    // followed immediately by banker's rounding; they are
+                    // equivalent at compile time (verified against PBWin 10).
+                    self.pos += 1;
+                    let r = self.parse_factor()?;
+                    v = banker_round(v / r);
+                }
+                Some(b'\\') => {
+                    self.pos += 1;
+                    let r = self.parse_factor()?;
+                    v = banker_round(v / r);
+                }
+                _ => break,
+            }
+        }
+        Ok(v)
+    }
+
+    // factor := unary '-' factor | atom
+    fn parse_factor(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+            return Ok(-self.parse_factor()?);
+        }
+        if self.peek() == Some(b'+') {
+            self.pos += 1;
+            return self.parse_factor();
+        }
+        self.parse_atom()
+    }
+
+    // atom := CVQ('(' string ')') | '(' expr ')' | hex | integer | %constant
+    fn parse_atom(&mut self) -> Result<f64, ()> {
+        self.skip_ws();
+        let bytes = self.s.as_bytes();
+        // CVQ("...")
+        if self.s[self.pos..].starts_with("CVQ(") {
+            self.pos += 4;
+            self.skip_ws();
+            // read a quoted string literal
+            let q = self.peek().ok_or(())?;
+            if q != b'"' && q != b'\'' {
+                return Err(());
+            }
+            self.pos += 1;
+            let start = self.pos;
+            while self.pos < self.s.len() && bytes[self.pos] != q {
+                self.pos += 1;
+            }
+            let lit = &self.s[start..self.pos];
+            if self.pos >= self.s.len() {
+                return Err(());
+            }
+            self.pos += 1; // closing quote
+            self.skip_ws();
+            if self.peek() != Some(b')') {
+                return Err(());
+            }
+            self.pos += 1;
+            // little-endian byte packing (up to 8 bytes, high bytes zero)
+            let mut val: i64 = 0;
+            for (i, c) in lit.bytes().take(8).enumerate() {
+                val |= (c as i64) << (8 * i);
+            }
+            return Ok(val as f64);
+        }
+        // parenthesised sub-expression
+        if self.peek() == Some(b'(') {
+            self.pos += 1;
+            let v = self.parse_expr()?;
+            self.skip_ws();
+            if self.peek() != Some(b')') {
+                return Err(());
+            }
+            self.pos += 1;
+            return Ok(v);
+        }
+        // hex literal &H....
+        if self.s[self.pos..].starts_with("&H") {
+            let start = self.pos + 2;
+            let mut e = start;
+            while e < self.s.len() {
+                let b = bytes[e];
+                if b.is_ascii_hexdigit() {
+                    e += 1;
+                } else {
+                    break;
+                }
+            }
+            let hex = &self.s[start..e];
+            let val = i64::from_str_radix(hex, 16).map_err(|_| ())?;
+            self.pos = e;
+            // skip an optional trailing type suffix
+            if matches!(self.peek(), Some(b'&') | Some(b'%') | Some(b'?')) {
+                self.pos += 1;
+            }
+            return Ok(val as f64);
+        }
+        // %constant reference
+        if self.peek() == Some(b'%') {
+            let start = self.pos;
+            self.pos += 1;
+            while self.pos < self.s.len() {
+                let b = bytes[self.pos];
+                if b.is_ascii_alphanumeric() || b == b'_' {
+                    self.pos += 1;
+                } else {
+                    break;
+                }
+            }
+            let name = &self.s[start..self.pos];
+            return Ok(self.pre.parse_constant_value(name) as f64);
+        }
+        // plain integer
+        let start = self.pos;
+        while self.pos < self.s.len() && bytes[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        if self.pos == start {
+            return Err(());
+        }
+        let txt = &self.s[start..self.pos];
+        txt.parse::<i64>().map_err(|_| ()).map(|v| v as f64)
+    }
+}
+
 fn split_top_level<'a>(s: &'a str, sep: &str) -> Option<Vec<&'a str>> {
     let bytes = s.as_bytes();
     let mut depth = 0i32;

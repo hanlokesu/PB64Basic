@@ -14,6 +14,7 @@ use pb::preprocessor::Preprocessor;
 
 mod codegen;
 mod llvm_ir;
+mod resfile;
 mod symbols;
 
 fn main() {
@@ -37,32 +38,38 @@ fn main() {
     // built as a DLL — the object is archived into <name>.SLL instead.
     let mut sll_mode = false;
     let mut sll_name: Option<String> = None;
-    let src_has_compile_dll = std::fs::read_to_string(file_path)
-        .map(|s| {
-            s.lines().take(64).any(|l| {
-                let t = l.trim().to_uppercase();
-                if t.starts_with("#COMPILE SLL") {
-                    sll_mode = true;
-                    // Optional output name: `#COMPILE SLL = "name.SLL"` (CHW
-                    // "Creating a Static Link Library") or the bare form
-                    // `#COMPILE SLL "name.sll"` (CHW "SLL example"). Anything
-                    // after "#COMPILE SLL" that is not empty is the name.
-                    // Extract from the ORIGINAL (case-preserved) line so the
-                    // SLL file keeps the user's spelling (t is uppercased).
-                    let orig = l.trim();
-                    let rest = orig["#COMPILE SLL".len()..].trim();
-                    let rest = rest.trim_start_matches('=').trim();
-                    let name = rest.trim_matches('"').trim_matches('\'').trim();
-                    if !name.is_empty() {
-                        sll_name = Some(name.to_string());
-                    }
-                    true
-                } else {
-                    t.starts_with("#COMPILE DLL")
+    let mut exe_name: Option<(String, bool)> = None;
+    let mut dll_name: Option<(String, bool)> = None;
+    // Scan the first 64 lines for the single #COMPILE directive. The parser
+    // returns the case-preserved name and whether the exact-name '=' is used.
+    let compile_dir = std::fs::read_to_string(file_path)
+        .ok()
+        .and_then(|s| s.lines().take(64).find_map(parse_compile_directive));
+    let src_has_compile_dll = if let Some(cd) = &compile_dir {
+        match cd.kind.as_str() {
+            "SLL" => {
+                sll_mode = true;
+                if !cd.name.is_empty() {
+                    sll_name = Some(cd.name.clone());
                 }
-            })
-        })
-        .unwrap_or(false);
+                false
+            }
+            "DLL" => {
+                if !cd.name.is_empty() {
+                    dll_name = Some((cd.name.clone(), cd.has_eq));
+                }
+                true
+            }
+            _ => {
+                if !cd.name.is_empty() {
+                    exe_name = Some((cd.name.clone(), cd.has_eq));
+                }
+                false
+            }
+        }
+    } else {
+        false
+    };
     let dll_mode = dll_mode || (src_has_compile_dll && !sll_mode);
     // A source-level `#COMPILE DLL` (or --dll) wins over --exe: a DLL source
     // must never also run the EXE link (undefined `main` from libcmt.exe,
@@ -113,6 +120,8 @@ fn main() {
         exe_mode,
         sll_mode,
         sll_name,
+        exe_name,
+        dll_name,
         session_mode,
         emit_llvm,
         debug_mode,
@@ -143,6 +152,45 @@ fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|pos| args.get(pos + 1).cloned())
+}
+
+/// One parsed `#COMPILE {EXE|DLL|SLL} [=] ["name"]` directive.
+struct CompileDirective {
+    kind: String, // "EXE" | "DLL" | "SLL"
+    has_eq: bool, // optional '=' present: name is exact, nothing appended
+    name: String, // case-preserved target name (may be empty)
+}
+
+fn parse_compile_directive(line: &str) -> Option<CompileDirective> {
+    let t = line.trim();
+    let upper = t.to_uppercase();
+    if !upper.starts_with("#COMPILE ") {
+        return None;
+    }
+    let rest = t["#COMPILE ".len()..].trim();
+    let kind_end = rest
+        .find(|c: char| c.is_whitespace() || c == '=')
+        .unwrap_or(rest.len());
+    let kind = rest[..kind_end].to_uppercase();
+    if kind != "EXE" && kind != "DLL" && kind != "SLL" {
+        return None;
+    }
+    let mut tail = rest[kind_end..].trim();
+    let has_eq = tail.starts_with('=');
+    if has_eq {
+        tail = tail[1..].trim();
+    }
+    let name = if tail.starts_with('"') || tail.starts_with('\'') {
+        let q = tail.as_bytes()[0];
+        match tail[1..].find(q as char) {
+            Some(c) => tail[1..c + 1].to_string(),
+            None => String::new(),
+        }
+    } else {
+        let e = tail.find(char::is_whitespace).unwrap_or(tail.len());
+        tail[..e].to_string()
+    };
+    Some(CompileDirective { kind, has_eq, name })
 }
 /// Auto-detect the Windows SDK import-library directory so users do not have
 /// to pass --lib-dir by hand. Scans the standard install roots and picks the
@@ -199,6 +247,7 @@ fn compile_file(
     let t0 = std::time::Instant::now();
     let mut preprocessor = Preprocessor::new();
     preprocessor.set_target(&opts.target);
+    preprocessor.set_build_mode(opts.exe_mode, opts.dll_mode, opts.sll_mode);
     let source_lines = preprocessor.preprocess(path)?;
     eprintln!(
         "[PB64Basic] Preprocessed {} lines ({:.1}s)",
@@ -359,13 +408,25 @@ fn compile_file(
 
     // Phase 5: Embed resources (icons, version info, etc.) into EXE
     if opts.exe_mode {
-        let exe_path = output_path.with_extension("exe");
+        let exe_path = codegen::resolve_target_path(output_path, opts.exe_name.as_ref(), "exe");
         if exe_path.exists() {
             let has_icons = !preprocessor.resources().is_empty();
+            let has_raw = !preprocessor.raw_resources().is_empty();
+            let has_strings = !preprocessor.string_resources().is_empty();
             let has_manifest = !preprocessor.manifests().is_empty();
             let has_version = !preprocessor.version_info().strings.is_empty();
+            let has_res_files = !preprocessor.res_files().is_empty();
             if has_icons {
                 embed_resources(&exe_path, preprocessor.resources());
+            }
+            if has_res_files {
+                embed_res_files(&exe_path, preprocessor.res_files());
+            }
+            if has_raw {
+                embed_raw_resources(&exe_path, preprocessor.raw_resources());
+            }
+            if has_strings {
+                embed_string_resources(&exe_path, preprocessor.string_resources());
             }
             if has_manifest {
                 embed_manifest(&exe_path, preprocessor.manifests());
@@ -511,6 +572,266 @@ fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
         }
         Err(e) => eprintln!(
             "[PB64Basic] Warning: cannot run powershell for manifest embedding: {}",
+            e
+        ),
+    }
+}
+
+/// Embed pre-compiled #RESOURCE RES/PBR files.  Each binary is parsed into
+/// its resource entries and every entry is written through Win32
+/// UpdateResource, preserving its type (integer or Unicode name), resource
+/// id, language and byte-for-byte data.
+fn embed_res_files(exe_path: &Path, files: &[pb::preprocessor::ResFileEntry]) {
+    use std::os::windows::process::CommandExt;
+    let mut script = String::new();
+    script.push_str("Add-Type -TypeDefinition @'\n");
+    script.push_str("using System;\n");
+    script.push_str("using System.Runtime.InteropServices;\n");
+    script.push_str("public class ResFile {\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr BeginUpdateResource(string p, bool b);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool UpdateResource(IntPtr h, IntPtr t, IntPtr n, ushort l, byte[] d, uint cb);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr h, bool d);\n");
+    script.push_str("}\n'@\n");
+    let exe_q = exe_path.to_string_lossy().replace('\'', "''");
+    script.push_str(&format!("$exe = '{}'\n", exe_q));
+    script.push_str("$h = [ResFile]::BeginUpdateResource($exe, $false)\n");
+
+    let mut total_entries = 0usize;
+    for entry in files {
+        let bytes = match std::fs::read(&entry.path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!(
+                    "[PB64Basic] Warning: cannot read resource file {}: {}",
+                    entry.path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        let parsed = if entry.is_pbr {
+            resfile::parse_pbr(&bytes)
+        } else {
+            resfile::parse_res(&bytes)
+        };
+        let parsed = match parsed {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "[PB64Basic] Warning: cannot parse resource file {}: {}",
+                    entry.path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        for item in &parsed {
+            total_entries += 1;
+            let b64 = base64_encode(&item.data);
+            script.push_str(&format!(
+                "$bytes = [Convert]::FromBase64String('{}')\n",
+                b64
+            ));
+            // Type pointer: integer RT_* or Unicode string name.
+            if let Some(t) = item.type_int {
+                script.push_str(&format!("$tp = [IntPtr]{}\n", t));
+            } else if let Some(s) = &item.type_str {
+                let sq = s.replace('\'', "''");
+                script.push_str(&format!(
+                    "$tp = [Runtime.InteropServices.Marshal]::StringToHGlobalUni('{}')\n",
+                    sq
+                ));
+            }
+            // Name pointer: integer id or Unicode string name.
+            if let Some(n) = item.name_int {
+                script.push_str(&format!("$nm = [IntPtr]{}\n", n));
+            } else if let Some(s) = &item.name_str {
+                let sq = s.replace('\'', "''");
+                script.push_str(&format!(
+                    "$nm = [Runtime.InteropServices.Marshal]::StringToHGlobalUni('{}')\n",
+                    sq
+                ));
+            }
+            script.push_str(&format!(
+                "[void][ResFile]::UpdateResource($h, $tp, $nm, {}, $bytes, $bytes.Length)\n",
+                item.lang
+            ));
+        }
+    }
+    script.push_str("[void][ResFile]::EndUpdateResource($h, $false)\n");
+
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        Ok(out) => {
+            if out.status.success() {
+                eprintln!(
+                    "[PB64Basic] Embedded {} resource entry/entries from {} file(s) into {}",
+                    total_entries,
+                    files.len(),
+                    exe_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[PB64Basic] Warning: RES/PBR embedding failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "[PB64Basic] Warning: cannot run powershell for RES/PBR embedding: {}",
+            e
+        ),
+    }
+}
+
+/// Embed file-based #RESOURCE items (BITMAP/RCDATA/WAVE/TYPELIB) via Win32
+/// UpdateResource.  Numeric RT_* types are passed as integer pointers;
+/// custom WAVE/TYPELIB types are passed as Unicode string-name pointers.
+/// BITMAP data drops the 14-byte BITMAPFILEHEADER (RT_BITMAP stores only
+/// the BITMAPINFO section).  All mappings match a PBWin10 build.
+fn embed_raw_resources(exe_path: &Path, raw: &[pb::preprocessor::RawResource]) {
+    use std::os::windows::process::CommandExt;
+    let mut script = String::new();
+    script.push_str("Add-Type -TypeDefinition @'\n");
+    script.push_str("using System;\n");
+    script.push_str("using System.Runtime.InteropServices;\n");
+    script.push_str("public class ResRaw {\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr BeginUpdateResource(string p, bool b);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool UpdateResource(IntPtr h, IntPtr t, IntPtr n, ushort l, byte[] d, uint cb);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr h, bool d);\n");
+    script.push_str("}\n'@\n");
+    let exe_q = exe_path.to_string_lossy().replace('\'', "''");
+    script.push_str(&format!("$exe = '{}'\n", exe_q));
+    script.push_str("$h = [ResRaw]::BeginUpdateResource($exe, $false)\n");
+    for item in raw {
+        let path_q = item.path.to_string_lossy().replace('\'', "''");
+        script.push_str(&format!("$bytes = [IO.File]::ReadAllBytes('{}')\n", path_q));
+        if item.type_kind == pb::preprocessor::RawResType::Bitmap {
+            // RT_BITMAP: drop the 14-byte BITMAPFILEHEADER.
+            script.push_str("$bytes = $bytes[14..($bytes.Length-1)]\n");
+        }
+        // Build the type pointer (numeric RT_* or Unicode string name).
+        if let Some(num) = item.type_kind.numeric_id() {
+            script.push_str(&format!("$tp = [IntPtr]{}\n", num));
+        } else if let Some(name) = item.type_kind.type_name() {
+            script.push_str(&format!(
+                "$tp = [Runtime.InteropServices.Marshal]::StringToHGlobalUni('{}')\n",
+                name
+            ));
+        }
+        script.push_str(&format!("$nm = [IntPtr]{}\n", item.id));
+        script.push_str("[void][ResRaw]::UpdateResource($h, $tp, $nm, 0, $bytes, $bytes.Length)\n");
+    }
+    script.push_str("[void][ResRaw]::EndUpdateResource($h, $false)\n");
+
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        Ok(out) => {
+            if out.status.success() {
+                eprintln!(
+                    "[PB64Basic] Embedded {} raw resource(s) into {}",
+                    raw.len(),
+                    exe_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[PB64Basic] Warning: raw resource embedding failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "[PB64Basic] Warning: cannot run powershell for raw resource embedding: {}",
+            e
+        ),
+    }
+}
+
+/// Group #RESOURCE STRING entries into Windows RT_STRING blocks and embed
+/// them.  Each block holds 16 IDs: resource name = (id>>4)+1, slot inside
+/// the block = id&15.  Block data is 16 consecutive (u16 length-in-WCHARs
+/// followed by that many UTF-16 code units); empty slots have length 0.
+/// Layout matches a PBWin10 build byte-for-byte.
+fn embed_string_resources(exe_path: &Path, entries: &[pb::preprocessor::StringResource]) {
+    use std::os::windows::process::CommandExt;
+
+    // Determine the set of block indices present.
+    let mut blocks: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for e in entries {
+        blocks.insert(e.id >> 4);
+    }
+
+    let mut script = String::new();
+    script.push_str("Add-Type -TypeDefinition @'\n");
+    script.push_str("using System;\n");
+    script.push_str("using System.Runtime.InteropServices;\n");
+    script.push_str("public class ResStr {\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true, CharSet=CharSet.Unicode)] public static extern IntPtr BeginUpdateResource(string p, bool b);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool UpdateResource(IntPtr h, IntPtr t, IntPtr n, ushort l, byte[] d, uint cb);\n");
+    script.push_str("  [DllImport(\"kernel32.dll\", SetLastError=true)] public static extern bool EndUpdateResource(IntPtr h, bool d);\n");
+    script.push_str("}\n'@\n");
+    let exe_q = exe_path.to_string_lossy().replace('\'', "''");
+    script.push_str(&format!("$exe = '{}'\n", exe_q));
+    script.push_str("$h = [ResStr]::BeginUpdateResource($exe, $false)\n");
+    script.push_str("$RT_STRING = [IntPtr]6\n");
+
+    for block in &blocks {
+        // Build the 16-slot block in Rust.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut block_lang: u16 = 1033;
+        for slot in 0u32..16 {
+            let want_id = block * 16 + slot;
+            // Find the entry for this exact id (first match wins).
+            let entry = entries.iter().find(|e| e.id == want_id);
+            if let Some(en) = entry {
+                let wchars: Vec<u16> = en.text.encode_utf16().collect();
+                buf.extend_from_slice(&(wchars.len() as u16).to_le_bytes());
+                for w in &wchars {
+                    buf.extend_from_slice(&w.to_le_bytes());
+                }
+                block_lang = en.lang_id;
+            } else {
+                buf.extend_from_slice(&0u16.to_le_bytes());
+            }
+        }
+        let b64 = base64_encode(&buf);
+        let block_name = block + 1; // resource name is 1-based block index
+        script.push_str(&format!("$b = [Convert]::FromBase64String('{}')\n", b64));
+        script.push_str(&format!(
+            "[void][ResStr]::UpdateResource($h, $RT_STRING, [IntPtr]{}, {}, $b, $b.Length)\n",
+            block_name, block_lang
+        ));
+    }
+    script.push_str("[void][ResStr]::EndUpdateResource($h, $false)\n");
+
+    match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+    {
+        Ok(out) => {
+            if out.status.success() {
+                eprintln!(
+                    "[PB64Basic] Embedded {} string resource(s) in {} block(s) into {}",
+                    entries.len(),
+                    blocks.len(),
+                    exe_path.display()
+                );
+            } else {
+                eprintln!(
+                    "[PB64Basic] Warning: string resource embedding failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        Err(e) => eprintln!(
+            "[PB64Basic] Warning: cannot run powershell for string resource embedding: {}",
             e
         ),
     }

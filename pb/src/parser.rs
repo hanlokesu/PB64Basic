@@ -17278,6 +17278,14 @@ impl Parser {
                 }
                 Ok(expr)
             }
+            Token::String_ => {
+                // RESOURCE$(STRING, id): the class word STRING is a type keyword
+                // token, but here it names the resource class.  Expose it as a
+                // STRING variable so codegen's RESOURCE handler maps it to the
+                // wide-string table class (CHW RESOURCE$_function.htm).
+                self.advance();
+                Ok(Expr::Variable("STRING".to_string()))
+            }
             _ => Err(PbError::parser(
                 format!("Unexpected token in expression: {:?}", self.peek()),
                 self.current_file(),
