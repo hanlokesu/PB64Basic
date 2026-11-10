@@ -405,7 +405,7 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 331 (v0.2.122). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 332 (v0.2.123). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
 > batch 331 (v0.2.122) - i686 BYVAL truncation fix and precise parse error codes: i64 builtin results inlined into narrow integer BYVAL parameters on the 32-bit target are now explicitly truncated at the call boundary (previously the full 8 bytes shifted every subsequent argument on the i686 stack), and parser expect() emits PBWin-style messages mapped to the exact CHW 411-459 expected-code range instead of the generic 477 fallback, with the first error message embedded in the summary so the process exit code carries the precise code. No new keyword; coverage stays at 947 rows / 915 implemented.
 > batch 330 (v0.2.121) - CLI command-line handling and PEEK/POKE data type conformance: bare positional runtime objects are now linked and a normal build links an executable by default (unrecognized/conflicting arguments exit with code 2, new --obj-only flag), numeric PEEK correctly maps INTEGER to signed 16-bit and DWORD to unsigned 32-bit (new pb_peek16s/pb_peek32u) and recognizes EXT/CUR/CUX, PEEK$ with no count is a clear error, and POKE multi-value stride and EXT/CUR/CUX writes are fixed. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch330_test.bas`.
 > batch 329 (v0.2.120) - hash (#) metastatement family CHW conformance: built-in compiler equates defined with real identity, #IF compile-time arithmetic with banker's rounding (Error 427 on float literals), #COMPILE EXE/DLL explicit output names (Error 496), and #RESOURCE BITMAP/RCDATA/WAVE/TYPELIB/STRING/RES support (legacy PBR reports a clear error).
@@ -965,6 +965,21 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.123 (2026-11-12)
+
+- Runtime: trap integer division and modulo by zero as Error 11 ("Division by zero")
+  instead of letting LLVM sdiv/srem raise an unhandled hardware exception.
+  A new noreturn helper `pb_raise_error(int code)` in pb_runtime.c sets pb_err,
+  looks up the message table, prints "Error N: message" to stderr, and exits.
+  Codegen inserts an icmp+condbr guard before sdiv (PB `\`) and srem (MOD) for
+  all promoted integer widths.
+- Error mapping: exclude "END (mismatched block)" from the Error 482 (data type
+  mismatch) rule; it is a block-structure syntax error and now falls through to
+  the generic syntax code 477.
+
+Verified: 10\0 prints "Error 11: Division by zero" exit=11; 10\3=3 and
+10 MOD 3=1 unchanged; l0-l11 x64 and i686 both pass.
+
 ### v0.2.122 (2026-11-11) - i686 BYVAL truncation fix and precise parse error codes (411-459)
 
 - Compiler/runtime release. The bundled runtime objects and `PB64Basic.exe` are rebuilt; no new keyword is added, so keyword coverage stays at 947 rows / 915 implemented and the fork extension count stays at 30.
