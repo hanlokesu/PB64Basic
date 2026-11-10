@@ -406,7 +406,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 339 (v0.2.130). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> Batch 339 (v0.2.130): #284 Error 51 (Internal error) and Error 99 (Object error) conformance.
+> batch 339 (v0.2.130) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance: Added NULL check for pb_com_new() calls in codegen. When NEWCOM/GETCOM/ANYCOM fails (returns NULL), runtime now triggers Error 99 (Object error). Verified existing Error 51 trigger point in RENAME operation. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch339_test.bas.
 
 **Changes:**
 - Added NULL check for `pb_com_new()` in codegen.rs (Expr::ComNew branch). When COM object creation fails (returns NULL), runtime now raises Error 99 (Object error).
