@@ -30528,8 +30528,12 @@ impl Compiler {
     fn builtin_space(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let n = self.compile_expr(fb, &args[0])?;
         let n_i32 = self.to_i32(fb, &n);
+        // CHW: a negative count produces an empty string.  Clamp n to >= 0.
+        let zero_i32 = fb.const_i32(0);
+        let neg_cmp = fb.icmp("slt", &n_i32, &zero_i32);
+        let actual_n = fb.select(&neg_cmp, &zero_i32, &n_i32);
         let one = fb.const_i32(1);
-        let buf_size = fb.add(&n_i32, &one);
+        let buf_size = fb.add(&actual_n, &one);
         let buf = fb.call(&IrType::Ptr, "malloc", &[buf_size]);
 
         // Loop: fill with spaces
@@ -30544,7 +30548,7 @@ impl Compiler {
 
         fb.label(&cond_label);
         let i = fb.load(&IrType::I32, &i_ptr);
-        let cmp = fb.icmp("slt", &i, &n_i32);
+        let cmp = fb.icmp("slt", &i, &actual_n);
         fb.condbr(&cmp, &body_label, &exit_label);
 
         fb.label(&body_label);
@@ -30557,7 +30561,7 @@ impl Compiler {
 
         fb.label(&exit_label);
         // Null-terminate
-        let null_ptr = fb.gep_byte(&buf, &n_i32);
+        let null_ptr = fb.gep_byte(&buf, &actual_n);
         let zero_byte = fb.const_i8(0);
         fb.store(&zero_byte, &null_ptr);
         Ok(self.bstr_from_buf(fb, &buf))
