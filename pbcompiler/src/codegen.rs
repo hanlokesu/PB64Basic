@@ -1890,6 +1890,8 @@ impl Compiler {
             false,
         );
         self.module
+            .declare_function("pb_raise_error", &IrType::Void, &[IrType::I32], false);
+        self.module
             .declare_function("pb_put_record", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("pb_get_record", &IrType::Void, &[IrType::I32], false);
@@ -25812,8 +25814,32 @@ impl Compiler {
                 let rf = fb.sitofp(&r, &IrType::Double);
                 Ok(fb.fdiv(&lf, &rf))
             }
-            BinaryOp::IntDiv => Ok(fb.sdiv(&l, &r)),
-            BinaryOp::Mod => Ok(fb.srem(&l, &r)),
+            BinaryOp::IntDiv => {
+                // PB `\` integer division: trap division by zero as Error 11.
+                let zero = fb.const_int(&r.ty, 0);
+                let is_zero = fb.icmp("eq", &r, &zero);
+                let l_err = fb.next_label("idiv.zero");
+                let l_ok = fb.next_label("idiv.ok");
+                fb.condbr(&is_zero, &l_err, &l_ok);
+                fb.label(&l_err);
+                fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
+                fb.raw_line("unreachable");
+                fb.label(&l_ok);
+                Ok(fb.sdiv(&l, &r))
+            }
+            BinaryOp::Mod => {
+                // PB MOD: same division-by-zero trap as IntDiv (Error 11).
+                let zero = fb.const_int(&r.ty, 0);
+                let is_zero = fb.icmp("eq", &r, &zero);
+                let l_err = fb.next_label("mod.zero");
+                let l_ok = fb.next_label("mod.ok");
+                fb.condbr(&is_zero, &l_err, &l_ok);
+                fb.label(&l_err);
+                fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
+                fb.raw_line("unreachable");
+                fb.label(&l_ok);
+                Ok(fb.srem(&l, &r))
+            }
             BinaryOp::Pow => {
                 let lf = fb.sitofp(&l, &IrType::Double);
                 let rf = fb.sitofp(&r, &IrType::Double);

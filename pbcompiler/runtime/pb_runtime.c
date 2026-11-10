@@ -4076,6 +4076,23 @@ char* pb_error_message(int n) {
     return pb_bstr_alloc(msg, (unsigned int)strlen(msg));
 }
 
+/* Raise a runtime error: set pb_err, print the message, and exit.
+   Called from compiler-inserted checks (division by zero, subscript out of
+   range, overflow).  noreturn so LLVM knows the following sdiv/srem/load
+   is only reached on the safe path. */
+__declspec(noreturn) void pb_raise_error(int code) {
+    pb_err = code;
+    pb_err_var = code;
+    const char* msg = NULL;
+    if (code >= 0 && code < (int)PB_ERROR_MSG_COUNT) {
+        msg = pb_error_msgs[code];
+    }
+    if (!msg) msg = "Runtime error";
+    fprintf(stderr, "Error %d: %s\n", code, msg);
+    fflush(stderr);
+    exit(code);
+}
+
 /* ===== System builtins ===== */
 
 #ifdef _WIN32
