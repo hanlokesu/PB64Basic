@@ -405,7 +405,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 334 (v0.2.125). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 335 (v0.2.126). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 335 (v0.2.126) - runtime Error 6 division edge-case trap: integer division (`\`) and modulo (MOD) now also check for the INT_MIN / -1 edge case on top of the existing division-by-zero trap, calling pb_raise_error(6) when the mathematical result cannot be represented in i32/i64. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch335_test.bas`.
 > batch 334 (v0.2.125) - runtime Error 6 add/sub overflow trap and Error 5 math-domain trap: signed i32/i64 addition and subtraction now use `@llvm.sadd.with.overflow.*` / `@llvm.ssub.with.overflow.*` and branch to pb_raise_error(6) on overflow, and SQR of a negative number / LOG of zero or negative call pb_raise_error(5) ("Error 5: Illegal function call"). No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch334_test.bas`.
 > batch 333 (v0.2.124) - runtime Error 6 overflow trap and Error 9 subscript trap: signed i32/i64 multiplication now uses `@llvm.smul.with.overflow.*` and branches on the overflow flag to call the noreturn helper pb_raise_error(6) ("Error 6: Overflow"), and every array access inserts a per-dimension bounds check that calls pb_raise_error(9) ("Error 9: Subscript/Pointer out of range") when the index falls outside the declared [lower, upper] range. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch333_test.bas`.
 > batch 332 (v0.2.123) - runtime Error 11 division-by-zero trap and Error 482 mapping refinement: integer division (PB `\`) and modulo (MOD) now emit a compiler-inserted zero-divisor check that calls a new noreturn runtime helper pb_raise_error(11), printing "Error 11: Division by zero" and exiting instead of letting LLVM sdiv/srem raise an unhandled hardware exception.  The parser message "END (mismatched block)" is no longer misclassified as Error 482 (data type mismatch); it now falls through to the generic syntax code 477. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch332_test.bas`.
@@ -968,6 +969,10 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.126 (2026-11-12)
+
+- Feat: trap the `INT_MIN / -1` edge case in integer division and modulo as runtime Error 6 (Overflow), on top of the existing division-by-zero (Error 11) trap.
+
 ### v0.2.125 (2026-11-12)
 
 - Feat: trap signed integer addition and subtraction overflow as runtime Error 6 (PBWin Overflow), using LLVM `@llvm.sadd.with.overflow.*` / `@llvm.ssub.with.overflow.*`.
