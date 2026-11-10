@@ -25918,7 +25918,8 @@ impl Compiler {
                 Ok(fb.fdiv(&lf, &rf))
             }
             BinaryOp::IntDiv => {
-                // PB `\` integer division: trap division by zero as Error 11.
+                // PB `\` integer division: trap division by zero as Error 11,
+                // and trap INT_MIN / -1 overflow as Error 6.
                 let zero = fb.const_int(&r.ty, 0);
                 let is_zero = fb.icmp("eq", &r, &zero);
                 let l_err = fb.next_label("idiv.zero");
@@ -25928,10 +25929,35 @@ impl Compiler {
                 fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
                 fb.raw_line("unreachable");
                 fb.label(&l_ok);
+                // INT_MIN / -1 overflow check (i32 and i64 only).
+                let w = l.ty.bit_width();
+                if w == 32 || w == 64 {
+                    let int_min = if w == 32 {
+                        fb.const_i32(-2147483648)
+                    } else {
+                        fb.const_i64(-9223372036854775807 - 1)
+                    };
+                    let neg_one = if w == 32 {
+                        fb.const_i32(-1)
+                    } else {
+                        fb.const_i64(-1)
+                    };
+                    let is_min = fb.icmp("eq", &l, &int_min);
+                    let is_neg1 = fb.icmp("eq", &r, &neg_one);
+                    let ovf = fb.and(&is_min, &is_neg1);
+                    let l_ovf = fb.next_label("idiv.ovf");
+                    let l_ok2 = fb.next_label("idiv.ok2");
+                    fb.condbr(&ovf, &l_ovf, &l_ok2);
+                    fb.label(&l_ovf);
+                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
+                    fb.raw_line("unreachable");
+                    fb.label(&l_ok2);
+                }
                 Ok(fb.sdiv(&l, &r))
             }
             BinaryOp::Mod => {
-                // PB MOD: same division-by-zero trap as IntDiv (Error 11).
+                // PB MOD: same division-by-zero trap as IntDiv (Error 1),
+                // and INT_MIN MOD -1 also overflows (Error 6).
                 let zero = fb.const_int(&r.ty, 0);
                 let is_zero = fb.icmp("eq", &r, &zero);
                 let l_err = fb.next_label("mod.zero");
@@ -25941,6 +25967,29 @@ impl Compiler {
                 fb.raw_line("call void @pb_raise_error(i32 11) noreturn");
                 fb.raw_line("unreachable");
                 fb.label(&l_ok);
+                let w = l.ty.bit_width();
+                if w == 32 || w == 64 {
+                    let int_min = if w == 32 {
+                        fb.const_i32(-2147483648)
+                    } else {
+                        fb.const_i64(-9223372036854775807 - 1)
+                    };
+                    let neg_one = if w == 32 {
+                        fb.const_i32(-1)
+                    } else {
+                        fb.const_i64(-1)
+                    };
+                    let is_min = fb.icmp("eq", &l, &int_min);
+                    let is_neg1 = fb.icmp("eq", &r, &neg_one);
+                    let ovf = fb.and(&is_min, &is_neg1);
+                    let l_ovf = fb.next_label("mod.ovf");
+                    let l_ok2 = fb.next_label("mod.ok2");
+                    fb.condbr(&ovf, &l_ovf, &l_ok2);
+                    fb.label(&l_ovf);
+                    fb.raw_line("call void @pb_raise_error(i32 6) noreturn");
+                    fb.raw_line("unreachable");
+                    fb.label(&l_ok2);
+                }
                 Ok(fb.srem(&l, &r))
             }
             BinaryOp::Pow => {
