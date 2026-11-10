@@ -25478,7 +25478,19 @@ impl Compiler {
                     None => Val::new(self.empty_string_name.clone(), IrType::Ptr),
                 };
                 let mode_v = Val::new(mode.to_string(), IrType::I32);
-                Ok(fb.call(&IrType::Ptr, "pb_com_new", &[mode_v, pn, clsid_v, lib_v]))
+                let obj = fb.call(&IrType::Ptr, "pb_com_new", &[mode_v, pn, clsid_v, lib_v]);
+                // NEWCOM/GETCOM/ANYCOM failure → Error 99 (Object error).
+                // pb_com_new returns NULL on failure (CLSIDFromProgID failed,
+                // CoCreateInstance failed, etc.). Trap NULL as runtime Error 99.
+                let null = fb.const_null_ptr();
+                let is_null = fb.icmp("eq", &obj, &null);
+                let l_err = fb.next_label("com_new.err");
+                let l_ok = fb.next_label("com_new.ok");
+                fb.condbr(&is_null, &l_err, &l_ok);
+                fb.label(&l_err);
+                fb.raise_error(99);
+                fb.label(&l_ok);
+                Ok(obj)
             }
             Expr::MethodCall { base, name, args } => {
                 // batch306/307 (legacy #8): indexed TYPE member array `@p.arr(i)`

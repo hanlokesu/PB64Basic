@@ -405,7 +405,17 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 338 (v0.2.129). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 339 (v0.2.130). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Batch 339 (v0.2.130): #284 Error 51 (Internal error) and Error 99 (Object error) conformance.
+
+**Changes:**
+- Added NULL check for `pb_com_new()` in codegen.rs (Expr::ComNew branch). When COM object creation fails (returns NULL), runtime now raises Error 99 (Object error).
+- Verified existing Error 51 trigger point in RENAME operation (pb_runtime.c:6578).
+
+**Verification:**
+- cargo fmt --all: clean
+- cargo clippy --release -D warnings: clean
+- Test program: NEWCOM with invalid ProgID correctly triggers Error 99
 > batch 337 (v0.2.128) - CHR$ range inverted-range overflow fix: `CHR$(a TO b)` with `a > b` previously computed count = b - a + 1 (negative), malloc'd a huge buffer, and wrote bytes at negative offsets.  Now clamps count to >= 0 so an inverted range yields an empty string.  No new keyword; coverage stays at 947 rows / 915 implemented.  Self-check: `examples/batch337_test.bas`.
 > batch 336 (v0.2.127) - string negative-count overflow fix: `STRING$`, `SPACE$`, and `STRING$$` previously allocated n+1 (or n*2) bytes and wrote the NUL terminator at buf[n], which for n < 0 writes one or two bytes *before* the malloc'd buffer.  Now clamps n to >= 0 with icmp+select so the loop never runs and the terminator lands at buf[0], matching CHW "negative count produces an empty string".  Also extracted `fb.raise_error(code)` to deduplicate the 9 runtime-error trap sites.  No new keyword; coverage stays at 947 rows / 915 implemented.  Self-check: `examples/batch336_test.bas`.
 > batch 335 (v0.2.126) - runtime Error 6 division edge-case trap: integer division (`\`) and modulo (MOD) now also check for the INT_MIN / -1 edge case on top of the existing division-by-zero trap, calling pb_raise_error(6) when the mathematical result cannot be represented in i32/i64. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch335_test.bas`.
@@ -972,6 +982,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.130 (2026-11-11) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance
+
+**Changed:**
+- **#284 Error 99 (Object error)**: Added NULL check for `pb_com_new()` calls in codegen. When NEWCOM/GETCOM/ANYCOM fails (returns NULL), runtime now triggers Error 99 (Object error) instead of silently continuing with an invalid object pointer.
+- **#284 Error 51 (Internal error)**: Verified existing trigger point in RENAME operation (MoveFileExA returns ERROR_ACCESS_DENIED).
+
+**Fixed:**
+- Object creation failure no longer results in silent undefined behavior; users now get a clear Error 99 diagnostic.
+
 ### v0.2.129 (2026-09-12) - Error 7 (Out of memory) malloc NULL check
 
 - **Error 7 (Out of memory)**: Added `malloc_or_raise` helper in codegen.rs that checks for NULL after every `malloc()` call and raises runtime Error 7 (`pb_raise_error(7)`) if allocation fails. Covers all 9 malloc call sites: CHR$ range, CHR$ multi, CHR$$ multi, STR$, HEX$, num_to_string, STRING$, SPACE$, STRING$$. This completes the runtime error coverage for CHW error code 7.
