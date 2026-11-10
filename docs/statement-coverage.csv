@@ -1,4 +1,4 @@
-# Last updated from batch 327 (v0.2.118) - 2026-11-10,,,,
+# Last updated from batch 328 (v0.2.119) - 2026-11-10,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -329,7 +329,7 @@ EXP10,FUNCTION,LLVM intrinsic,Implemented
 EXP2,FUNCTION,LLVM intrinsic,Implemented
 EXPM1,FORK EXTENSION,C runtime (MSVCRT),Implemented
 EXPORT,STATEMENT,PB/Win only,Implemented
-EXTERN,FORK EXTENSION,external COFF symbol,Implemented
+OBJEXTERN,FORK EXTENSION,external COFF object symbol,Implemented
 EXTRACT,FUNCTION,codegen builtin,Implemented
 EXTRACT$,FUNCTION,Win32,Implemented
 FASTPROC,STATEMENT,PB/Win only,Implemented

@@ -198,6 +198,7 @@ fn compile_file(
     // Phase 1: Preprocess
     let t0 = std::time::Instant::now();
     let mut preprocessor = Preprocessor::new();
+    preprocessor.set_target(&opts.target);
     let source_lines = preprocessor.preprocess(path)?;
     eprintln!(
         "[PB64Basic] Preprocessed {} lines ({:.1}s)",

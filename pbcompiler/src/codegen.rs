@@ -7170,7 +7170,7 @@ impl Compiler {
                     self.register_declare(ds);
                 }
                 TopLevel::ExternDecl(ed) => {
-                    self.register_extern(ed);
+                    self.register_extern(ed)?;
                 }
                 TopLevel::LinkFile(path) => {
                     if !path.is_empty() {
@@ -8234,7 +8234,57 @@ impl Compiler {
     /// embedded data block (its value is the symbol address); a scalar
     /// declaration names an external variable whose value is loaded (e.g. the
     /// bin2coff `label_size`). COFF symbol matching is case-sensitive.
-    fn register_extern(&mut self, ed: &ExternDecl) {
+    fn register_extern(&mut self, ed: &ExternDecl) -> PbResult<()> {
+        let target_is_32 = self.module.is_32bit();
+        let target_width: u8 = if target_is_32 { 32 } else { 64 };
+
+        // Bare target-width marker (32/64): auto-skip this declaration when the
+        // marker does not match the current compilation target, so one source
+        // can declare both targets and the compiler selects the right object
+        // without a preprocessor conditional. A skipped declaration neither
+        // links its file nor registers its symbol.
+        if let Some(arch) = ed.arch {
+            if (arch == 32) != target_is_32 {
+                return Ok(());
+            }
+        }
+
+        // Optional embedded object file: validate the COFF machine header and
+        // auto-add it to the link set (deduplicated), no separate #LINK.
+        if let Some(ref fspec) = ed.file {
+            let path = Path::new(fspec);
+            if path.exists() {
+                // Reachable now: validate the machine width up front so a
+                // wrong-width object is rejected before the link step.
+                let file_width = Self::coff_machine_width(path)?;
+                if let Some(arch) = ed.arch {
+                    // The marker already matched the current target (above);
+                    // verify the file's real machine width agrees with it.
+                    if file_width != arch {
+                        return Err(PbError::generic(format!(
+                            "OBJEXTERN '{}' is marked {} but the object COFF machine type is {}-bit",
+                            fspec, arch, file_width
+                        )));
+                    }
+                } else if file_width != target_width {
+                    // No marker: the object width must match the current target.
+                    return Err(PbError::generic(format!(
+                        "OBJEXTERN '{}' is {}-bit but the current target is {}-bit",
+                        fspec, file_width, target_width
+                    )));
+                }
+            }
+            // If the file is not reachable from the cwd, keep the literal spec
+            // and let link_exe's source-directory fallback resolve it.
+
+            // Auto-add the file to the link set, deduplicated. The same object
+            // referenced by several OBJEXTERN statements (label + label_size)
+            // is linked only once.
+            if !self.link_files.iter().any(|f| f == fspec) {
+                self.link_files.push(fspec.clone());
+            }
+        }
+
         let name = normalize_name(&ed.name);
         let is_ptr = matches!(ed.pb_type, PbType::Pointer(_));
 
@@ -8275,6 +8325,77 @@ impl Compiler {
                 ir_type,
                 ed.pb_type.clone(),
             );
+        }
+        Ok(())
+    }
+
+    /// Read the COFF machine header of an object (or the first ordinary member
+    /// of a COFF archive) and return its pointer width (32 or 64).
+    ///
+    /// A COFF object begins with a 2-byte little-endian Machine field at
+    /// offset 0. A COFF archive (.lib/.SLL) begins with the 8-byte signature
+    /// `!<arch>\n`; its 60-byte member headers are parsed to reach the first
+    /// ordinary COFF member (the special symbol/string-table members are
+    /// skipped).
+    fn coff_machine_width(path: &Path) -> PbResult<u8> {
+        let bytes = std::fs::read(path).map_err(|e| {
+            PbError::generic(format!(
+                "Cannot read object file '{}': {}",
+                path.display(),
+                e
+            ))
+        })?;
+
+        // COFF archive: walk member headers to the first ordinary member.
+        if bytes.starts_with(b"!<arch>\n") {
+            let mut pos = 8;
+            while pos + 60 <= bytes.len() {
+                let header = &bytes[pos..pos + 60];
+                let mname = String::from_utf8_lossy(&header[0..16]);
+                let msize: usize = String::from_utf8_lossy(&header[48..58])
+                    .trim()
+                    .parse()
+                    .unwrap_or(0);
+                let data_start = pos + 60;
+                let data_end = data_start + msize;
+                // Special members are "/" (symbol table), "//" (long-name table)
+                // and "/SYM64/" (64-bit symbol table). A long-name reference
+                // for an ordinary member ("/123") is NOT special and is kept.
+                let trimmed = mname.trim();
+                let is_special = trimmed == "/" || trimmed == "//" || trimmed.starts_with("/SYM");
+                if !is_special && data_end <= bytes.len() {
+                    let member = &bytes[data_start..data_end];
+                    if member.len() >= 2 {
+                        return Self::coff_width_from_machine(member);
+                    }
+                }
+                pos = data_end + (msize & 1); // members are padded to even size
+            }
+            return Err(PbError::generic(format!(
+                "COFF archive '{}' contains no readable object member",
+                path.display()
+            )));
+        }
+
+        if bytes.len() < 2 {
+            return Err(PbError::generic(format!(
+                "File '{}' is too small to be a COFF object",
+                path.display()
+            )));
+        }
+        Self::coff_width_from_machine(&bytes)
+    }
+
+    /// Map a member's 2-byte COFF Machine field to its pointer width.
+    fn coff_width_from_machine(member: &[u8]) -> PbResult<u8> {
+        let machine = u16::from_le_bytes([member[0], member[1]]);
+        match machine {
+            0x14c | 0x1c0 => Ok(32),   // IMAGE_FILE_MACHINE_I386 / ARM
+            0x8664 | 0xaa64 => Ok(64), // IMAGE_FILE_MACHINE_AMD64 / ARM64
+            other => Err(PbError::generic(format!(
+                "Unknown or unsupported COFF machine type 0x{:04X}",
+                other
+            ))),
         }
     }
 
@@ -26071,18 +26192,19 @@ impl Compiler {
             }
         } else if target_ir.is_int() {
             if val.ty == IrType::Ptr {
-                // A window/control handle is a pointer at the IR level.  Converting
-                // one to an integer destination has to go through ptrtoint; without
-                // this the fallback below emitted `fptosi ptr ... to i32`, which is
-                // invalid IR and broke every `CONTROL ADD ... TO hVar` store.
-                let as_int = fb.ptrtoint(val);
+                // A window/control handle or an EXTERN data address is a pointer
+                // at the IR level. Convert it directly to the destination width.
+                // The old code always ran ptrtoint to i32 first, so a 64-bit
+                // address was truncated before it could be widened and storing
+                // it in a QUAD lost the upper 32 bits.
+                if target_ir.bit_width() >= 64 {
+                    return fb.ptrtoint64(val);
+                }
+                let as_int = fb.ptrtoint_native(val, self.module.is_32bit());
                 if as_int.ty == *target_ir {
                     return as_int;
                 }
-                if as_int.ty.bit_width() > target_ir.bit_width() {
-                    return fb.trunc(&as_int, target_ir);
-                }
-                return as_int;
+                return fb.trunc(&as_int, target_ir);
             }
             if val.ty.is_int() {
                 if val.ty.bit_width() < target_ir.bit_width() {

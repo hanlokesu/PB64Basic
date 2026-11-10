@@ -488,7 +488,7 @@ impl Parser {
                 Some(ds) => Ok(Some(TopLevel::DeclareStmt(ds))),
                 None => Ok(None),
             },
-            Token::Extern => match self.parse_extern_stmt(line)? {
+            Token::ObjExtern => match self.parse_extern_stmt(line)? {
                 Some(ed) => Ok(Some(TopLevel::ExternDecl(ed))),
                 None => Ok(None),
             },
@@ -2683,12 +2683,44 @@ impl Parser {
         }))
     }
 
-    /// `EXTERN name [ALIAS "sym"] AS type` (FORK EXTENSION; external data symbol).
-    /// A PTR type denotes the embedded data block (its value is the symbol
-    /// address); a scalar type denotes an external variable (its value is
-    /// loaded, e.g. the bin2coff `label_size`).
+    /// `OBJEXTERN ["file.obj"] [32|64] name [ALIAS "sym"] AS type`
+    /// (FORK EXTENSION; external data symbol). A PTR type denotes the embedded
+    /// data block (its value is the symbol address); a scalar type denotes an
+    /// external variable (its value is loaded, e.g. the bin2coff `label_size`).
     fn parse_extern_stmt(&mut self, line: usize) -> PbResult<Option<ExternDecl>> {
-        self.advance(); // consume EXTERN
+        self.advance(); // consume OBJEXTERN
+
+        // Optional embedded object file: OBJEXTERN "file.obj" ... auto-links the
+        // file without a separate #LINK. A leading string literal is the file.
+        let file = match self.peek().clone() {
+            Token::StringLiteral(s) => {
+                self.advance();
+                Some(s)
+            }
+            _ => None,
+        };
+
+        // Optional target-width marker as a bare number 32 or 64 (no brackets).
+        // Only the two pointer widths are accepted; anything else is an error.
+        let arch = match self.peek().clone() {
+            Token::IntegerLiteral(n) => {
+                self.advance();
+                if n == 32 || n == 64 {
+                    Some(n as u8)
+                } else {
+                    return Err(PbError::parser(
+                        format!(
+                            "Only 32 or 64 target marker allowed in OBJEXTERN statement, got {}",
+                            n
+                        ),
+                        self.current_file(),
+                        self.current_line(),
+                    ));
+                }
+            }
+            _ => None,
+        };
+
         let name = self.consume_identifier()?;
 
         // Optional ALIAS "ExternalSymbol" (case-sensitive COFF spelling)
@@ -2705,14 +2737,14 @@ impl Parser {
             None
         };
 
-        // AS type is mandatory for EXTERN.
+        // AS type is mandatory for OBJEXTERN.
         let pb_type = if self.peek() == &Token::As {
             self.advance();
             self.parse_type()?
         } else {
             return Err(PbError::parser(
                 format!(
-                    "'AS' type required in EXTERN statement: EXTERN {} AS type",
+                    "'AS' type required in OBJEXTERN statement: OBJEXTERN {} AS type",
                     name
                 ),
                 self.current_file(),
@@ -2727,6 +2759,8 @@ impl Parser {
             alias,
             pb_type,
             line,
+            file,
+            arch,
         }))
     }
 
@@ -2839,7 +2873,7 @@ impl Parser {
                 matches!(self.peek_at(1), Some(Token::Identifier(_)))
             }
             Token::Declare => true,
-            Token::Extern => true,
+            Token::ObjExtern => true,
             Token::Type => {
                 // TYPE at start of line (new type decl, not inside body).
                 // TYPE SET (statement) is NOT a top-level keyword.

@@ -1,6 +1,6 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 327 (v0.2.118)** — 2026-11-10. All statements through batch 327 are reflected in this matrix.
+> **Last updated from batch 328 (v0.2.119)** — 2026-11-10. All statements through batch 328 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
@@ -18,7 +18,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
 | ✅ **Total available** | **917** | Implemented + Established |
 | ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
-| 🔧 Fork extension | 30 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, EXTERN, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
+| 🔧 Fork extension | 30 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
 
@@ -334,7 +334,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | EXP2 | FUNCTION | LLVM intrinsic | Implemented |
 | EXPM1 | FORK EXTENSION | C runtime (MSVCRT) | Implemented |
 | EXPORT | STATEMENT | PB/Win only | Implemented |
-| EXTERN | FORK EXTENSION | external COFF symbol | Implemented |
+| OBJEXTERN | FORK EXTENSION | external COFF object symbol | Implemented |
 | EXTRACT | FUNCTION | codegen builtin | Implemented |
 | EXTRACT$ | FUNCTION | Win32 | Implemented |
 | FASTPROC | STATEMENT | PB/Win only | Implemented |

@@ -148,8 +148,8 @@ pub enum Token {
     // Declare keyword
     Declare,
 
-    // Extern keyword (FORK EXTENSION; external data symbol from a linked obj)
-    Extern,
+    // ObjExtern keyword (FORK EXTENSION; external data symbol from a linked obj)
+    ObjExtern,
 
     // DLL export/import keywords
     Export,
@@ -200,7 +200,6 @@ impl Token {
             "EXIT" => Some(Token::Exit),
             "EXPORT" => Some(Token::Export),
             "COMMON" => Some(Token::Common),
-            "EXTERN" => Some(Token::Extern),
             "EXT" => Some(Token::Ext),
             "FOR" => Some(Token::For),
             "FREEFILE" => Some(Token::FreeFile),
@@ -224,6 +223,7 @@ impl Token {
             "MOD" => Some(Token::Mod),
             "NEXT" => Some(Token::Next),
             "NOT" => Some(Token::Not),
+            "OBJEXTERN" => Some(Token::ObjExtern),
             "ON" => Some(Token::On),
             "OPEN" => Some(Token::Open),
             "OPTIONAL" => Some(Token::Optional),

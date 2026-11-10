@@ -91,6 +91,12 @@ pub struct ExternDecl {
     pub alias: Option<String>, // explicit external symbol spelling (case-sensitive)
     pub pb_type: PbType,       // declared type (scalar -> load; PTR -> data address)
     pub line: usize,
+    /// Optional object file that provides the symbol (`EXTERN "file.obj" ...`):
+    /// auto-linked without a separate #LINK. None = legacy #LINK-based form.
+    pub file: Option<String>,
+    /// Optional target-width marker [32] / [64]; a declaration whose marker
+    /// does not match the current compilation target is skipped automatically.
+    pub arch: Option<u8>,
 }
 
 #[derive(Debug, Clone)]

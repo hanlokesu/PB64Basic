@@ -218,6 +218,21 @@ impl Preprocessor {
         }
     }
 
+    /// Configure the compilation target before preprocessing so #IF guards can
+    /// select target-specific code (e.g. linking a 32-bit vs 64-bit COFF object
+    /// produced by bin2coff).  Defines %TARGET_64 / %TARGET_32 as PB truth
+    /// (-1) on the matching target and 0 on the other.  These live in the
+    /// cross-pass `constants` table, so they are available in both
+    /// preprocessing passes and are not cleared by reset_defined_this_pass.
+    pub fn set_target(&mut self, target: &str) {
+        let t = target.to_ascii_lowercase();
+        let is_64 = t.contains("x86_64") || t.contains("aarch64");
+        self.constants
+            .insert("%TARGET_64".to_string(), if is_64 { -1 } else { 0 });
+        self.constants
+            .insert("%TARGET_32".to_string(), if is_64 { 0 } else { -1 });
+    }
+
     /// Run the full two-pass preprocess (batch 306).  Pass 1 walks the source
     /// and include graph collecting every MACRO definition (with the correct
     /// #IF/constant state); pass 2 re-runs the same walk with the complete

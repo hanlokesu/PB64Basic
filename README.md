@@ -214,6 +214,124 @@ PB64Basic build program.bas --exe \
 
 ---
 
+## Embedding Binary Data with OBJEXTERN
+
+This section explains the `OBJEXTERN` keyword in depth because it is easy to
+misunderstand what an object file is doing here. Read it end to end before your
+first use.
+
+### What it is for
+
+`OBJEXTERN` binds a PB64Basic variable directly to a symbol that lives inside a
+COFF object file (`.obj`). The most common use is **embedding arbitrary binary
+resources** - text, images, lookup tables, compressed blobs, certificate data -
+into the final executable, so the program reads those bytes at run time without
+shipping or locating separate files.
+
+### Why a raw file cannot be linked directly
+
+The linker only understands the COFF format (`.obj`, `.lib`/`.SLL` archives and
+`.dll`). A raw `.bin`, `.dat` or `.png` is just a stream of bytes with no COFF
+structure, so feeding one to the linker fails with `unknown file type`. That is a
+linker requirement, not an `OBJEXTERN` restriction.
+
+A helper tool such as [bin2coff](https://github.com/arklumpus/bin2coff) converts
+any binary file into a COFF object that exposes two public symbols:
+
+- `label` - the data bytes themselves (from C: `extern uint8_t label[]`).
+- `label_size` - a 4-byte unsigned integer holding the byte count (from C:
+  `extern uint32_t label_size`).
+
+### Syntax
+
+```
+OBJEXTERN ["file.obj"] [32|64] name [ALIAS "sym"] AS type
+```
+
+The square brackets above only mark optional parts in this notation - you do not
+type them. The width, when present, is a bare number, not a bracketed token.
+
+The three practical forms are:
+
+```powerbasic
+' 1. Pure symbol declaration; the object is supplied separately with #LINK.
+OBJEXTERN gdata AS BYTE PTR
+
+' 2. The object is named in the declaration; it is auto-linked (no #LINK).
+OBJEXTERN "payload.obj" gdata AS BYTE PTR
+
+' 3. Object + bare target width + explicit symbol name.
+OBJEXTERN "payload_x64.obj" 64 gdata ALIAS "demo_block" AS BYTE PTR
+```
+
+### How the type is interpreted
+
+- A **pointer type** (for example `BYTE PTR`) binds the data block. The variable
+  expression evaluates to the address of the embedded bytes rather than loading
+  a value, so it is the form you pass to `PEEK$` to read the data.
+- A **scalar type** (for example `DWORD`) binds an external variable and loads
+  its value normally. This is how the `label_size` length symbol is read.
+
+### Target width, validation and auto-skip
+
+- A bare `64` marks a 64-bit object. It is linked when building a 64-bit target
+  and is **automatically skipped** - not linked, no error, no symbol registered -
+  when building a 32-bit target.
+- A bare `32` is the symmetric case: linked on the 32-bit target, skipped on the
+  64-bit target.
+- With **no width marker**, the compiler reads the COFF machine header itself.
+  It links the object when the object width matches the current target and
+  reports a clear error on a mismatch.
+- The compiler always reads the COFF header to verify a marked object. A wrong
+  marker (for example `64` on an object that is actually 32-bit) is an immediate
+  compile-time error rather than a confusing link failure.
+- When a file is named, it is added to the link set automatically and
+  de-duplicated. The same object referenced by several `OBJEXTERN` lines (the
+  data block and its size) is linked only once, so a separate `#LINK` is not
+  needed.
+- The file-less form (form 1) is still supported for workflows that prefer to
+  pull objects in with `#LINK`.
+
+### End-to-end workflow
+
+1. Convert the binary to a COFF object for each target you ship:
+
+```bash
+bin2coff payload.txt payload_x64.obj pblock 64bit
+bin2coff payload.txt payload_x86.obj pblock Win32
+```
+
+2. Declare the data block and its length. Giving both widths lets the same source
+   compile for either target; the compiler selects the matching object and
+   skips the other declarations:
+
+```powerbasic
+#COMPILE EXE
+
+OBJEXTERN "payload_x64.obj" 64 gdata ALIAS "pblock" AS BYTE PTR
+OBJEXTERN "payload_x64.obj" 64 gsize ALIAS "pblock_size" AS DWORD
+OBJEXTERN "payload_x86.obj" 32 gdata ALIAS "pblock" AS BYTE PTR
+OBJEXTERN "payload_x86.obj" 32 gsize ALIAS "pblock_size" AS DWORD
+
+FUNCTION PBMAIN() AS LONG
+    LOCAL n AS DWORD
+    LOCAL txt AS STRING
+    n = gsize                       ' scalar: loads the embedded length
+    txt = PEEK$(gdata, gsize)       ' pointer: reads the embedded bytes
+    ' ...use n and txt...
+END FUNCTION
+```
+
+### Symbol naming and the leading underscore
+
+On the Win32 (i686) target clang adds a leading underscore to global symbols
+automatically; on x64 it does not. Therefore always write an `ALIAS` **without**
+a leading underscore, and the same declaration resolves correctly on both
+targets. Writing the underscore yourself produces a double-underscore symbol on
+Win32 that the linker cannot find.
+
+---
+
 ## Verified
 
 All added built-ins are tested by compiling and **running** the generated
@@ -286,8 +404,9 @@ exit code 0:
 > - **0** DDT/GUI-class keywords deferred (Tier 3)
 > - **0** documented keywords not yet implemented
 >
-> Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, EXTERN, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 327 (v0.2.118). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
+> Updated through batch 328 (v0.2.119). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 328 (v0.2.119) - The FORK EXTENSION keyword `EXTERN` is renamed `OBJEXTERN` and gains an embedded object syntax: `OBJEXTERN ["file.obj"] [32|64] name [ALIAS "sym"] AS type`. Naming a file auto-links and de-duplicates it without a separate `#LINK`; a bare `32`/`64` marker is validated against the COFF machine header and auto-skips non-matching targets, while an unmarked object is verified against the current target. The old `EXTERN` keyword is removed with no alias. Also fixes a pointer-to-integer conversion that hard-coded `i32` and truncated 64-bit addresses, and the 32/64-bit object machine-type conflict through target-aware preprocessor macros. Coverage stays at 947 rows with 30 fork extensions. Self-check: `examples/batch327_test.bas`.
 > batch 327 (v0.2.118) - New FORK EXTENSION keyword EXTERN declares external COFF data symbols: a pointer type returns the embedded data address and a scalar type loads the external value (label_size). IR names carry no underscore (ALIAS is used verbatim; Win32 clang adds the underscore), the 32-bit link passes /SAFESEH:NO and PEEK$ accepts a pointer-typed address. bin2coff plus #LINK plus EXTERN plus PEEK$ embeds and reads binary data. Coverage now 947 rows with 30 fork extensions. Self-check: `examples/batch327_test.bas`.
 > batch 326 (v0.2.117) - U/V/W keyword family CHW conformance: UBOUND/LBOUND boundary values, binary-safe UCASE/LCASE, LOCK/UNLOCK TO ranges, USING, UNION and UDP fixes; VERIFY, the VAL function and VAL statement and 64-bit VARPTR; WINMAIN wide-pointer dereference and LEN, WORD, WRITE#, WINDOW GET/SET, WHILE/WEND and WRAP/UNWRAP. The l3 test reserved-word variable was renamed and the 32-bit runtime objects rebuilt. No keyword coverage change (946 rows, 915 implemented). Self-check: `examples/batch326_test.bas`.
 > batch 325 (v0.2.116) - THREADED arrays are now supported: declared with empty parentheses and dimensioned with DIM/REDIM (including PRESERVE), each thread gets its own zero-initialized buffer with cross-procedure visibility and an independent main-thread copy. THREADSAFE procedures take an automatic SRW-lock semaphore through the unified return layer; THREAD CREATE parses StackSize/SUSPEND and CLOSE/SUSPEND/RESUME require a TO clause (the no-TO form was restored after a parser regression). TCP LINE INPUT uses a dynamically growing buffer instead of the fixed 4096-byte limit, and TCP OPEN resolves string ports via getservbyname. The batch205 loopback test was made headless with readiness flags. No keyword coverage change (946 rows, 915 implemented). Self-check: `examples/batch325_test.bas`.
@@ -843,6 +962,16 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.119 (2026-11-10) - OBJEXTERN: renamed keyword with embedded object linking
+
+- Compiler/runtime release. No new keyword is added (the FORK EXTENSION count stays at 30 and coverage stays at 947 rows); the previous `EXTERN` keyword is renamed `OBJEXTERN` and the old name is removed with no compatibility alias.
+- **New embedded-object syntax.** `OBJEXTERN ["file.obj"] [32|64] name [ALIAS "sym"] AS type`. When a file is named, the compiler adds it to the link set automatically and de-duplicates it, so a separate `#LINK` is no longer required; the same object referenced by several declarations is linked only once. The width, when given, is a bare number and is never written inside brackets.
+- **Target validation and auto-skip.** A bare `64`/`32` marker is checked against the object's COFF machine header and the declaration is automatically skipped on the non-matching target; an unmarked object is verified against the current target and a mismatch raises a clear compile error. A marker that does not match the object's actual machine type is an immediate error.
+- **Pointer-to-integer fix.** Converting a pointer to a 64-bit integer previously hard-coded an `i32` `ptrtoint`, which truncated the high 32 bits of the address; it now uses the target-width integer type.
+- **Target-aware object selection.** The preprocessor defines `%TARGET_64`/`%TARGET_32` from the active triple so conditional `#LINK` is possible, and the self-check now uses the embedded width markers instead.
+- **Symbol naming.** An `ALIAS` is always written without a leading underscore: clang adds the underscore automatically on Win32 and not on x64, so writing it yourself produces a double-underscore symbol that cannot be found.
+- See the dedicated "Embedding Binary Data with OBJEXTERN" section above for the full end-to-end workflow. Verified by the five-gate regression (fmt, clippy, headless, compile-all, dual-target link smoke) and the dual-target self-check `examples/batch327_test.bas` (FAILURES: 0).
+
 ### v0.2.118 (2026-11-10) - New EXTERN keyword: access external COFF data symbols
 
 - Compiler/runtime release. Adds the new FORK EXTENSION keyword `EXTERN`; keyword coverage moves to 947 rows with 30 fork extensions.

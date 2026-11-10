@@ -1,15 +1,18 @@
 #COMPILE EXE
 
-' batch327 self-check: EXTERN external data symbol (FORK EXTENSION).
-' Links the bin2coff COFF object batch327_data.obj and reads the embedded
-' 37-byte text block plus its 4-byte size symbol through EXTERN + PEEK$.
-' Headless only: every assertion is counted, results go through ConPrint,
-' no WAITKEY / MSGBOX / dialog.
-' FORK-ONLY: PBWin 10 has no EXTERN keyword and rejects #LINK .obj (630).
+' batch327 self-check: OBJEXTERN external data symbol (FORK EXTENSION).
+' The object path and target width are embedded in the OBJEXTERN statements,
+' so the compiler auto-selects the matching object (x64/x86), auto-links it
+' and auto-skips the non-matching declarations - no separate #LINK is needed.
+' The 37-byte text block and its 4-byte size symbol are read through
+' OBJEXTERN + PEEK$. Headless only: every assertion is counted, results go
+' through ConPrint, no WAITKEY / MSGBOX / dialog.
+' FORK-ONLY: PBWin 10 has no OBJEXTERN keyword and rejects #LINK .obj (630).
 
-#LINK "batch327_data.obj"
-EXTERN b327data ALIAS "b327data" AS BYTE PTR
-EXTERN b327data_size ALIAS "b327data_size" AS DWORD
+OBJEXTERN "batch327_data.obj" 64 b327data ALIAS "b327data" AS BYTE PTR
+OBJEXTERN "batch327_data.obj" 64 b327data_size ALIAS "b327data_size" AS DWORD
+OBJEXTERN "batch327_data_x86.obj" 32 b327data ALIAS "b327data" AS BYTE PTR
+OBJEXTERN "batch327_data_x86.obj" 32 b327data_size ALIAS "b327data_size" AS DWORD
 
 DECLARE FUNCTION GetStdHandle LIB "KERNEL32.DLL" ALIAS "GetStdHandle" (BYVAL nStdHandle AS DWORD) AS LONG
 DECLARE FUNCTION AttachConsole LIB "KERNEL32.DLL" ALIAS "AttachConsole" (BYVAL dwProcessId AS DWORD) AS LONG
