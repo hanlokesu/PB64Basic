@@ -22884,13 +22884,24 @@ impl Compiler {
                         continue;
                     }
                     let val = self.compile_expr(fb, inner_arg)?;
-                    // BOOLEAN (i1) values must be widened to a real 4-byte
-                    // value before being passed.  A bare i1 leaves 3 garbage
-                    // bytes in the register/stack slot and the callee reads
-                    // them as part of its LONG (batch 38 "choose out of
-                    // range" flapped between PASS/FAIL on stack garbage).
+                    // Parameter real slot width. ASC (STRING and WSTRING) and
+                    // other builtins return i64 even when the callee parameter is
+                    // a 4-byte LONG/DWORD. On i686 cdecl/stdcall an i64 occupies
+                    // two 32-bit stack slots, shifting every later argument so
+                    // the callee reads a bad pointer (0xC0000005, addr=2).
+                    // Truncate a too-wide i64 to the parameter integer width.
+                    let target_ir = Self::ir_type_for(&param.pb_type);
                     let val = if val.ty == IrType::I1 {
                         self.to_i32(fb, &val)
+                    } else if val.ty == IrType::I64
+                        && matches!(target_ir, IrType::I8 | IrType::I16 | IrType::I32)
+                    {
+                        let i32v = self.to_i32(fb, &val);
+                        match target_ir {
+                            IrType::I8 => fb.trunc(&i32v, &IrType::I8),
+                            IrType::I16 => fb.trunc(&i32v, &IrType::I16),
+                            _ => i32v,
+                        }
                     } else {
                         val
                     };
