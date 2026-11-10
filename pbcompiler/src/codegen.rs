@@ -29774,9 +29774,13 @@ impl Compiler {
         let a_i32 = self.to_i32(fb, &a);
         let b = self.compile_expr(fb, &args[1])?;
         let b_i32 = self.to_i32(fb, &b);
-        // count = b - a + 1; malloc; loop a..=b storing bytes.
-        let count = fb.sub(&b_i32, &a_i32);
-        let count = fb.add(&count, &fb.const_i32(1));
+        // count = b - a + 1; clamp to >= 0 so a > b yields an empty string
+        // instead of malloc(negative) + a negative-offset NUL.
+        let raw_count = fb.sub(&b_i32, &a_i32);
+        let raw_count = fb.add(&raw_count, &fb.const_i32(1));
+        let zero_i32 = fb.const_i32(0);
+        let neg_cmp = fb.icmp("slt", &raw_count, &zero_i32);
+        let count = fb.select(&neg_cmp, &zero_i32, &raw_count);
         let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&count));
         let loop_l = fb.next_label("chr.loop");
         let body_l = fb.next_label("chr.body");
