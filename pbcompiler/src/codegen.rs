@@ -30630,6 +30630,10 @@ impl Compiler {
     fn builtin_string_wide(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let n = self.compile_expr(fb, &args[0])?;
         let n_i32 = self.to_i32(fb, &n);
+        // CHW: a negative count produces an empty string.  Clamp n to >= 0.
+        let zero_i32 = fb.const_i32(0);
+        let neg_cmp = fb.icmp("slt", &n_i32, &zero_i32);
+        let actual_n = fb.select(&neg_cmp, &zero_i32, &n_i32);
         let char_val = self.compile_expr(fb, &args[1])?;
         // 16-bit code unit: numeric argument masked to 0..65535; a string
         // argument (Character$$) contributes its first UTF-16 code unit.
@@ -30641,7 +30645,7 @@ impl Compiler {
             fb.trunc(&masked, &IrType::I16)
         };
         let two = fb.const_i32(2);
-        let buf_bytes = fb.mul(&n_i32, &two);
+        let buf_bytes = fb.mul(&actual_n, &two);
         let buf = fb.call(&IrType::Ptr, "malloc", std::slice::from_ref(&buf_bytes));
 
         let cond_label = fb.next_label("strw.cond");
@@ -30653,7 +30657,7 @@ impl Compiler {
 
         fb.label(&cond_label);
         let i = fb.load(&IrType::I32, &i_ptr);
-        let cmp = fb.icmp("slt", &i, &n_i32);
+        let cmp = fb.icmp("slt", &i, &actual_n);
         fb.condbr(&cmp, &body_label, &exit_label);
 
         fb.label(&body_label);
