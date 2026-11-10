@@ -392,7 +392,16 @@ fn compile_file(
     );
 
     if parser.error_count > 0 {
-        return Err(pb::error::PbError::parser(format!("Build failed with {} parse error(s). Search for unexpected tokens in your .bas file.", parser.error_count), None, 0));
+        // Append the first error message so pbwin_code() can resolve the precise
+        // PBWin expected-code (411..459) instead of always falling back to 477.
+        let suffix = parser
+            .first_error_message
+            .map(|m| format!(" First error: {}", m))
+            .unwrap_or_default();
+        return Err(pb::error::PbError::parser(
+            format!("Build failed with {} parse error(s). Search for unexpected tokens in your .bas file.{}",
+                    parser.error_count, suffix),
+            None, 0));
     }
 
     // #DIM ALL (official meta-directive) == OPTION EXPLICIT. The parser only

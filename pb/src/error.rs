@@ -204,9 +204,89 @@ impl PbError {
         if m.contains("string operand") {
             return 421;
         }
-        // Token expectations -> generic syntax error 477 (a more specific 4xx
-        // "expected" code is left as future work; 477 is what PBWin returns for
-        // a bare syntax failure such as "PRINT 1 +").
+        // Token expectations -> precise PBWin 411..459 "X expected" codes.
+        // These messages are produced by Parser::expect(); the generic 477 fallback
+        // below still catches any other "expected" phrasing.
+        if m.contains("\",\" expected") {
+            return 411; // "," expected
+        }
+        if m.contains("\";\" expected") {
+            return 412; // ";" expected
+        }
+        if m.contains("\"(\" expected") {
+            return 413; // "(" expected
+        }
+        if m.contains("\")\" expected") {
+            return 414; // ")" expected
+        }
+        if m.contains("\"=\" expected") {
+            return 415; // "=" expected
+        }
+        if m.contains("\"-\" expected") {
+            return 416; // "-" expected
+        }
+        if m.contains("\"*\" expected") {
+            return 417; // "*" expected
+        }
+        if m.contains("as expected") {
+            return 437; // AS expected
+        }
+        if m.contains("then expected") {
+            return 442; // THEN expected
+        }
+        if m.contains("to expected") {
+            return 443; // TO expected
+        }
+        if m.contains("gosub expected") {
+            return 439; // GOSUB expected
+        }
+        if m.contains("goto expected") {
+            return 440; // GOTO expected
+        }
+        if m.contains("if expected") {
+            return 447; // IF expected
+        }
+        if m.contains("for expected") {
+            return 451; // FOR expected
+        }
+        if m.contains("next expected") {
+            return 459; // NEXT expected
+        }
+        if m.contains("sub expected") {
+            return 452; // SUB expected
+        }
+        if m.contains("function expected") {
+            return 446; // FUNCTION expected
+        }
+        if m.contains("select expected") {
+            return 449; // SELECT expected
+        }
+        if m.contains("case expected") {
+            return 450; // CASE expected
+        }
+        if m.contains("do expected") {
+            return 448; // DO loop expected
+        }
+        if m.contains("loop expected") || m.contains("wend expected") {
+            return 456; // LOOP/WEND expected
+        }
+        if m.contains("end if expected") {
+            return 455; // END IF expected
+        }
+        if m.contains("end select expected") {
+            return 457; // END SELECT expected
+        }
+        if m.contains("end sub expected") {
+            return 458; // END SUB expected
+        }
+        if m.contains("end function expected") {
+            return 454; // END FUNCTION expected
+        }
+        if m.contains("equate") || (m.contains("%") && m.contains("expected")) {
+            return 453; // Equate (%name) expected
+        }
+        // Token expectations -> generic syntax error 477 for any remaining
+        // "expected"/"unexpected token" phrasing.
         if m.contains("expected") || m.contains("unexpected token") {
             return 477;
         }

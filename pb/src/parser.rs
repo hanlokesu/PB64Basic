@@ -64,6 +64,10 @@ pub struct Parser {
     pos: usize,
     def_funcs: HashMap<String, (Vec<String>, Expr)>,
     pub error_count: usize,
+    /// First parse-error message (for exit-code mapping).  The summary error
+    /// returned to the CLI appends this so pbwin_code() can resolve the
+    /// precise 411..459 expected-code instead of always falling back to 477.
+    pub first_error_message: Option<String>,
     /// Set when the source contains `OPTION EXPLICIT` (same effect as
     /// `#DIM ALL`): every variable must be declared before it is used.
     pub option_explicit: bool,
@@ -104,6 +108,7 @@ impl Parser {
             pos: 0,
             def_funcs: HashMap::new(),
             error_count: 0,
+            first_error_message: None,
             option_explicit: false,
             interface_names: std::collections::HashSet::new(),
             current_function_name: None,
@@ -232,8 +237,41 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
+            // PBWin-style "X expected" messages so error.rs can map them to the
+            // precise 411..459 expected-code family instead of the generic 477.
+            let msg = match expected {
+                Token::Comma => "\",\" expected".to_string(),
+                Token::Semicolon => "\";\" expected".to_string(),
+                Token::LParen => "\"(\" expected".to_string(),
+                Token::RParen => "\")\" expected".to_string(),
+                Token::Eq => "\"=\" expected".to_string(),
+                Token::Minus => "\"-\" expected".to_string(),
+                Token::Star => "\"*\" expected".to_string(),
+                Token::LBracket => "\"[\" expected".to_string(),
+                Token::RBracket => "\"]\" expected".to_string(),
+                Token::Colon => "\":\" expected".to_string(),
+                Token::Dot => "\".\" expected".to_string(),
+                Token::As => "AS expected".to_string(),
+                Token::Then => "THEN expected".to_string(),
+                Token::To => "TO expected".to_string(),
+                Token::GoSub => "GOSUB expected".to_string(),
+                Token::GoTo => "GOTO expected".to_string(),
+                Token::If => "IF expected".to_string(),
+                Token::For => "FOR expected".to_string(),
+                Token::Next => "NEXT expected".to_string(),
+                Token::Sub => "SUB expected".to_string(),
+                Token::Function => "FUNCTION expected".to_string(),
+                Token::Select => "SELECT expected".to_string(),
+                Token::Case => "CASE expected".to_string(),
+                Token::Do => "DO expected".to_string(),
+                Token::Loop => "LOOP expected".to_string(),
+                Token::Wend => "WEND expected".to_string(),
+                Token::End => "END expected".to_string(),
+                Token::PercentConstant(_) => "Equate (%name) expected".to_string(),
+                _ => format!("Expected {:?}, got {:?}", expected, self.peek()),
+            };
             Err(PbError::parser(
-                format!("Expected {:?}, got {:?}", expected, self.peek()),
+                msg,
                 self.current_file(),
                 self.current_line(),
             ))
@@ -372,6 +410,9 @@ impl Parser {
                 Ok(None) => {} // consumed but no item (e.g., comment)
                 Err(e) => {
                     eprintln!("Error: Parse error: {}", e);
+                    if self.first_error_message.is_none() {
+                        self.first_error_message = Some(e.message.clone());
+                    }
                     self.error_count += 1;
                     self.consume_to_eol();
                 }
@@ -2854,6 +2895,9 @@ impl Parser {
                 Ok(stmt) => stmts.push(stmt),
                 Err(e) => {
                     eprintln!("Error: Parse error: {}", e);
+                    if self.first_error_message.is_none() {
+                        self.first_error_message = Some(e.message.clone());
+                    }
                     self.error_count += 1;
                     self.consume_to_eol();
                 }
