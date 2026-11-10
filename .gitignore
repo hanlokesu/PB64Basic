@@ -51,3 +51,9 @@ _bak*/
 
 # JK-IDE editor state files (caret position / encoding), never source
 *.bmk
+
+# Per-batch probe stdout dumps (never source; user keeps * - Copy.bas backups)
+/out*.txt
+/b284semi.txt
+/batch258d_dump.txt
+/mout.txt
