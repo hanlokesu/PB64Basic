@@ -21,15 +21,24 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 || args[1] != "build" {
-        eprintln!(
-            "Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--session-struct]"
-        );
+        eprintln!("Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--obj-only]");
+        eprintln!("       [--session-struct]");
         eprintln!("       [--emit-llvm] [--parse-only] [--runtime-lib path] [--lib-dir path]");
         eprintln!("       [--debug] [--target triple] [--console]");
         process::exit(2);
     }
 
     let file_path = &args[2];
+    // Validate every token up front and collect any bare positional ".obj"
+    // (runtime library). Fails loudly on unknown arguments instead of silently
+    // ignoring them (msg1404).
+    let positional_obj = match scan_positional_runtime(&args) {
+        Ok(obj) => obj,
+        Err(msg) => {
+            eprintln!("[PB64Basic] Error: {}", msg);
+            process::exit(2);
+        }
+    };
     let dll_mode = args.iter().any(|a| a == "--dll");
     // Source-level `#COMPILE DLL` (official PBWin form) implies DLL mode even
     // without --dll on the command line (batch 276: official DLL samples use
@@ -71,11 +80,23 @@ fn main() {
         false
     };
     let dll_mode = dll_mode || (src_has_compile_dll && !sll_mode);
-    // A source-level `#COMPILE DLL` (or --dll) wins over --exe: a DLL source
-    // must never also run the EXE link (undefined `main` from libcmt.exe,
-    // batch 276b). run_examples/release always pass --exe, so without this
-    // guard every DLL example would fail its compile gate.
-    let exe_mode = args.iter().any(|a| a == "--exe") && !dll_mode && !sll_mode;
+    // A source-level `#COMPILE DLL` (or --dll) wins over the EXE link: a DLL
+    // source must never also run the EXE link (undefined `main` from libcmt.exe,
+    // batch 276b).
+    // Building a .bas links a runnable EXE by default, matching PBWin's
+    // "build produces a runnable program" behavior (an explicit --exe is
+    // accepted and equivalent). The link is skipped for DLL/SLL targets and
+    // for --obj-only / --parse-only / --emit-llvm, which intentionally stop at
+    // an object/IR. Previously the EXE link required --exe and a bare runtime
+    // .obj was silently ignored, so a build reported success with no EXE
+    // (msg1404).
+    let obj_only = args.iter().any(|a| a == "--obj-only");
+    let exe_mode = !dll_mode
+        && !sll_mode
+        && !obj_only
+        && !args
+            .iter()
+            .any(|a| a == "--parse-only" || a == "--emit-llvm");
     let session_mode = args.iter().any(|a| a == "--session-struct");
     let parse_only = args.iter().any(|a| a == "--parse-only");
     let emit_llvm = args.iter().any(|a| a == "--emit-llvm");
@@ -89,7 +110,20 @@ fn main() {
         p.with_extension("obj").to_string_lossy().into_owned()
     });
 
-    let runtime_lib = get_flag_value(&args, "--runtime-lib");
+    // Runtime library: an explicit --runtime-lib wins; otherwise a bare
+    // positional ".obj" collected above is used. Two different runtime objects
+    // is a hard error rather than a silent choice.
+    let runtime_lib = match (get_flag_value(&args, "--runtime-lib"), positional_obj) {
+        (Some(flag), Some(bare)) if flag != bare => {
+            eprintln!(
+                "[PB64Basic] Error: conflicting runtime libraries: --runtime-lib '{}' and bare '{}'.",
+                flag, bare
+            );
+            process::exit(2);
+        }
+        (Some(flag), _) => Some(flag),
+        (None, bare) => bare,
+    };
     let target =
         get_flag_value(&args, "--target").unwrap_or_else(|| codegen::DEFAULT_TARGET.to_string());
     let lib_dir = get_flag_value(&args, "--lib-dir").or_else(|| {
@@ -152,6 +186,62 @@ fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|pos| args.get(pos + 1).cloned())
+}
+
+// Every CLI flag the parser understands. Value flags consume the token that
+// follows them; boolean flags do not. Any positional token outside these sets
+// is either a bare ".obj" runtime library or an error - it must never be
+// silently swallowed (the bug in msg1404: a bare "pb_runtime_x86.obj" was
+// ignored and the build reported success without producing an EXE).
+const BOOL_FLAGS: &[&str] = &[
+    "--dll",
+    "--exe",
+    "--session-struct",
+    "--parse-only",
+    "--emit-llvm",
+    "--debug",
+    "--console",
+    "--obj-only",
+];
+const VALUE_FLAGS: &[&str] = &[
+    "-o",
+    "--runtime-lib",
+    "--lib-dir",
+    "--target",
+    "--split-threshold",
+];
+
+/// Scan the arguments after the source file. A bare token ending in ".obj" is
+/// treated as the runtime library (the natural positional form users type);
+/// any other unrecognized token is a hard error rather than a silent no-op.
+fn scan_positional_runtime(args: &[String]) -> Result<Option<String>, String> {
+    let mut bare_obj: Option<String> = None;
+    let mut i = 3; // args[0]=exe, args[1]=build, args[2]=source
+    while i < args.len() {
+        let tok = &args[i];
+        if BOOL_FLAGS.contains(&tok.as_str()) {
+            i += 1;
+        } else if VALUE_FLAGS.contains(&tok.as_str()) {
+            // The next token is this flag's value, not a positional argument.
+            i += 2;
+        } else if tok.to_ascii_lowercase().ends_with(".obj") {
+            if bare_obj.is_some() {
+                return Err(format!(
+                    "More than one positional runtime object given: '{}' and '{}'. Pass a single runtime .obj, or use --runtime-lib.",
+                    bare_obj.as_deref().unwrap_or(""),
+                    tok
+                ));
+            }
+            bare_obj = Some(tok.clone());
+            i += 1;
+        } else {
+            return Err(format!(
+                "Unrecognized command-line argument: '{}'. Check the flag spelling (runtime objects use --runtime-lib, or a bare .obj).",
+                tok
+            ));
+        }
+    }
+    Ok(bare_obj)
 }
 
 /// One parsed `#COMPILE {EXE|DLL|SLL} [=] ["name"]` directive.

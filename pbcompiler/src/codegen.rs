@@ -1719,9 +1719,9 @@ impl Compiler {
             PbType::Integer | PbType::Word => IrType::I16,
             PbType::Byte => IrType::I8,
             PbType::Quad => IrType::I64,
-            PbType::Double | PbType::Ext | PbType::Cur => IrType::Double,
+            PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX => IrType::Double,
             PbType::Single => IrType::Float,
-            PbType::String | PbType::FixedString(_) => IrType::Ptr,
+            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_) => IrType::Ptr,
             PbType::WString => IrType::Ptr, // UTF-16 BSTR pointer (batch280)
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
@@ -1760,8 +1760,10 @@ impl Compiler {
             PbType::Byte => 1,
             PbType::Integer | PbType::Word => 2,
             PbType::Long | PbType::Dword | PbType::Single => 4,
-            PbType::Double | PbType::Ext | PbType::Cur | PbType::Quad => 8,
+            PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX | PbType::Quad => 8,
             PbType::FixedString(n) => *n as i32,
+            // CHW Fixed-length_strings: N wide characters = 2N bytes.
+            PbType::FixedWString(n) => (*n as i32) * 2,
             PbType::String | PbType::WString | PbType::Pointer(_) | PbType::Interface(_) => ptr_w,
             PbType::Field => 16,
             // Variant/UDT: caller resolves; default to pointer width.
@@ -1856,7 +1858,10 @@ impl Compiler {
     }
 
     fn is_string_pb(pb_type: &PbType) -> bool {
-        matches!(pb_type, PbType::String | PbType::FixedString(_))
+        matches!(
+            pb_type,
+            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_)
+        )
     }
 
     fn is_string_name(name: &str) -> bool {
@@ -1866,7 +1871,7 @@ impl Compiler {
     fn is_float_pb(pb_type: &PbType) -> bool {
         matches!(
             pb_type,
-            PbType::Double | PbType::Single | PbType::Ext | PbType::Cur
+            PbType::Double | PbType::Single | PbType::Ext | PbType::Cur | PbType::CurX
         )
     }
 
@@ -6593,7 +6598,11 @@ impl Compiler {
         self.module
             .declare_function("pb_peek16", &IrType::I32, &[IrType::Ptr], false);
         self.module
+            .declare_function("pb_peek16s", &IrType::I32, &[IrType::Ptr], false);
+        self.module
             .declare_function("pb_peek32", &IrType::I32, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_peek32u", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_peek64", &IrType::I64, &[IrType::Ptr], false);
         self.module
@@ -14308,6 +14317,9 @@ impl Compiler {
                                 | "QUAD"
                                 | "SINGLE"
                                 | "DOUBLE"
+                                | "EXT"
+                                | "CUR"
+                                | "CUX"
                         ) =>
                     {
                         (normalize_name(n), &call.args[1..])
@@ -14323,9 +14335,10 @@ impl Compiler {
                     };
                     let base_addr = fb.inttoptr(&av64);
                     let size = match dt.as_str() {
-                        "BYTE" | "INTEGER" | "WORD" => 1,
+                        "BYTE" => 1,
+                        "INTEGER" | "WORD" => 2,
                         "DWORD" | "LONG" | "SINGLE" => 4,
-                        "QUAD" | "DOUBLE" => 8,
+                        "QUAD" | "DOUBLE" | "EXT" | "CUR" | "CUX" => 8,
                         _ => 1,
                     };
                     for (i, val_expr) in rest.iter().skip(1).enumerate() {
@@ -14357,7 +14370,7 @@ impl Compiler {
                                 let f = fb.sitofp(&v, &IrType::Float);
                                 fb.call_void("pb_pokef", &[addr, f])
                             }
-                            "DOUBLE" => {
+                            "DOUBLE" | "EXT" | "CUR" | "CUX" => {
                                 let dv = self.to_f64(fb, &v);
                                 fb.call_void("pb_poked", &[addr, dv])
                             }
@@ -14514,7 +14527,11 @@ impl Compiler {
                         PbType::Word | PbType::Integer => 2,
                         PbType::Long | PbType::Dword => 4,
                         PbType::Single => 4,
-                        PbType::Quad | PbType::Double | PbType::Ext | PbType::Cur => 8,
+                        PbType::Quad
+                        | PbType::Double
+                        | PbType::Ext
+                        | PbType::Cur
+                        | PbType::CurX => 8,
                         PbType::FixedString(n) => *n as i64,
                         PbType::String => -1, // dynamic STRING: 2-byte LE length prefix + bytes
                         _ => 0,               // Variant / UDT: raw size not fixed
@@ -24017,7 +24034,7 @@ impl Compiler {
                     let n64 = fb.const_i64(n as i64);
                     fb.call_void("pb_input_file_fixed", &[filenum_i32.clone(), ptr, n64]);
                 }
-                PbType::Double | PbType::Single | PbType::Ext | PbType::Cur => {
+                PbType::Double | PbType::Single | PbType::Ext | PbType::Cur | PbType::CurX => {
                     fb.call_void("pb_input_file_dbl", &[filenum_i32.clone(), ptr]);
                 }
                 _ => {
@@ -25164,7 +25181,21 @@ impl Compiler {
                             let cv = self.compile_expr(fb, c)?;
                             self.to_i32(fb, &cv)
                         }
-                        None => fb.const_i32(0),
+                        None => {
+                            // CHM: PEEK$([STRINGZ,] address, count) - count is
+                            // required. A missing count used to default to 0 and
+                            // silently return an empty string, masking the
+                            // malformed call (msg1402: a single-arg PEEK$ was
+                            // mistaken for a working read).
+                            return Err(PbError::parser(
+                                format!(
+                                    "{} requires a count argument: {}([STRINGZ,] address, count)",
+                                    raw_upper, raw_upper
+                                ),
+                                None,
+                                self.current_line,
+                            ));
+                        }
                     };
                     let fn_name = if raw_upper == "PEEK$" {
                         if zform {
@@ -27045,9 +27076,11 @@ impl Compiler {
                                     PbType::Byte => size = 1,
                                     PbType::Word | PbType::Integer => size = 2,
                                     PbType::Long | PbType::Dword | PbType::Single => size = 4,
-                                    PbType::Double | PbType::Ext | PbType::Cur | PbType::Quad => {
-                                        size = 8
-                                    }
+                                    PbType::Double
+                                    | PbType::Ext
+                                    | PbType::Cur
+                                    | PbType::CurX
+                                    | PbType::Quad => size = 8,
                                     PbType::String | PbType::WString => size = ptrw,
                                     PbType::Pointer(_) | PbType::Interface(_) => size = ptrw,
                                     PbType::UserDefined(tn) => {
@@ -27082,6 +27115,7 @@ impl Compiler {
                                                     PbType::Double
                                                     | PbType::Ext
                                                     | PbType::Cur
+                                                    | PbType::CurX
                                                     | PbType::Quad => size = 8,
                                                     PbType::String | PbType::WString => size = ptrw,
                                                     PbType::Pointer(_) | PbType::Interface(_) => {
@@ -27456,6 +27490,9 @@ impl Compiler {
                                 | "QUAD"
                                 | "SINGLE"
                                 | "DOUBLE"
+                                | "EXT"
+                                | "CUR"
+                                | "CUX"
                         ) =>
                     {
                         (normalize_name(n), args.get(1))
@@ -27475,12 +27512,19 @@ impl Compiler {
                     };
                     let addr = fb.inttoptr(&av64);
                     match dt.as_str() {
-                        "BYTE" | "INTEGER" => fb.call(&IrType::I32, "pb_peek8", &[addr]),
+                        "BYTE" => fb.call(&IrType::I32, "pb_peek8", &[addr]),
+                        "INTEGER" => fb.call(&IrType::I32, "pb_peek16s", &[addr]),
                         "WORD" => fb.call(&IrType::I32, "pb_peek16", &[addr]),
-                        "DWORD" | "LONG" => fb.call(&IrType::I32, "pb_peek32", &[addr]),
+                        "LONG" => fb.call(&IrType::I32, "pb_peek32", &[addr]),
+                        "DWORD" => fb.call(&IrType::I32, "pb_peek32u", &[addr]),
                         "QUAD" => fb.call(&IrType::I64, "pb_peek64", &[addr]),
                         "SINGLE" => fb.call(&IrType::Float, "pb_peekf", &[addr]),
-                        "DOUBLE" => fb.call(&IrType::Double, "pb_peekd", &[addr]),
+                        // DOUBLE, and EXT/CUR/CUX which are physically stored as
+                        // an 8-byte Double in this fork (EXT 80-bit is a known
+                        // storage limitation, tracked in the backlog).
+                        "DOUBLE" | "EXT" | "CUR" | "CUX" => {
+                            fb.call(&IrType::Double, "pb_peekd", &[addr])
+                        }
                         _ => fb.call(&IrType::I32, "pb_peek8", &[addr]),
                     }
                 }))
@@ -27652,16 +27696,21 @@ impl Compiler {
             PbType::Double => 11,         // %VARCLASS_DBL
             PbType::Ext => 12,            // %VARCLASS_EXT
             PbType::Cur => 13,            // %VARCLASS_CUR
+            PbType::CurX => 14,           // %VARCLASS_CUX (CHW ARRAYATTR)
             PbType::UserDefined(_) => 20, // %VARCLASS_TYPE
             PbType::Interface(_) => 20,   // object reference, same class as TYPE
             // X PTR reports as a pointer class (batch306); PBWin's VARCLASS
             // enum has no dedicated PTR class, so TYPE (20) is the closest.
             PbType::Pointer(_) => 20,
-            PbType::Variant => 17,        // %VARCLASS_VRNT
-            PbType::String => 23,         // %VARCLASS_STR
-            PbType::WString => 23,        // WSTRING reports as STRING class (batch280)
+            PbType::Variant => 17, // %VARCLASS_VRNT
+            PbType::String => 23,  // %VARCLASS_STR
+            // CHW ARRAYATTR table: wide dynamic string is class 27.  PBWin
+            // measured WSTRING attr1=27 (the CHM row 27 equate cell mislabels
+            // it %VARCLASS_FLD, but the number is 27).
+            PbType::WString => 27, // %VARCLASS wide dynamic (batch280 -> corrected)
             PbType::FixedString(_) => 22, // %VARCLASS_FIX
-            PbType::Field => 24,          // %VARCLASS_FLD
+            PbType::FixedWString(_) => 26, // %VARCLASS_WFIX (CHW ARRAYATTR)
+            PbType::Field => 24,   // %VARCLASS_FLD
             // Bit-field reports the class of its IN container (BYTE/WORD/DWORD).
             PbType::BitField { base, .. } => match base.as_deref() {
                 Some(PbType::Byte) => 0,
@@ -31258,6 +31307,7 @@ fn com_type_code(pb: &PbType) -> Result<i32, String> {
         PbType::Byte => Ok(6),
         PbType::Quad => Ok(7),
         PbType::Cur => Ok(8),
+        PbType::CurX => Ok(8),
         PbType::Variant => Ok(10),
         other => Err(format!(
             "type `{}` is not COM-compatible for OBJECT parameters/results",
@@ -31282,6 +31332,8 @@ fn infer_type_from_name(name: &str) -> PbType {
         PbType::Integer
     } else if name.ends_with('!') {
         PbType::Single
+    } else if name.ends_with("@@") {
+        PbType::CurX
     } else if name.ends_with('@') {
         PbType::Cur
     } else if name.ends_with('$') {

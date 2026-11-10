@@ -16,10 +16,19 @@ pub enum PbType {
     /// 4-byte byte-count prefix, exactly like STRING but encoded UTF-16.
     WString,
     FixedString(usize), // STRING * N
+    /// WSTRING * N — fixed-length wide string (CHW Fixed-length_strings:
+    /// N characters, 2N bytes in PBWin).  The fork keeps the same ptr-slot
+    /// backing storage as FixedString arrays, but the distinct VARCLASS 26
+    /// identity is preserved instead of silently dropping the `* N`.
+    FixedWString(usize),
     Quad,
     Dword,
     Ext,
     Cur, // CURRENCY
+    /// Extended-currency (CURRENCYX/CUX, @@ suffix): 8-byte Quad scaled by
+    /// 100. Same physical storage as Cur (Double here), but a distinct
+    /// VARCLASS identity (14 vs 13) per CHW ARRAYATTR/Currency pages.
+    CurX,
     Byte,
     Word,
     UserDefined(String), // TYPE name
@@ -52,11 +61,12 @@ impl PbType {
             PbType::Integer => "%",
             PbType::Double => "#",
             PbType::Single => "!",
-            PbType::String | PbType::FixedString(_) => "$",
+            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_) => "$",
             PbType::Quad => "&&",
             PbType::Dword => "???",
             PbType::Ext => "##",
             PbType::Cur => "@",
+            PbType::CurX => "@@",
             _ => "",
         }
     }

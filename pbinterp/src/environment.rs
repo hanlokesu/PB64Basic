@@ -366,7 +366,9 @@ fn type_from_name(name: &str) -> PbType {
         PbType::Integer
     } else if upper.ends_with('!') {
         PbType::Single
-    } else if upper.ends_with("@@") || upper.ends_with('@') {
+    } else if upper.ends_with("@@") {
+        PbType::CurX
+    } else if upper.ends_with('@') {
         PbType::Cur
     } else if upper.ends_with('$') {
         PbType::String

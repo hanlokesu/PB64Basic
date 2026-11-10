@@ -31,9 +31,9 @@ fn deftype_for_name(name: &str) -> Option<PbType> {
         "DEFDBL" => Some(PbType::Double),
         "DEFEXT" => Some(PbType::Ext),
         "DEFCUR" => Some(PbType::Cur),
-        // No ExtCurrency in PbType; Cur maps to Double storage (fork's
-        // PbType::Cur -> IrType::Double).  DEFCUX keeps that mapping.
-        "DEFCUX" => Some(PbType::Cur),
+        // DEFCUX maps to the distinct CurX variant (VARCLASS 14); physical
+        // storage is the same 8-byte Double as Cur.
+        "DEFCUX" => Some(PbType::CurX),
         "DEFDWD" => Some(PbType::Dword),
         "DEFSTR" => Some(PbType::String),
         _ => None,
@@ -173,6 +173,7 @@ impl Parser {
             "EXT" => PbType::Ext,
             "QUAD" => PbType::Quad,
             "CUR" => PbType::Cur,
+            "CUX" => PbType::CurX,
             "STRING" => PbType::String,
             _ => PbType::Long,
         }
@@ -1288,7 +1289,17 @@ impl Parser {
             }
             Token::Identifier(w) if w.eq_ignore_ascii_case("WSTRING") => {
                 self.advance();
-                Ok(PbType::WString) // UTF-16 wide string (batch280)
+                // CHW Fixed-length_strings: WSTRING * N is a distinct fixed
+                // wide type (VARCLASS 26). Parse the length instead of
+                // silently dropping it (same shape as STRING * N).
+                if self.peek() == &Token::Star {
+                    self.advance();
+                    if let Token::IntegerLiteral(n) = self.peek().clone() {
+                        self.advance();
+                        return Ok(PbType::FixedWString(n as usize));
+                    }
+                }
+                Ok(PbType::WString) // UTF-16 wide dynamic string (batch280)
             }
             // batch294: WSTRINGZ is a pointer to a NUL-terminated wide string
             // (WINMAIN's lpszCmdLine parameter); the fork stores wide strings
@@ -1351,6 +1362,12 @@ impl Parser {
                     "CURRENCY" | "CUR" => {
                         self.advance();
                         Ok(PbType::Cur)
+                    }
+                    "CURRENCYX" | "CUX" => {
+                        // CHW Currency/ARRAYATTR: distinct VARCLASS 14, but the
+                        // same 8-byte physical storage as Cur.
+                        self.advance();
+                        Ok(PbType::CurX)
                     }
                     "ASCIIZ" | "ASCIZ" => {
                         self.advance();
@@ -17309,6 +17326,12 @@ impl Parser {
                     Token::Integer => Some("INTEGER"),
                     Token::Quad => Some("QUAD"),
                     Token::Single => Some("SINGLE"),
+                    // CHM PEEK datatype list also includes EXT/CUR/CUX. CUX is an
+                    // Identifier token (handled by the normal expression path);
+                    // EXT/CUR are keyword tokens and must be folded here or they
+                    // fall through to parse_primary and error.
+                    Token::Ext => Some("EXT"),
+                    Token::Cur => Some("CUR"),
                     _ => None,
                 };
                 if let Some(d) = dt {
@@ -17376,7 +17399,9 @@ fn type_from_suffix(name: &str) -> PbType {
         PbType::Integer
     } else if name.ends_with('!') {
         PbType::Single
-    } else if name.ends_with("@@") || name.ends_with('@') {
+    } else if name.ends_with("@@") {
+        PbType::CurX
+    } else if name.ends_with('@') {
         PbType::Cur
     } else if name.ends_with('$') {
         PbType::String

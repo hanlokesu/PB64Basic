@@ -5257,8 +5257,17 @@ void pb_str_assign_copy(char** slot, const char* src, unsigned len) {
 void pb_asc_stmt(char** slot, long long pos, long long code) {
     if (!slot) return;
     char* s = *slot;
-    if (!s || !s[0]) return;                 /* null (zero-length): ignored */
+    if (!s) return;                          /* null pointer: ignored */
+    /* batch (A-family probe): index by the BSTR byte-prefixed length, NOT
+       strlen - binary strings (MK*$, CHR$ 0) embed NUL bytes, and strlen
+       would truncate so positions past the first NUL were wrongly ignored.
+       PBWin writes those positions (NUL-safe), matching pb_asc_get. */
+#ifdef _WIN32
+    long long len = (long long)SysStringByteLen(s);
+#else
     long long len = (long long)strlen(s);
+#endif
+    if (len == 0) return;                    /* zero-length string: ignored */
     if (pos == 0 || pos > len) return;       /* zero or beyond length: ignored */
     long long idx = (pos > 0) ? (pos - 1) : (len + pos);
     if (idx < 0 || idx >= len) return;       /* negative out of range: ignored */
@@ -6255,7 +6264,9 @@ char* pb_line_input_console(char* prompt, int has_prompt) {
 
 int pb_peek8(void* a) { return *(unsigned char*)a; }
 int pb_peek16(void* a) { return *(unsigned short*)a; }
+int pb_peek16s(void* a) { return *(short*)a; }
 long pb_peek32(void* a) { return *(long*)a; }
+unsigned long pb_peek32u(void* a) { return *(unsigned long*)a; }
 long long pb_peek64(void* a) { return *(long long*)a; }
 float pb_peekf(void* a) { float f; memcpy(&f, a, 4); return f; }
 double pb_peekd(void* a) { double d; memcpy(&d, a, 8); return d; }
