@@ -28214,6 +28214,24 @@ impl Compiler {
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
         let f64_val = self.to_f64(fb, &val);
+        // SQR(negative) and LOG(<=0) are illegal function calls -> Error 5.
+        if func_name == "llvm.sqrt.f64" || func_name == "llvm.log.f64" {
+            let zero = fb.const_f64(0.0);
+            let cmp = if func_name == "llvm.sqrt.f64" {
+                // f64_val < 0.0
+                fb.fcmp("olt", &f64_val, &zero)
+            } else {
+                // f64_val <= 0.0 (LOG of 0 or negative is illegal)
+                fb.fcmp("ole", &f64_val, &zero)
+            };
+            let l_ok = fb.next_label("math.ok");
+            let l_err = fb.next_label("math.err");
+            fb.condbr(&cmp, &l_err, &l_ok);
+            fb.label(&l_err);
+            fb.raw_line("call void @pb_raise_error(i32 5) noreturn");
+            fb.raw_line("unreachable");
+            fb.label(&l_ok);
+        }
         Ok(fb.call(&IrType::Double, func_name, &[f64_val]))
     }
 
