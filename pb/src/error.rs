@@ -166,8 +166,12 @@ impl PbError {
         {
             return 466;
         }
-        // Type/shape mismatches -> Error 482 "Data type mismatch"
-        if m.contains("type mismatch") || m.contains("mismatch") {
+        // Type/shape mismatches -> Error 482 "Data type mismatch".
+        // "END (mismatched block)" is a parser block-structure error, not a
+        // data-type mismatch — let it fall through to the generic 477.
+        if (m.contains("type mismatch") || m.contains("mismatch"))
+            && !m.contains("mismatched block")
+        {
             return 482;
         }
         // Length/complexity limits
