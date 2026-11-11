@@ -464,6 +464,9 @@ int pb_str_cstr_len(const char* s) {
     return (int)strlen(s);
 }
 
+/* Forward declaration: BSTR byte length (NUL-safe), defined later. */
+int pb_str_len(const char* s);
+
 /* Public BSTR allocation wrapper — called from LLVM IR codegen (cdecl) */
 char* pb_bstr_alloc(const char* src, unsigned int len) {
 #ifdef _WIN32
@@ -676,14 +679,14 @@ char* pb_clip(char* mode, char* s, long long start, long long count) {
     return pb_bstr_alloc(s + from, (unsigned int)(to - from));
 }
 char* pb_wrap(char* s, char* l, char* r) {
-    size_t nl = strlen(l), nr = strlen(r), ns = strlen(s);
+    size_t nl = (size_t)pb_str_len(l), nr = (size_t)pb_str_len(r), ns = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(nl + ns + nr + 1);
     memcpy(buf, l, nl); memcpy(buf + nl, s, ns); memcpy(buf + nl + ns, r, nr);
     buf[nl + ns + nr] = 0;
     return pb_bstr_alloc(buf, (unsigned int)(nl + ns + nr));
 }
 char* pb_unwrap(char* s, char* l, char* r) {
-    size_t nl = strlen(l), nr = strlen(r), ns = strlen(s);
+    size_t nl = (size_t)pb_str_len(l), nr = (size_t)pb_str_len(r), ns = (size_t)pb_str_len(s);
     size_t from = 0, to = ns;
     if (nl && ns >= nl && memcmp(s, l, nl) == 0) from = nl;
     if (nr && ns - from >= nr && memcmp(s + ns - nr, r, nr) == 0) to = ns - nr;
@@ -790,8 +793,6 @@ char* pb_retain_string(char* main, char* match, int any_flag) {
     buf[o] = 0;
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
-/* Forward declaration: BSTR length (NUL-safe), defined later. */
-int pb_str_len(const char* s);
 /* LCASE$ / UCASE$ with optional ANSI (mode=0) / OEM (mode=1).
  * ANSI: CharLowerBuffA / CharUpperBuffA handle DBCS correctly.
  * OEM: DBCS pairs are preserved untouched; only ASCII letters are folded.
@@ -849,7 +850,7 @@ char* pb_mcase_string(char* s, int mode) {
     // A DBCS pair is treated as one letter and then resets the word boundary
     // (next_upper=1). OEM mode keeps DBCS pairs untouched. Verified against
     // PBWin 10 on a 936 DBCS system (lm_mcase/lm_mcase2 probes).
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
     int next_upper = 1;
     size_t i = 0;
@@ -8496,10 +8497,12 @@ char* pb_variant_str(const void* v) {
     if (vt != 8) return pb_bstr_alloc("", 0);
     memcpy(&s, (const char*)v + 8, sizeof(s));
     if (!s) return pb_bstr_alloc("", 0);
-    /* The fork's Variant stores the ANSI string pointer directly (batch293
-       emit_variant_store: IrType::Ptr -> VT_BSTR + raw char* in the +8 union
-       slot), not a COM BSTR.  VARIANT$ is therefore the string itself. */
-    return pb_bstr_alloc(s, (unsigned int)strlen(s));
+    /* The fork's Variant stores the ANSI string pointer in the +8 union slot
+       (batch293 emit_variant_store: IrType::Ptr -> VT_BSTR).  The pointer still
+       points at the fork's internal BSTR layout (4-byte length prefix + ANSI
+       payload), so the byte length is read from that prefix (NUL-safe) rather
+       than strlen, which would stop at the first embedded NUL. */
+    return pb_bstr_alloc(s, (unsigned int)pb_str_len(s));
 }
 
 /* VARIANT$$ returns the WSTRING form: the fork's WSTRING variables are UTF-16
@@ -8508,7 +8511,7 @@ char* pb_variant_str(const void* v) {
 const void* pb_variant_wstr(const void* v) {
     unsigned short vt;
     const char* s;
-    int n;
+    int nb, need, got;
     wchar_t* w;
     char* out;
     if (!v) return NULL;
@@ -8516,12 +8519,15 @@ const void* pb_variant_wstr(const void* v) {
     if (vt != 8) return NULL;
     memcpy(&s, (const char*)v + 8, sizeof(s));
     if (!s) return NULL;
-    n = MultiByteToWideChar(0 /* CP_ACP */, 0, s, -1, NULL, 0);
-    if (n <= 0) return NULL;
-    w = (wchar_t*)malloc((size_t)n * sizeof(wchar_t));
+    nb = pb_str_len(s);                       /* ANSI payload bytes, NUL-safe */
+    if (nb <= 0) return NULL;
+    need = MultiByteToWideChar(0 /* CP_ACP */, 0, s, nb, NULL, 0);
+    if (need <= 0) return NULL;
+    w = (wchar_t*)malloc((size_t)need * sizeof(wchar_t));
     if (!w) return NULL;
-    MultiByteToWideChar(0 /* CP_ACP */, 0, s, -1, w, n);
-    out = (char*)pb_bstr_alloc((const char*)w, (unsigned int)(n - 1) * 2);
+    got = MultiByteToWideChar(0 /* CP_ACP */, 0, s, nb, w, need);
+    if (got <= 0) { free(w); return NULL; }
+    out = (char*)pb_bstr_alloc((const char*)w, (unsigned int)got * 2);
     free(w);
     return out;
 }

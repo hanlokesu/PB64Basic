@@ -405,7 +405,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 339 (v0.2.130). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 340 (v0.2.131). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 340 (v0.2.131) - NUL-safe string length: WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$ read the BSTR 4-byte length prefix (pb_str_len) instead of C strlen; VARIANT$$ uses explicit-length MultiByteToWideChar twice (need -> malloc -> got). An embedded NUL no longer truncates the payload. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 339 (v0.2.130) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance: Added NULL check for pb_com_new() calls in codegen. When NEWCOM/GETCOM/ANYCOM fails (returns NULL), runtime now triggers Error 99 (Object error). Verified existing Error 51 trigger point in RENAME operation. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch339_test.bas.
 
 **Changes:**
@@ -982,6 +983,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.131 (2026-11-11) - batch 340: NUL-safe string length in WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$
+
+**Fixed:**
+- **Embedded-NUL truncation**: `WRAP$`, `UNWRAP$`, `MCASE$`, `VARIANT$` and `VARIANT$$` now read the byte length from the BSTR 4-byte length prefix (`pb_str_len`) instead of the C `strlen`, so an embedded NUL (`CHR$ 0`) in the middle of a string no longer truncates the payload or reports a wrong length.
+- **`VARIANT$$` wide conversion**: The ANSI-to-UTF-16 conversion now passes the explicit payload byte length to `MultiByteToWideChar` in both calls (need -> malloc -> got), replacing the old `-1` NUL-terminated mode and the `(n-1)*2` size math; conversion failure frees the temporary buffer and returns NULL.
+
+**Changed:**
+- Runtime-only internal fix; no new keyword and no codegen/parser change. Coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch340_test.bas` (source `A NUL B NUL C`, LEN 5), dual-run fork vs PBWin10, FAILURES 0 on both sides.
+
 ### v0.2.130 (2026-11-11) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance
 
 **Changed:**
