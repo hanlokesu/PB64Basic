@@ -147,7 +147,8 @@ and expression functions with no implementation (`Unknown function — 0`).
 **Option A — no toolchain needed (recommended): download the prebuilt
 package from [Releases](https://github.com/hanlokesu/PB64Basic/releases).**
 Pick the latest `PB64Basic-vX.Y.Z-x64.zip`; it already contains
-the compiled `PB64Basic.exe`, the 64-bit runtime `pb_runtime_x64.obj`, sample
+the compiled `PB64Basic.exe`, the 64-bit and 32-bit runtime objects
+(`pb_runtime_x64.obj`, `pb_runtime_x86.obj`), sample
 programs and a one-click `compile.bat`. Unzip and run:
 
 ```bat
@@ -171,8 +172,8 @@ compile.bat          :: builds examples\demo.bas -> examples\demo.exe
    - LLVM / Clang (`LLVM.LLVM`, ~500 MB download; a UAC prompt may appear
      - click YES)
    - Windows SDK (`Microsoft.WindowsSDK.10.0.26100`)
-   Then it builds `pb_runtime_x64.obj` and the release `PB64Basic.exe`
-   for you.
+   Then it builds `pb_runtime_x64.obj` and `pb_runtime_x86.obj` plus the release
+   `PB64Basic.exe` for you.
 2. **Compile your first program:**
 
    ```bash
@@ -205,6 +206,15 @@ PB64Basic build program.bas --exe \
   --target x86_64-pc-windows-msvc \
   --runtime-lib pb_runtime_x64.obj \
   --lib-dir "<Windows SDK>\Lib\<ver>\um\x64"
+```
+
+Compile a 32-bit (i686) exe — use the matching `pb_runtime_x86.obj`:
+
+```bash
+PB64Basic build program.bas --exe \
+  --target i686-pc-windows-msvc \
+  --runtime-lib pb_runtime_x86.obj \
+  --lib-dir "<Windows SDK>\Lib\<ver>\um\x86"
 ```
 
 - `--runtime-lib` — points to the precompiled `pb_runtime.c` object.
@@ -405,7 +415,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 340 (v0.2.131). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 341 (v0.2.132). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 341 (v0.2.132) - Ship the i686 runtime object in the release package and lock linker size options: the zip now carries pb_runtime_x86.obj for --target i686-pc-windows-msvc; both runtime objects are rebuilt -O2 with per-function COMDAT sections; the linker passes /OPT:REF, /OPT:ICF and /DEBUG:NONE for both targets; the zip smoke links hello.bas for x86_64 and i686. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 340 (v0.2.131) - NUL-safe string length: WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$ read the BSTR 4-byte length prefix (pb_str_len) instead of C strlen; VARIANT$$ uses explicit-length MultiByteToWideChar twice (need -> malloc -> got). An embedded NUL no longer truncates the payload. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 339 (v0.2.130) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance: Added NULL check for pb_com_new() calls in codegen. When NEWCOM/GETCOM/ANYCOM fails (returns NULL), runtime now triggers Error 99 (Object error). Verified existing Error 51 trigger point in RENAME operation. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch339_test.bas.
 
@@ -983,6 +994,19 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.132 (2026-11-11) - batch 341: ship the i686 runtime object and lock linker size options
+
+**Packaging:**
+- The release zip now includes the 32-bit runtime object `pb_runtime_x86.obj` alongside `pb_runtime_x64.obj`, so an `--target i686-pc-windows-msvc` build uses the matching pre-built runtime object shipped in the package instead of relying on a local or stale object.
+
+**Changed:**
+- Runtime objects for both targets are rebuilt with `-O2 -ffunction-sections -fdata-sections`. The packaged objects shrink (x64 about 22.9% smaller, i686 about 19.7% smaller) while every function keeps its own COMDAT section so `/OPT:REF` can drop unused routines.
+- The linker now passes `/OPT:REF`, `/OPT:ICF` and `/DEBUG:NONE` explicitly for both targets and both subsystems, pinning dead-code elimination, identical COMDAT folding and no embedded debug info against future drift.
+- The release-zip verification smoke now links `examples/hello.bas` for both x86_64 and i686 against the runtime objects actually shipped in the package.
+
+**Coverage:**
+- No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch340_test.bas`.
+
 ### v0.2.131 (2026-11-11) - batch 340: NUL-safe string length in WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$
 
 **Fixed:**

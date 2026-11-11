@@ -987,6 +987,15 @@ fn link_exe(
         args.push("-Wl,/SAFESEH:NO".to_string());
     }
 
+    // Release-size hardening. /OPT:REF drops unreferenced runtime routines and
+    // /OPT:ICF folds identical COMDAT code; /DEBUG:NONE keeps debug info out of
+    // the image. /OPT:REF is already on by default, but stating it explicitly
+    // keeps the build reproducible if the linker default ever changes, and ICF
+    // is off by default. Kept for both targets and subsystem types.
+    args.push("-Wl,/OPT:REF".to_string());
+    args.push("-Wl,/OPT:ICF".to_string());
+    args.push("-Wl,/DEBUG:NONE".to_string());
+
     // #STACK num_expr (batch 299): request a custom runtime stack reserve.
     // CHW rounds up to the next 64 Kb boundary, minimum 128 Kb; the
     // preprocessor already did that, so pass the byte count straight to the

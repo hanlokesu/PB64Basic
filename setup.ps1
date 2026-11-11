@@ -5,7 +5,7 @@
 #   2. LLVM / Clang          (LLVM.LLVM, ~500 MB)
 #   3. Windows SDK           (Microsoft.WindowsSDK.10.0.26100)
 # Then builds:
-#   4. pb_runtime_x64.obj    (from pbcompiler/runtime/pb_runtime.c)
+#   4. pb_runtime_x64.obj / pb_runtime_x86.obj (from pbcompiler/runtime/pb_runtime.c)
 #   5. PB64Basic.exe        (release build via cargo)
 #
 # Run from setup.bat (double-click), or:
@@ -107,20 +107,25 @@ if (-not $sdkFound) {
     if (-not $sdkFound) { Write-Fail "SDK install failed. Install the Windows SDK manually from https://developer.microsoft.com/windows/downloads/windows-sdk/" }
 }
 
-# ---------- 4. Build runtime object ----------
-Write-Step "Building pb_runtime_x64.obj..."
+# ---------- 4. Build runtime objects ----------
 $rtSrc = Join-Path $ScriptDir "pbcompiler\runtime\pb_runtime.c"
-$rtObj = Join-Path $ScriptDir "pb_runtime_x64.obj"
 if (Test-Path $rtSrc) {
     # -ffunction-sections/-fdata-sections (batch 310): place each function and
-    # global in its own COMDAT section so the linker (/OPT:REF, on by default)
-    # drops the runtime functions the program never references, shrinking the
-    # EXE instead of pulling the whole runtime.
-    & clang -c $rtSrc -o $rtObj --target=x86_64-pc-windows-msvc -ffunction-sections -fdata-sections 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0 -and (Test-Path $rtObj)) {
-        Write-Ok "Runtime object built: $rtObj"
-    } else {
-        Write-Fail "Runtime build failed. LLVM/Clang is required (step 2)."
+    # global in its own COMDAT section so the linker (/OPT:REF) drops the runtime
+    # functions the program never references, shrinking the EXE instead of
+    # pulling the whole runtime. -O2 shrinks the object ~20% over -O0.
+    foreach ($rtTarget in @(
+        @{ Obj = "pb_runtime_x64.obj"; Triple = "x86_64-pc-windows-msvc" },
+        @{ Obj = "pb_runtime_x86.obj"; Triple = "i686-pc-windows-msvc" }
+    )) {
+        $rtObj = Join-Path $ScriptDir $rtTarget.Obj
+        Write-Step "Building $($rtTarget.Obj)..."
+        & clang -c $rtSrc -o $rtObj --target=$rtTarget.Triple -O2 -ffunction-sections -fdata-sections 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0 -and (Test-Path $rtObj)) {
+            Write-Ok "Runtime object built: $rtObj"
+        } else {
+            Write-Fail "Runtime build failed ($($rtTarget.Triple)). LLVM/Clang is required (step 2)."
+        }
     }
 } else {
     Write-Fail "pb_runtime.c not found: $rtSrc"
