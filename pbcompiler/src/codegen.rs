@@ -9212,10 +9212,10 @@ impl Compiler {
                 // a handler), so the post-statement check only fires on an error
                 // THIS statement produced. The ERR variable value survives because
                 // RESUME no longer clears @pb_err.
-                self.emit_stmt_enter(fb)?;
+                let (entry_start, _entry_done) = self.emit_stmt_enter(fb)?;
                 self.compile_call_stmt(fb, c)?;
                 // ON ERROR GOTO: test for a run-time error after the statement
-                self.emit_error_check(fb)?;
+                self.emit_error_check(fb, entry_start)?;
                 Ok(())
             }
             Statement::WriteRec { args, trailing, .. } => {
@@ -24238,9 +24238,12 @@ impl Compiler {
     /// checked statement a fresh "did this statement error?" probe (PBWin
     /// semantics: the trap fires once per erroring statement; RESUME restores
     /// normal flow with the ERR variable still holding the last error code).
-    fn emit_stmt_enter(&mut self, fb: &mut FunctionBuilder) -> PbResult<()> {
+    fn emit_stmt_enter(
+        &mut self,
+        fb: &mut FunctionBuilder,
+    ) -> PbResult<(Option<String>, Option<String>)> {
         if self.onerror_handler.is_none() || fb.is_terminated() {
-            return Ok(());
+            return Ok((None, None));
         }
         let act = fb.load(
             &IrType::I32,
@@ -24257,11 +24260,19 @@ impl Compiler {
         );
         fb.br(&done);
         fb.label(&done);
-        Ok(())
+        // The retry (bare RESUME) target must be the clear-before block, not
+        // `done`: jumping straight to `done` skips the @pb_err clear, so the
+        // residual handler error code survives the RESUME and re-triggers the
+        // trap on the retried statement (batch025 Test2 RMDIR/MKDIR loop).
+        Ok((Some(do_clear), Some(done)))
     }
 
     /// error flag and branch to the ON ERROR handler when an error occurred.
-    fn emit_error_check(&mut self, fb: &mut FunctionBuilder) -> PbResult<()> {
+    fn emit_error_check(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        entry: Option<String>,
+    ) -> PbResult<()> {
         let handler = match &self.onerror_handler {
             Some(h) => h.clone(),
             None => return Ok(()),
@@ -24269,7 +24280,12 @@ impl Compiler {
         if fb.is_terminated() {
             return Ok(());
         }
-        let stmt_start = fb.current_label.clone();
+        // Retry (bare RESUME) must re-enter the statement at its entry block,
+        // captured before the call body was compiled.  By this point the builder
+        // current_label may have drifted into an expression-internal block (e.g.
+        // the malloc.ok arm of a STR$), so reusing current_label there gives a
+        // Retry target that does not dominate its own SSA uses.
+        let stmt_start = entry.unwrap_or_else(|| fb.current_label.clone());
         let cont = fb.next_label("err.cont");
         let id = self.onerror_checkpoints.len() as i32;
 
@@ -25488,17 +25504,11 @@ impl Compiler {
                 };
                 let mode_v = Val::new(mode.to_string(), IrType::I32);
                 let obj = fb.call(&IrType::Ptr, "pb_com_new", &[mode_v, pn, clsid_v, lib_v]);
-                // NEWCOM/GETCOM/ANYCOM failure → Error 99 (Object error).
-                // pb_com_new returns NULL on failure (CLSIDFromProgID failed,
-                // CoCreateInstance failed, etc.). Trap NULL as runtime Error 99.
-                let null = fb.const_null_ptr();
-                let is_null = fb.icmp("eq", &obj, &null);
-                let l_err = fb.next_label("com_new.err");
-                let l_ok = fb.next_label("com_new.ok");
-                fb.condbr(&is_null, &l_err, &l_ok);
-                fb.label(&l_err);
-                fb.raise_error(99);
-                fb.label(&l_ok);
+                // CHW How_do_you_create_an_object_: when creation fails the
+                // object variable is set to NOTHING; the statement generates
+                // NO error, and the caller must test with ISOBJECT(objvar).
+                // pb_com_new returns NULL on failure, a non-NULL IDispatch* on
+                // success — hand the raw pointer back without trapping NULL.
                 Ok(obj)
             }
             Expr::MethodCall { base, name, args } => {

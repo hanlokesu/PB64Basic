@@ -415,7 +415,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 341 (v0.2.132). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 342 (v0.2.133). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 342 (v0.2.133) - ON ERROR retry loop and COM failure conformance plus embedded-NUL string length: bare RESUME retry re-enters the clear-before block so the residual error code is cleared before the statement runs again; NEWCOM/GETCOM/ANYCOM failure sets NOTHING without raising Error 99; the retry checkpoint entry block is captured before the body for IR dominance; CHRTOUTF8$/UTF8TOCHR$, BUILD$, JOIN$, CLIP$/SHRINK$/REMOVE$/RETAIN$/REMAIN$ read the BSTR prefix length. CLIPBOARD TEXT/OEMTEXT keep strlen by Win32 NUL-terminated format semantics. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch342_test.bas, batch343_test.bas.
 > batch 341 (v0.2.132) - Ship the i686 runtime object in the release package and lock linker size options: the zip now carries pb_runtime_x86.obj for --target i686-pc-windows-msvc; both runtime objects are rebuilt -O2 with per-function COMDAT sections; the linker passes /OPT:REF, /OPT:ICF and /DEBUG:NONE for both targets; the zip smoke links hello.bas for x86_64 and i686. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 340 (v0.2.131) - NUL-safe string length: WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$ read the BSTR 4-byte length prefix (pb_str_len) instead of C strlen; VARIANT$$ uses explicit-length MultiByteToWideChar twice (need -> malloc -> got). An embedded NUL no longer truncates the payload. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 339 (v0.2.130) - #284 Error 51 (Internal error) and Error 99 (Object error) conformance: Added NULL check for pb_com_new() calls in codegen. When NEWCOM/GETCOM/ANYCOM fails (returns NULL), runtime now triggers Error 99 (Object error). Verified existing Error 51 trigger point in RENAME operation. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch339_test.bas.
@@ -994,6 +995,21 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.133 (2026-11-13) - batch 342: fix ON ERROR retry loop, COM failure conformance, and embedded-NUL string length
+
+**Fixed:**
+- **ON ERROR handler retry loop (#316):** A bare `RESUME` (retry) re-entered the statement body directly, skipping the entry block that clears `@pb_err`. The residual handler error code survived the resume and was treated as a new error by the retried statement's check, trapping the handler again in an infinite loop (batch025 Test2: repeated `MKDIR` failure -> handler `RMDIR` -> `RESUME` -> retry `MKDIR` -> trap again). The retry checkpoint now targets the clear-before entry block, so the error code is cleared before the statement body runs again; `RESUME NEXT` still jumps to the continuation block unchanged.
+- **ON ERROR/RESUME IR dominance (#312):** The retry checkpoint entry block is captured before the statement body is compiled and passed to the error check, instead of reusing the builder's drifted `current_label` (which could land inside an expression-internal block such as a `STR$` malloc.ok arm). The retry target now dominates its own SSA uses; the old `current_label` fallback is retained when no handler is active.
+- **NEWCOM/GETCOM/ANYCOM failure conformance (#313):** Per the official object-creation docs, when creation fails the object variable is set to NOTHING and the statement raises no error; the caller must test with `ISOBJECT`. The compiler no longer traps a NULL COM pointer as runtime Error 99; `pb_com_new` returns the raw pointer on failure and it is handed back directly.
+- **Embedded-NUL string length (#308/#309/#315):** `CHRTOUTF8$`/`UTF8TOCHR$`, `BUILD$`, `JOIN$`, and `CLIP$`/`SHRINK$`/`REMOVE$`/`RETAIN$`/`REMAIN$` read the payload length from the BSTR 4-byte length prefix (`pb_str_len`) instead of the C `strlen`, so an embedded NUL (`CHR$ 0`) in the middle of a string no longer truncates the payload or reports a wrong length.
+
+**Changed:**
+- **CLIPBOARD TEXT/OEMTEXT keep `strlen` by design (#310):** CF_TEXT/CF_OEMTEXT/CF_UNICODETEXT are NUL-terminated Win32 clipboard formats whose consumers scan to a NUL; a probe with `A\0B\0C` returns `len=1` (truncated at the first NUL) identically on fork and PBWin10. Embedded NUL binary data is not a legal TEXT/OEMTEXT payload, so these runtime points keep the NUL-terminated length.
+- Probes: `examples/batch342_test.bas` (UTF-8 round-trip + `BUILD$`/`JOIN$` embedded NUL), `examples/batch343_test.bas` (clip/filter family embedded NUL, byte-by-byte assertions), and `examples/batch340_test.bas` widened the `VARIANT$$` check to per-code-unit `ASC` assertions.
+
+**Coverage:**
+- No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch342_test.bas`, `examples/batch343_test.bas`.
+
 ### v0.2.132 (2026-11-11) - batch 341: ship the i686 runtime object and lock linker size options
 
 **Packaging:**

@@ -661,7 +661,7 @@ char* pb_mksingle(float v) {
 }
 /* Batch 41: string utilities. */
 char* pb_clip(char* mode, char* s, long long start, long long count) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     long long from = 0, to = (long long)n;
     if (strcmp(mode, "LEFT") == 0) { from = (count > (long long)n) ? (long long)n : count; }
     else if (strcmp(mode, "RIGHT") == 0) { to = n - ((count > (long long)n) ? (long long)n : count); if (to < 0) to = 0; }
@@ -702,7 +702,7 @@ char* pb_unwrap(char* s, char* l, char* r) {
  *   collapsed the hard-coded whitespace set even when a custom Mask$ was
  *   supplied, so SHRINK$("a,,b", ",") was returned unchanged. */
 char* pb_shrink(char* s, char* mask) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
     size_t o = 0;
     unsigned char delim[256];
@@ -734,8 +734,8 @@ char* pb_shrink(char* s, char* mask) {
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
 char* pb_remove_string(char* main, char* match, int any_flag) {
-    size_t n = strlen(main);
-    size_t mlen = match ? strlen(match) : 0;
+    size_t n = (size_t)pb_str_len(main);
+    size_t mlen = match ? (size_t)pb_str_len(match) : 0;
     char* buf = (char*)malloc(n + 1);
     size_t o = 0;
     if (mlen == 0) {
@@ -764,8 +764,8 @@ char* pb_remove_string(char* main, char* match, int any_flag) {
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
 char* pb_retain_string(char* main, char* match, int any_flag) {
-    size_t n = strlen(main);
-    size_t mlen = match ? strlen(match) : 0;
+    size_t n = (size_t)pb_str_len(main);
+    size_t mlen = match ? (size_t)pb_str_len(match) : 0;
     char* buf = (char*)malloc(n + 1);
     size_t o = 0;
     if (mlen == 0) {
@@ -895,8 +895,8 @@ char* pb_mcase_string(char* s, int mode) {
     return r;
 }
 char* pb_remain_string(char* main, char* match, long long start, int any_flag) {
-    size_t n = strlen(main);
-    size_t mlen = match ? strlen(match) : 0;
+    size_t n = (size_t)pb_str_len(main);
+    size_t mlen = match ? (size_t)pb_str_len(match) : 0;
     if (mlen == 0 || n == 0) {
         return pb_bstr_alloc("", 0);
     }
@@ -941,10 +941,10 @@ char* pb_remain_string(char* main, char* match, long long start, int any_flag) {
 }
 char* pb_build(char** arr, long long n) {
     size_t total = 0;
-    for (long long i = 0; i < n; i++) total += strlen(arr[i]);
+    for (long long i = 0; i < n; i++) total += (size_t)pb_str_len(arr[i]);
     char* buf = (char*)malloc(total + 1);
     size_t o = 0;
-    for (long long i = 0; i < n; i++) { size_t l = strlen(arr[i]); memcpy(buf + o, arr[i], l); o += l; }
+    for (long long i = 0; i < n; i++) { size_t l = (size_t)pb_str_len(arr[i]); memcpy(buf + o, arr[i], l); o += l; }
     buf[o] = 0;
     return pb_bstr_alloc(buf, (unsigned int)o);
 }
@@ -967,7 +967,7 @@ char* pb_oem_to_chr(char* s) {
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 char* pb_chr_to_utf8(char* s) {
-    int n = (int)strlen(s);
+    int n = pb_str_len(s);
     int w = MultiByteToWideChar(0, 0, s, n, NULL, 0);
     if (w <= 0) return pb_bstr_alloc("", 0);
     short* ws = (short*)malloc(w * 2);
@@ -980,7 +980,7 @@ char* pb_chr_to_utf8(char* s) {
     return pb_bstr_alloc(buf, (unsigned int)u);
 }
 char* pb_utf8_to_chr(char* s) {
-    int n = (int)strlen(s);
+    int n = pb_str_len(s);
     int w = MultiByteToWideChar(65001, 0, s, n, NULL, 0);
     if (w <= 0) return pb_bstr_alloc("", 0);
     short* ws = (short*)malloc(w * 2);
@@ -12082,7 +12082,7 @@ char* pb_join(char* base, long long count, const char* delim) {
     size_t total = 0;
     for (long long i = 0; i < count; i++) {
         char* s = arr[i];
-        size_t slen = s ? strlen(s) : 0;
+        size_t slen = (size_t)pb_str_len(s);
         if (quote_mode) {
             total += slen + 2;                 /* wrapping quotes */
             if (i < count - 1) total += 1;    /* single comma */
@@ -12099,7 +12099,7 @@ char* pb_join(char* base, long long count, const char* delim) {
     char* p = result;
     for (long long i = 0; i < count; i++) {
         char* s = arr[i];
-        size_t slen = s ? strlen(s) : 0;
+        size_t slen = (size_t)pb_str_len(s);
         if (quote_mode) {
             *p++ = '"';
             if (slen) { memcpy(p, s, slen); p += slen; }

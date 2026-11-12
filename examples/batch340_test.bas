@@ -79,9 +79,16 @@ FUNCTION PBMAIN () AS LONG
     CheckByte ASC(r, 4), 0, "varstr-b4"
     CheckByte ASC(r, 5), 67, "varstr-b5"
 
-    ' VARIANT$$: wide form keeps 5 wide characters
+    ' VARIANT$$: wide form keeps 5 wide characters; check each UTF-16
+    ' code-unit, not just the length, so an embedded NUL wide char cannot
+    ' be hidden by a length-only assertion.
     w = VARIANT$$(v)
     CheckLong LEN(w), 5, "varwstr-len"
+    CheckLong ASC(w, 1), 65, "varwstr-b1"
+    CheckLong ASC(w, 2), 0,  "varwstr-b2"
+    CheckLong ASC(w, 3), 66, "varwstr-b3"
+    CheckLong ASC(w, 4), 0,  "varwstr-b4"
+    CheckLong ASC(w, 5), 67, "varwstr-b5"
 
     ConPrint "=== FAILURES: " + FORMAT$(g_failures) + " ==="
     FUNCTION = g_failures
