@@ -12043,8 +12043,8 @@ impl Compiler {
             "GRAPHIC_LINE" => {
                 // args: x1,y1,x2,y2 [,color]
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 let col = if let Some(a4) = call.args.get(4) {
@@ -12126,8 +12126,8 @@ impl Compiler {
             }
             "XPRINT_LINE" => {
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12137,8 +12137,8 @@ impl Compiler {
             }
             "XPRINT_BOX" => {
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12245,8 +12245,8 @@ impl Compiler {
             "XPRINT_ARC" => {
                 // batch 234: official XPRINT ARC (x1,y1)-(x2,y2), start, end
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 let sa = self.compile_expr(fb, &call.args[4])?;
@@ -12267,8 +12267,8 @@ impl Compiler {
             }
             "XPRINT_ELLIPSE" => {
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12279,8 +12279,8 @@ impl Compiler {
             "XPRINT_PIE" => {
                 // batch 234: official XPRINT PIE (x1,y1)-(x2,y2), start, end
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 let sa = self.compile_expr(fb, &call.args[4])?;
@@ -12379,8 +12379,8 @@ impl Compiler {
             }
             "XPRINT_SET_CLIP" => {
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12399,8 +12399,8 @@ impl Compiler {
             "XPRINT_SCALE" => {
                 // batch 234: official XPRINT SCALE (x1,y1)-(x2,y2)
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12441,8 +12441,8 @@ impl Compiler {
             }
             "XPRINT_COPY" => {
                 let mut ia = Vec::new();
-                for i in 0..6 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(6) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12463,8 +12463,8 @@ impl Compiler {
                 if npts >= 3 {
                     let arrty = IrType::Array(npts * 2, Box::new(IrType::I32));
                     let ptr = fb.alloca(&arrty);
-                    for i in 0..ncoords {
-                        let v = self.compile_expr(fb, &call.args[i])?;
+                    for (i, arg) in call.args.iter().take(ncoords).enumerate() {
+                        let v = self.compile_expr(fb, arg)?;
                         let iv = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
                         let elem = fb.gep_byte(&ptr, &fb.const_i32((i as i32) * 4));
                         fb.store(&iv, &elem);
@@ -12484,8 +12484,8 @@ impl Compiler {
                 if npts >= 2 {
                     let arrty = IrType::Array(npts * 2, Box::new(IrType::I32));
                     let ptr = fb.alloca(&arrty);
-                    for i in 0..ncoords {
-                        let v = self.compile_expr(fb, &call.args[i])?;
+                    for (i, arg) in call.args.iter().take(ncoords).enumerate() {
+                        let v = self.compile_expr(fb, arg)?;
                         let iv = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
                         let elem = fb.gep_byte(&ptr, &fb.const_i32((i as i32) * 4));
                         fb.store(&iv, &elem);
@@ -12643,8 +12643,8 @@ impl Compiler {
             }
             "XPRINT_STRETCH" => {
                 let mut ia = Vec::new();
-                for i in 0..8 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(8) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12663,8 +12663,8 @@ impl Compiler {
             }
             "XPRINT_IMAGELIST" => {
                 let mut ia = Vec::new();
-                for i in 0..3 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(3) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void(
@@ -12968,8 +12968,8 @@ impl Compiler {
             }
             "XPRINT_GET_MARGIN" => {
                 let mut ps = Vec::new();
-                for i in 0..4 {
-                    if let Some((p, _, _)) = self.lvalue_ptr(fb, &call.args[i]) {
+                for arg in call.args.iter().take(4) {
+                    if let Some((p, _, _)) = self.lvalue_ptr(fb, arg) {
                         ps.push(p);
                     }
                 }
@@ -13566,8 +13566,8 @@ impl Compiler {
                     // build i32 array on stack via llvm alloca of [npts*2 x i32]
                     let arrty = IrType::Array(npts * 2, Box::new(IrType::I32));
                     let ptr = fb.alloca(&arrty);
-                    for i in 0..ncoords {
-                        let v = self.compile_expr(fb, &call.args[i])?;
+                    for (i, arg) in call.args.iter().take(ncoords).enumerate() {
+                        let v = self.compile_expr(fb, arg)?;
                         let iv = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
                         let elem = fb.gep_byte(&ptr, &fb.const_i32((i as i32) * 4));
                         fb.store(&iv, &elem);
@@ -13588,8 +13588,8 @@ impl Compiler {
                 if npts >= 2 {
                     let arrty = IrType::Array(npts * 2, Box::new(IrType::I32));
                     let ptr = fb.alloca(&arrty);
-                    for i in 0..ncoords {
-                        let v = self.compile_expr(fb, &call.args[i])?;
+                    for (i, arg) in call.args.iter().take(ncoords).enumerate() {
+                        let v = self.compile_expr(fb, arg)?;
                         let iv = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
                         let elem = fb.gep_byte(&ptr, &fb.const_i32((i as i32) * 4));
                         fb.store(&iv, &elem);
@@ -13609,8 +13609,8 @@ impl Compiler {
             "GRAPHIC_ARC" => {
                 // args: x1,y1,x2,y2,start,end[,color]
                 let mut a = Vec::new();
-                for i in 0..6.min(call.args.len()) {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(6.min(call.args.len())) {
+                    let v = self.compile_expr(fb, arg)?;
                     a.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 let col = if call.args.len() > 6 {
@@ -13625,8 +13625,8 @@ impl Compiler {
             "GRAPHIC_PIE" => {
                 // args: x1,y1,x2,y2,start,end[,color[,fillcolor[,fillstyle]]]
                 let mut a = Vec::new();
-                for i in 0..6.min(call.args.len()) {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(6.min(call.args.len())) {
+                    let v = self.compile_expr(fb, arg)?;
                     a.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 for i in 6..9 {
@@ -13642,8 +13642,8 @@ impl Compiler {
             "GRAPHIC_PAINT" => {
                 // args: x,y[,fill[,border[,style]]]
                 let mut a = Vec::new();
-                for i in 0..2.min(call.args.len()) {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(2.min(call.args.len())) {
+                    let v = self.compile_expr(fb, arg)?;
                     a.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 for i in 2..5 {
@@ -13867,8 +13867,8 @@ impl Compiler {
             "GRAPHIC_COPY" => {
                 // args: x1,y1,x2,y2,x3,y3
                 let mut ia = Vec::new();
-                for i in 0..6 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(6) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void("pb_graphic_copy", &ia);
@@ -13901,8 +13901,8 @@ impl Compiler {
                     "pb_graphic_ellipse"
                 };
                 let mut ia = Vec::new();
-                for i in 0..4 {
-                    let v = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
                 let color = if let Some(a4) = call.args.get(4) {
@@ -22601,8 +22601,8 @@ impl Compiler {
                         call.args.len().saturating_sub(1)
                     };
                     let mut callee_args: Vec<Val> = Vec::new();
-                    for i in 1..=call_count {
-                        let v = self.compile_expr(fb, &call.args[i])?;
+                    for arg in call.args.iter().skip(1).take(call_count) {
+                        let v = self.compile_expr(fb, arg)?;
                         callee_args.push(v);
                     }
                     if has_result && call.args.len() >= 2 {
@@ -22976,8 +22976,7 @@ impl Compiler {
         // omitted VARIANT parameter arrives as VT_ERROR + DISP_E_PARAMNOTFOUND
         // (0x80020004).  Only BYVAL non-VARIANT parameters get a plain default
         // value (0 / empty string) - ISMISSING is a compile error 579 for them.
-        for i in args.len()..func_info.params.len() {
-            let param = &func_info.params[i];
+        for param in func_info.params.iter().skip(args.len()) {
             if !param.is_optional {
                 break; // Non-optional param missing → stop (caller error, handled at runtime)
             }
