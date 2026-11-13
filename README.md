@@ -428,7 +428,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 345 (v0.2.136). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 346 (v0.2.137). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 346 (v0.2.137) - refactored 23 range loops in pbcompiler/src/codegen.rs to direct iterator form to clear the newer clippy needless_range_loop lint that the CI runner promotes to an error under -D warnings; loops that still compute a byte-stride offset keep the index via enumerate. Behavior-preserving internal change, emitted IR and executables unchanged. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas; compile-all 399 ok / 0 failed, headless 257 ran / 0 failed.
 > batch 345 (v0.2.136) - setup.ps1 runtime build reads the object name and target triple into plain scalar variables before invoking clang; previously the hashtable property was interpolated into --target= as the type name System.Collections.Hashtable.Triple and clang rejected it with unknown target triple. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 344 (v0.2.135) - repeatable --include-dir switch plus PB-style /I alias (/I<dir> and /I <dir>, case-insensitive): a bare #INCLUDE header name searches the command-line directories first (in order, de-duplicated), then the built-in PBWin install candidates, then the source parent; separator-bearing relative paths still resolve against the source parent only. Preprocessor full Win32API include set drops from about 208s to about 2.6s via single-scan HashMap equate/macro lookup, IR line-for-line identical. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 343 (v0.2.134) - numeric-to-string family compile-time type guard: STR$/CSTR$, HEX$, OCT$, BIN$, DEC$ reject a string/pointer operand at compile time with Error 420 (numeric operand expected) instead of silently rendering the BSTR pointer bit pattern as a garbage number; eight existing examples drop the spurious STR$ around string variables (numeric STR$ preserved), batch025 moves a REGISTER string to LOCAL. Six negative probes in _negative_probes; self-check examples/batch343_test.bas, dual-run fork vs PBWin10 FAILURES 0. No new keyword; coverage stays at 947 rows / 915 implemented.
@@ -1011,6 +1012,13 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.137 (2026-11-14) - batch 346: clear new-clippy needless_range_loop errors in codegen
+
+**Fixed:**
+- **The CI lint gate is restored: 23 `clippy::needless_range_loop` findings in `pbcompiler/src/codegen.rs` were refactored to direct iterator loops.** The clippy version shipped on the CI runner flags a range-loop index that is only used to index a single argument list (e.g. `call.args[i]` or `func_info.params[i]`) as `needless_range_loop`; under `-D warnings` this is promoted to an error, so the Lint job failed on every push. The local older clippy did not emit this lint, which is why the local gate could not catch it. The loops now iterate the argument list directly (`for arg in call.args.iter().take(...)`); where a byte-stride element offset is still computed, the index is retained via `enumerate()`. This is a behavior-preserving internal refactor: emitted IR and compiled executables are unchanged.
+
+No new keyword, probe, or coverage change; coverage stays at 947 rows / 915 implemented.
+
 ### v0.2.136 (2026-11-14) - batch 345: setup.ps1 runtime target-triple binding fix
 
 **Fixed:**
