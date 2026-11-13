@@ -143,14 +143,16 @@ if (Test-Path $rtSrc) {
             @{ Obj = "pb_runtime_x64.obj"; Triple = "x86_64-pc-windows-msvc" },
             @{ Obj = "pb_runtime_x86.obj"; Triple = "i686-pc-windows-msvc" }
         )) {
-            $rtObj = Join-Path $ScriptDir $rtTarget.Obj
-            Write-Step "Building $($rtTarget.Obj)..."
-            $rtOut = & $clangExe -c $rtSrc -o $rtObj --target=$rtTarget.Triple -O2 -ffunction-sections -fdata-sections 2>&1
+            $objName = $rtTarget.Obj
+            $triple  = $rtTarget.Triple
+            $rtObj = Join-Path $ScriptDir $objName
+            Write-Step "Building $objName..."
+            $rtOut = & $clangExe -c $rtSrc -o $rtObj --target=$triple -O2 -ffunction-sections -fdata-sections 2>&1
             $rtCode = $LASTEXITCODE
             if ($rtCode -eq 0 -and (Test-Path $rtObj)) {
                 Write-Ok "Runtime object built: $rtObj"
             } else {
-                Write-Fail "Runtime build failed ($($rtTarget.Triple)): clang exited with code $rtCode."
+                Write-Fail "Runtime build failed ($triple): clang exited with code $rtCode."
                 $errLines = @($rtOut | Where-Object { $_ -match "error:|fatal error|No such file|not found" })
                 if ($errLines.Count -gt 0) {
                     Write-Host "   clang diagnostics:" -ForegroundColor Red
@@ -158,6 +160,7 @@ if (Test-Path $rtSrc) {
                 }
                 Write-Warn "   If clang could not start: LLVM/Clang is missing or not on PATH (step 2)."
                 Write-Warn "   If clang started but reported missing headers: install the Windows SDK and MSVC build tools."
+                Write-Warn "   If the error names an unknown target or invalid argument: this is a setup-script invocation problem, not a missing dependency."
             }
         }
     }

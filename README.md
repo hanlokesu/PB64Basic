@@ -1060,6 +1060,7 @@ Notes: a separator-bearing relative path does not fall back to the command-line 
 
 **Setup script:**
 - `setup.ps1` no longer discards the Clang output when a runtime object fails to build. A failed step now reports separately whether `clang` could not be located (LLVM/Clang missing or not on PATH) or a compile started but exited non-zero; in the non-zero case the `error:` / `fatal error` / `not found` lines are printed, with a hint to check the Windows SDK and MSVC build tools. LLVM is also probed under the common non-standard install locations (`Program Files (x86)\LLVM\bin`, per-user `LLVM\bin`) in addition to `C:\Program Files\LLVM\bin`.
+- The runtime build loop reads the object name and target triple into plain variables before invoking clang; previously the triple was interpolated as the hashtable type name (`System.Collections.Hashtable.Triple`) and clang rejected it with `unknown target triple`.
 
 **Coverage:**
 - No new PB keyword; this is a CLI parameter extension, not a language keyword. Coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch344_test.bas` (same-directory `#INCLUDE`, shared equate and helper function), dual-run fork vs PBWin10, FAILURES 0 on both sides.
