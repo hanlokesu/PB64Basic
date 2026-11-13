@@ -1002,6 +1002,46 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 **Added:**
 - **`--include-dir <path>` command-line switch (repeatable) and PB-style `/I` alias:** A bare `#INCLUDE` header name now searches the directories passed on the command line first, in the order they were given (de-duplicated), before the built-in PBWin install candidates (`C:\PBWin10\WINAPI`, `C:\PBWin10\WINAPI\INC`, `C:\PBWin9\WINAPI`) and the source file's own directory. The `/I` alias accepts both the attached form `/I<dir>` and the separate form `/I <dir>`, case-insensitively. This lets a project whose Win32API headers live outside the default PBWin tree be compiled without moving the sources or headers. An include path that already contains a directory separator is still resolved relative to the including source's parent only; absolute and drive-qualified paths are used as-is.
 
+**Usage:**
+
+The switch accepts three equivalent command-line forms (quote a directory that contains spaces):
+
+- `--include-dir <dir>` - long form; the switch and the directory are separated by a space.
+- `/I<dir>` - PB-style attached form, no space.
+- `/I <dir>` - PB-style separate form; `/I` and the directory are separated by a space. `/I` is case-insensitive (`/i` works too).
+
+The switch may be repeated. Directories are searched in the order they appear on the command line, and duplicates are collapsed. A directory that does not exist is skipped silently.
+
+Example: headers live in `C:\WinAPI`, the source is `C:\pb\main.bas`, and the source uses a bare `#INCLUDE "Win32api.inc"`:
+
+```
+PB64Basic.exe build C:\pb\main.bas --exe --runtime-lib pb_runtime_x64.obj --include-dir C:\WinAPI
+```
+
+Equivalent PB-style forms:
+
+```
+PB64Basic.exe build C:\pb\main.bas --exe --runtime-lib pb_runtime_x64.obj /IC:\WinAPI
+PB64Basic.exe build C:\pb\main.bas --exe --runtime-lib pb_runtime_x64.obj /I C:\WinAPI
+```
+
+With two header roots, search falls back from the first to the second:
+
+```
+--include-dir C:\WinAPI --include-dir D:\headers
+```
+
+How a `#INCLUDE` path is resolved:
+
+1. **Absolute or drive-qualified** (`#INCLUDE "C:\WinAPI\api.inc"`) is used as-is; no directory search is performed.
+2. **Relative path with a separator** (`#INCLUDE "inc\my.inc"`, `#INCLUDE "..\inc\bar.inc"`) resolves against the including source file's parent directory only; command-line and built-in directories are not consulted.
+3. **Bare file name** (`#INCLUDE "Win32api.inc"`) is searched in this order; the first existing match wins:
+   1. Command-line directories (`--include-dir` / `/I`), in the given order, de-duplicated;
+   2. Built-in PBWin candidates: `C:\PBWin10\WINAPI`, `C:\PBWin10\WINAPI\INC`, `C:\PBWin9\WINAPI`;
+   3. The source file's own directory.
+
+Notes: a separator-bearing relative path does not fall back to the command-line directories; use a bare name there if you want command-line search. This switch applies to the fork compiler command line only; the PBWin IDE uses its own include-directory settings.
+
 **Performance:**
 - The preprocessor's full Win32API header set (batch306: 1219 headers, about 1.49M physical lines) compiles in about 2.6 s instead of about 208 s: `$equate` and single-line macro substitution each do one scan plus a HashMap lookup instead of repeated O(n^2) text rescans. The generated IR is line-for-line identical to the pre-optimization baseline (24,396 lines, compare groups 0).
 
