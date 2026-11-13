@@ -55,24 +55,46 @@ if ($cargo) {
 
 # ---------- 2. LLVM / Clang ----------
 Write-Step "Checking LLVM / Clang..."
+$llvmCandidates = @(
+    "C:\Program Files\LLVM\bin",
+    "C:\Program Files (x86)\LLVM\bin",
+    (Join-Path $env:LOCALAPPDATA "LLVM\bin"),
+    (Join-Path $env:USERPROFILE "AppData\Local\LLVM\bin")
+)
+$clangExe = $null
 $clang = Get-Command clang -ErrorAction SilentlyContinue
-if (-not $clang) {
-    $llvmBin = "C:\Program Files\LLVM\bin\clang.exe"
-    if (Test-Path $llvmBin) { $clang = Get-Command $llvmBin -ErrorAction SilentlyContinue }
-}
 if ($clang) {
-    $ver = & $clang.Source --version 2>$null | Select-Object -First 1
+    $clangExe = $clang.Source
+} else {
+    foreach ($bin in $llvmCandidates) {
+        $probe = Join-Path $bin "clang.exe"
+        if (Test-Path $probe) { $clangExe = $probe; break }
+    }
+}
+if ($clangExe) {
+    $ver = & $clangExe --version 2>$null | Select-Object -First 1
     Write-Ok "Clang found: $ver"
+    # Make sure clang's bin folder is on PATH for this session (fresh install / non-standard layout)
+    $clangBin = Split-Path -Parent $clangExe
+    if (-not (($env:Path -split ';') -contains $clangBin)) {
+        $env:Path = "$clangBin;" + $env:Path
+    }
 } else {
     Write-Warn "LLVM not found. Installing via winget (LLVM.LLVM, ~500 MB download)..."
     Write-Warn "If a UAC prompt appears, click YES."
     winget install --id LLVM.LLVM -e --accept-source-agreements --accept-package-agreements --silent 2>&1 | Out-Null
-    $llvmBin = "C:\Program Files\LLVM\bin\clang.exe"
-    if (Test-Path $llvmBin) { Write-Ok "LLVM installed."; $changed = $true }
-    else { Write-Fail "LLVM install failed. Install LLVM manually, then re-run this script." }
+    foreach ($bin in $llvmCandidates) {
+        $probe = Join-Path $bin "clang.exe"
+        if (Test-Path $probe) { $clangExe = $probe; break }
+    }
+    if ($clangExe) {
+        Write-Ok "LLVM installed."; $changed = $true
+        $clangBin = Split-Path -Parent $clangExe
+        $env:Path = "$clangBin;" + $env:Path
+    } else {
+        Write-Fail "LLVM install failed. Install LLVM manually, then re-run this script."
+    }
 }
-# Make sure clang is on PATH for this session after a fresh install
-$env:Path = "C:\Program Files\LLVM\bin;" + $env:Path
 
 # ---------- 3. Windows SDK ----------
 Write-Step "Checking Windows SDK..."
@@ -110,21 +132,33 @@ if (-not $sdkFound) {
 # ---------- 4. Build runtime objects ----------
 $rtSrc = Join-Path $ScriptDir "pbcompiler\runtime\pb_runtime.c"
 if (Test-Path $rtSrc) {
-    # -ffunction-sections/-fdata-sections (batch 310): place each function and
-    # global in its own COMDAT section so the linker (/OPT:REF) drops the runtime
-    # functions the program never references, shrinking the EXE instead of
-    # pulling the whole runtime. -O2 shrinks the object ~20% over -O0.
-    foreach ($rtTarget in @(
-        @{ Obj = "pb_runtime_x64.obj"; Triple = "x86_64-pc-windows-msvc" },
-        @{ Obj = "pb_runtime_x86.obj"; Triple = "i686-pc-windows-msvc" }
-    )) {
-        $rtObj = Join-Path $ScriptDir $rtTarget.Obj
-        Write-Step "Building $($rtTarget.Obj)..."
-        & clang -c $rtSrc -o $rtObj --target=$rtTarget.Triple -O2 -ffunction-sections -fdata-sections 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0 -and (Test-Path $rtObj)) {
-            Write-Ok "Runtime object built: $rtObj"
-        } else {
-            Write-Fail "Runtime build failed ($($rtTarget.Triple)). LLVM/Clang is required (step 2)."
+    if (-not $clangExe -or -not (Test-Path $clangExe)) {
+        Write-Fail "clang is not available (step 2): install LLVM/Clang and add its bin folder to PATH, then re-run."
+    } else {
+        # -ffunction-sections/-fdata-sections (batch 310): place each function and
+        # global in its own COMDAT section so the linker (/OPT:REF) drops the runtime
+        # functions the program never references, shrinking the EXE instead of
+        # pulling the whole runtime. -O2 shrinks the object ~20% over -O0.
+        foreach ($rtTarget in @(
+            @{ Obj = "pb_runtime_x64.obj"; Triple = "x86_64-pc-windows-msvc" },
+            @{ Obj = "pb_runtime_x86.obj"; Triple = "i686-pc-windows-msvc" }
+        )) {
+            $rtObj = Join-Path $ScriptDir $rtTarget.Obj
+            Write-Step "Building $($rtTarget.Obj)..."
+            $rtOut = & $clangExe -c $rtSrc -o $rtObj --target=$rtTarget.Triple -O2 -ffunction-sections -fdata-sections 2>&1
+            $rtCode = $LASTEXITCODE
+            if ($rtCode -eq 0 -and (Test-Path $rtObj)) {
+                Write-Ok "Runtime object built: $rtObj"
+            } else {
+                Write-Fail "Runtime build failed ($($rtTarget.Triple)): clang exited with code $rtCode."
+                $errLines = @($rtOut | Where-Object { $_ -match "error:|fatal error|No such file|not found" })
+                if ($errLines.Count -gt 0) {
+                    Write-Host "   clang diagnostics:" -ForegroundColor Red
+                    foreach ($e in ($errLines | Select-Object -First 12)) { Write-Host "     $e" -ForegroundColor Red }
+                }
+                Write-Warn "   If clang could not start: LLVM/Clang is missing or not on PATH (step 2)."
+                Write-Warn "   If clang started but reported missing headers: install the Windows SDK and MSVC build tools."
+            }
         }
     }
 } else {
