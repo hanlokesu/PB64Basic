@@ -24,7 +24,7 @@ fn main() {
         eprintln!("Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--obj-only]");
         eprintln!("       [--session-struct]");
         eprintln!("       [--emit-llvm] [--parse-only] [--runtime-lib path] [--lib-dir path]");
-        eprintln!("       [--debug] [--target triple] [--console]");
+        eprintln!("       [--include-dir path] [--debug] [--target triple] [--console]");
         process::exit(2);
     }
 
@@ -148,6 +148,7 @@ fn main() {
     let split_threshold = get_flag_value(&args, "--split-threshold")
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
+    let include_dirs = collect_include_dirs(&args);
 
     let mut opts = codegen::CompileOptions {
         dll_mode,
@@ -168,7 +169,14 @@ fn main() {
         console_mode: None,
     };
 
-    match compile_file(file_path, &output, parse_only, cli_console, &mut opts) {
+    match compile_file(
+        file_path,
+        &output,
+        parse_only,
+        cli_console,
+        &mut opts,
+        &include_dirs,
+    ) {
         Ok(()) => {
             eprintln!("[PB64Basic] Success: {}", output);
         }
@@ -186,6 +194,42 @@ fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|pos| args.get(pos + 1).cloned())
+}
+
+/// True for the PB-style include-directory switch `/I`, either attached
+/// (`/IC:\WinAPI`) or separate (`/I C:\WinAPI`).
+fn is_slash_i(tok: &str) -> bool {
+    tok.len() >= 2 && tok[..2].eq_ignore_ascii_case("/I")
+}
+
+/// Collect every `--include-dir <path>` and `/I <path>` / `/I<path>` value,
+/// in command-line order.  The switch is repeatable; duplicates are left to
+/// the preprocessor to collapse.
+fn collect_include_dirs(args: &[String]) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    let mut i = 3; // args[0]=exe, args[1]=build, args[2]=source
+    while i < args.len() {
+        let tok = args[i].as_str();
+        if tok == "--include-dir" {
+            if let Some(v) = args.get(i + 1) {
+                dirs.push(v.clone());
+            }
+            i += 2;
+        } else if is_slash_i(tok) {
+            if tok.len() == 2 {
+                if let Some(v) = args.get(i + 1) {
+                    dirs.push(v.clone());
+                }
+                i += 2;
+            } else {
+                dirs.push(tok[2..].to_string());
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    dirs
 }
 
 // Every CLI flag the parser understands. Value flags consume the token that
@@ -209,6 +253,7 @@ const VALUE_FLAGS: &[&str] = &[
     "--lib-dir",
     "--target",
     "--split-threshold",
+    "--include-dir",
 ];
 
 /// Scan the arguments after the source file. A bare token ending in ".obj" is
@@ -224,6 +269,11 @@ fn scan_positional_runtime(args: &[String]) -> Result<Option<String>, String> {
         } else if VALUE_FLAGS.contains(&tok.as_str()) {
             // The next token is this flag's value, not a positional argument.
             i += 2;
+        } else if is_slash_i(tok) {
+            // PB-style include dir: `/I <dir>` (separate) or `/I<dir>`
+            // (attached). The value is collected by collect_include_dirs();
+            // here it is only recognised so it is not reported as unknown.
+            i += if tok.len() == 2 { 2 } else { 1 };
         } else if tok.to_ascii_lowercase().ends_with(".obj") {
             if bare_obj.is_some() {
                 return Err(format!(
@@ -330,6 +380,7 @@ fn compile_file(
     parse_only: bool,
     force_console: bool,
     opts: &mut codegen::CompileOptions,
+    include_dirs: &[String],
 ) -> PbResult<()> {
     let path = Path::new(path);
 
@@ -338,6 +389,9 @@ fn compile_file(
     let mut preprocessor = Preprocessor::new();
     preprocessor.set_target(&opts.target);
     preprocessor.set_build_mode(opts.exe_mode, opts.dll_mode, opts.sll_mode);
+    for dir in include_dirs {
+        preprocessor.add_include_dir(dir);
+    }
     let source_lines = preprocessor.preprocess(path)?;
     eprintln!(
         "[PB64Basic] Preprocessed {} lines ({:.1}s)",

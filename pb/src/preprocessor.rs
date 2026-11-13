@@ -150,30 +150,39 @@ fn standalone_underscore_with_tail(s: &str) -> Option<usize> {
     None
 }
 
-/// Replace every occurrence of `$NAME` (or `$$NAME`) in `text` with `value`,
-/// guarding against matching a longer identifier (`$NAME_EXTRA` stays intact).
-fn substitute_equate_text(text: &str, name: &str, value: &str) -> String {
+/// Fast path for `$equate` substitution: instead of scanning the whole line
+/// once per equate name (O(lines * equates * line_len)), scan the line once,
+/// extract each `$IDENT` token and look it up in the map. Token-boundary rules
+/// (prev char not alnum/_/`$`; the token run already ends at the next
+/// non-identifier char, so the trailing boundary check is implied) match the
+/// old per-name sweep. Single pass, no recursive expansion of substituted
+/// values — same behavior as before.
+fn substitute_equates_fast(text: &str, map: &HashMap<String, String>) -> String {
     let bytes = text.as_bytes();
-    let nlen = name.len();
     let mut out = String::with_capacity(text.len());
     let mut i = 0usize;
     while i < bytes.len() {
-        if bytes[i] == b'$' && text[i..].starts_with(name) {
+        if bytes[i] == b'$' {
+            let start = i;
+            let mut j = i + 1;
+            while j < bytes.len()
+                && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'$')
+            {
+                j += 1;
+            }
             let before_ok = i == 0
                 || !(bytes[i - 1].is_ascii_alphanumeric()
                     || bytes[i - 1] == b'_'
                     || bytes[i - 1] == b'$');
-            let after_ok = i + nlen >= bytes.len()
-                || !(bytes[i + nlen].is_ascii_alphanumeric()
-                    || bytes[i + nlen] == b'_'
-                    || bytes[i + nlen] == b'$');
-            if before_ok && after_ok {
-                out.push_str(value);
-                i += nlen;
-                continue;
+            if before_ok {
+                let key = text[start..j].to_uppercase();
+                if let Some(value) = map.get(&key) {
+                    out.push_str(value);
+                    i = j;
+                    continue;
+                }
             }
         }
-        // Copy one UTF-8 char
         let ch_len = utf8_char_len(bytes[i]);
         out.push_str(&text[i..i + ch_len]);
         i += ch_len;
@@ -247,6 +256,12 @@ pub struct Preprocessor {
     /// default (GUI, see codegen::link_exe).  Recorded here so main.rs can
     /// pass it to the linker as /SUBSYSTEM:CONSOLE.
     console_mode: Option<bool>,
+    /// Extra user-supplied `#INCLUDE` search directories, in command-line
+    /// order (`--include-dir <path>`, repeatable).  Consulted before the
+    /// built-in PBWin install roots and the source directory for a bare
+    /// include file name (msg1413: headers installed outside the hard-coded
+    /// `C:\PBWin10\WINAPI` roots still resolve).
+    include_dirs: Vec<PathBuf>,
 }
 
 impl Default for Preprocessor {
@@ -314,6 +329,7 @@ impl Preprocessor {
             dim_all: false,
             stack_size: None,
             console_mode: None,
+            include_dirs: Vec::new(),
         }
     }
 
@@ -343,6 +359,22 @@ impl Preprocessor {
         self.constants.insert("%PB_EXE".to_string(), val);
     }
 
+    /// Register one extra `#INCLUDE` search directory (repeatable from the
+    /// command line).  Blank/whitespace entries are ignored; duplicates are
+    /// collapsed so a directory passed twice does not lose search order or
+    /// waste a probe.  User directories are consulted before the built-in
+    /// PBWin install roots and the source directory.
+    pub fn add_include_dir(&mut self, dir: &str) {
+        let trimmed = dir.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let path = PathBuf::from(trimmed);
+        if !self.include_dirs.contains(&path) {
+            self.include_dirs.push(path);
+        }
+    }
+
     /// Run the full two-pass preprocess (batch 306).  Pass 1 walks the source
     /// and include graph collecting every MACRO definition (with the correct
     /// #IF/constant state); pass 2 re-runs the same walk with the complete
@@ -361,7 +393,8 @@ impl Preprocessor {
         let _ = self.process_file(path)?;
         self.collect_only = false;
         self.reset_defined_this_pass();
-        self.process_file(path)
+        let lines = self.process_file(path)?;
+        Ok(lines)
     }
 
     /// Restore `defined_this_pass` to just the built-in SDK defaults.
@@ -975,7 +1008,7 @@ impl Preprocessor {
                     rest = no_once.trim();
                 }
                 if let Some(inc_path) = extract_string(rest) {
-                    let resolved = resolve_include_path(file, &inc_path);
+                    let resolved = resolve_include_path(file, &inc_path, &self.include_dirs);
                     match self.process_file(&resolved) {
                         Ok(inc_lines) => {
                             lines.extend(inc_lines);
@@ -1118,21 +1151,12 @@ impl Preprocessor {
         // text-replaced with the definition's right-hand side, except on the
         // definition lines themselves (they were pushed raw above).
         if !self.string_constants.is_empty() {
-            let map: Vec<(String, String)> = self
-                .string_constants
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
             for sl in lines.iter_mut() {
                 let t = sl.text.trim_start();
                 if t.starts_with('$') && sl.text.contains('=') {
                     continue; // definition line
                 }
-                let mut out = sl.text.clone();
-                for (name, value) in &map {
-                    out = substitute_equate_text(&out, name, value);
-                }
-                sl.text = out;
+                sl.text = substitute_equates_fast(&sl.text, &self.string_constants);
             }
         }
 
@@ -1232,21 +1256,69 @@ impl Preprocessor {
         // a fixpoint (batch306 #5) — PBWin resolves the full alias chain.
         let mut result = full.to_string();
         for _ in 0..8 {
-            let mut changed = false;
-            for (name, def) in &self.macros {
-                if def.body.len() == 1 {
-                    let before = result.clone();
-                    result = replace_macro_refs(&result, name, def);
-                    if result != before {
-                        changed = true;
-                    }
-                }
-            }
+            let (next, changed) = Self::expand_single_macros_once(&result, &self.macros);
+            result = next;
             if !changed {
                 break;
             }
         }
         result
+    }
+
+    /// One fixpoint round of single-line macro expansion: scan the line once,
+    /// extract each identifier token and look it up in the macro map, instead
+    /// of walking every macro over the whole line (O(lines * macros * line_len)).
+    /// Only body.len()==1 macros are matched here; multi-line macros are handled
+    /// by the statement-position pass above. Returns (new text, changed).
+    fn expand_single_macros_once(
+        result: &str,
+        macros: &HashMap<String, MacroDef>,
+    ) -> (String, bool) {
+        let bytes = result.as_bytes();
+        let mut out = String::new();
+        let mut changed = false;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if c.is_ascii_alphabetic() || c == b'_' as char {
+                let start = i;
+                while i < bytes.len()
+                    && ((bytes[i] as char).is_ascii_alphanumeric()
+                        || bytes[i] == b'_'
+                        || bytes[i] == b'$')
+                {
+                    i += 1;
+                }
+                let word = &result[start..i];
+                let key = word.to_uppercase();
+                let hit = macros.get(&key).filter(|d| d.body.len() == 1);
+                if let Some(def) = hit {
+                    let body = def.body.first().cloned().unwrap_or_default();
+                    let mut j = i;
+                    while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                        j += 1;
+                    }
+                    if j < bytes.len() && bytes[j] == b'(' {
+                        if let Some(close_rel) = find_matching_paren(&result[j..]) {
+                            let close = j + close_rel;
+                            let args = split_args(&result[j + 1..close]);
+                            out.push_str(&substitute_params(&body, &def.params, &args));
+                            i = close + 1;
+                            changed = true;
+                            continue;
+                        }
+                    }
+                    out.push_str(&substitute_params(&body, &def.params, &[]));
+                    changed = true;
+                    continue;
+                }
+                out.push_str(word);
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        (out, changed)
     }
 
     /// Evaluate a #IF / #ELSEIF condition.
@@ -2004,52 +2076,11 @@ fn substitute_params(body: &str, params: &[String], args: &[String]) -> String {
     result
 }
 
-/// Replace single-line macro references (NAME or NAME(args)) in `line`.
-fn replace_macro_refs(line: &str, name: &str, def: &MacroDef) -> String {
-    let name_upper = name.to_uppercase();
-    let body = def.body.first().cloned().unwrap_or_default();
-    let mut out = String::new();
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if c.is_ascii_alphabetic() || c == '_' {
-            let start = i;
-            while i < bytes.len()
-                && ((bytes[i] as char).is_ascii_alphanumeric()
-                    || bytes[i] == b'_'
-                    || bytes[i] == b'$')
-            {
-                i += 1;
-            }
-            let word = &line[start..i];
-            if word.to_uppercase() == name_upper {
-                let mut j = i;
-                while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
-                    j += 1;
-                }
-                if j < bytes.len() && bytes[j] == b'(' {
-                    if let Some(close_rel) = find_matching_paren(&line[j..]) {
-                        let close = j + close_rel;
-                        let args = split_args(&line[j + 1..close]);
-                        out.push_str(&substitute_params(&body, &def.params, &args));
-                        i = close + 1;
-                        continue;
-                    }
-                }
-                out.push_str(&substitute_params(&body, &def.params, &[]));
-                continue;
-            }
-            out.push_str(word);
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-    out
-}
-
-fn resolve_include_path(current_file: &Path, include_path: &str) -> PathBuf {
+fn resolve_include_path(
+    current_file: &Path,
+    include_path: &str,
+    include_dirs: &[PathBuf],
+) -> PathBuf {
     // Convert backslashes to forward slashes for cross-platform
     let normalized = include_path.replace('\\', "/");
     // Absolute path or drive-qualified path: use it directly.
@@ -2070,6 +2101,15 @@ fn resolve_include_path(current_file: &Path, include_path: &str) -> PathBuf {
     // auto-detection) and search it BEFORE the local directory, so a
     // same-named local file (e.g. the repo's 70-byte win32api.inc stub)
     // cannot hijack the official SDK header (batch 306).
+    // User-supplied `--include-dir` roots are consulted first, in the order
+    // given on the command line (msg1413: headers installed outside the
+    // hard-coded PBWin roots still resolve).
+    for dir in include_dirs {
+        let p = dir.join(&normalized);
+        if p.exists() {
+            return p;
+        }
+    }
     for cand in [
         "C:\\PBWin10\\WINAPI",
         "C:\\PBWin10\\WINAPI\\INC",

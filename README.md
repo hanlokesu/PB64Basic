@@ -415,7 +415,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 343 (v0.2.134). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 344 (v0.2.135). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 344 (v0.2.135) - repeatable --include-dir switch plus PB-style /I alias (/I<dir> and /I <dir>, case-insensitive): a bare #INCLUDE header name searches the command-line directories first (in order, de-duplicated), then the built-in PBWin install candidates, then the source parent; separator-bearing relative paths still resolve against the source parent only. Preprocessor full Win32API include set drops from about 208s to about 2.6s via single-scan HashMap equate/macro lookup, IR line-for-line identical. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 343 (v0.2.134) - numeric-to-string family compile-time type guard: STR$/CSTR$, HEX$, OCT$, BIN$, DEC$ reject a string/pointer operand at compile time with Error 420 (numeric operand expected) instead of silently rendering the BSTR pointer bit pattern as a garbage number; eight existing examples drop the spurious STR$ around string variables (numeric STR$ preserved), batch025 moves a REGISTER string to LOCAL. Six negative probes in _negative_probes; self-check examples/batch343_test.bas, dual-run fork vs PBWin10 FAILURES 0. No new keyword; coverage stays at 947 rows / 915 implemented.
 > batch 342 (v0.2.133) - ON ERROR retry loop and COM failure conformance plus embedded-NUL string length: bare RESUME retry re-enters the clear-before block so the residual error code is cleared before the statement runs again; NEWCOM/GETCOM/ANYCOM failure sets NOTHING without raising Error 99; the retry checkpoint entry block is captured before the body for IR dominance; CHRTOUTF8$/UTF8TOCHR$, BUILD$, JOIN$, CLIP$/SHRINK$/REMOVE$/RETAIN$/REMAIN$ read the BSTR prefix length. CLIPBOARD TEXT/OEMTEXT keep strlen by Win32 NUL-terminated format semantics. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch342_test.bas, batch343_test.bas.
 > batch 341 (v0.2.132) - Ship the i686 runtime object in the release package and lock linker size options: the zip now carries pb_runtime_x86.obj for --target i686-pc-windows-msvc; both runtime objects are rebuilt -O2 with per-function COMDAT sections; the linker passes /OPT:REF, /OPT:ICF and /DEBUG:NONE for both targets; the zip smoke links hello.bas for x86_64 and i686. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
@@ -996,6 +997,17 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.135 (2026-11-13) - batch 344: repeatable --include-dir / /I switch for #INCLUDE, plus preprocessor include-set speedup
+
+**Added:**
+- **`--include-dir <path>` command-line switch (repeatable) and PB-style `/I` alias:** A bare `#INCLUDE` header name now searches the directories passed on the command line first, in the order they were given (de-duplicated), before the built-in PBWin install candidates (`C:\PBWin10\WINAPI`, `C:\PBWin10\WINAPI\INC`, `C:\PBWin9\WINAPI`) and the source file's own directory. The `/I` alias accepts both the attached form `/I<dir>` and the separate form `/I <dir>`, case-insensitively. This lets a project whose Win32API headers live outside the default PBWin tree be compiled without moving the sources or headers. An include path that already contains a directory separator is still resolved relative to the including source's parent only; absolute and drive-qualified paths are used as-is.
+
+**Performance:**
+- The preprocessor's full Win32API header set (batch306: 1219 headers, about 1.49M physical lines) compiles in about 2.6 s instead of about 208 s: `$equate` and single-line macro substitution each do one scan plus a HashMap lookup instead of repeated O(n^2) text rescans. The generated IR is line-for-line identical to the pre-optimization baseline (24,396 lines, compare groups 0).
+
+**Coverage:**
+- No new PB keyword; this is a CLI parameter extension, not a language keyword. Coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch344_test.bas` (same-directory `#INCLUDE`, shared equate and helper function), dual-run fork vs PBWin10, FAILURES 0 on both sides.
+
 ### v0.2.134 (2026-11-13) - batch 343: compile-time numeric-operand guard for the numeric-to-string family
 
 **Fixed:**
