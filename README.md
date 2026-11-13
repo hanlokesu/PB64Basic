@@ -217,10 +217,23 @@ PB64Basic build program.bas --exe \
   --lib-dir "<Windows SDK>\Lib\<ver>\um\x86"
 ```
 
+If your Win32API headers live in a non-default directory (for example
+`C:\WinAPI`), pass it with `--include-dir` (repeatable), or the PB-style
+`/I` alias:
+
+```bash
+PB64Basic build program.bas --exe \
+  --target x86_64-pc-windows-msvc \
+  --runtime-lib pb_runtime_x64.obj \
+  --include-dir C:\WinAPI
+# equivalent: /IC:\WinAPI  or  /I C:\WinAPI
+```
+
 - `--runtime-lib` — points to the precompiled `pb_runtime.c` object.
 - `--lib-dir`  — optional. Directory containing `user32.lib`,
   `shell32.lib`, etc. Required for `MSGBOX` / `SHELL` / Win32 API usage.
   If omitted, the compiler auto-detects the newest installed Windows SDK.
+- `--include-dir <dir>` (repeatable) - optional. Adds a directory that a bare `#INCLUDE "header.inc"` name searches in, before the built-in PBWin install candidates and the source file's own directory. The PB-style alias `/I` accepts the attached `/I<dir>` or separate `/I <dir>` form, case-insensitive. A separator-bearing relative `#INCLUDE` path still resolves against the source file's parent only; absolute paths are used as-is.
 
 ---
 
