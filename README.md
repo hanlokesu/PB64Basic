@@ -428,7 +428,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 344 (v0.2.135). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 345 (v0.2.136). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 345 (v0.2.136) - setup.ps1 runtime build reads the object name and target triple into plain scalar variables before invoking clang; previously the hashtable property was interpolated into --target= as the type name System.Collections.Hashtable.Triple and clang rejected it with unknown target triple. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 344 (v0.2.135) - repeatable --include-dir switch plus PB-style /I alias (/I<dir> and /I <dir>, case-insensitive): a bare #INCLUDE header name searches the command-line directories first (in order, de-duplicated), then the built-in PBWin install candidates, then the source parent; separator-bearing relative paths still resolve against the source parent only. Preprocessor full Win32API include set drops from about 208s to about 2.6s via single-scan HashMap equate/macro lookup, IR line-for-line identical. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 343 (v0.2.134) - numeric-to-string family compile-time type guard: STR$/CSTR$, HEX$, OCT$, BIN$, DEC$ reject a string/pointer operand at compile time with Error 420 (numeric operand expected) instead of silently rendering the BSTR pointer bit pattern as a garbage number; eight existing examples drop the spurious STR$ around string variables (numeric STR$ preserved), batch025 moves a REGISTER string to LOCAL. Six negative probes in _negative_probes; self-check examples/batch343_test.bas, dual-run fork vs PBWin10 FAILURES 0. No new keyword; coverage stays at 947 rows / 915 implemented.
 > batch 342 (v0.2.133) - ON ERROR retry loop and COM failure conformance plus embedded-NUL string length: bare RESUME retry re-enters the clear-before block so the residual error code is cleared before the statement runs again; NEWCOM/GETCOM/ANYCOM failure sets NOTHING without raising Error 99; the retry checkpoint entry block is captured before the body for IR dominance; CHRTOUTF8$/UTF8TOCHR$, BUILD$, JOIN$, CLIP$/SHRINK$/REMOVE$/RETAIN$/REMAIN$ read the BSTR prefix length. CLIPBOARD TEXT/OEMTEXT keep strlen by Win32 NUL-terminated format semantics. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch342_test.bas, batch343_test.bas.
@@ -1010,6 +1011,13 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.136 (2026-11-14) - batch 345: setup.ps1 runtime target-triple binding fix
+
+**Fixed:**
+- **`setup.ps1` no longer passes a broken target triple to clang.** The runtime build loop iterated over a hashtable per target; inside the `--target=` argument the hashtable was stringified to its type name, so clang received `--target=System.Collections.Hashtable.Triple` and rejected it with `unknown target triple`, even though LLVM/Clang and the Windows SDK were installed correctly. The loop now reads the object name and target triple into plain scalar variables before invoking clang, so both `x86_64-pc-windows-msvc` and `i686-pc-windows-msvc` runtime objects build correctly. The failure diagnostics also distinguish an unknown target / invalid argument (a setup-script invocation problem) from a missing LLVM/Clang install or missing SDK/MSVC headers.
+
+No compiler code, keyword, probe, or coverage change; coverage stays at 947 rows / 915 implemented.
+
 ### v0.2.135 (2026-11-13) - batch 344: repeatable --include-dir / /I switch for #INCLUDE, plus preprocessor include-set speedup
 
 **Added:**
