@@ -64,7 +64,7 @@ FUNCTION PBMAIN() AS LONG
     IF a = "AB" AND b = "CDEF" THEN
         ConPrint "SPLIT-PASS"
     ELSE
-        ConPrint "SPLIT-FAIL [" & STR$(a) & "] [" & STR$(b) & "]"
+        ConPrint "SPLIT-FAIL [" & a & "] [" & b & "]"
     END IF
 
     REDIM arr(1 TO 5)

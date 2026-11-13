@@ -415,7 +415,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 342 (v0.2.133). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 343 (v0.2.134). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 343 (v0.2.134) - numeric-to-string family compile-time type guard: STR$/CSTR$, HEX$, OCT$, BIN$, DEC$ reject a string/pointer operand at compile time with Error 420 (numeric operand expected) instead of silently rendering the BSTR pointer bit pattern as a garbage number; eight existing examples drop the spurious STR$ around string variables (numeric STR$ preserved), batch025 moves a REGISTER string to LOCAL. Six negative probes in _negative_probes; self-check examples/batch343_test.bas, dual-run fork vs PBWin10 FAILURES 0. No new keyword; coverage stays at 947 rows / 915 implemented.
 > batch 342 (v0.2.133) - ON ERROR retry loop and COM failure conformance plus embedded-NUL string length: bare RESUME retry re-enters the clear-before block so the residual error code is cleared before the statement runs again; NEWCOM/GETCOM/ANYCOM failure sets NOTHING without raising Error 99; the retry checkpoint entry block is captured before the body for IR dominance; CHRTOUTF8$/UTF8TOCHR$, BUILD$, JOIN$, CLIP$/SHRINK$/REMOVE$/RETAIN$/REMAIN$ read the BSTR prefix length. CLIPBOARD TEXT/OEMTEXT keep strlen by Win32 NUL-terminated format semantics. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch342_test.bas, batch343_test.bas.
 > batch 341 (v0.2.132) - Ship the i686 runtime object in the release package and lock linker size options: the zip now carries pb_runtime_x86.obj for --target i686-pc-windows-msvc; both runtime objects are rebuilt -O2 with per-function COMDAT sections; the linker passes /OPT:REF, /OPT:ICF and /DEBUG:NONE for both targets; the zip smoke links hello.bas for x86_64 and i686. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
 > batch 340 (v0.2.131) - NUL-safe string length: WRAP$/UNWRAP$/MCASE$/VARIANT$/VARIANT$$ read the BSTR 4-byte length prefix (pb_str_len) instead of C strlen; VARIANT$$ uses explicit-length MultiByteToWideChar twice (need -> malloc -> got). An embedded NUL no longer truncates the payload. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: examples/batch340_test.bas.
@@ -995,6 +996,18 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.134 (2026-11-13) - batch 343: compile-time numeric-operand guard for the numeric-to-string family
+
+**Fixed:**
+- **String/pointer operand to STR$/CSTR$, HEX$, OCT$, BIN$, DEC$ (#323):** These conversion functions take a numeric expression only. Previously a string variable (an opaque `IrType::Ptr` BSTR) fell through to the integer/float conversion as its raw pointer bit pattern, producing a garbage subnormal float or zero instead of a diagnostic. A shared `guard_numeric_operand` helper now rejects a pointer operand at compile time with `Error 420: Numeric operand expected: <fn>$ requires a numeric expression, not a string/pointer` and the source line number, matching PBWin10, which raises Error 420 when a string operand lands in a numeric position for this family.
+
+**Changed:**
+- Eight existing examples dropped the spurious `STR$` wrapper around string variables (string concatenation takes the BSTR directly); `STR$` around numeric variables was kept unchanged. `batch025_test.bas` moves a `REGISTER` string variable to `LOCAL` (`REGISTER` is restricted to integer/long/word/dword/extended float, not strings; PBWin Error 491).
+- Six negative probes under `_negative_probes/` (`b323_{str,cstr,hex,oct,bin,dec}_string.bas`) assert each family rejects a string operand: non-zero exit, no `.exe`, and a diagnostic naming the function.
+
+**Coverage:**
+- No new keyword; coverage stays at 947 rows / 915 implemented. Self-check: `examples/batch343_test.bas` (happy-path numeric rendering, nine assertions), dual-run fork vs PBWin10, FAILURES 0 on both sides.
+
 ### v0.2.133 (2026-11-13) - batch 342: fix ON ERROR retry loop, COM failure conformance, and embedded-NUL string length
 
 **Fixed:**

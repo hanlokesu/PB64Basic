@@ -28825,6 +28825,7 @@ impl Compiler {
             return Err(PbError::runtime("radix function requires 1 argument"));
         }
         let v = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&v, &format!("{}$", which))?;
         let base = match which {
             "BIN" => 2,
             "OCT" => 8,
@@ -30026,8 +30027,30 @@ impl Compiler {
         Ok(())
     }
 
+    /// Guard for the numeric-to-string family (STR$/CSTR$, HEX$, OCT$, BIN$,
+    /// DEC$): they take a numeric expression only. A BSTR operand is an opaque
+    /// `IrType::Ptr`; without this check the pointer bit pattern falls through
+    /// to to_f64/to_i64 and is rendered as a garbage subnormal float or 0.
+    /// PBWin10 raises Error 420 (Relational operator expected) for a string in
+    /// a numeric position (measured: STR$/HEX$/OCT$/BIN$/DEC$ all 420) — align
+    /// that compile-time rejection instead of emitting junk.
+    fn guard_numeric_operand(&self, val: &Val, fn_name: &str) -> PbResult<()> {
+        if val.ty == IrType::Ptr {
+            return Err(PbError::parser(
+                format!(
+                    "Error 420: Numeric operand expected: {} requires a numeric expression, not a string/pointer",
+                    fn_name
+                ),
+                None,
+                self.current_line,
+            ));
+        }
+        Ok(())
+    }
+
     fn builtin_str(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, "STR$/CSTR$")?;
         let buf_size = fb.const_i32(32);
         let buf = self.malloc_or_raise(fb, &buf_size);
         if val.ty.is_int() {
@@ -30080,6 +30103,7 @@ impl Compiler {
     /// QUAD values as unsigned 64-bit. Optional digits sets a minimum zero-padded width.
     fn builtin_hex(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, "HEX$")?;
         // 32-bit (and smaller) types: sign-extend so negative LONGs format as
         // u64 hex (PBWin10 renders HEX$(-1) as 16 F's, not 8).
         let v64 = if val.ty == IrType::I32 || val.ty == IrType::I16 || val.ty == IrType::I8 {

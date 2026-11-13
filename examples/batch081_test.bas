@@ -58,7 +58,7 @@ FUNCTION PBMAIN() AS LONG
     ' Test 1: LINE INPUT with prompt
     ConPrint "Test 1: LINE INPUT with prompt"
     LINE INPUT "Enter a linetxt: "; linetxt
-    ConPrint "You entered: [" & STR$(linetxt) & "]"
+    ConPrint "You entered: [" & linetxt & "]"
     ConPrint ""
 
     ' Test 2: INPUT with prompt
@@ -70,7 +70,7 @@ FUNCTION PBMAIN() AS LONG
     ' Test 3: LINE INPUT without prompt
     ConPrint "Test 3: LINE INPUT without prompt (type something and press Enter)"
     LINE INPUT linetxt
-    ConPrint "You entered: [" & STR$(linetxt) & "]"
+    ConPrint "You entered: [" & linetxt & "]"
     ConPrint ""
 
     ConPrint "=== ALL 3 TESTS PASSED ==="

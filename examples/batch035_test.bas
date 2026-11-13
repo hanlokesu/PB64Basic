@@ -51,7 +51,7 @@ GLOBAL failures AS LONG
 
 SUB Check(cond AS LONG, msg AS STRING)
     IF cond = 0 THEN
-        ConPrint "FAIL: " & STR$(msg)
+        ConPrint "FAIL: " & msg
         failures = failures + 1
     END IF
 END SUB

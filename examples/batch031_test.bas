@@ -71,11 +71,11 @@ FUNCTION PBMAIN() AS LONG
     FIELD #2, 10 AS f1, 10 AS f2
     GET #2
     IF f1 <> "0123456789" THEN
-        ConPrint "FAIL f1 read = [" & STR$(f1) & "]"
+        ConPrint "FAIL f1 read = [" & f1 & "]"
         errc = errc + 1
     END IF
     IF f2 <> "9876543210" THEN
-        ConPrint "FAIL f2 read = [" & STR$(f2) & "]"
+        ConPrint "FAIL f2 read = [" & f2 & "]"
         errc = errc + 1
     END IF
 
@@ -83,7 +83,7 @@ FUNCTION PBMAIN() AS LONG
     FIELD #2, 10 AS f1
     f1 = "abc"
     IF f1 <> "abc       " THEN
-        ConPrint "FAIL pad = [" & STR$(f1) & "]"
+        ConPrint "FAIL pad = [" & f1 & "]"
         errc = errc + 1
     END IF
 
@@ -94,11 +94,11 @@ FUNCTION PBMAIN() AS LONG
     PUT #2, 2
     GET #2, 2
     IF f1 <> "RECORDTWO " THEN
-        ConPrint "FAIL rec2 f1 = [" & STR$(f1) & "]"
+        ConPrint "FAIL rec2 f1 = [" & f1 & "]"
         errc = errc + 1
     END IF
     IF f2 <> "1234567890" THEN
-        ConPrint "FAIL rec2 f2 = [" & STR$(f2) & "]"
+        ConPrint "FAIL rec2 f2 = [" & f2 & "]"
         errc = errc + 1
     END IF
 
@@ -106,7 +106,7 @@ FUNCTION PBMAIN() AS LONG
     '        record buffer is still open; after CLOSE the binding is gone) ---
     FIELD STRING f1
     IF f1 <> "RECORDTWO " THEN
-        ConPrint "FAIL tostr f1 = [" & STR$(f1) & "]"
+        ConPrint "FAIL tostr f1 = [" & f1 & "]"
         errc = errc + 1
     END IF
     CLOSE #2
@@ -115,11 +115,11 @@ FUNCTION PBMAIN() AS LONG
     FIELD x$, 3 AS g1, 3 AS g2
     x$ = "abcdef"
     IF g1 <> "abc" THEN
-        ConPrint "FAIL dyn g1 = [" & STR$(g1) & "]"
+        ConPrint "FAIL dyn g1 = [" & g1 & "]"
         errc = errc + 1
     END IF
     IF g2 <> "def" THEN
-        ConPrint "FAIL dyn g2 = [" & STR$(g2) & "]"
+        ConPrint "FAIL dyn g2 = [" & g2 & "]"
         errc = errc + 1
     END IF
     g1 = "111"
@@ -132,7 +132,7 @@ FUNCTION PBMAIN() AS LONG
     ' --- 7) FIELD RESET unbinds ---
     FIELD RESET g1
     IF g1 <> "" THEN
-        ConPrint "FAIL reset g1 = [" & STR$(g1) & "]"
+        ConPrint "FAIL reset g1 = [" & g1 & "]"
         errc = errc + 1
     END IF
 

@@ -63,7 +63,7 @@ FUNCTION PBMAIN() AS LONG
             ConPrint "READ-FAIL d=" & STR$(d)
         END IF
     ELSE
-        ConPrint "READ-FAIL [" & STR$(a) & "] " & STR$(n) & " [" & STR$(w) & "]"
+        ConPrint "READ-FAIL [" & a & "] " & STR$(n) & " [" & w & "]"
     END IF
 
     RESTORE
@@ -71,7 +71,7 @@ FUNCTION PBMAIN() AS LONG
     IF a = "Hello" THEN
         ConPrint "RESTORE-PASS"
     ELSE
-        ConPrint "RESTORE-FAIL [" & STR$(a) & "]"
+        ConPrint "RESTORE-FAIL [" & a & "]"
     END IF
     ConPrint "Press any key to exit..."
     waitk = WAITKEY$

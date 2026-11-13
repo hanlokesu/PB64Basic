@@ -53,10 +53,10 @@ FUNCTION PBMAIN() AS LONG
 
     ' --- REGISTER is accepted as an optimization hint (LOCAL semantics) ---
     REGISTER counter AS LONG
-    REGISTER regname AS STRING
+    LOCAL regname AS STRING
     counter = 5
     regname = "reg"
-    ConPrint "REGISTER counter=" & STR$(counter) & " regname=" & STR$(regname)
+    ConPrint "REGISTER counter=" & STR$(counter) & " regname=" & regname
 
     ' --- Test 1: ON ERROR GOTO traps a run-time error, RESUME NEXT skips it ---
     ON ERROR GOTO handler1

@@ -190,7 +190,7 @@ FUNCTION PBMAIN () AS LONG
     GRAPHIC SPLIT src, 24 TO p1, p2
     IF (p1 & p2) <> src THEN
         fails = fails + 1
-        ConPrint "  FAIL lossless: [" & STR$(p1) & "] & [" & STR$(p2) & "] <> " & STR$(src)
+        ConPrint "  FAIL lossless: [" & p1 & "] & [" & p2 & "] <> " & src
     ELSE
         ConPrint "  PASS lossless -> " & STR$(LEN(p1)) & " +" & STR$(LEN(p2)) & " characters"
     END IF

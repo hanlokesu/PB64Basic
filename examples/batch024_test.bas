@@ -78,9 +78,9 @@ FUNCTION PBMAIN() AS LONG
     OPEN "batch24_dir_b.tmp" FOR OUTPUT AS #3
     CLOSE #3
     d1 = DIR$("batch24_dir_*.tmp")
-    ConPrint "DIR$ first =" & STR$(d1)
+    ConPrint "DIR$ first =" & d1
     d2 = DIR$(NEXT)
-    ConPrint "DIR$ next  =" & STR$(d2)
+    ConPrint "DIR$ next  =" & d2
     DIR "batch24_dir_*.tmp" TO s
     ConPrint "DIR stmt    =" & s
     DIR NEXT TO s
