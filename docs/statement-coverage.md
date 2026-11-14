@@ -1,23 +1,23 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 349 (v0.2.140)** — 2026-11-15. All statements through batch 349 are reflected in this matrix.
+> **Last updated from batch 350 (v0.2.141)** — 2026-11-15. All statements through batch 350 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 
 > **Status-column key**: `Implemented` = this project generates real code. `Established` = a keyword that is *mature in the official PB documentation* - it is **NOT** a claim that upstream benstopics/powerbasilisk implemented it. `Not implemented` = an official keyword this project does not implement yet. `FORK EXTENSION` = implemented by this project but **not** an official PB keyword. This matrix does not publish a count of upstream's own keyword set.
 
 - Rows in this matrix: **947** (14 BLOCK, 285 FUNCTION, 5 OPERATOR, 612 STATEMENT, 30 FORK EXTENSION).
-- **917** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
-- **0** documented keywords still not implemented; **0** Tier-3 DDT GUI items deferred; **30** fork extension (implemented here, not an official PB keyword).
+- **915** official keywords currently available (✅ Implemented by this project + ✅ Established in the official PB docs).
+- **2** documented keywords still not implemented (TCP NOTIFY, UDP NOTIFY); **0** Tier-3 DDT GUI items deferred; **30** fork extension (implemented here, not an official PB keyword).
 
 ## Summary
 
 | Status | Count | Notes |
 |--------|-------|-------|
-| ✅ Implemented (this project) | 915 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
+| ✅ Implemented (this project) | 913 | Real codegen added by this project (Win32 calls / runtime helpers / control flow) |
 | ✅ Established | 2 | Mature in the official PB documentation (not a claim about upstream's shipped set) |
-| ✅ **Total available** | **917** | Implemented + Established |
-| ❌ Not implemented | 0 | Official PB keywords this project does not implement yet |
+| ✅ **Total available** | **915** | Implemented + Established |
+| ❌ Not implemented | 2 | Official PB keywords this project does not implement yet (TCP NOTIFY, UDP NOTIFY) |
 | 🔧 Fork extension | 30 | Implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC) |
 | 🔲 Proposed (not yet implemented) | 0 | Documented upstream, no codegen evidence yet |
 | 🛠 Tier-3 DDT (deferred) | 0 | DDT GUI / window-callback framework, high effort, deferred |
@@ -796,7 +796,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | TCP ACCEPT | STATEMENT | PB/Win + PB/CC | Implemented |
 | TCP CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
 | TCP LINE INPUT | STATEMENT | PB/Win + PB/CC | Implemented |
-| TCP NOTIFY | STATEMENT | PB/Win + PB/CC | Implemented |
+| TCP NOTIFY | STATEMENT | PB/Win + PB/CC | Not implemented |
 | TCP OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
 | TCP PRINT | STATEMENT | PB/Win + PB/CC | Implemented |
 | TCP RECV | STATEMENT | PB/Win + PB/CC | Implemented |
@@ -855,7 +855,7 @@ Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords /
 | UCODE$ | FUNCTION | Win32 | Implemented |
 | UCODEPAGE | STATEMENT | PB/Win + PB/CC | Implemented |
 | UDP CLOSE | STATEMENT | PB/Win + PB/CC | Implemented |
-| UDP NOTIFY | STATEMENT | PB/Win + PB/CC | Implemented |
+| UDP NOTIFY | STATEMENT | PB/Win + PB/CC | Not implemented |
 | UDP OPEN | STATEMENT | PB/Win + PB/CC | Implemented |
 | UDP RECV | STATEMENT | PB/Win + PB/CC | Implemented |
 | UDP SEND | STATEMENT | PB/Win + PB/CC | Implemented |

@@ -12703,6 +12703,14 @@ impl Compiler {
                 );
             }
             "TCP_NOTIFY" => {
+                // batch 350: the runtime stores the event mask but nothing ever
+                // delivers a window message (this build has no GUI message pump),
+                // so the statement used to compile and run as a silent no-op.
+                // Report it instead of letting the user believe it works.
+                self.warnings.push(format!(
+                    "line {}: TCP NOTIFY accepted but has no effect (async GUI message dispatch is not implemented - the event mask is stored, never delivered)",
+                    call.line
+                ));
                 let s0 = self.compile_expr(fb, &call.args[0])?;
                 let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
                 let s1 = self.compile_expr(fb, &call.args[1])?;
@@ -12710,6 +12718,11 @@ impl Compiler {
                 fb.call_void("pb_tcp_notify", &[i0, i1]);
             }
             "UDP_NOTIFY" => {
+                // batch 350: same silent-no-op problem as TCP_NOTIFY above.
+                self.warnings.push(format!(
+                    "line {}: UDP NOTIFY accepted but has no effect (async GUI message dispatch is not implemented - the event mask is stored, never delivered)",
+                    call.line
+                ));
                 let s0 = self.compile_expr(fb, &call.args[0])?;
                 let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
                 let s1 = self.compile_expr(fb, &call.args[1])?;
@@ -22332,6 +22345,17 @@ impl Compiler {
                 return Ok(());
             }
             "THREAD CREATE" => {
+                // batch 350: the i686 runtime has no safe way to call a PB
+                // function as a stdcall thread entry (cdecl callee through a
+                // stdcall pointer corrupts the stack), so pb_thread_create
+                // fails closed with error 7 at RUN time.  Say so at compile
+                // time instead of letting the user find out from error 7.
+                if self.module.is_32bit() {
+                    self.warnings.push(format!(
+                        "line {}: THREAD CREATE on the i686 target is not supported - the runtime fails closed with error 7 (Out of memory); build with --target x86_64-pc-windows-msvc to use threads",
+                        call.line
+                    ));
+                }
                 if !call.args.is_empty() {
                     let func_name = match &call.args[0] {
                         Expr::Variable(n) => normalize_name(n),

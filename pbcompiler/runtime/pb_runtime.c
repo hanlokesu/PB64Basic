@@ -7397,6 +7397,9 @@ static pb_sock_t pb_sock[PB_MAX_SOCK];
 /* pb_sock_state is defined earlier (file/socket section) so pb_freefile can
    reference it: 0=free 1=tcp 2=udp 3=tcp-server. */
 static long pb_sock_timeout[PB_MAX_SOCK];  /* per-socket SEND/RECV timeout in ms */
+/* batch 350: sticky "last TCP LINE ended without a CRLF" state, so EOF(fNum)
+   keeps returning TRUE after a partial line until a complete line arrives. */
+static int pb_sock_eof[PB_MAX_SOCK];
 #define PB_SOCK_INVALID ((pb_sock_t)-1)
 
 /* Apply the SEND/RECV timeout to one socket (SO_RCVTIMEO/SO_SNDTIMEO). A
@@ -7474,6 +7477,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
         if (bind(s, &a, sizeof(a)) != 0 || listen(s, 8) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
         pb_sock[filenum] = s;
         pb_sock_state[filenum] = 3;
+        pb_sock_eof[filenum] = 0;
         pb_sock_timeout[filenum] = timeout;
         return 0;
     }
@@ -7488,6 +7492,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
     }
     pb_sock[filenum] = s;
     pb_sock_state[filenum] = 1;
+    pb_sock_eof[filenum] = 0;
     pb_sock_timeout[filenum] = timeout;
     return 0;
 }
@@ -7507,6 +7512,7 @@ int pb_tcp_accept(int srv, int* out_newf) {
     if (f >= PB_MAX_SOCK) { closesocket(s); pb_err_var = pb_err = 52; return -1; }
     pb_sock[f] = s;
     pb_sock_state[f] = 1;
+    pb_sock_eof[f] = 0;
     /* Inherit the listening server's SEND/RECV timeout so the accepted socket
        also times out (CHW TIMEOUT applies to SEND/RECV/PRINT/LINE). */
     long t = pb_sock_timeout[srv];
@@ -7560,23 +7566,36 @@ int pb_tcp_line_input(int f, char** out) {
         if (out) *out = pb_bstr_alloc(NULL, 0);
         return -1;
     }
-    /* Dynamic buffer: the old fixed 4096-byte stack buffer silently truncated
-       lines longer than 4095 bytes. Grow on demand so a line of any length is
-       returned in full; the blocking byte-at-a-time recv, timeout/error and
-       CRLF handling below are unchanged. */
+    /* CHW TCP_LINE_INPUT_statement.htm: "even if no $CRLF has been found, TCP
+       LINE will return if no additional data is available.  In that case, TCP
+       LINE will return whatever data has been accumulated, and set EOF to
+       logical TRUE (non-zero)".
+       Batch 350 implements exactly that: once at least one byte has been
+       consumed, a drained receive buffer ends the call (instead of blocking
+       until the socket timeout).  With no bytes at all the call still waits
+       for the first byte - the line-oriented behaviour the batch205 loopback
+       protocol depends on - and a timeout there stays Error 24. */
     long cap = 256;
     char* tmp = (char*)malloc((size_t)cap);
     if (!tmp) { pb_err_var = pb_err = 7; return -1; }
     int n = 0;
+    int incomplete = 0;   /* 1 = returned without a CRLF terminator */
     for (;;) {
-        char c = 0;
-        int r = recv(pb_sock[f], &c, 1, 0);
-        if (r == 0) break;                 /* graceful close: no error */
-        if (r < 0) {                       /* timeout=24, other device error=57 */
-            pb_err_var = pb_err = pb_wsa_err_code();
+        unsigned long avail = 0;
+        if (ioctlsocket(pb_sock[f], PB_FIONREAD, &avail) != 0) avail = 0;
+        if (avail == 0 && n > 0) {
+            incomplete = 1;                 /* no more data: partial line, EOF TRUE */
             break;
         }
-        if (c == '\n') break;
+        char c = 0;
+        int r = recv(pb_sock[f], &c, 1, 0);
+        if (r == 0) { incomplete = 1; break; }   /* graceful close: partial line */
+        if (r < 0) {                             /* timeout=24, other device error=57 */
+            pb_err_var = pb_err = pb_wsa_err_code();
+            if (n > 0) incomplete = 1;
+            break;
+        }
+        if (c == '\n') { incomplete = 0; break; }
         if (c == '\r') continue;
         if (n == cap) {
             long ncap = cap * 2;
@@ -7586,6 +7605,9 @@ int pb_tcp_line_input(int f, char** out) {
         }
         tmp[n++] = c;
     }
+    /* complete line -> 2 (EOF false until the next LINE INPUT changes it);
+       partial line -> 1 (EOF true). */
+    pb_sock_eof[f] = incomplete ? 1 : 2;
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
@@ -7606,6 +7628,7 @@ int pb_tcp_close(int f) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] == 0) { pb_err_var = pb_err = 52; return -1; }
     closesocket(pb_sock[f]);
     pb_sock_state[f] = 0;
+    pb_sock_eof[f] = 0;
     pb_sock_timeout[f] = 0;
     return 0;
 }
@@ -7616,6 +7639,12 @@ int pb_tcp_close(int f) {
    pb_eof can fall through to the file check. */
 int pb_socket_eof_state(int filenum) {
     if (filenum < 1 || filenum >= PB_MAX_SOCK || pb_sock_state[filenum] == 0) return -2;
+    /* batch 350: after a TCP LINE, EOF means "the last line was incomplete".
+       A complete line (state 2) must report FALSE even though the receive
+       buffer is temporarily empty; a partial line (state 1) keeps TRUE.  State
+       0 means TCP LINE has not run yet, so fall back to the live probe. */
+    if (pb_sock_eof[filenum] == 1) return -1;
+    if (pb_sock_eof[filenum] == 2) return 0;
     unsigned long avail = 0;
     if (ioctlsocket(pb_sock[filenum], PB_FIONREAD, &avail) != 0) return -1;
     return avail > 0 ? 0 : -1;
@@ -7638,6 +7667,7 @@ int pb_udp_open(int port, int filenum, long timeout) {
     if (bind(s, &a, sizeof(a)) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
     pb_sock[filenum] = s;
     pb_sock_state[filenum] = 2;
+    pb_sock_eof[filenum] = 0;
     return 0;
 }
 
@@ -7689,6 +7719,7 @@ int pb_udp_close(int f) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] == 0) { pb_err_var = pb_err = 52; return -1; }
     closesocket(pb_sock[f]);
     pb_sock_state[f] = 0;
+    pb_sock_eof[f] = 0;
     return 0;
 }
 

@@ -15012,7 +15012,20 @@ impl Parser {
             }
             _ => {
                 self.consume_to_eol();
-                eprintln!("Error: THREAD: unsupported sub-command on line {}", line);
+                // batch 350: THREAD NEW / THREAD OBJECT are the COM object model
+                // (IPowerThread).  Only the statement family exists here, so name
+                // the missing model instead of a generic "unsupported".
+                if op == "NEW" || op == "OBJECT" {
+                    eprintln!(
+                        "Error: THREAD OBJECT / THREAD NEW (the IPowerThread COM object model) is not implemented on line {} - use the statement form THREAD CREATE [SUSPEND] TO hThread",
+                        line
+                    );
+                } else {
+                    eprintln!(
+                        "Error: THREAD: unsupported sub-command `{}` on line {} - supported: CREATE, CLOSE, SUSPEND, RESUME, STATUS, GET, SET",
+                        op, line
+                    );
+                }
                 self.error_count += 1;
                 Ok(Statement::Noop(format!("THREAD {op}"), line))
             }
@@ -17308,6 +17321,19 @@ impl Parser {
                     // which previously fell through to a variable reference.
                     Expr::FunctionCall(name.to_uppercase(), vec![self.parse_expression()?])
                 } else {
+                    // batch 350: the TXT pseudo-object (CHW "TXT pseudo-object")
+                    // is a GUI Text Window object model whose members
+                    // (CELL/CLS/COLOR/END/INKEY$/INSTAT/LINE.INPUT/PRINT/
+                    // WAITKEY$/WINDOW/COL/ROW) have no runtime here.  Without
+                    // this guard `TXT.WINDOW` failed with the generic
+                    // "Expected member name after '.'".
+                    if name.eq_ignore_ascii_case("TXT") && self.peek() == &Token::Dot {
+                        return Err(PbError::parser(
+                            "TXT pseudo-object is not implemented in this build: the GUI Text Window object model (TXT.CELL/CLS/COLOR/END/INKEY$/INSTAT/LINE.INPUT/PRINT/WAITKEY$/WINDOW/COL/ROW) has no runtime - use PRINT with #CONSOLE ON or GRAPHIC WINDOW instead",
+                            self.current_file(),
+                            self.current_line(),
+                        ));
+                    }
                     Expr::Variable(name)
                 };
                 // Chained .member access: obj.field1.field2..., and the dotted
