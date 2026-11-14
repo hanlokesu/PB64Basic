@@ -146,14 +146,15 @@ and expression functions with no implementation (`Unknown function — 0`).
 
 **Option A — no toolchain needed (recommended): download the prebuilt
 package from [Releases](https://github.com/hanlokesu/PB64Basic/releases).**
-Pick the latest `PB64Basic-vX.Y.Z-x64.zip`; it already contains
-the compiled `PB64Basic.exe`, the 64-bit and 32-bit runtime objects
+Pick the latest `PB64Basic-Enhanced-vX.Y.Z-x64.zip` (replace `X.Y.Z` with the
+version you downloaded); it already contains the compiled `PB64Basic.exe`,
+the 64-bit and 32-bit runtime objects
 (`pb_runtime_x64.obj`, `pb_runtime_x86.obj`), sample
 programs and a one-click `compile.bat`. Unzip and run:
 
 ```bat
-cd PB64Basic-v0.1.21-x64
-compile.bat          :: builds examples\demo.bas -> examples\demo.exe
+cd PB64Basic-Enhanced-vX.Y.Z-x64
+compile.bat          :: builds examples\hello.bas -> examples\hello.exe
 ```
 
 > **Which download should I use?** The green **Code → Download ZIP** button
