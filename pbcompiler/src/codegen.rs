@@ -10411,7 +10411,18 @@ impl Compiler {
                             );
                         }
                         _ => {
-                            // FIELD / WString / other: not implemented yet - ignore
+                            // FIELD / WString / other: the previous code ignored
+                            // the assignment here, so `ASC(wide, n) = code`
+                            // compiled cleanly and did nothing.  Reject loudly
+                            // instead of dropping the statement.
+                            return Err(PbError::parser(
+                                format!(
+                                    "ASC statement: unsupported left-hand type {:?} - only STRING and STRING * N are implemented",
+                                    s_pb
+                                ),
+                                None,
+                                self.current_line,
+                            ));
                         }
                     }
                     return Ok(());
