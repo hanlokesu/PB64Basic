@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 346 (v0.2.137). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 347 (v0.2.138). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> > batch 347 (v0.2.138) - C-family numeric conversions (CINT, CLNG, CDWD, CLNGINT, CUINT, CULNG, CQUAD, CQUD, CDWORD, CBYTE/CBYT, CWORD/CWRD, CDBL, CEXT, CSNG, CFLT, CCUR, CCUX) reject a string/pointer operand at compile time with Error 420 (numeric operand expected) instead of silently passing the BSTR pointer bit pattern into the integer/float conversion; the dispatcher forwards the keyword name to guard_numeric_operand. CINT/CLNG/CQUD/CDBL/CSNG align with the measured PBWin10 behaviour; the fork-only extensions follow the same rule. 13 negative probes added under _negative_probes/b347_*; positive witness examples/batch347_test.bas, FAILURES 0. No new keyword; coverage stays at 947 rows / 915 implemented.
 > batch 346 (v0.2.137) - refactored 23 range loops in pbcompiler/src/codegen.rs to direct iterator form to clear the newer clippy needless_range_loop lint that the CI runner promotes to an error under -D warnings; loops that still compute a byte-stride offset keep the index via enumerate. Behavior-preserving internal change, emitted IR and executables unchanged. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas; compile-all 399 ok / 0 failed, headless 257 ran / 0 failed.
 > batch 345 (v0.2.136) - setup.ps1 runtime build reads the object name and target triple into plain scalar variables before invoking clang; previously the hashtable property was interpolated into --target= as the type name System.Collections.Hashtable.Triple and clang rejected it with unknown target triple. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
 > batch 344 (v0.2.135) - repeatable --include-dir switch plus PB-style /I alias (/I<dir> and /I <dir>, case-insensitive): a bare #INCLUDE header name searches the command-line directories first (in order, de-duplicated), then the built-in PBWin install candidates, then the source parent; separator-bearing relative paths still resolve against the source parent only. Preprocessor full Win32API include set drops from about 208s to about 2.6s via single-scan HashMap equate/macro lookup, IR line-for-line identical. No new keyword; coverage stays at 947 rows / 915 implemented. Self-check examples/batch344_test.bas, dual-run fork vs PBWin10 FAILURES 0.
@@ -1013,6 +1014,18 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.138 (2026-11-14) - batch 347: C-family numeric conversions reject string operands
+
+**Fixed:**
+- **The C-family numeric conversion keywords now reject a string/pointer operand at compile time with `Error 420` instead of silently converting the BSTR pointer bit pattern to a number.** `CINT`, `CLNG`, `CDWD`, `CLNGINT`, `CUINT`, `CULNG`, `CQUAD`, `CQUD`, `CDWORD`, `CBYTE`/`CBYT`, `CWORD`/`CWRD`, `CDBL`, `CEXT`, `CSNG`, `CFLT`, `CCUR`, `CCUX` all passed their operand through `to_i32`/`to_i64`/`to_f64`, whose fallback branch returned an unrecognised value unchanged. A string is an opaque `IrType::Ptr`, so its pointer bit pattern reached the integer or floating conversion and produced a silently wrong result: `cint`/`clng`/`cquad`/`cqud`/`cdword` exited 0 and wrote an `.exe` that read the string pointer as a number, while the other variants failed later in LLVM/link with an unexplained rc=51. The dispatcher now forwards the keyword name and every helper calls the existing `guard_numeric_operand`, raising `Error 420: Numeric operand expected: <name> requires a numeric expression, not a string/pointer`. `CINT`/`CLNG`/`CQUD`/`CDBL`/`CSNG` match the measured PBWin10 result; the fork-only extensions apply the same rule for consistency.
+
+**Verification:**
+- 13 new negative probes `_negative_probes/b347_*_string.bas` cover every C-family spelling: each compiles with rc=420, produces no `.exe`, and the diagnostic names the keyword. The full 23-probe suite reports 0 BAD.
+- `examples/batch347_test.bas` locks the numeric operand path for all 19 spellings (GBK + CRLF + no BOM), FAILURES: 0.
+- compile-all 400 ok / 0 failed; headless 261 compiled / 258 ran / 0 failed / 0 timeouts; `cargo fmt --check` rc=0; `cargo clippy -D warnings` 0 warning.
+
+No new keyword, coverage-table, or runtime change; coverage stays at 947 rows / 915 implemented.
+
 ### v0.2.137 (2026-11-14) - batch 346: clear new-clippy needless_range_loop errors in codegen
 
 **Fixed:**

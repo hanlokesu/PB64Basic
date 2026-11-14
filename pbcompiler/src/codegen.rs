@@ -26573,26 +26573,26 @@ impl Compiler {
             "LOG1P" => Some(self.builtin_unary_math(fb, args, "log1p")),
             "ERF" => Some(self.builtin_unary_math(fb, args, "erf")),
             "CINT" | "CLNG" | "CDWD" | "CLNGINT" | "CUINT" | "CULNG" => {
-                Some(self.builtin_cint(fb, args))
+                Some(self.builtin_cint(fb, args, name))
             }
-            "CDBL" => Some(self.builtin_to_f64(fb, args)),
+            "CDBL" => Some(self.builtin_to_f64(fb, args, name)),
             // CHW conversion functions: CEXT (extended), CCUR (currency),
             // CCUX (extended-currency) — CEXT≈f64; CCUR rounds to 4 fixed
             // decimals (×10000), CCUX to 2 (×100), matching PBWin10 STR$.
-            "CEXT" => Some(self.builtin_to_f64(fb, args)),
-            "CCUR" => Some(self.builtin_cur(fb, args, "pb_ccur")),
-            "CCUX" => Some(self.builtin_cur(fb, args, "pb_ccux")),
+            "CEXT" => Some(self.builtin_to_f64(fb, args, name)),
+            "CCUR" => Some(self.builtin_cur(fb, args, "pb_ccur", name)),
+            "CCUX" => Some(self.builtin_cur(fb, args, "pb_ccux", name)),
             "CVBYT" | "CVW" | "CVI" | "CVWRD" | "CVL" | "CVDWD" | "CVQ" => {
                 Some(self.builtin_cv_int(fb, args, name))
             }
-            "CFLT" => Some(self.builtin_to_f32(fb, args)),
-            "CSNG" => Some(self.builtin_to_f32(fb, args)),
+            "CFLT" => Some(self.builtin_to_f32(fb, args, name)),
+            "CSNG" => Some(self.builtin_to_f32(fb, args, name)),
             "CSTR" => Some(self.builtin_str(fb, args)),
-            "CQUAD" => Some(self.builtin_to_i64(fb, args)),
-            "CQUD" => Some(self.builtin_round_i64(fb, args)),
-            "CBYTE" | "CBYT" => Some(self.builtin_to_u8(fb, args)),
-            "CWORD" | "CWRD" => Some(self.builtin_to_u16(fb, args)),
-            "CDWORD" => Some(self.builtin_to_i32(fb, args)),
+            "CQUAD" => Some(self.builtin_to_i64(fb, args, name)),
+            "CQUD" => Some(self.builtin_round_i64(fb, args, name)),
+            "CBYTE" | "CBYT" => Some(self.builtin_to_u8(fb, args, name)),
+            "CWORD" | "CWRD" => Some(self.builtin_to_u16(fb, args, name)),
+            "CDWORD" => Some(self.builtin_to_i32(fb, args, name)),
             "CSET" => Some(self.builtin_cset_str(fb, args)),
             "LSET" => Some(self.builtin_lset_str(fb, args)),
             "RSET" => Some(self.builtin_rset_str(fb, args)),
@@ -28344,8 +28344,9 @@ impl Compiler {
     }
 
     // Batch 91 fix: CINT/CLNG/CLNGINT/CUINT/CULNG — round to nearest (ties away from zero), not truncate.
-    fn builtin_cint(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_cint(&mut self, fb: &mut FunctionBuilder, args: &[Expr], kw: &str) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         match &val.ty {
             IrType::Double | IrType::Float => {
                 let f64_val = self.to_f64(fb, &val);
@@ -28358,21 +28359,39 @@ impl Compiler {
         }
     }
 
-    fn builtin_to_i32(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_i32(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_i32(fb, &val))
     }
 
     // Batch 87: CQUAD — convert to 64-bit signed integer
-    fn builtin_to_i64(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_i64(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_i64(fb, &val))
     }
 
     // Batch 87: CBYTE/CBYT — convert to unsigned 8-bit (0..255). Truncate low
     // byte, then zero-extend so the value displays unsigned (PBWin CBYT(-1)=255).
-    fn builtin_to_u8(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_u8(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         let i32v = self.to_i32(fb, &val);
         let t = fb.trunc(&i32v, &IrType::I8);
         Ok(fb.zext(&t, &IrType::I32))
@@ -28380,16 +28399,28 @@ impl Compiler {
 
     // Batch 87: CWORD/CWRD — convert to unsigned 16-bit (0..65535). Truncate
     // low word, then zero-extend so the value displays unsigned (PBWin CWRD(-1)=65535).
-    fn builtin_to_u16(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_u16(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         let i32v = self.to_i32(fb, &val);
         let t = fb.trunc(&i32v, &IrType::I16);
         Ok(fb.zext(&t, &IrType::I32))
     }
 
     // CQUD — convert to 64-bit signed integer with rounding (PBWin CQUD(-3.7)=-4).
-    fn builtin_round_i64(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_round_i64(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         if matches!(val.ty, IrType::Double | IrType::Float) {
             let f64_val = self.to_f64(fb, &val);
             // Banker's rounding (ties to even) — matches PB CINT/CLNG.
@@ -29036,11 +29067,13 @@ impl Compiler {
         fb: &mut FunctionBuilder,
         args: &[Expr],
         name: &str,
+        kw: &str,
     ) -> PbResult<Val> {
         if args.is_empty() {
             return Err(PbError::runtime("CCUR/CCUX requires 1 argument"));
         }
         let v = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&v, kw)?;
         let d = if v.ty == IrType::Double {
             v
         } else {
@@ -29516,13 +29549,25 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, "pb_oem_to_chr", std::slice::from_ref(&s)))
     }
 
-    fn builtin_to_f64(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_f64(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_f64(fb, &val))
     }
 
-    fn builtin_to_f32(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+    fn builtin_to_f32(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        kw: &str,
+    ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_numeric_operand(&val, kw)?;
         let f64_val = self.to_f64(fb, &val);
         Ok(fb.fptrunc(&f64_val, &IrType::Float))
     }
