@@ -8276,13 +8276,84 @@ void pb_threadsafe_leave(void* lock) {
    calls this on DIM to obtain a zero-initialized heap block.  calloc yields
    zeroed numeric elements and NULL BSTR slots for string arrays.  A later
    DIM/REDIM frees the calling thread's previous block first. */
+/* D4: THREADED array blocks are additionally registered per thread, so a
+   thread exit frees every block the exiting thread allocated instead of
+   leaving them for process teardown.  FLS (Fiber Local Storage) callbacks run
+   on thread detach, and the head of the per-thread list lives IN the FLS slot
+   itself, so the callback never depends on static TLS that the loader may
+   already have reclaimed.  FlsAlloc failure falls back to the old behaviour
+   (process-exit reclaim): the allocation still succeeds, it just is not
+   registered. */
+#ifndef PB_THREADED_FLS_DEFS
+#define PB_THREADED_FLS_DEFS
+#define PB_FLS_OUT_OF_INDEXES 0xFFFFFFFFUL
+__declspec(dllimport) unsigned long __stdcall FlsAlloc(void(__stdcall*)(void*));
+__declspec(dllimport) int __stdcall FlsSetValue(unsigned long, void*);
+__declspec(dllimport) void* __stdcall FlsGetValue(unsigned long);
+#endif
+
+typedef struct pb_tls_block_node {
+    void* block;
+    struct pb_tls_block_node* next;
+} pb_tls_block_node;
+
+static unsigned long pb_tls_fls_index = PB_FLS_OUT_OF_INDEXES;
+static int pb_tls_fls_state = 0; /* 0 uninitialised, 1 ready, 2 unavailable */
+
+static void __stdcall pb_threaded_fls_callback(void* value) {
+    pb_tls_block_node* node = (pb_tls_block_node*)value;
+    while (node != NULL) {
+        pb_tls_block_node* next = node->next;
+        if (node->block != NULL) { free(node->block); }
+        free(node);
+        node = next;
+    }
+}
+
+static void pb_threaded_fls_ensure(void) {
+    if (pb_tls_fls_state == 0) {
+        pb_tls_fls_index = FlsAlloc(pb_threaded_fls_callback);
+        pb_tls_fls_state = (pb_tls_fls_index == PB_FLS_OUT_OF_INDEXES) ? 2 : 1;
+    }
+}
+
 void* pb_threaded_array_alloc(long long nbytes) {
+    void* block;
     if (nbytes <= 0) { return NULL; }
-    return calloc((size_t)nbytes, 1);
+    block = calloc((size_t)nbytes, 1);
+    if (block == NULL) { return NULL; }
+    pb_threaded_fls_ensure();
+    if (pb_tls_fls_state == 1) {
+        pb_tls_block_node* node = (pb_tls_block_node*)malloc(sizeof(pb_tls_block_node));
+        if (node != NULL) {
+            node->block = block;
+            node->next = (pb_tls_block_node*)FlsGetValue(pb_tls_fls_index);
+            FlsSetValue(pb_tls_fls_index, (void*)node);
+        }
+    }
+    return block;
 }
 
 void pb_threaded_array_free(void* block) {
-    if (block != NULL) { free(block); }
+    if (block == NULL) { return; }
+    if (pb_tls_fls_state == 1) {
+        pb_tls_block_node* node = (pb_tls_block_node*)FlsGetValue(pb_tls_fls_index);
+        pb_tls_block_node* prev = NULL;
+        while (node != NULL) {
+            if (node->block == block) {
+                if (prev == NULL) {
+                    FlsSetValue(pb_tls_fls_index, (void*)node->next);
+                } else {
+                    prev->next = node->next;
+                }
+                free(node);
+                break;
+            }
+            prev = node;
+            node = node->next;
+        }
+    }
+    free(block);
 }
 
 /* ================= Batch 22: LPRINT / TRACE / IMPORT ================= */
@@ -11945,7 +12016,7 @@ void pb_mem_fill(long long dst, long long count, long long val, long long width)
 /* MEMORY FILL dst, count, str$ � repeat the string pattern over count bytes. */
 void pb_mem_fill_str(long long dst, long long count, const char* s) {
     unsigned char* p = (unsigned char*)(intptr_t)dst;
-    size_t slen = s ? strlen(s) : 0;
+    size_t slen = s ? (size_t)pb_str_len(s) : 0;
     if (slen == 0) return;
     for (long long i = 0; i < count; i++) p[i] = (unsigned char)s[i % slen];
 }
@@ -11964,8 +12035,7 @@ char* pb_erl_str(void) {
    of MatchStr ends the extraction. start <= 0 or beyond length -> empty string;
    MatchStr absent -> whole remainder. */
 char* pb_extract(long long start, const char* main_str, const char* match_str, int any_mode) {
-    if (!main_str) main_str = "";
-    long long len = (long long)strlen(main_str);
+    long long len = main_str ? (long long)pb_str_len(main_str) : 0;
     if (start <= 0 || start > len) return pb_bstr_alloc("", 0);
     long long i = start - 1;
     long long end = len;

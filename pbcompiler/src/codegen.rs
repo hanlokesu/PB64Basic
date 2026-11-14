@@ -7311,7 +7311,7 @@ impl Compiler {
 
         // Bake the compile-time shape of every THREADED array into the global
         // ArrayInfo before any body is compiled (cross-procedure reads).
-        self.prescan_threaded_arrays(program);
+        self.prescan_threaded_arrays(program)?;
 
         // Second pass: compile function/sub bodies
         let mut codegen_errors = 0usize;
@@ -8557,7 +8557,7 @@ impl Compiler {
         // `THREADED a%()` + `DIM a(1 TO 5)` keeps the Integer (i16) element
         // type instead of silently widening to Long.  Any other pb_type on a
         // bare name can only come from an explicit AS clause.
-        let arr_pb_type = if name_has_type_suffix(&dim.name) {
+        let arr_pb_type = if name_has_type_suffix(&dim.name) || dim.explicit_type {
             dim.pb_type.clone()
         } else {
             match &dim.pb_type {
@@ -10921,7 +10921,9 @@ impl Compiler {
         let name = normalize_name(&dim.name);
         if !dim.bounds.is_empty() {
             // Top-level DIM with bounds → declare as global array
-            let pb_type = if let Some(pt) = self.pending_global_arrays.get(&name) {
+            let pb_type = if dim.explicit_type {
+                dim.pb_type.clone()
+            } else if let Some(pt) = self.pending_global_arrays.get(&name) {
                 pt.clone()
             } else {
                 dim.pb_type.clone()
@@ -10964,7 +10966,7 @@ impl Compiler {
     /// dimensions and returns a constant 0 and every read hits element 0.
     /// The first observed bounded shape wins; all DIMs in a program normally
     /// share one shape (each thread merely gets its own heap block).
-    fn prescan_threaded_arrays(&mut self, program: &Program) {
+    fn prescan_threaded_arrays(&mut self, program: &Program) -> PbResult<()> {
         // name -> list of (dims, total) observed across every body.
         let mut shapes: ThreadedShapeMap = HashMap::new();
         fn walk(stmts: &[Statement], symbols: &SymbolTable, shapes: &mut ThreadedShapeMap) {
@@ -11012,6 +11014,29 @@ impl Compiler {
                 Some(a) => a,
                 None => continue,
             };
+            // D3: a THREADED array has ONE compile-time shape shared by every
+            // procedure.  Conflicting DIM bounds used to let the first observed
+            // shape silently win, so other procedures indexed with the wrong
+            // stride / element count.  Report the conflict instead.
+            let first = &candidates[0];
+            if let Some(other) = candidates.iter().find(|c| c.0 != first.0 || c.1 != first.1) {
+                let show = |c: &(Vec<(i64, i64)>, usize)| {
+                    c.0.iter()
+                        .map(|(lo, n)| format!("{} TO {}", lo, lo + *n - 1))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return Err(PbError::parser(
+                    format!(
+                        "THREADED array `{}` is dimensioned with mismatched shapes ({} elements) vs ({} elements)",
+                        name,
+                        show(first),
+                        show(other)
+                    ),
+                    None,
+                    0,
+                ));
+            }
             let (dims, total) = candidates.into_iter().next().unwrap();
             let array_ir = IrType::Array(total, Box::new(prev.elem_ir_type.clone()));
             self.symbols.insert_global_array(
@@ -11027,6 +11052,7 @@ impl Compiler {
                 },
             );
         }
+        Ok(())
     }
 
     /// Pre-scan a function body for every REDIM so each array is stack-allocated
@@ -11277,7 +11303,11 @@ impl Compiler {
         if !dim.bounds.is_empty() {
             // Check if this is a pending global array (GLOBAL arr() + DIM arr(bounds) inside fn)
             if self.pending_global_arrays.contains_key(&name) {
-                let pb_type = self.pending_global_arrays.get(&name).unwrap().clone();
+                let pb_type = if dim.explicit_type {
+                    dim.pb_type.clone()
+                } else {
+                    self.pending_global_arrays.get(&name).unwrap().clone()
+                };
                 self.declare_global_array(&name, &pb_type, &dim.bounds);
                 return Ok(());
             }
@@ -11292,8 +11322,8 @@ impl Compiler {
                 // 32-bit-truncated pointers and crash (batch 248/249/249_test/
                 // 245 headless, C0000005 - batch 307).
                 let arr_pb_type = match &dim.pb_type {
-                    PbType::Variant => prev.pb_type.clone(),
-                    PbType::Long => match &prev.pb_type {
+                    PbType::Variant if !dim.explicit_type => prev.pb_type.clone(),
+                    PbType::Long if !dim.explicit_type => match &prev.pb_type {
                         PbType::String | PbType::FixedString(_) => prev.pb_type.clone(),
                         _ => dim.pb_type.clone(),
                     },
@@ -11403,8 +11433,8 @@ impl Compiler {
             // [N x Ptr] and store/load follow elem_ir_type automatically.
             let declared = self.symbols.lookup(&name).map(|i| i.pb_type.clone());
             let arr_pb_type = match &dim.pb_type {
-                PbType::Variant => declared.clone().unwrap_or(PbType::Long),
-                PbType::Long => match &declared {
+                PbType::Variant if !dim.explicit_type => declared.clone().unwrap_or(PbType::Long),
+                PbType::Long if !dim.explicit_type => match &declared {
                     Some(PbType::String) | Some(PbType::FixedString(_)) => {
                         declared.clone().unwrap()
                     }
@@ -28346,6 +28376,7 @@ impl Compiler {
     // Batch 91 fix: CINT/CLNG/CLNGINT/CUINT/CULNG — round to nearest (ties away from zero), not truncate.
     fn builtin_cint(&mut self, fb: &mut FunctionBuilder, args: &[Expr], kw: &str) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         match &val.ty {
             IrType::Double | IrType::Float => {
@@ -28366,6 +28397,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_i32(fb, &val))
     }
@@ -28378,6 +28410,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_i64(fb, &val))
     }
@@ -28391,6 +28424,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         let i32v = self.to_i32(fb, &val);
         let t = fb.trunc(&i32v, &IrType::I8);
@@ -28406,6 +28440,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         let i32v = self.to_i32(fb, &val);
         let t = fb.trunc(&i32v, &IrType::I16);
@@ -28420,6 +28455,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         if matches!(val.ty, IrType::Double | IrType::Float) {
             let f64_val = self.to_f64(fb, &val);
@@ -29073,6 +29109,7 @@ impl Compiler {
             return Err(PbError::runtime("CCUR/CCUX requires 1 argument"));
         }
         let v = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&v, kw)?;
         let d = if v.ty == IrType::Double {
             v
@@ -29556,6 +29593,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         Ok(self.to_f64(fb, &val))
     }
@@ -29567,6 +29605,7 @@ impl Compiler {
         kw: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
+        self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
         let f64_val = self.to_f64(fb, &val);
         Ok(fb.fptrunc(&f64_val, &IrType::Float))
@@ -30079,6 +30118,16 @@ impl Compiler {
     /// a numeric position (measured: STR$/HEX$/OCT$/BIN$/DEC$ all 420) — align
     /// that compile-time rejection instead of emitting junk.
     fn guard_numeric_operand(&self, val: &Val, fn_name: &str) -> PbResult<()> {
+        if matches!(val.ty, IrType::Struct(_)) {
+            return Err(PbError::parser(
+                format!(
+                    "Error 420: Numeric operand expected: {} requires a numeric expression, not a structure",
+                    fn_name
+                ),
+                None,
+                self.current_line,
+            ));
+        }
         if val.ty == IrType::Ptr {
             return Err(PbError::parser(
                 format!(
@@ -30088,6 +30137,26 @@ impl Compiler {
                 None,
                 self.current_line,
             ));
+        }
+        Ok(())
+    }
+
+    /// Reject a whole array passed with empty subscripts (`ARR()`) in a numeric
+    /// slot.  `compile_expr` lowers that form to element 0, so `CINT(a())`
+    /// silently returned a(0) instead of raising PBWin's Error 420.  Element
+    /// access `a(i)` and Variant scalars are unaffected.
+    fn guard_whole_array(&self, arg: &Expr, fn_name: &str) -> PbResult<()> {
+        if let Expr::FunctionCall(n, idx) = arg {
+            if idx.is_empty() && self.symbols.lookup_array(&normalize_name(n)).is_some() {
+                return Err(PbError::parser(
+                    format!(
+                        "Error 420: Numeric operand expected: {} requires a numeric expression, not an array",
+                        fn_name
+                    ),
+                    None,
+                    self.current_line,
+                ));
+            }
         }
         Ok(())
     }
@@ -31220,7 +31289,11 @@ impl Compiler {
                 Statement::Dim(dim) => {
                     let name = normalize_name(&dim.name);
                     if !dim.bounds.is_empty() && self.pending_global_arrays.contains_key(&name) {
-                        let pb_type = self.pending_global_arrays.get(&name).unwrap().clone();
+                        let pb_type = if dim.explicit_type {
+                            dim.pb_type.clone()
+                        } else {
+                            self.pending_global_arrays.get(&name).unwrap().clone()
+                        };
                         // Compute array layout and push to session_fields
                         self.declare_global_array(&name, &pb_type, &dim.bounds);
                     } else if dim.scope == DimScope::Global

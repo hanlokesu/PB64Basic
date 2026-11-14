@@ -150,6 +150,12 @@ pub struct DimStatement {
     /// i.e. an array, even if bounds is empty (dynamic array). Distinguishes
     /// `DIM x() AS LONG` from a scalar `DIM x AS LONG` (batch289 A-class).
     pub is_array: bool,
+    /// True when the element type came from an explicit `AS` clause, including
+    /// the trailing `AS` that back-fills untyped names in `DIM a, b AS LONG`.
+    /// A bare name with no `AS` leaves this false even though its pb_type is
+    /// the default Long, so codegen can tell "default Long" from "AS LONG"
+    /// when inheriting a previously declared THREADED/string element type.
+    pub explicit_type: bool,
     /// REDIM PRESERVE - keep existing element values (CHW: plain REDIM is
     /// ERASE+DIM and zeroes; PRESERVE keeps old elements, new ones zeroed).
     pub preserve: bool,

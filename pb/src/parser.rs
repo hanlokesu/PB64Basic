@@ -1160,16 +1160,20 @@ impl Parser {
             }
 
             let idx = stmts.len();
+            let mut explicit = false;
             let pb_type = if self.peek() == &Token::As {
                 self.advance();
                 let t = self.parse_type()?;
                 for i in &untyped {
                     stmts[*i].pb_type = t.clone();
+                    stmts[*i].explicit_type = true;
                 }
                 untyped.clear();
                 pending_type = Some(t.clone());
+                explicit = true;
                 t
             } else if let Some(t) = &pending_type {
+                explicit = true;
                 t.clone()
             } else {
                 let t = type_from_suffix(&name);
@@ -1185,6 +1189,7 @@ impl Parser {
                 line,
                 is_redim: false,
                 is_array,
+                explicit_type: explicit,
                 preserve: false,
                 is_register: false,
                 at_address: None,
@@ -1226,7 +1231,8 @@ impl Parser {
             self.expect(&Token::RParen)?;
         }
 
-        let pb_type = if self.peek() == &Token::As {
+        let explicit_type = self.peek() == &Token::As;
+        let pb_type = if explicit_type {
             self.advance();
             self.parse_type()?
         } else {
@@ -1260,6 +1266,7 @@ impl Parser {
             line,
             is_redim: true,
             is_array,
+            explicit_type,
             preserve,
             is_register: false,
             at_address,
@@ -14085,17 +14092,21 @@ impl Parser {
             }
 
             let idx = dims.len();
+            let mut explicit = false;
             let pb_type = if self.peek() == &Token::As {
                 self.advance();
                 let t = self.parse_type()?;
                 // Back-fill all previously untyped names with this type
                 for i in &untyped {
                     dims[*i].pb_type = t.clone();
+                    dims[*i].explicit_type = true;
                 }
                 untyped.clear();
                 pending_type = Some(t.clone());
+                explicit = true;
                 t
             } else if let Some(t) = &pending_type {
+                explicit = true;
                 t.clone()
             } else {
                 let t = type_from_suffix(&name);
@@ -14111,6 +14122,7 @@ impl Parser {
                 line,
                 is_redim: false,
                 is_array,
+                explicit_type: explicit,
                 preserve: false,
                 is_register: false,
                 at_address: None,
