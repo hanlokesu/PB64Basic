@@ -8298,7 +8298,16 @@ typedef struct pb_tls_block_node {
 } pb_tls_block_node;
 
 static unsigned long pb_tls_fls_index = PB_FLS_OUT_OF_INDEXES;
-static int pb_tls_fls_state = 0; /* 0 uninitialised, 1 ready, 2 unavailable */
+/* 0 uninitialised, 1 initialising, 2 ready, 3 unavailable.  A plain int here was a
+   data race: every worker thread dimensions the same THREADED array during start-up,
+   so two or more threads could pass the `state == 0` test together, run FlsAlloc
+   separately and overwrite the single pb_tls_fls_index.  The losing thread then
+   registered its block under an index no callback ever visited, while the index the
+   callback did use was written by threads that had seen a different one.  The visible
+   symptom was an intermittent 0xC0000374 heap-corruption crash (4 of 30 runs of
+   examples/batch325_test.bas, batch 349).  Initialisation is now a CAS-guarded
+   exactly-once block. */
+static volatile long pb_tls_fls_state = 0;
 
 static void __stdcall pb_threaded_fls_callback(void* value) {
     pb_tls_block_node* node = (pb_tls_block_node*)value;
@@ -8311,9 +8320,23 @@ static void __stdcall pb_threaded_fls_callback(void* value) {
 }
 
 static void pb_threaded_fls_ensure(void) {
-    if (pb_tls_fls_state == 0) {
-        pb_tls_fls_index = FlsAlloc(pb_threaded_fls_callback);
-        pb_tls_fls_state = (pb_tls_fls_index == PB_FLS_OUT_OF_INDEXES) ? 2 : 1;
+    for (;;) {
+        long state = __atomic_load_n(&pb_tls_fls_state, __ATOMIC_ACQUIRE);
+        if (state == 2 || state == 3) { return; }
+        if (state == 0) {
+            long expected = 0;
+            if (__atomic_compare_exchange_n(&pb_tls_fls_state, &expected, 1, 0,
+                                            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                unsigned long idx = FlsAlloc(pb_threaded_fls_callback);
+                pb_tls_fls_index = idx;
+                __atomic_store_n(&pb_tls_fls_state,
+                                 (idx == PB_FLS_OUT_OF_INDEXES) ? 3 : 2,
+                                 __ATOMIC_RELEASE);
+                return;
+            }
+        }
+        /* state == 1: another thread is inside FlsAlloc; it finishes in a few
+           instructions, so a short spin beats any sleep-based handshake. */
     }
 }
 
@@ -8323,7 +8346,7 @@ void* pb_threaded_array_alloc(long long nbytes) {
     block = calloc((size_t)nbytes, 1);
     if (block == NULL) { return NULL; }
     pb_threaded_fls_ensure();
-    if (pb_tls_fls_state == 1) {
+    if (__atomic_load_n(&pb_tls_fls_state, __ATOMIC_ACQUIRE) == 2) {
         pb_tls_block_node* node = (pb_tls_block_node*)malloc(sizeof(pb_tls_block_node));
         if (node != NULL) {
             node->block = block;
@@ -8336,7 +8359,7 @@ void* pb_threaded_array_alloc(long long nbytes) {
 
 void pb_threaded_array_free(void* block) {
     if (block == NULL) { return; }
-    if (pb_tls_fls_state == 1) {
+    if (__atomic_load_n(&pb_tls_fls_state, __ATOMIC_ACQUIRE) == 2) {
         pb_tls_block_node* node = (pb_tls_block_node*)FlsGetValue(pb_tls_fls_index);
         pb_tls_block_node* prev = NULL;
         while (node != NULL) {

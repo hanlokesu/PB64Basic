@@ -18,6 +18,35 @@ mod resfile;
 mod symbols;
 
 fn main() {
+    // The front end (preprocessor -> lexer -> recursive-descent parser) and the code
+    // generator recurse deeply enough that an *unoptimized* build's larger stack frames
+    // overflow the platform default (0xC00000FD) on ordinary sources: the debug binary
+    // died on `PRINT "x"` and on every example that carries a statement, and the release
+    // binary overflowed once a source nested 200 parentheses (batch 349). A 32 MB-stack
+    // build compiles all of those cleanly, so the fix is to stop relying on the
+    // main-thread stack size rather than to guess at the recursion depth. The 32 MB is
+    // reserved, not committed.
+    const COMPILER_STACK: usize = 32 * 1024 * 1024;
+    match std::thread::Builder::new()
+        .name("pb64basic-compiler".to_string())
+        .stack_size(COMPILER_STACK)
+        .spawn(real_main)
+    {
+        Ok(worker) => {
+            if worker.join().is_err() {
+                // A panic inside the compiler thread keeps the historical main-thread
+                // exit code so scripts and CI see the same signal as before.
+                process::exit(101);
+            }
+        }
+        Err(e) => {
+            eprintln!("[PB64Basic] Error: cannot start compiler thread: {}", e);
+            process::exit(2);
+        }
+    }
+}
+
+fn real_main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 3 || args[1] != "build" {
