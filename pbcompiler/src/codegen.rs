@@ -22964,12 +22964,22 @@ impl Compiler {
                     // other builtins return i64 even when the callee parameter is
                     // a 4-byte LONG/DWORD. On i686 cdecl/stdcall an i64 occupies
                     // two 32-bit stack slots, shifting every later argument so
-                    // the callee reads a bad pointer (0xC0000005, addr=2).
-                    // Truncate a too-wide i64 to the parameter integer width.
+                    // the callee reads a bad pointer (0xC0000005, addr=2), so on
+                    // 32-bit the too-wide i64 is narrowed to the parameter width.
+                    //
+                    // On x86_64 every argument occupies a full 64-bit register or
+                    // 8-byte stack slot, so an i64 argument must NOT be truncated:
+                    // STRPTR/VARPTR and a returned HANDLE carry a 64-bit address,
+                    // and truncating to i32 drops the upper 32 bits, producing an
+                    // invalid pointer (WriteFile on a 32-bit-era DWORD prototype
+                    // wrote zero bytes; p352). The callee reads the low dword of a
+                    // true 32-bit argument, so keeping the full i64 width there is
+                    // ABI-safe.
                     let target_ir = Self::ir_type_for(&param.pb_type);
                     let val = if val.ty == IrType::I1 {
                         self.to_i32(fb, &val)
-                    } else if val.ty == IrType::I64
+                    } else if self.module.is_32bit()
+                        && val.ty == IrType::I64
                         && matches!(target_ir, IrType::I8 | IrType::I16 | IrType::I32)
                     {
                         let i32v = self.to_i32(fb, &val);
@@ -23011,6 +23021,16 @@ impl Compiler {
                             let norm = normalize_name(vname);
                             let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
                             compiled.push(Val::new(ptr_name, IrType::Ptr));
+                        }
+                        Expr::IntegerLit(n) if *n == 0 => {
+                            // A BYREF pointer parameter passed a literal 0 is the
+                            // Win32 NULL convention (lpOverlapped,
+                            // lpSecurityAttributes, ...).  Storing the zero in a
+                            // temp slot and passing that slot's address hands the
+                            // callee a non-NULL pointer to a zeroed struct, which
+                            // it dereferences as a real structure (silent no-op or
+                            // 0xC0000005).  Pass the null pointer directly instead.
+                            compiled.push(fb.const_null_ptr());
                         }
                         _ => {
                             // Expression to BYREF: allocate temp

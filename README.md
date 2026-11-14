@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **2** official keywords are not implemented yet (TCP NOTIFY, UDP NOTIFY); **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 351 (v0.2.142). **2 official keyword(s) remain unimplemented: TCP NOTIFY, UDP NOTIFY; all other non-Tier-3 official keywords are implemented.**
+> Updated through batch 352 (v0.2.143). **2 official keyword(s) remain unimplemented: TCP NOTIFY, UDP NOTIFY; all other non-Tier-3 official keywords are implemented.**
+> batch 352 (v0.2.143) - on x86_64 a BYVAL DWORD/LONG parameter receiving a 64-bit STRPTR/VARPTR/HANDLE keeps the full i64 width (the i686 stack-slot truncation is retained for 32-bit targets only), and a BYREF optional pointer passed literal 0 reaches the callee as NULL instead of a pointer to a zeroed temp slot; covered by examples/batch352_test.bas (FAILURES: 0).
 > batch 351 (v0.2.142) - the ASC assignment statement now rejects a WSTRING / UDT / numeric left-hand type with a named parser error instead of falling through an empty codegen arm and dropping the assignment silently; the STRING and STRING * N paths are unchanged, covered by examples/batch351_test.bas (FAILURES: 0) and the b351_asc_wstring negative probe.
 > > batch 350 (v0.2.141) - TCP LINE INPUT now returns a partial line when the receive buffer drains and reports EOF TRUE (first byte still waits, timeout still Error 24; batch205 loopback re-ran clean); TCP/UDP NOTIFY compile with a warning that the event mask is stored but never delivered, and their coverage rows move to Not implemented; THREAD OBJECT/THREAD NEW and the TXT pseudo-object now name the missing model instead of a generic parse error, and i686 THREAD CREATE warns about the runtime error 7 at compile time.
 > > batch 349 (v0.2.140) - compiler stack sizing and THREADED FLS init hardening: the front end now runs on an explicitly sized 32 MB stack thread, so the debug build no longer dies with 0xC00000FD at the parse stage and a 200-level nested expression compiles in both the debug and the release profile (self-check `examples/batch349_test.bas`, FAILURES 0); FLS initialisation is a CAS-guarded exactly-once block instead of a plain global read/write; the intermittent 0xC0000374 in the THREADED stress example is measured at 6-8% over 100 runs across runtime generations and recorded as a pre-existing low-frequency multi-thread issue, not fixed; a 32-bit hello built with the shipped obj is 155,648 bytes, so the reported 516,096-byte size does not reproduce. No new keyword; coverage stays at 947 rows / 915 implemented.
@@ -1017,6 +1018,20 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.143 (2026-11-15) - batch 352: x64 DECLARE pointer arguments keep full width; BYREF 0 passes NULL
+
+**Fixed:**
+- **A BYVAL DWORD/LONG/i32 DECLARE parameter receiving a 64-bit pointer no longer has its upper 32 bits truncated on x86_64.** `STRPTR`/`VARPTR` and a returned HANDLE carry a full 64-bit address. The call-argument codegen narrowed an `i64` argument down to the 4-byte parameter width with `trunc i64 -> i32` before re-interpreting it as a pointer, so on a 32-bit-era Win32 prototype (e.g. `WriteFile(... BYVAL lpBuffer AS DWORD ...)`) the callee received an invalid truncated pointer and wrote zero bytes. That narrowing was introduced for the i686 cdecl/stdcall frame, where an `i64` occupies two 32-bit stack slots and shifts every later argument; it now applies only when the target is 32-bit. On x86_64 every argument occupies a full 64-bit register or 8-byte stack slot, so the `i64` is kept at full width; a true 32-bit argument still occupies the low dword of that slot, which is ABI-safe.
+- **A BYREF pointer parameter passed a literal `0` now reaches the callee as a null pointer.** Previously the zero was stored in a temporary slot and that slot's address was pushed: a non-NULL pointer to a zeroed structure, which the callee dereferenced as a real structure (silent no-op or access violation). Per the Win32/PB convention, a literal `0` to an optional BYREF pointer (`lpOverlapped`, `lpSecurityAttributes`, ...) is NULL, so the null pointer is passed directly instead of going through a temp slot. Other constant expressions still go through the temporary slot as before.
+
+**Verification:**
+- `examples/batch352_test.bas` (CRLF, no BOM) compiles and runs with `FAILURES: 0`; it writes a string through `WriteFile` with a `DWORD` `lpBuffer` prototype and a BYREF overlapped argument of `0`.
+- Negative-probe suite: 29 probes, 0 BAD.
+- `run_examples.py --compile-all` compiles 405 examples with 0 failures; `--all-headless` runs 263 headless examples with 0 failed and 0 timeouts.
+- `cargo fmt --all --check` rc=0; `cargo clippy --all-targets -- -D warnings` rc=0 with 0 warnings; the i686/x86_64 link smoke links every test source on both targets with 0 failures, and the batch224 i686 stack-slot regression still links cleanly.
+
+No new keyword; coverage stays at 947 rows / 915 available.
+
 ### v0.2.142 (2026-11-15) - batch 351: ASC statement rejects non-string left-hand types loudly
 
 **Fixed:**
