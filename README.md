@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 360 (v0.2.151). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 361 (v0.2.152). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 361 (v0.2.152) - one-line MACRO FUNCTION expands as an expression macro, multi-line MACROTEMP identifiers receive unique four-digit expansion suffixes, and EXIT MACRO jumps to a generated end label; multi-line MACRO FUNCTION lowering, sequential CHR=WIDE, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, and other recorded gaps remain open.
 > batch 360 (v0.2.151) - SESSION-struct global STRING fields reserve four FIELD-descriptor pointer slots, CHR=WIDE is accepted as a CHW no-op for BINARY/RANDOM files while sequential WIDE remains an explicit compile error; REDIM PRESERVE repeated AS type confirmed against PBWin10 to preserve prefix values, no code change; sequential UTF-16 conversion and other known gaps remain open.
 > batch 359 (v0.2.150) - OPEN ACCESS/LOCK/BASE implemented with runtime enforcement, OPEN failures set ERR 53/70/75, bare CLOSE and multiple-file CLOSE implemented, FIELD no longer overflows pointer-sized string slots (i686 C0000005 fixed), CHR=WIDE rejected explicitly; TCP LINE INPUT drained-line behaviour confirmed against CHW; CHR=WIDE, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, REDIM PRESERVE edge semantics remain open.
 > batch 358 (v0.2.149) - CSET ABS/USING implemented, $$CRLF/$$DQ2/$$SQ2/$$QCQ/$$WHITESPACE wide equates with code-unit LEN, BYVAL VARIANT expression arguments via a temporary container, STR$/PRINT # single-precision literal formatting aligned with PBWin10, TCP CLOSE drains queued bytes so a reply in flight is not lost to an RST (batch205 loopback is now 10/10), UNION/TYPE bit fields covered by a regression probe; OPEN clauses, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT remain open.
@@ -1027,6 +1028,36 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.152 (2026-11-16)
+
+Batch 361. Closes the preprocessor MACRO subset that can be lowered by text
+substitution: one-line MACRO FUNCTION, MACROTEMP uniqueness, and EXIT MACRO.
+
+- **Implemented - one-line MACRO FUNCTION.** `MACRO FUNCTION name(params) = expr`
+  is registered as an expression macro and substituted at any source position,
+  matching the CHW single-line macro-function form. Multi-line macro functions
+  with statements and `END MACRO = returnexpression` still require inline-function
+  lowering and remain an open boundary.
+- **Implemented - MACROTEMP uniqueness.** Identifiers declared by MACROTEMP in a
+  multi-line macro receive the per-expansion four-digit suffix (`0001`, `0002`,
+  ...) on every expansion, preserving the source identifier's original case.
+  Variables and labels in the expanded block do not collide between repeated
+  call sites.
+- **Implemented - EXIT MACRO.** A whole-line or inline `THEN EXIT MACRO` in a
+  regular multi-line macro is replaced by `GOTO` to a generated end label for
+  that expansion, matching CHW's "functionally identical to GOTO END-MACRO"
+  semantics.
+- **Verified.** `examples/batch361_test.bas` checks the one-line function result,
+  two multi-line expansions with unique temp names, and the early EXIT MACRO jump;
+  it exits 0 on x64 and i686. PBWin10 accepts the macro definition; after the
+  console PRINT line was removed for the GUI target, the reference source
+  compiles and exits 0.
+- **Still open.** Multi-line `MACRO FUNCTION` statement bodies with
+  `END MACRO = returnexpression` remain unimplemented; sequential CHR=WIDE
+  conversion, legacy PBRES/PBR, EnumPrintersW, the TXT pseudo-object, THREAD
+  OBJECT, THREADED per-thread array shapes, and the other recorded architecture
+  gaps are unchanged.
+
 ### v0.2.151 (2026-11-16)
 
 Batch 360. Closes two retained file-layout and OPEN clause edges, and records a

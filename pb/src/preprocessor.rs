@@ -93,10 +93,19 @@ pub struct ResFileEntry {
 
 /// A MACRO definition (batch 27). Single-line macros have a 1-line body and
 /// expand anywhere in a line; multi-line macros expand at statement position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacroKind {
+    Regular,
+    Function,
+}
+
 #[derive(Debug, Clone)]
 struct MacroDef {
+    name: String,
     params: Vec<String>,
     body: Vec<String>,
+    temps: Vec<String>,
+    kind: MacroKind,
 }
 
 /// Strip trailing comment from a line, respecting string literals.
@@ -231,6 +240,9 @@ pub struct Preprocessor {
     /// `table(%ANY_SIZE-1)` fail constant evaluation (38 parse errors, build44).
     defined_this_pass: HashSet<String>,
     macros: HashMap<String, MacroDef>,
+    /// Per-macro expansion counter, used to give MACROTEMP identifiers and
+    /// EXIT MACRO end labels a unique 4-digit suffix on each expansion.
+    macro_expansions: HashMap<String, u32>,
     pub resources: Vec<(u32, PathBuf)>,
     /// #RESOURCE BITMAP/RCDATA/WAVE/TYPELIB — file-based raw resources.
     pub raw_resources: Vec<RawResource>,
@@ -320,6 +332,7 @@ impl Preprocessor {
                 "%PB_EXE".to_string(),
             ]),
             macros: HashMap::new(),
+            macro_expansions: HashMap::new(),
             resources: Vec::new(),
             raw_resources: Vec::new(),
             string_resources: Vec::new(),
@@ -389,6 +402,7 @@ impl Preprocessor {
         self.collect_only = true;
         self.collect_included.clear();
         self.macros.clear();
+        self.macro_expansions.clear();
         self.reset_defined_this_pass();
         let _ = self.process_file(path)?;
         self.collect_only = false;
@@ -1165,15 +1179,42 @@ impl Preprocessor {
 
     /// Collect a MACRO definition starting at raw_lines[start_i] (whose trimmed
     /// text is `first_line`). Returns the index of the next unprocessed line.
-    /// Single-line: `MACRO name(params) = text`; multi-line: `MACRO name(params)`
-    /// ... `END MACRO`. MACROTEMP / EXIT MACRO / macro functions are not
-    /// expanded in this batch; their definition lines are skipped.
+    ///
+    /// Supported forms:
+    ///   * `MACRO name(params) = text`
+    ///   * `MACRO FUNCTION name(params) = expr`
+    ///   * multi-line `MACRO name(params)` with MACROTEMP and EXIT MACRO
+    ///
+    /// A multi-line `MACRO FUNCTION` whose body contains statements still
+    /// requires an inline-function lowering; that block is consumed but not
+    /// registered here.
     fn collect_macro(&mut self, raw_lines: &[&str], start_i: usize, first_line: &str) -> usize {
         let rest = first_line[5..].trim();
         let upper_rest = rest.to_uppercase();
-        // MACRO FUNCTION name ... END MACRO = expr — macro function, not
-        // supported this batch: consume the whole block.
         if upper_rest.starts_with("FUNCTION") {
+            let func_rest = rest[8..].trim();
+            let (name, params) = parse_macro_proto(func_rest);
+            if let Some(eqpos) = find_eq_outside_parens(func_rest) {
+                // One-line macro function: the right-hand side is an expression,
+                // expanded anywhere in a line like a single-line macro.
+                let body_text = func_rest[eqpos + 1..].trim().to_string();
+                if !name.is_empty() {
+                    self.macros.insert(
+                        name.clone(),
+                        MacroDef {
+                            name,
+                            params,
+                            body: vec![body_text],
+                            temps: Vec::new(),
+                            kind: MacroKind::Function,
+                        },
+                    );
+                }
+                return start_i + 1;
+            }
+            // Multi-line macro function: consume the whole block.  The statement
+            // body cannot be substituted into an expression position without an
+            // inline-function lowering, so it remains an explicit open boundary.
             let mut j = start_i + 1;
             while j < raw_lines.len() {
                 if raw_lines[j].trim().to_uppercase().starts_with("END MACRO") {
@@ -1183,6 +1224,7 @@ impl Preprocessor {
             }
             return j;
         }
+
         let (name, params) = parse_macro_proto(rest);
         let eq_pos = find_eq_outside_parens(rest);
         if let Some(eqpos) = eq_pos {
@@ -1190,17 +1232,23 @@ impl Preprocessor {
             let body_text = rest[eqpos + 1..].trim().to_string();
             if !name.is_empty() {
                 self.macros.insert(
-                    name,
+                    name.clone(),
                     MacroDef {
+                        name,
                         params,
                         body: vec![body_text],
+                        temps: Vec::new(),
+                        kind: MacroKind::Regular,
                     },
                 );
             }
             return start_i + 1;
         }
-        // Multi-line macro: collect until END MACRO
+
+        // Multi-line macro: collect until END MACRO. MACROTEMP identifiers are
+        // recorded so each expansion can rename them to unique PB identifiers.
         let mut body: Vec<String> = Vec::new();
+        let mut temps: Vec<String> = Vec::new();
         let mut j = start_i + 1;
         while j < raw_lines.len() {
             let t = raw_lines[j].trim();
@@ -1209,8 +1257,13 @@ impl Preprocessor {
                 break;
             }
             if u.starts_with("MACROTEMP") {
-                // MACROTEMP unique-identifier renaming not supported this
-                // batch; skip the declaration line.
+                let temp_list = t[9..].trim();
+                temps.extend(
+                    split_args(temp_list)
+                        .into_iter()
+                        .map(|x| x.trim().to_string())
+                        .filter(|x| !x.is_empty()),
+                );
                 j += 1;
                 continue;
             }
@@ -1218,7 +1271,16 @@ impl Preprocessor {
             j += 1;
         }
         if !name.is_empty() {
-            self.macros.insert(name, MacroDef { params, body });
+            self.macros.insert(
+                name.clone(),
+                MacroDef {
+                    name,
+                    params,
+                    body,
+                    temps,
+                    kind: MacroKind::Regular,
+                },
+            );
         }
         j + 1
     }
@@ -1226,10 +1288,10 @@ impl Preprocessor {
     /// Expand macros in a line. Multi-line macros expand at statement position
     /// (line start); single-line macros expand anywhere in the line. Returns
     /// the expanded text, possibly containing embedded newlines.
-    fn expand_macros(&self, trimmed: &str, full: &str) -> String {
+    fn expand_macros(&mut self, trimmed: &str, full: &str) -> String {
         // Multi-line macros: statement position (line start).
         let trimmed_upper = trimmed.to_uppercase();
-        for (name, def) in &self.macros {
+        for (name, def) in &self.macros.clone() {
             if def.body.len() > 1 {
                 if let Some(rest) = trimmed_upper.strip_prefix(&name.to_uppercase()) {
                     let ok = rest.is_empty()
@@ -1241,11 +1303,7 @@ impl Preprocessor {
                             .unwrap_or(false);
                     if ok {
                         let args = extract_paren_args(trimmed, name.len());
-                        let mut out: Vec<String> = Vec::new();
-                        for bl in &def.body {
-                            out.push(substitute_params(bl, &def.params, &args));
-                        }
-                        return out.join("\n");
+                        return self.expand_multiline_macro(def, &args);
                     }
                 }
             }
@@ -1263,6 +1321,40 @@ impl Preprocessor {
             }
         }
         result
+    }
+
+    /// Expand a multi-line macro for one call site. MACROTEMP identifiers are
+    /// suffixed with the current expansion number; EXIT MACRO becomes a GOTO a
+    /// generated end label, matching CHW's "GOTO END-MACRO" semantics.
+    fn expand_multiline_macro(&mut self, def: &MacroDef, args: &[String]) -> String {
+        let expansion = self
+            .macro_expansions
+            .entry(def.name.clone())
+            .and_modify(|v| *v += 1)
+            .or_insert(1);
+        let suffix = format!("{:04}", *expansion);
+        let mut lines: Vec<String> = def
+            .body
+            .iter()
+            .map(|body| substitute_params(body, &def.params, args))
+            .collect();
+
+        for temp in &def.temps {
+            let renamed = format!("{}{}", temp, suffix);
+            for line in lines.iter_mut() {
+                *line = replace_word(line, temp, &renamed);
+            }
+        }
+
+        if def.kind == MacroKind::Regular {
+            let end_label = format!("PB_MEND_{}_{}", def.name, suffix);
+            for line in lines.iter_mut() {
+                *line = replace_exit_macro(line, &end_label);
+            }
+            lines.push(format!("{}:", end_label));
+        }
+
+        lines.join("\n")
     }
 
     /// One fixpoint round of single-line macro expansion: scan the line once,
@@ -1794,11 +1886,60 @@ fn replace_word(body: &str, param: &str, arg: &str) -> String {
                 i += 1;
             }
             let word = &body[start..i];
-            if word.to_uppercase() == param {
+            if word.to_uppercase() == param.to_uppercase() {
                 out.push_str(arg);
             } else {
                 out.push_str(word);
             }
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Replace `EXIT MACRO` (whole two-keyword form, possibly after `THEN` on the
+/// same line) with `GOTO <label>`.  CHW defines EXIT MACRO as functionally
+/// identical to GOTO the imaginary END-MACRO label.
+fn replace_exit_macro(line: &str, label: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if c.is_ascii_alphanumeric() || c == '_' {
+            let start = i;
+            while i < bytes.len()
+                && ((bytes[i] as char).is_ascii_alphanumeric()
+                    || bytes[i] == b'_'
+                    || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            let word = &line[start..i];
+            if word.eq_ignore_ascii_case("EXIT") {
+                let mut j = i;
+                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                    j += 1;
+                }
+                let m_start = j;
+                while j < bytes.len()
+                    && ((bytes[j] as char).is_ascii_alphanumeric()
+                        || bytes[j] == b'_'
+                        || bytes[j] == b'$')
+                {
+                    j += 1;
+                }
+                let next_word = &line[m_start..j];
+                if next_word.eq_ignore_ascii_case("MACRO") {
+                    out.push_str("GOTO ");
+                    out.push_str(label);
+                    i = j;
+                    continue;
+                }
+            }
+            out.push_str(word);
         } else {
             out.push(c);
             i += 1;
