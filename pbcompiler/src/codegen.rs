@@ -6282,6 +6282,31 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr, IrType::I32],
             false,
         );
+        // batch 358: CSET [ABS] ... [USING pad] (CHW CSET_statement.htm).
+        self.module.declare_function(
+            "pb_cset_abs_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cset_using_buf",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cset_abs_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cset_using_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_mkbyt", &IrType::Ptr, &[IrType::I32], false);
         self.module.declare_function(
@@ -9988,6 +10013,11 @@ impl Compiler {
     fn expr_is_wstring(&mut self, e: &Expr) -> bool {
         match e {
             Expr::Variable(name) => {
+                // `$$CRLF` / `$$WHITESPACE` style wide equates expand to
+                // WSTRING constants (batch358), so LEN must count code units.
+                if wide_multi_equate_value(name).is_some() {
+                    return true;
+                }
                 if let Some(info) = self.symbols.lookup(&normalize_name(name)) {
                     info.pb_type == PbType::WString
                 } else {
@@ -21076,7 +21106,7 @@ impl Compiler {
                 return Ok(());
             }
             "CSET" => {
-                // CSET target$ = value → pb_cset(&target, value, len)
+                // CHW CSET_statement.htm: CSET [ABS] target = value [USING pad]
                 if call.args.len() >= 2 {
                     let value = self.compile_expr(fb, &call.args[1])?;
                     let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &call.args[0])?;
@@ -21085,10 +21115,31 @@ impl Compiler {
                         _ => 256,
                     };
                     let len_const = fb.const_i32(len);
-                    if matches!(pb_type, PbType::FixedString(_)) {
-                        fb.call_void("pb_cset_buf", &[ptr, value, len_const]);
+                    // Optional third arg: ABS sentinel or USING pad expression.
+                    let is_abs = matches!(call.args.get(2),
+                        Some(Expr::StringLit(s)) if s == "__ABS__");
+                    let pad_val = if call.args.len() >= 3 && !is_abs {
+                        Some(self.compile_expr(fb, &call.args[2])?)
                     } else {
-                        fb.call_void("pb_cset", &[ptr, value, len_const]);
+                        None
+                    };
+                    if matches!(pb_type, PbType::FixedString(_)) {
+                        if is_abs {
+                            fb.call_void("pb_cset_abs_buf", &[ptr, value, len_const]);
+                        } else if let Some(pad) = pad_val {
+                            fb.call_void("pb_cset_using_buf", &[ptr, value, len_const, pad]);
+                        } else {
+                            fb.call_void("pb_cset_buf", &[ptr, value, len_const]);
+                        }
+                    } else {
+                        // Dynamic BSTR target: its "space" is the current LEN.
+                        if is_abs {
+                            fb.call_void("pb_cset_abs_dynamic", &[ptr, value]);
+                        } else if let Some(pad) = pad_val {
+                            fb.call_void("pb_cset_using_dynamic", &[ptr, value, pad]);
+                        } else {
+                            fb.call_void("pb_cset", &[ptr, value, len_const]);
+                        }
                     }
                 }
                 return Ok(());
@@ -22963,22 +23014,41 @@ impl Compiler {
                     // [16 x i8] parameter slot - an ABI mismatch crash
                     // (batch304: OPTMIX(double, ptr) vs ([16 x i8], ptr)).
                     if matches!(param.pb_type, PbType::Variant) {
-                        match inner_arg {
-                            Expr::Variable(vn) => {
+                        // Only a variable that is itself a VARIANT can be
+                        // loaded as a 16-byte container in place.  Any other
+                        // variable (STRING, LONG, ...) must go through the
+                        // temporary-container path below, or the load would
+                        // read 16 bytes out of an 8-byte slot (batch358 probe:
+                        // `VariantCode(s)` with a STRING argument reported the
+                        // wrong VT).
+                        let is_variant_var = match inner_arg {
+                            Expr::Variable(vn) => self
+                                .expr_pb_type(&Expr::Variable(vn.clone()))
+                                .map(|t| t == PbType::Variant)
+                                .unwrap_or(false),
+                            _ => false,
+                        };
+                        if is_variant_var {
+                            if let Expr::Variable(vn) = inner_arg {
                                 let (slot, _pb) =
                                     self.compile_lvalue_ptr(fb, &Expr::Variable(vn.clone()))?;
                                 let container =
                                     fb.load(&IrType::Array(16, Box::new(IrType::I8)), &slot);
                                 compiled.push(container);
                             }
-                            _ => {
-                                return Err(PbError::parser(
-                                    "BYVAL VARIANT arguments must be a Variant variable (expression conversion to a Variant container is not implemented)"
-                                        .to_string(),
-                                    None,
-                                    self.current_line,
-                                ));
-                            }
+                        } else {
+                            // CHW Variant: BYVAL passes the whole 16-byte
+                            // container.  An expression now gets a temporary
+                            // container built with the same VT mapping that a
+                            // Variant assignment uses (batch358), instead of
+                            // refusing the call.
+                            let val = self.compile_expr(fb, inner_arg)?;
+                            let container_ty = IrType::Array(16, Box::new(IrType::I8));
+                            let slot = fb.alloca(&container_ty);
+                            fb.store(&Val::new("zeroinitializer", container_ty.clone()), &slot);
+                            self.emit_variant_store(fb, &slot, &val);
+                            let container = fb.load(&container_ty, &slot);
+                            compiled.push(container);
                         }
                         continue;
                     }
@@ -24129,7 +24199,7 @@ impl Compiler {
                 // positive/zero, none for negative (" 5" / "-1"), plus one
                 // trailing space (present after every numeric item, including
                 // the last one before CR/LF).
-                let s = self.num_to_string(fb, &val);
+                let s = self.num_to_string_of(fb, &val, arg);
                 fb.call_void("pb_print_file_item", &[filenum_i32.clone(), s]);
             }
         }
@@ -25067,14 +25137,12 @@ impl Compiler {
                     if let Some(w) = wide_equate(orig_name) {
                         return Ok(fb.const_i32(w));
                     }
-                    if wide_equate_unsupported(orig_name) {
-                        self.warnings.push(format!(
-                            "wide multi-char equate `{}` is not supported yet \
-                             (no wide-string type in this compiler) - treated as empty string",
-                            orig_name
-                        ));
-                        let (str_name, _) = self.module.add_string_constant("");
-                        return Ok(Val::new(str_name, IrType::Ptr));
+                    if let Some(w) = wide_multi_equate_value(orig_name) {
+                        // CHW Built-in_string_equates.htm: every ANSI `$` equate
+                        // has a wide (Unicode) `$$` counterpart, so the
+                        // multi-character forms become WSTRING constants.
+                        let (wname, _) = self.module.add_wstring_constant(w);
+                        return Ok(Val::new(wname, IrType::Ptr));
                     }
                 }
                 let name = normalize_name(orig_name);
@@ -30312,6 +30380,15 @@ impl Compiler {
                 let d = self.compile_expr(fb, &args[1])?;
                 let di = self.to_i32(fb, &d);
                 fb.call(&IrType::Ptr, "pb_str_dbl_d", &[f64_val, di])
+            } else if let Expr::FloatLit(_, src) = &args[0] {
+                // SINGLE-precision literal: PBWin renders seven significant
+                // digits ("STR$(1e20)" -> " 1E+20", "STR$(0.1)" -> " .1").
+                if Self::float_lit_is_single_prec(src) {
+                    let seven = fb.const_i32(7);
+                    fb.call(&IrType::Ptr, "pb_str_dbl_d", &[f64_val, seven])
+                } else {
+                    fb.call(&IrType::Ptr, "pb_str_dbl", std::slice::from_ref(&f64_val))
+                }
             } else {
                 fb.call(&IrType::Ptr, "pb_str_dbl", std::slice::from_ref(&f64_val))
             };
@@ -30362,6 +30439,34 @@ impl Compiler {
         let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf.clone(), len]);
         fb.call_void("free", &[buf]);
         Ok(bstr)
+    }
+
+    /// Unsuffixed literals with at most six mantissa digits are SINGLE in
+    /// PowerBASIC (see lexer::pb_float_value), and PBWin renders a SINGLE with
+    /// seven significant digits.  Rendering the widened f64 with the DOUBLE
+    /// 15-digit format instead exposes the f32->f64 residue: `PRINT #1, 1e20`
+    /// emitted "1.00000002004088E+20" where PBWin emits "1E+20".
+    fn float_lit_is_single_prec(src: &str) -> bool {
+        let s = src.trim().to_ascii_uppercase();
+        if s.ends_with('#') || s.ends_with('@') {
+            return false;
+        }
+        let mant = s.split('E').next().unwrap_or(&s);
+        mant.chars().filter(|c| c.is_ascii_digit()).count() <= 6
+    }
+
+    /// STR$-style rendering that keeps the declared precision of a literal.
+    fn num_to_string_of(&mut self, fb: &mut FunctionBuilder, val: &Val, expr: &Expr) -> Val {
+        if val.ty == IrType::Double {
+            if let Expr::FloatLit(_, src) = expr {
+                if Self::float_lit_is_single_prec(src) {
+                    let f = self.to_f64(fb, val);
+                    let seven = fb.const_i32(7);
+                    return fb.call(&IrType::Ptr, "pb_str_dbl_d", &[f, seven]);
+                }
+            }
+        }
+        self.num_to_string(fb, val)
     }
 
     /// Convert a numeric value to a string (like STR$), for use in & concatenation
@@ -31650,15 +31755,24 @@ fn wide_equate(name: &str) -> Option<i32> {
     Some(v)
 }
 
-/// Wide multi-char equates that this compiler cannot represent yet
-/// (they are wide strings). Recognised so we can fail explicitly instead of
-/// silently treating them as ordinary variables.
-fn wide_equate_unsupported(name: &str) -> bool {
+/// Wide (`$$`) versions of the multi-character built-in string equates.
+///
+/// CHW Built-in_string_equates.htm lists one ANSI form per row (`$CRLF` =
+/// `CHR$(13,10)`, `$DQ2` = `CHR$(34,34)`, `$SQ2` = `CHR$(39,39)`, `$QCQ` =
+/// `CHR$(34,44,34)`, `$WHITESPACE` = `CHR$(32,9,13,10)`) and states that each
+/// has a wide counterpart identified by a double dollar-sign. The single
+/// character wide forms are numeric (`wide_equate`); these multi-character
+/// ones expand to WSTRING constants.
+fn wide_multi_equate_value(name: &str) -> Option<&'static str> {
     let upper = name.to_uppercase();
-    matches!(
-        upper.as_str(),
-        "$$CRLF" | "$$DQ2" | "$$SQ2" | "$$QCQ" | "$$WHITESPACE"
-    )
+    match upper.as_str() {
+        "$$CRLF" => Some("\r\n"),
+        "$$DQ2" => Some("\"\""),
+        "$$SQ2" => Some("''"),
+        "$$QCQ" => Some("\",\""),
+        "$$WHITESPACE" => Some(" \t\r\n"),
+        _ => None,
+    }
 }
 
 fn normalize_name(name: &str) -> String {

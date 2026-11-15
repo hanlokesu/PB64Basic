@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 357 (v0.2.148). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 358 (v0.2.149). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 358 (v0.2.149) - CSET ABS/USING implemented, $$CRLF/$$DQ2/$$SQ2/$$QCQ/$$WHITESPACE wide equates with code-unit LEN, BYVAL VARIANT expression arguments via a temporary container, STR$/PRINT # single-precision literal formatting aligned with PBWin10, TCP CLOSE drains queued bytes so a reply in flight is not lost to an RST (batch205 loopback is now 10/10), UNION/TYPE bit fields covered by a regression probe; OPEN clauses, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT remain open.
 > batch 357 (v0.2.148) - i686 THREAD CREATE Error 7 gone (stdcall boot thunk), DIALOG NEW creates hidden and SHOW reveals it, thread-local CALLSTK (F4 heap corruption 9/100 -> 0/200), NOTIFY window-message probes on both targets, 32-bit Hello 155,648 B; TXT/THREAD OBJECT still open with explicit diagnostics.
 > - **batch 356**: i686 `WNDCLASSEX`/`MSG`/`NMHDR`/`TCITEMA` use the 32-bit layout and `pb_wndproc` the 32-bit ABI; 32-bit GUI windows are created again and no longer crash.
 > batch 355 (v0.2.146) - new FORK EXTENSION `VERSION$()`: a zero-argument string function that returns the release version the running compiler was built from, baked in from the repository VERSION file at build time (the same string the banner and `PB64Basic --version` report). Both `VERSION$()` and the bare `VERSION$` spelling compile; the value is copied into a real BSTR. Coverage now 948 rows with 31 fork extensions. Self-check: `examples/batch355_test.bas`.
@@ -1024,6 +1025,119 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.149 (2026-11-16)
+
+Batch 358. Closes four items from the controlled-gap list: the CSET ABS/USING
+modifiers, the wide multi-character string equates, BYVAL VARIANT arguments
+that are expressions rather than variables, and the rendering of
+single-precision numeric literals by STR$ and PRINT #.
+
+- **Added - CSET ABS and CSET USING.** CHW specifies
+  `CSET [ABS] result_var = string_expression [USING string_expression]`: ABS
+  keeps the destination's existing padding bytes and centres the new text
+  between them, USING pads with the first character of its string argument.
+  The parser accepts both modifiers (and rejects ABS together with USING),
+  codegen dispatches to fixed-buffer or dynamic-BSTR runtime entry points, and
+  `pb_runtime.c` gained `pb_cset_abs_buf`, `pb_cset_using_buf`,
+  `pb_cset_abs_dynamic` and `pb_cset_using_dynamic`. Verified against the CHW
+  page examples on both targets: `COOL ..PowerBASIC.. COOL` (length 24) for
+  ABS and `*****PowerBASIC*****` (length 20) for USING.
+- **Added - wide multi-character string equates.** `$$CRLF` is
+  `CHR$$(13,10)`, `$$DQ2` is `CHR$$(34,34)`, `$$SQ2` is `CHR$$(39,39)`,
+  `$$QCQ` is `CHR$$(34,44,34)` and `$$WHITESPACE` is `CHR$$(32,9,13,10)`
+  (CHW Built-in string equates). They used to emit a warning and expand to an
+  empty string; they now expand to WSTRING constants. `LEN` of a wide equate
+  counts UTF-16 code units, so `LEN($$CRLF)` is 2 and `LEN($$WHITESPACE)` is 4,
+  matching PBWin10 byte for byte.
+- **Added - BYVAL VARIANT arguments may be expressions.** A BYVAL VARIANT
+  parameter used to accept only a Variant variable; any other argument was a
+  compile-time error. The code generator now materialises a temporary 16-byte
+  Variant container for an expression, using the same VT mapping as a Variant
+  assignment (BSTR, R8, I4, I2, I1, I8, pointer). A Variant variable is still
+  passed in place. Probed with a PB procedure that returns `VARIANTVT(v)`:
+  `1 + 2` gives VT 3, `1.5` gives VT 5, `"abc"` gives VT 8 on both targets.
+- **Fixed - STR$ and PRINT # rendered single-precision literals with the
+  DOUBLE format.** An unsuffixed literal with at most six mantissa digits is
+  SINGLE in PowerBASIC, but it was widened to f64 and printed with 15
+  significant digits, exposing the f32 residue: `PRINT #1, 1e20` wrote
+  `1.00000002004088E+20` where PBWin10 writes `1E+20`, and `PRINT #1, 0.1`
+  wrote `.100000001490116` where PBWin10 writes `.1`. Literals that the lexer
+  classifies as SINGLE are now rendered with seven significant digits;
+  doubles keep the 15-digit format. PBWin10 reference values matched exactly
+  on both targets (`STR$(1e20)` = ` 1E+20`, `STR$(0.1)` = ` .1`,
+  `STR$(1/3)` = ` .333333333333333`).
+- **Fixed - TCP CLOSE could reset the connection and lose a reply in flight.**
+  Windows converts a `closesocket` with unread received data into an RST, and
+  an RST makes the peer discard data it has not read yet. `TCP LINE INPUT`
+  returns as soon as the receive buffer drains (CHW), so the trailing CRLF of
+  a line could stay unread; the next `TCP CLOSE` then reset the connection and
+  the peer saw an empty line instead of the reply. `pb_tcp_close` now drains
+  whatever is already queued before closing. `examples/batch205_tcp_loopback_test.bas`
+  went from intermittent `FAILURES: 1` (a passing run followed by a failing one
+  on the same port) to 10/10 clean runs on x64.
+- **Verified - UNION and TYPE bit fields.** `AS BIT * n` with the documented
+  `IN <base>` form on the first member was already implemented; a regression
+  probe now covers both a UNION (`IN DWORD`, two 4-bit members read back 8 and
+  7 from `&H12345678`) and a TYPE (`IN BYTE`, 3 + 5 bits read back 5 and 17).
+- **Still open (unchanged, explicit diagnostics).** OPEN's ACCESS / LOCK /
+  BASE / CHR clauses are still accepted and ignored (defaults apply);
+  MACROTEMP / MACRO FUNCTION / EXIT MACRO are still skipped by the
+  preprocessor; legacy PBRES/PBR resource files still fail with an explicit
+  error; EnumPrintersW still crashes inside a PB-linked executable and
+  PRINTERCOUNT reads the registry instead; TXT pseudo-object and THREAD
+  OBJECT keep their explicit parser diagnostics.
+
+Batch 358. Closes four items from the controlled-gap list: the CSET ABS/USING
+modifiers, the wide multi-character string equates, BYVAL VARIANT arguments
+that are expressions rather than variables, and the rendering of
+single-precision numeric literals by STR$ and PRINT #.
+
+- **Added - CSET ABS and CSET USING.** CHW specifies
+  `CSET [ABS] result_var = string_expression [USING string_expression]`: ABS
+  keeps the destination's existing padding bytes and centres the new text
+  between them, USING pads with the first character of its string argument.
+  The parser accepts both modifiers (and rejects ABS together with USING),
+  codegen dispatches to fixed-buffer or dynamic-BSTR runtime entry points, and
+  `pb_runtime.c` gained `pb_cset_abs_buf`, `pb_cset_using_buf`,
+  `pb_cset_abs_dynamic` and `pb_cset_using_dynamic`. Verified against the CHW
+  page examples on both targets: `COOL ..PowerBASIC.. COOL` (length 24) for
+  ABS and `*****PowerBASIC*****` (length 20) for USING.
+- **Added - wide multi-character string equates.** `$$CRLF` is
+  `CHR$$(13,10)`, `$$DQ2` is `CHR$$(34,34)`, `$$SQ2` is `CHR$$(39,39)`,
+  `$$QCQ` is `CHR$$(34,44,34)` and `$$WHITESPACE` is `CHR$$(32,9,13,10)`
+  (CHW Built-in string equates). They used to emit a warning and expand to an
+  empty string; they now expand to WSTRING constants. `LEN` of a wide equate
+  counts UTF-16 code units, so `LEN($$CRLF)` is 2 and `LEN($$WHITESPACE)` is 4,
+  matching PBWin10 byte for byte.
+- **Added - BYVAL VARIANT arguments may be expressions.** A BYVAL VARIANT
+  parameter used to accept only a Variant variable; any other argument was a
+  compile-time error. The code generator now materialises a temporary 16-byte
+  Variant container for an expression, using the same VT mapping as a Variant
+  assignment (BSTR, R8, I4, I2, I1, I8, pointer). A Variant variable is still
+  passed in place. Probed with a PB procedure that returns `VARIANTVT(v)`:
+  `1 + 2` gives VT 3, `1.5` gives VT 5, `"abc"` gives VT 8 on both targets.
+- **Fixed - STR$ and PRINT # rendered single-precision literals with the
+  DOUBLE format.** An unsuffixed literal with at most six mantissa digits is
+  SINGLE in PowerBASIC, but it was widened to f64 and printed with 15
+  significant digits, exposing the f32 residue: `PRINT #1, 1e20` wrote
+  `1.00000002004088E+20` where PBWin10 writes `1E+20`, and `PRINT #1, 0.1`
+  wrote `.100000001490116` where PBWin10 writes `.1`. Literals that the lexer
+  classifies as SINGLE are now rendered with seven significant digits;
+  doubles keep the 15-digit format. PBWin10 reference values matched exactly
+  on both targets (`STR$(1e20)` = ` 1E+20`, `STR$(0.1)` = ` .1`,
+  `STR$(1/3)` = ` .333333333333333`).
+- **Verified - UNION and TYPE bit fields.** `AS BIT * n` with the documented
+  `IN <base>` form on the first member was already implemented; a regression
+  probe now covers both a UNION (`IN DWORD`, two 4-bit members read back 8 and
+  7 from `&H12345678`) and a TYPE (`IN BYTE`, 3 + 5 bits read back 5 and 17).
+- **Still open (unchanged, explicit diagnostics).** OPEN's ACCESS / LOCK /
+  BASE / CHR clauses are still accepted and ignored (defaults apply);
+  MACROTEMP / MACRO FUNCTION / EXIT MACRO are still skipped by the
+  preprocessor; legacy PBRES/PBR resource files still fail with an explicit
+  error; EnumPrintersW still crashes inside a PB-linked executable and
+  PRINTERCOUNT reads the registry instead; TXT pseudo-object and THREAD
+  OBJECT keep their explicit parser diagnostics.
+
 ### v0.2.148 (2026-11-15)
 
 Batch 357. Closes three long-standing runtime defects, adds automated assertions

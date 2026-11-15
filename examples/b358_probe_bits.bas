@@ -1,0 +1,21 @@
+#COMPILE EXE
+#CONSOLE ON
+UNION UBITS
+  v AS DWORD
+  b0 AS BIT * 4 IN DWORD
+  b1 AS BIT * 4
+END UNION
+TYPE TBITS
+  lo AS BIT * 3 IN BYTE
+  hi AS BIT * 5
+END TYPE
+FUNCTION PBMAIN () AS LONG
+  LOCAL u AS UBITS
+  LOCAL t AS TBITS
+  u.v = &H12345678
+  PRINT "union bit:"; u.b0; u.b1
+  t.lo = 5
+  t.hi = 17
+  PRINT "type bit:"; t.lo; t.hi
+  FUNCTION = 0
+END FUNCTION

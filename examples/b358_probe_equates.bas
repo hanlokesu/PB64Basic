@@ -1,0 +1,21 @@
+#COMPILE EXE
+#CONSOLE ON
+FUNCTION PBMAIN () AS LONG
+  LOCAL a AS WSTRING
+  LOCAL b AS WSTRING
+  LOCAL c AS WSTRING
+  LOCAL d AS WSTRING
+  LOCAL e AS WSTRING
+  a = $$CRLF
+  b = $$DQ2
+  c = $$SQ2
+  d = $$QCQ
+  e = $$WHITESPACE
+  PRINT "crlf="; LEN(a); " dq2="; LEN(b); " sq2="; LEN(c); " qcq="; LEN(d); " ws="; LEN(e)
+  IF LEN(a)=2 AND LEN(b)=2 AND LEN(c)=2 AND LEN(d)=3 AND LEN(e)=4 THEN
+    PRINT "EQUATES OK"
+  ELSE
+    PRINT "EQUATES BAD"
+  END IF
+  FUNCTION = 0
+END FUNCTION

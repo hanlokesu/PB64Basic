@@ -6560,6 +6560,79 @@ void pb_rset_using_buf(char* dest, const char* src, int len, const char* pad) {
     dest[len] = (char)0;
 }
 
+/* CSET ABS (buffer target): center src, leave padding positions unchanged
+   from their original content (CHW CSET_statement.htm: "CSET leaves the
+   padding positions unchanged from their original content, rather than
+   replacing them with spaces"). */
+void pb_cset_abs_buf(char* dest, const char* src, int len) {
+    int src_len = src ? (int)strlen(src) : 0;
+    int take = src_len < len ? src_len : len;
+    int pad_l = (len - take) / 2;
+    if (take > 0) memmove(dest + pad_l, src, (size_t)take);
+    dest[len] = (char)0;
+}
+
+/* CSET USING (buffer target): center src, pad both sides with the first
+   character of pad (space when pad is empty/absent). */
+void pb_cset_using_buf(char* dest, const char* src, int len, const char* pad) {
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    int src_len = src ? (int)strlen(src) : 0;
+    int take = src_len < len ? src_len : len;
+    int pad_l = (len - take) / 2;
+    int i;
+    for (i = 0; i < len; i++) {
+        dest[i] = (i < pad_l) ? padc : ((i - pad_l) < take ? src[i - pad_l] : padc);
+    }
+    dest[len] = (char)0;
+}
+
+/* CSET ABS (dynamic BSTR target): the "space of the string variable" is its
+   current LEN; bytes outside the centered src keep their previous content. */
+void pb_cset_abs_dynamic(char** dest, const char* src) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)strlen(old) : 0;
+    int src_len = src ? (int)strlen(src) : 0;
+    int take = src_len < width ? src_len : width;
+    int pad_l = (width - take) / 2;
+    char* buf;
+    if (width < 0) width = 0;
+    buf = (char*)malloc((size_t)width + 1);
+    if (!buf) return;
+    if (width > 0) {
+        if (old) memcpy(buf, old, (size_t)width); else memset(buf, 32, (size_t)width);
+    }
+    if (take > 0) memcpy(buf + pad_l, src, (size_t)take);
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+    if (old) SysFreeString(old);
+}
+
+/* CSET USING (dynamic BSTR target): center src in the current width. */
+void pb_cset_using_dynamic(char** dest, const char* src, const char* pad) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)strlen(old) : 0;
+    const char* s = src ? src : "";
+    int src_len = (int)strlen(s);
+    int take = src_len < width ? src_len : width;
+    int pad_l = (width - take) / 2;
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    char* buf;
+    int i;
+    if (width < 0) width = 0;
+    buf = (char*)malloc((size_t)width + 1);
+    if (!buf) return;
+    for (i = 0; i < width; i++) {
+        buf[i] = (i < pad_l) ? padc : ((i - pad_l) < take ? s[i - pad_l] : padc);
+    }
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+    if (old) SysFreeString(old);
+}
+
 /* RESET: close all open files */
 /* RESET: close all open files */
 void pb_reset(void) {
@@ -7646,8 +7719,26 @@ int pb_tcp_print(int f, const char* data, int newline) {
     return 0;
 }
 
+/* Discard bytes already queued on a socket before closesocket().  Windows
+   turns a close with unread received data into an RST, and an RST can make the
+   peer discard a reply that is still in flight: batch205's acceptor reads a
+   partial line (TCP LINE INPUT returns as soon as the buffer drains, CHW), then
+   prints its answer and closes - the unread CRLF used to reset the connection
+   and the client saw an empty line instead of "pong".  Draining first turns the
+   close back into a normal FIN. */
+static void pb_sock_drain(int f) {
+    for (int i = 0; i < 64; i++) {
+        unsigned long avail = 0;
+        if (ioctlsocket(pb_sock[f], PB_FIONREAD, &avail) != 0 || avail == 0) break;
+        char buf[512];
+        int want = avail > sizeof(buf) ? (int)sizeof(buf) : (int)avail;
+        if (recv(pb_sock[f], buf, want, 0) <= 0) break;
+    }
+}
+
 int pb_tcp_close(int f) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] == 0) { pb_err_var = pb_err = 52; return -1; }
+    pb_sock_drain(f);
     closesocket(pb_sock[f]);
     pb_sock_state[f] = 0;
     pb_sock_eof[f] = 0;

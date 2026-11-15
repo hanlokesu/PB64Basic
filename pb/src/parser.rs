@@ -8602,17 +8602,56 @@ impl Parser {
 
                 if matches!(name_upper.as_str(), "CSET") {
                     self.advance(); // consume CSET
-                                    // CSET [ABS] result_var = string_expression [USING ...]
-                                    // (ABS / USING not supported yet — plain centering only)
+                                    // CHW CSET_statement.htm:
+                                    //   CSET [ABS] result_var = string_expression [USING string_expression]
+                                    // ABS leaves the padding positions untouched (keeps their
+                                    // original content); USING pads both sides with the first
+                                    // character of the pad expression (spaces when absent).
+                    let has_abs = if let Token::Identifier(s) = self.peek().clone() {
+                        if s.eq_ignore_ascii_case("ABS") {
+                            self.advance();
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
                     let target = self.parse_primary()?;
                     if self.peek() == &Token::Eq {
                         self.advance();
                     }
                     let value = self.parse_expression()?;
+                    let mut using_pad: Option<Expr> = None;
+                    if let Token::Identifier(s) = self.peek().clone() {
+                        if s.eq_ignore_ascii_case("USING") {
+                            self.advance();
+                            using_pad = Some(self.parse_expression()?);
+                        }
+                    }
                     self.consume_to_eol();
+                    if has_abs && using_pad.is_some() {
+                        // ABS keeps the original padding while USING fills it — the
+                        // combination is contradictory, so say so instead of
+                        // silently picking one.
+                        self.error_count += 1;
+                        return Err(PbError::parser(
+                            "CSET cannot combine ABS with USING: ABS keeps the original padding, USING fills it"
+                                .to_string(),
+                            None,
+                            line,
+                        ));
+                    }
+                    let mut cargs = vec![target, value];
+                    if let Some(pad) = using_pad {
+                        cargs.push(pad);
+                    } else if has_abs {
+                        // Sentinel: ABS without USING leaves padding untouched.
+                        cargs.push(Expr::StringLit("__ABS__".to_string()));
+                    }
                     return Ok(Statement::Call(CallStmt {
                         name: "CSET".to_string(),
-                        args: vec![target, value],
+                        args: cargs,
                         line,
                     }));
                 }
