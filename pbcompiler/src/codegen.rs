@@ -27097,6 +27097,22 @@ impl Compiler {
                 }))
             }
             // System builtins
+            // VERSION$() - fork extension (batch 355): the release version this
+            // compiler was built from.  It is the same string the banner and
+            // `PB64Basic --version` report, baked in at build time from the
+            // repository VERSION file (build.rs -> PB64BASIC_VERSION), so a
+            // program compiled with a given release records that release itself.
+            // No arguments.  The constant carries a BSTR-style length prefix, but
+            // it is copied into a real BSTR with pb_bstr_alloc (the same pattern
+            // FUNCNAME$ uses): a PB string owns and frees its buffer, so handing
+            // back a pointer into .rdata would be freed later and crash.
+            "VERSION" => {
+                const V: &str = env!("PB64BASIC_VERSION");
+                let (sv, _) = self.module.add_string_constant(V);
+                let src = Val::new(sv, IrType::Ptr);
+                let len = fb.const_i32(V.len() as i32);
+                Some(Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[src, len])))
+            }
             "TIMER" => {
                 // CHW TIMER_function.htm: seconds since midnight (0..86400).
                 Some(Ok(fb.call(&IrType::Double, "pb_timer", &[])))

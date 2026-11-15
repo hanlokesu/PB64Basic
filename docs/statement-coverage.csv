@@ -1,4 +1,4 @@
-# Last updated from batch 354 (v0.2.145) - 2026-11-15,,,,
+# Last updated from batch 355 (v0.2.146) - 2026-11-15,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -876,6 +876,7 @@ VARIANT$$,FUNCTION,PB/Win only,Implemented
 VARIANTVT,FUNCTION,PB/Win only,Implemented
 VARPTR,FUNCTION,codegen builtin,Implemented
 VERIFY,FUNCTION,codegen builtin,Implemented
+VERSION$,FORK EXTENSION,codegen builtin (compile-time env),Implemented
 WAITKEY,FUNCTION,codegen builtin,Implemented
 WAITKEY$,FUNCTION,PB/CC + console,Implemented
 WHILE_WEND,BLOCK,PB/Win + PB/CC,Implemented

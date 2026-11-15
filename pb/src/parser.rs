@@ -17379,6 +17379,12 @@ impl Parser {
                     // string; NUL$(n) returns n NUL chars.  Without parens the
                     // fork otherwise treated it as an undeclared variable.
                     || name.eq_ignore_ascii_case("NUL$")
+                    // batch 355: VERSION$() is a fork extension with no
+                    // arguments, so the PB bare spelling `PRINT VERSION$`
+                    // (and `v = VERSION$`) must reach codegen too.  Without
+                    // this entry `#DIM ALL` rejected it as an undeclared
+                    // variable (Error 519).
+                    || name.eq_ignore_ascii_case("VERSION$")
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())

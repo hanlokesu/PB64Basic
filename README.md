@@ -428,8 +428,9 @@ exit code 0:
 > - **0** DDT/GUI-class keywords deferred (Tier 3)
 > - **0** documented keywords not yet implemented
 >
-> Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 354 (v0.2.145). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
+> Updated through batch 355 (v0.2.146). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 355 (v0.2.146) - new FORK EXTENSION `VERSION$()`: a zero-argument string function that returns the release version the running compiler was built from, baked in from the repository VERSION file at build time (the same string the banner and `PB64Basic --version` report). Both `VERSION$()` and the bare `VERSION$` spelling compile; the value is copied into a real BSTR. Coverage now 948 rows with 31 fork extensions. Self-check: `examples/batch355_test.bas`.
 > batch 354 (v0.2.145) - compiler banner prints `[PB64Basic] Version ...` first; `--version` added; version is baked in from the repository VERSION file at build time; release gate `versionfile` blocks a stale banner.
 > batch 353 (v0.2.144) - TCP/UDP NOTIFY now register with WSAAsyncSelect (full CHW clause, Error 57 on failure); CHRBYTES returns 2 for wide strings; two keywords move to Implemented.
 > batch 352 (v0.2.143) - on x86_64 a BYVAL DWORD/LONG parameter receiving a 64-bit STRPTR/VARPTR/HANDLE keeps the full i64 width (the i686 stack-slot truncation is retained for 32-bit targets only), and a BYREF optional pointer passed literal 0 reaches the callee as NULL instead of a pointer to a zeroed temp slot; covered by examples/batch352_test.bas (FAILURES: 0).
@@ -1021,6 +1022,13 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.146 (2026-11-15) - batch 355
+
+- **`VERSION$()` reports the release version from inside a PB program**: a new zero-argument string function returns the version the running compiler was built from, the same string the banner and `PB64Basic --version` print. Both `VERSION$()` and the bare `VERSION$` spelling compile.
+- **Single source of truth**: the value is baked in from the repository `VERSION` file at build time (build.rs -> `PB64BASIC_VERSION`), so there is no runtime file to find and no way for a program to report a different release than the compiler that produced it. The release gate `versionfile` still refuses to publish when `VERSION` and `--version` disagree.
+- **BSTR-safe**: the constant is copied into a real BSTR with the same helper `FUNCNAME$` uses, so a PB string that owns and frees its buffer never receives a pointer into read-only data. `examples/batch355_test.bas` checks both spellings, the format, and 200 assignment/free cycles (`FAILURES: 0`).
+- **Coverage**: `VERSION$` is recorded as a FORK EXTENSION (not an official PB keyword): 948 rows, 915 official implemented, 2 established, 0 not implemented, 31 fork extensions, 917 available.
+
 ### v0.2.145 (2026-11-15) - batch 354
 
 - **Every build reports the compiler version**: the first banner line is now
