@@ -25257,6 +25257,19 @@ impl Compiler {
             Expr::FunctionCall(name, args) => {
                 let raw_upper = name.to_uppercase();
                 let name = normalize_name(name);
+                // VERSION$() is the string function.  normalize_name strips the
+                // trailing $, so an unsuffixed VERSION() call would otherwise
+                // land on the same builtin and return a BSTR pointer with no
+                // type check: assigning it to a numeric variable silently
+                // truncated the pointer (probe: LONG got -482459112).  Require
+                // the documented spelling instead of accepting that form.
+                if raw_upper == "VERSION" {
+                    return Err(PbError::parser(
+                        "VERSION is a string function: use VERSION$() (the $ suffix is required)",
+                        None,
+                        self.current_line,
+                    ));
+                }
                 // CHR$$(n...) returns a WSTRING (UTF-16 BSTR); each argument is
                 // truncated to the low 16 bits (PBWin probe: CHR$$(&H1F600) ->
                 // code 0xF600).  normalize_name would collapse it onto CHR$.

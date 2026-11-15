@@ -17385,6 +17385,11 @@ impl Parser {
                     // this entry `#DIM ALL` rejected it as an undeclared
                     // variable (Error 519).
                     || name.eq_ignore_ascii_case("VERSION$")
+                    // The unsuffixed spelling is not a valid PB string
+                    // function name; route it through the same bare-call path
+                    // so codegen rejects it with "use VERSION$()" instead of
+                    // the parser's generic DefType error (probe: rc=516).
+                    || name.eq_ignore_ascii_case("VERSION")
                 {
                     // No-argument functions without parentheses (PB syntax: n = DATACOUNT)
                     Expr::FunctionCall(name.to_uppercase(), Vec::new())
