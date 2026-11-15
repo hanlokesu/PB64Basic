@@ -46,16 +46,61 @@ fn main() {
     }
 }
 
+/// Rebuild the invocation as a copy-pasteable one-line command for the banner.
+///
+/// The EXE name is reduced to its file name so a build run from `target\release`
+/// does not print an absolute path, and arguments containing whitespace are
+/// quoted so a path with spaces survives both the log and a paste back into a
+/// shell.  Only what the caller actually passed is echoed - defaults that codegen
+/// resolves later (target, SDK lib dir) are reported by their own banner lines.
+fn command_line_for_log(args: &[String]) -> String {
+    let mut out = String::new();
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        if i == 0 {
+            let exe = Path::new(a)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(a.as_str());
+            out.push_str(exe);
+        } else if a.is_empty() || a.contains(' ') {
+            out.push('"');
+            out.push_str(a);
+            out.push('"');
+        } else {
+            out.push_str(a);
+        }
+    }
+    out
+}
+
 fn real_main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Release version stamped at build time from the repository `VERSION` file
+    // (see build.rs).  It is printed on every build so a compiler output can be
+    // traced back to the release that produced it, and `--version` reports it
+    // without doing any work.
+    const VERSION: &str = env!("PB64BASIC_VERSION");
+
+    if args.len() == 2 && (args[1] == "--version" || args[1] == "version") {
+        println!("PB64Basic {}", VERSION);
+        return;
+    }
 
     if args.len() < 3 || args[1] != "build" {
         eprintln!("Usage: PB64Basic build <file.bas> [-o output] [--dll] [--exe] [--obj-only]");
         eprintln!("       [--session-struct]");
         eprintln!("       [--emit-llvm] [--parse-only] [--runtime-lib path] [--lib-dir path]");
         eprintln!("       [--include-dir path] [--debug] [--target triple] [--console]");
+        eprintln!("       PB64Basic --version");
         process::exit(2);
     }
+
+    eprintln!("[PB64Basic] Version {}", VERSION);
+    eprintln!("[PB64Basic] {}", command_line_for_log(&args));
 
     let file_path = &args[2];
     // Validate every token up front and collect any bare positional ".obj"

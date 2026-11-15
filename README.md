@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (947 rows, deduplicated). **0** official keywords are not implemented yet; **30** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 353 (v0.2.144). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 354 (v0.2.145). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 354 (v0.2.145) - compiler banner prints `[PB64Basic] Version ...` first; `--version` added; version is baked in from the repository VERSION file at build time; release gate `versionfile` blocks a stale banner.
 > batch 353 (v0.2.144) - TCP/UDP NOTIFY now register with WSAAsyncSelect (full CHW clause, Error 57 on failure); CHRBYTES returns 2 for wide strings; two keywords move to Implemented.
 > batch 352 (v0.2.143) - on x86_64 a BYVAL DWORD/LONG parameter receiving a 64-bit STRPTR/VARPTR/HANDLE keeps the full i64 width (the i686 stack-slot truncation is retained for 32-bit targets only), and a BYREF optional pointer passed literal 0 reaches the callee as NULL instead of a pointer to a zeroed temp slot; covered by examples/batch352_test.bas (FAILURES: 0).
 > batch 351 (v0.2.142) - the ASC assignment statement now rejects a WSTRING / UDT / numeric left-hand type with a named parser error instead of falling through an empty codegen arm and dropping the assignment silently; the STRING and STRING * N paths are unchanged, covered by examples/batch351_test.bas (FAILURES: 0) and the b351_asc_wstring negative probe.
@@ -1020,6 +1021,26 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.145 (2026-11-15) - batch 354
+
+- **Every build reports the compiler version**: the first banner line is now
+  `[PB64Basic] Version v0.2.145`, so a compiler log identifies the release that
+  produced it. `PB64Basic --version` (or `PB64Basic version`) prints
+  `PB64Basic v0.2.145` and exits 0.
+- **The banner echoes the exact invocation**: the next line is the rebuilt command
+  line - `[PB64Basic] PB64Basic.exe build YourApp.bas --target ... --runtime-lib ...
+  --console` - with the EXE reduced to its file name and any argument containing
+  whitespace quoted, so a log shows both the release and the switches that produced
+  the output.
+- **The version is baked in at build time**: the repository-root `VERSION` file is
+  the single source, read by `pbcompiler/build.rs` and handed to the compiler
+  through `cargo:rustc-env=PB64BASIC_VERSION`. The EXE therefore carries its own
+  version and does not depend on an external file at run time - a copied
+  `PB64Basic.exe` still reports the release it was built from.
+- **A release cannot ship a stale banner**: `release.py` gained the `versionfile`
+  gate, which fails when `VERSION` differs from `--version`, so every release has
+  to update the file and rebuild before packaging.
+
 ### v0.2.144 (2026-11-15) - batch 353
 
 - **TCP NOTIFY / UDP NOTIFY now deliver**: the parser accepts the full CHW clause
