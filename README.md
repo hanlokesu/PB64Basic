@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 355 (v0.2.146). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 356 (v0.2.147). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> - **batch 356**: i686 `WNDCLASSEX`/`MSG`/`NMHDR`/`TCITEMA` use the 32-bit layout and `pb_wndproc` the 32-bit ABI; 32-bit GUI windows are created again and no longer crash.
 > batch 355 (v0.2.146) - new FORK EXTENSION `VERSION$()`: a zero-argument string function that returns the release version the running compiler was built from, baked in from the repository VERSION file at build time (the same string the banner and `PB64Basic --version` report). Both `VERSION$()` and the bare `VERSION$` spelling compile; the value is copied into a real BSTR. Coverage now 948 rows with 31 fork extensions. Self-check: `examples/batch355_test.bas`.
 > batch 354 (v0.2.145) - compiler banner prints `[PB64Basic] Version ...` first; `--version` added; version is baked in from the repository VERSION file at build time; release gate `versionfile` blocks a stale banner.
 > batch 353 (v0.2.144) - TCP/UDP NOTIFY now register with WSAAsyncSelect (full CHW clause, Error 57 on failure); CHRBYTES returns 2 for wide strings; two keywords move to Implemented.
@@ -1022,6 +1023,28 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.147 (2026-11-15)
+
+Batch 356. Fixes the 32-bit GUI defect reported by Erol Ojalvo (Batch140_test.bas):
+the i686 build compiled and linked cleanly but ran with no window at all, while
+the x64 build of the same program displayed its dialog normally.
+
+- **Fixed - i686 window creation.** `WNDCLASSEX`, `MSG`, `NMHDR` and `TCITEMA`
+  were declared with the x64 layout on every target. On i686 a `cbSize` of 80 and
+  the 8-byte field offsets do not match the native 48-byte `WNDCLASSEX`, so
+  `RegisterClassExA` failed, `CreateWindowExA` returned NULL, and every 32-bit
+  GUI program silently produced no window.
+- **Fixed - i686 window procedure ABI.** `pb_wndproc` declared 64-bit
+  `WPARAM`/`LPARAM` on both targets. On i686 the prologue then read past the
+  native 4-byte stack slots, `WM_NCCALCSIZE` received a bogus `RECT`, and the
+  process crashed with 0xC0000005. The i686 build now uses the 32-bit signature.
+- All four structures are selected by `_WIN64`; the x64 code path is unchanged.
+- Verified: i686 `Batch140_test` now shows "Batch 140: CONTROL CHECK/UNCHECK/GET
+  CHECK" and the MSGBOX dialog; x64 output is unchanged; the i686
+  LISTVIEW/TREEVIEW sample shows its dialog; compile-all 407/0, headless 267
+  compiled / 264 ran / 0 failed, 32 negative probes 0 BAD, link smoke both
+  targets 0 failures.
+
 ### v0.2.146 (2026-11-15) - batch 355
 
 - **`VERSION$()` reports the release version from inside a PB program**: a new zero-argument string function returns the version the running compiler was built from, the same string the banner and `PB64Basic --version` print. Both `VERSION$()` and the bare `VERSION$` spelling compile.

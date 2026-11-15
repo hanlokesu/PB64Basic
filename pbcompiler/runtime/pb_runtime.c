@@ -12494,7 +12494,14 @@ typedef struct { long x, y; } pb_point_t;
 #define PB_LOWORD(l)  ((unsigned int)((unsigned long long)(l) & 0xFFFF))
 #define PB_HIWORD(l)  ((unsigned int)(((unsigned long long)(l) >> 16) & 0xFFFF))
 
+#if defined(_WIN64)
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
+#else
+/* i686 WndProc: HWND/MSG are 32-bit and WPARAM/LPARAM are 4 bytes each.
+   Declaring 64-bit parameters made the prologue read past the stack slots,
+   so WM_NCCALCSIZE saw a bogus RECT and the process crashed (0xC0000005). */
+static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wParam, long lParam) {
+#endif
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
         long* r = (long*)lParam;   /* RECT: left, top, right, bottom */
         /* A dialog with a menu bar attached (MENU ATTACH / DIALOG SET MENU)
@@ -12651,6 +12658,12 @@ static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned lon
     }
 }
 
+/* WNDCLASSEXA / MSG layouts follow the target pointer width: 80/48 bytes on
+   x64, 48/28 bytes on i686.  The original definitions hard-coded the x64
+   layout, so a 32-bit build passed cbSize=80 to RegisterClassExA: the call
+   failed, CreateWindowExA returned NULL, and every i686 GUI program ran with
+   no window at all (Erol Ojalvo, Batch140_test, 2026-11-15). */
+#if defined(_WIN64)
 /* x64 WNDCLASSEXA layout (80 bytes) */
 typedef struct {
     unsigned int cbSize;
@@ -12678,6 +12691,34 @@ typedef struct {
     long pt_x;
     long pt_y;
 } pb_msg_t;
+#else
+/* i686 WNDCLASSEXA layout (48 bytes) */
+typedef struct {
+    unsigned int cbSize;
+    unsigned int style;
+    void* lpfnWndProc;
+    int cbClsExtra;
+    int cbWndExtra;
+    void* hInstance;
+    void* hIcon;
+    void* hCursor;
+    void* hbrBackground;
+    const char* lpszMenuName;
+    const char* lpszClassName;
+    void* hIconSm;
+} pb_wndclassex_t;
+
+/* i686 MSG layout (28 bytes) */
+typedef struct {
+    void* hwnd;
+    unsigned int message;
+    unsigned int wParam;
+    long lParam;
+    unsigned long time;
+    long pt_x;
+    long pt_y;
+} pb_msg_t;
+#endif
 
 /* batch 239: pb_window_new needs the non-client geometry.  pb_rect_t and
    AdjustWindowRectEx are declared later in the file (the batch 181 block);
@@ -15812,9 +15853,12 @@ long long pb_cblb_unselect(void* hDlg, long id, int item, int kind) {
 #define PB_TCIF_IMAGE         0x0002u
 #define PB_ICC_TAB_CLASSES    0x00000008u
 
-/* NMHDR (WinUser.h) and TCITEMA (CommCtrl.h), x64 layout.  The PB include
-   file declares these with DWORD fields because it targets 32-bit PBWin; the
-   C runtime is 64-bit, so the pointer/UINT_PTR/LPARAM fields are 8 bytes. */
+/* NMHDR (WinUser.h) and TCITEMA (CommCtrl.h) follow the target pointer
+   width.  The PB include file declares these with DWORD fields because it
+   targets 32-bit PBWin; the x64 runtime needs 8-byte pointer/UINT_PTR/LPARAM
+   fields (24 / 40 bytes), while i686 uses the native 12 / 28-byte layouts.
+   Hard-coding the x64 layout made every i686 WM_NOTIFY read garbage. */
+#if defined(_WIN64)
 typedef struct {
     void*              hwndFrom;
     unsigned long long idFrom;
@@ -15830,6 +15874,23 @@ typedef struct {
     int                iImage;
     long long          lParam;
 } pb_tcitema_t;
+#else
+typedef struct {
+    void*              hwndFrom;
+    unsigned int       idFrom;
+    unsigned int       code;
+} pb_nmhdr_t;
+
+typedef struct {
+    unsigned int       mask;
+    unsigned long      dwState;
+    unsigned long      dwStateMask;
+    char*              pszText;
+    int                cchTextMax;
+    int                iImage;
+    long               lParam;
+} pb_tcitema_t;
+#endif
 
 #define PB_TAB_MAX_PAGES 256
 static void* pb_tab_page_tab[PB_TAB_MAX_PAGES];
