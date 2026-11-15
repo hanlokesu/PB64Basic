@@ -16023,34 +16023,55 @@ impl Parser {
 
         // CHW optional positional clauses between FOR-mode and AS:
         //   [ACCESS access] [LOCK lock] [BASE = 0|1] [CHR = ANSI|WIDE]
-        // The fork's runtime does not yet parameterize on these; skip them so
-        // CHW syntax parses. They do not alter observable file I/O for the
-        // probe programs (the CHW defaults apply).
+        // ACCESS and LOCK are enforced by the runtime (sharing modes on the
+        // underlying handle); BASE is passed through and used for random
+        // record numbering / FILEATTR(-2).  CHR=WIDE needs a charset layer and
+        // is reported loudly instead of being silently ignored.
+        let mut access: u8 = 0; // READ WRITE (default)
+        let mut lock: u8 = 0; // READ WRITE (default)
+        let mut base: Option<Expr> = None;
+        let mut chr_wide = false;
         loop {
             match self.peek() {
                 Token::Identifier(w) if w.eq_ignore_ascii_case("ACCESS") => {
                     self.advance();
-                    self.skip_open_access_lock();
+                    access = self.parse_open_access(line);
                 }
                 Token::Identifier(w) if w.eq_ignore_ascii_case("LOCK") => {
                     self.advance();
-                    self.skip_open_access_lock();
+                    lock = self.parse_open_lock(line);
                 }
                 Token::Identifier(w) if w.eq_ignore_ascii_case("BASE") => {
                     self.advance();
                     if self.peek() == &Token::Eq {
                         self.advance();
                     }
-                    let _ = self.parse_expression();
+                    base = Some(self.parse_expression()?);
                 }
                 Token::Identifier(w) if w.eq_ignore_ascii_case("CHR") => {
                     self.advance();
                     if self.peek() == &Token::Eq {
                         self.advance();
                     }
-                    // ANSI | WIDE keyword
-                    if let Token::Identifier(_) = self.peek() {
-                        self.advance();
+                    match self.peek() {
+                        Token::Identifier(w2) if w2.eq_ignore_ascii_case("ANSI") => {
+                            self.advance();
+                        }
+                        Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
+                            self.advance();
+                            chr_wide = true;
+                            eprintln!(
+                                "Error: OPEN CHR=WIDE is not implemented (line {}); \
+                                 CHR=ANSI is the supported mode",
+                                line
+                            );
+                            self.error_count += 1;
+                        }
+                        _ => {
+                            eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);
+                            self.error_count += 1;
+                            self.consume_to_eol();
+                        }
                     }
                 }
                 _ => break,
@@ -16077,30 +16098,130 @@ impl Parser {
             }
         }
 
+        // CHW places BASE= and CHR= after `AS [#]filenum [LEN=...]`.
+        loop {
+            match self.peek() {
+                Token::Identifier(w) if w.eq_ignore_ascii_case("BASE") => {
+                    self.advance();
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    base = Some(self.parse_expression()?);
+                }
+                Token::Identifier(w) if w.eq_ignore_ascii_case("CHR") => {
+                    self.advance();
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    match self.peek() {
+                        Token::Identifier(w2) if w2.eq_ignore_ascii_case("ANSI") => {
+                            self.advance();
+                        }
+                        Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
+                            self.advance();
+                            chr_wide = true;
+                            eprintln!(
+                                "Error: OPEN CHR=WIDE is not implemented (line {}); \
+                                 CHR=ANSI is the supported mode",
+                                line
+                            );
+                            self.error_count += 1;
+                        }
+                        _ => {
+                            eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);
+                            self.error_count += 1;
+                            self.consume_to_eol();
+                        }
+                    }
+                }
+                _ => break,
+            }
+        }
+
         self.consume_to_eol();
         Ok(Statement::Open(OpenStmt {
             filename,
             mode,
             file_num,
             reclen,
+            access,
+            lock,
+            base,
+            chr_wide,
             line,
         }))
     }
 
-    /// Skip an ACCESS/LOCK argument: READ | WRITE | READ WRITE (up to two
-    /// reserved words). Used by parse_open_statement.
-    fn skip_open_access_lock(&mut self) {
-        let mut seen = 0;
-        while seen < 2 {
-            if let Token::Identifier(w) = self.peek() {
-                let u = w.to_uppercase();
-                if u == "READ" || u == "WRITE" || u == "SHARED" {
-                    self.advance();
-                    seen += 1;
-                    continue;
+    /// CHW `ACCESS READ | WRITE | READ WRITE` → 1 / 2 / 0.
+    fn parse_open_access(&mut self, line: usize) -> u8 {
+        let first = match self.peek() {
+            Token::Identifier(w) => w.to_uppercase(),
+            _ => String::new(),
+        };
+        match first.as_str() {
+            "READ" => {
+                self.advance();
+                if let Token::Identifier(w) = self.peek() {
+                    if w.eq_ignore_ascii_case("WRITE") {
+                        self.advance();
+                        return 0; // READ WRITE
+                    }
                 }
+                1 // READ
             }
-            break;
+            "WRITE" => {
+                self.advance();
+                2
+            }
+            _ => {
+                eprintln!(
+                    "Error: OPEN ACCESS: expected READ or WRITE on line {}",
+                    line
+                );
+                self.error_count += 1;
+                0
+            }
+        }
+    }
+
+    /// CHW `LOCK SHARED | WRITE | READ | READ WRITE` → 1 / 2 / 3 / 0.
+    fn parse_open_lock(&mut self, line: usize) -> u8 {
+        // SHARED is a lexer keyword (Token::Shared), not an Identifier.
+        if self.peek() == &Token::Shared {
+            self.advance();
+            return 1;
+        }
+        let first = match self.peek() {
+            Token::Identifier(w) => w.to_uppercase(),
+            _ => String::new(),
+        };
+        match first.as_str() {
+            "SHARED" => {
+                self.advance();
+                1
+            }
+            "WRITE" => {
+                self.advance();
+                2
+            }
+            "READ" => {
+                self.advance();
+                if let Token::Identifier(w) = self.peek() {
+                    if w.eq_ignore_ascii_case("WRITE") {
+                        self.advance();
+                        return 0; // READ WRITE
+                    }
+                }
+                3 // READ
+            }
+            _ => {
+                eprintln!(
+                    "Error: OPEN LOCK: expected SHARED, WRITE, READ or READ WRITE on line {}",
+                    line
+                );
+                self.error_count += 1;
+                0
+            }
         }
     }
 
@@ -16108,22 +16229,29 @@ impl Parser {
         let line = self.current_line();
         self.advance(); // CLOSE
                         // # is optional in PowerBASIC: CLOSE #filenum or CLOSE filenum
-        if self.peek() == &Token::Hash {
-            self.advance();
-        }
+                        // CHW: `CLOSE [[#] filenum& [, [#] filenum&] ...]` - no number closes
+                        // every open file.
         if self.at_eol_or_eof() {
-            // Bare CLOSE with no file number — close all files
             self.consume_to_eol();
-            eprintln!(
-                "Error: CLOSE: bare CLOSE (close all files) is not implemented on line {}",
-                line
-            );
-            self.error_count += 1;
-            return Ok(Statement::Noop("CLOSE (no file)".to_string(), line));
+            return Ok(Statement::Close(CloseStmt {
+                file_nums: Vec::new(),
+                line,
+            }));
         }
-        let file_num = self.parse_expression()?;
+        let mut file_nums = Vec::new();
+        loop {
+            if self.peek() == &Token::Hash {
+                self.advance();
+            }
+            file_nums.push(self.parse_expression()?);
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
         self.consume_to_eol();
-        Ok(Statement::Close(CloseStmt { file_num, line }))
+        Ok(Statement::Close(CloseStmt { file_nums, line }))
     }
 
     /// OBJECT CALL/GET/LET/SET obj.member[(args)] [TO result] — DISPATCH access

@@ -27,6 +27,8 @@
 #include <direct.h>  /* _chdrive for CHDRIVE */
 #include <sys/locking.h>  /* _LK_LOCK / _LK_UNLCK */
 #include <sys/stat.h>  /* _stat / _S_IFDIR for ISFOLDER */
+#include <share.h>    /* _SH_DENY* + _fsopen for CHW OPEN LOCK */
+#include <errno.h>    /* errno -> PB error mapping on OPEN failure */
 #include <excpt.h>  /* GetExceptionCode for SEH filters */
 #include <malloc.h>  /* _heapchk for heap integrity probes */
 __declspec(dllimport) void* __stdcall GetProcessHeap(void);
@@ -3524,6 +3526,42 @@ static char file_names[MAX_FILE_HANDLES][260]; /* 0=INPUT 1=OUTPUT 2=APPEND 3=BI
 static unsigned rec_len[MAX_FILE_HANDLES] = {0};
 static char* rec_buf[MAX_FILE_HANDLES] = {0};
 static long long rec_pos[MAX_FILE_HANDLES] = {0};
+/* CHW OPEN clauses (batch 359): ACCESS / LOCK / BASE per file number.
+   file_base_code: 0 = unset (BASE 1 default), 1 = BASE 0, 2 = BASE 1. */
+static int file_access[MAX_FILE_HANDLES] = {0};
+static int file_locks[MAX_FILE_HANDLES] = {0};
+static int file_base_code[MAX_FILE_HANDLES] = {0};
+
+/* CHW BASE defaults to 1; the encoded array distinguishes "unset" from the
+   legal BASE 0. */
+static int pb_file_base(int filenum) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES) return 1;
+    return file_base_code[filenum] ? file_base_code[filenum] - 1 : 1;
+}
+
+/* Map a CRT open failure to the CHW OPEN error codes (53 file not found,
+   70 permission denied, 75 path/file access error). */
+static int pb_open_errno_code(void) {
+    switch (errno) {
+        case ENOENT: return 53;
+        case EACCES: return 70;
+        default: return 75;
+    }
+}
+
+/* CHW LOCK restricts *other* processes:
+   SHARED (1) -> allow read/write, WRITE (2) -> deny write,
+   READ (3) -> deny read, READ WRITE (0, default) -> deny both. */
+static FILE* pb_fsopen_lock(const char* path, const char* fmode, int lock) {
+    int sh = _SH_DENYRW;
+    switch (lock) {
+        case 1: sh = _SH_DENYNO; break;
+        case 2: sh = _SH_DENYWR; break;
+        case 3: sh = _SH_DENYRD; break;
+        default: sh = _SH_DENYRW; break;
+    }
+    return _fsopen(path, fmode, sh);
+}
 
 /* Forward declaration: socket state array is defined in the Winsock section
    (pb_sock_state). pb_freefile must account for occupied sockets. */
@@ -3555,44 +3593,79 @@ long long pb_fre(void) {
     return 0;
 }
 
-int pb_open(const char* path, int mode, int filenum) {
-    if (filenum < 1 || filenum >= MAX_FILE_HANDLES) return -1;
+/* pb_err / pb_err_var are defined later in this file (global ERR variables);
+   OPEN now reports failures through them (batch 359). */
+extern int pb_err;
+extern int pb_err_var;
+
+/* OPEN with the CHW ACCESS / LOCK / BASE clauses.  access: 0 = READ WRITE,
+   1 = READ, 2 = WRITE.  lock: see pb_fsopen_lock.  base: 0 or 1. */
+int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, int base) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES) { pb_err_var = pb_err = 52; return -1; }
+    if (base != 0 && base != 1) { pb_err_var = pb_err = 5; return -1; }
     const char* fmode;
+    int may_create = 0;
     switch (mode) {
-        case 0: fmode = "rb"; break;  /* INPUT (binary: PBWin10 writes CRLF raw; a
-                                         text-mode fopen would translate \r\n and
-                                         corrupt LOF/byte counts - measured) */
-        case 1: fmode = "wb"; break;  /* OUTPUT */
-        case 2: fmode = "ab"; break;  /* APPEND */
+        case 0:
+            /* INPUT is read-only; ACCESS WRITE contradicts it. */
+            if (access == 2) { pb_err_var = pb_err = 70; return -1; }
+            fmode = "rb";  /* binary: PBWin10 writes CRLF raw; text-mode fopen
+                              would translate \r\n and corrupt LOF/byte counts */
+            break;
+        case 1:
+            if (access == 1) { pb_err_var = pb_err = 70; return -1; }
+            fmode = "wb"; break;  /* OUTPUT */
+        case 2:
+            if (access == 1) { pb_err_var = pb_err = 70; return -1; }
+            fmode = "ab"; break;  /* APPEND */
         case 3:
-            /* BINARY: open existing file read/write without truncating;
-               create it if it does not exist (PB semantics). */
-            file_handles[filenum] = fopen(path, "r+b");
-            if (!file_handles[filenum]) {
-                file_handles[filenum] = fopen(path, "w+b");
-            }
-            file_modes[filenum] = mode;
-            if (file_handles[filenum]) {
-                strncpy(file_names[filenum], path, 259);
-                file_names[filenum][259] = 0;
-            }
-            return (file_handles[filenum] != NULL) ? 0 : -1;
-        default: fmode = "r"; break;
+            /* BINARY: keep an existing file, create it when absent.  ACCESS
+               READ must not create (read-only open), ACCESS WRITE opens for
+               update and creates a missing file. */
+            fmode = (access == 1) ? "rb" : "r+b";
+            may_create = (access != 1);
+            break;
+        default:
+            fmode = "r"; break;
     }
-    file_handles[filenum] = fopen(path, fmode);
-    if (file_handles[filenum]) {
-        file_modes[filenum] = mode;
-        strncpy(file_names[filenum], path, 259);
-        file_names[filenum][259] = 0;
+    FILE* f = pb_fsopen_lock(path, fmode, lock);
+    if (!f && may_create) {
+        f = pb_fsopen_lock(path, (access == 2) ? "wb" : "w+b", lock);
     }
-    return (file_handles[filenum] != NULL) ? 0 : -1;
+    if (!f) {
+        int e = pb_open_errno_code();
+        pb_err_var = pb_err = e;
+        return -1;
+    }
+    file_handles[filenum] = f;
+    file_modes[filenum] = mode;
+    file_access[filenum] = access;
+    file_locks[filenum] = lock;
+    file_base_code[filenum] = (base == 0) ? 1 : 2;
+    strncpy(file_names[filenum], path, 259);
+    file_names[filenum][259] = 0;
+    return 0;
+}
+
+/* Legacy entry point (defaults: ACCESS READ WRITE, LOCK READ WRITE, BASE 1). */
+int pb_open(const char* path, int mode, int filenum) {
+    return pb_open_ex(path, mode, filenum, 0, 0, 1);
 }
 
 void pb_close(int filenum) {
+    /* CHW: bare CLOSE (no file number) closes every open file.  The parser
+       encodes that as filenum 0. */
+    if (filenum == 0) {
+        for (int i = 1; i < MAX_FILE_HANDLES; i++) pb_close(i);
+        return;
+    }
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         fclose(file_handles[filenum]);
         file_handles[filenum] = NULL;
         file_modes[filenum] = 0;
+        file_access[filenum] = 0;
+        file_locks[filenum] = 0;
+        file_base_code[filenum] = 0;
         file_names[filenum][0] = 0;
         if (rec_buf[filenum]) {
             free(rec_buf[filenum]);
@@ -3609,7 +3682,7 @@ long long pb_fileattr(int filenum, int attr) {
     FILE* f = file_handles[filenum];
     switch (attr) {
         case -3: return f ? 1 : 0;                 /* 1 = file (COMM/TCP/UDP channels are devices; not in this table) */
-        case -2: return 1;                         /* logical first-byte position (BASE= not implemented -> 1) */
+        case -2: return pb_file_base(filenum);     /* CHW: logical first byte / BASE= */
         case -1:
             if (!f) return 0;
             if (file_modes[filenum] == 4) return rec_len[filenum];   /* RANDOM: record length */
@@ -4553,15 +4626,31 @@ void pb_array_reverse(void* base, int elem_size, int total) {
    kind 1 = string variable slot (char**): resolve *data + offset at use time */
 typedef struct { char* data; unsigned offset; unsigned len; unsigned kind; } pb_field_t;
 
-/* OPEN ... FOR RANDOM AS #n LEN=reclen � open r+b (keep existing) else w+b, alloc record buffer */
-int pb_open_random(const char* path, int filenum, unsigned reclen) {
+/* OPEN ... FOR RANDOM AS #n LEN=reclen with CHW ACCESS / LOCK / BASE.
+   ACCESS READ -> read-only "rb" (no create); ACCESS WRITE / READ WRITE ->
+   "r+b", creating the file when absent. */
+int pb_open_random_ex(const char* path, int filenum, unsigned reclen,
+                      int access, int lock, int base) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES) { pb_err_var = pb_err = 52; return -1; }
+    if (base != 0 && base != 1) { pb_err_var = pb_err = 5; return -1; }
     if (reclen == 0) reclen = 128;
-    FILE* f = fopen(path, "r+b");
-    if (!f) f = fopen(path, "w+b");
-    if (!f) { pb_err_var = pb_err = 53; return -1; }
+    const char* fmode = (access == 1) ? "rb" : "r+b";
+    FILE* f = pb_fsopen_lock(path, fmode, lock);
+    if (!f && access != 1) {
+        f = pb_fsopen_lock(path, (access == 2) ? "wb" : "w+b", lock);
+    }
+    if (!f) {
+        int e = pb_open_errno_code();
+        pb_err_var = pb_err = e;
+        return -1;
+    }
     file_handles[filenum] = f;
     file_modes[filenum] = 4;
+    file_access[filenum] = access;
+    file_locks[filenum] = lock;
+    file_base_code[filenum] = (base == 0) ? 1 : 2;
+    strncpy(file_names[filenum], path, 259);
+    file_names[filenum][259] = 0;
     if (rec_buf[filenum]) free(rec_buf[filenum]);
     rec_buf[filenum] = (char*)calloc(reclen, 1);
     rec_len[filenum] = reclen;
@@ -4569,11 +4658,18 @@ int pb_open_random(const char* path, int filenum, unsigned reclen) {
     return 0;
 }
 
+/* Legacy entry point (defaults). */
+int pb_open_random(const char* path, int filenum, unsigned reclen) {
+    return pb_open_random_ex(path, filenum, reclen, 0, 0, 1);
+}
+
 /* PUT #f [,recnum] � write current record buffer at current record position */
 void pb_put_record(int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     /* CHW error 54: PUT on a file opened in sequential mode -> ERR 54 */
     if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+    /* OPEN ACCESS READ forbids writes. */
+    if (file_access[filenum] == 1) { pb_err_var = pb_err = 70; return; }
     FILE* f = file_handles[filenum];
     long long pos = rec_pos[filenum] * (long long)rec_len[filenum];
     _fseeki64(f, pos, SEEK_SET);
@@ -4586,6 +4682,8 @@ void pb_get_record(int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     /* CHW error 54: GET on a file opened in sequential mode -> ERR 54 */
     if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+    /* OPEN ACCESS WRITE forbids reads. */
+    if (file_access[filenum] == 2) { pb_err_var = pb_err = 70; return; }
     FILE* f = file_handles[filenum];
     long long pos = rec_pos[filenum] * (long long)rec_len[filenum];
     _fseeki64(f, pos, SEEK_SET);
@@ -4593,10 +4691,12 @@ void pb_get_record(int filenum) {
     if (got < rec_len[filenum]) memset(rec_buf[filenum] + got, 0, rec_len[filenum] - got);
 }
 
-/* FIELD #n, FROM off TO ... � set current record position (1-based recnum) */
+/* FIELD #n, FROM off TO ... � set current record position (CHW BASE aware) */
 void pb_seek_record(int filenum, long long recnum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES) {
-        rec_pos[filenum] = recnum > 0 ? recnum - 1 : 0;
+        long long base = pb_file_base(filenum);
+        long long rel = recnum - base;
+        rec_pos[filenum] = rel > 0 ? rel : 0;
     }
 }
 
@@ -6803,8 +6903,9 @@ long long pb_loc(int filenum) {
            BINARY  -> 1-based byte position (SEEK #f,4 then LOC = 4)
            sequential INPUT/OUTPUT/APPEND -> byte position / 128 (fresh INPUT = 0) */
         int m = file_modes[filenum];
-        if (m == 4) return rec_pos[filenum];
-        if (m == 3) return ftell(file_handles[filenum]) + 1;
+        long long base = pb_file_base(filenum);
+        if (m == 4) return rec_pos[filenum] + base;
+        if (m == 3) return ftell(file_handles[filenum]) + base;
         return ftell(file_handles[filenum]) / 128;
     }
     return 0;
@@ -6818,15 +6919,15 @@ long long pb_loc(int filenum) {
 long long pb_seek_pos(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         int m = file_modes[filenum];
-        if (m == 4) return rec_pos[filenum] + 1;
-        return (long long)ftell(file_handles[filenum]) + 1;
+        if (m == 4) return rec_pos[filenum] + pb_file_base(filenum);
+        return (long long)ftell(file_handles[filenum]) + pb_file_base(filenum);
     }
     return 0;
 }
 
 void pb_seek(int filenum, long long pos) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        _fseeki64(file_handles[filenum], pos - 1, SEEK_SET);
+        _fseeki64(file_handles[filenum], pos - pb_file_base(filenum), SEEK_SET);
     }
 }
 
@@ -6836,13 +6937,14 @@ void pb_get(int filenum, long long pos, char* buf, long long size) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* CHW error 54: GET on a file opened in sequential mode -> ERR 54 */
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        if (file_access[filenum] == 2) { pb_err_var = pb_err = 70; return; }
         /* PBWin: on a RANDOM file, pos is the 1-based RECORD number ->
            byte offset (pos-1)*rec_len; on a BINARY file it is a 1-based
            byte offset (PBWin-measured record layout, batch 269 probe).
            An omitted position (pos <= 0) reads at the CURRENT file pointer,
            so no seek is issued. */
         if (pos > 0) {
-            long long off = pos - 1;
+            long long off = pos - pb_file_base(filenum);
             if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
             _fseeki64(file_handles[filenum], off, SEEK_SET);
         }
@@ -6855,9 +6957,10 @@ void pb_put(int filenum, long long pos, char* buf, long long size) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         /* CHW error 54: PUT on a file opened in sequential mode -> ERR 54 */
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        if (file_access[filenum] == 1) { pb_err_var = pb_err = 70; return; }
         /* Omitted position (pos <= 0) writes at the CURRENT file pointer. */
         if (pos > 0) {
-            long long off = pos - 1;
+            long long off = pos - pb_file_base(filenum);
             if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
             _fseeki64(file_handles[filenum], off, SEEK_SET);
         }
@@ -6872,9 +6975,10 @@ void pb_put(int filenum, long long pos, char* buf, long long size) {
 void pb_put_str(int filenum, long long pos, const char* s) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        if (file_access[filenum] == 1) { pb_err_var = pb_err = 70; return; }
         /* Omitted position (pos <= 0) writes at the CURRENT file pointer. */
         if (pos > 0) {
-            long long off = pos - 1;
+            long long off = pos - pb_file_base(filenum);
             if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
             _fseeki64(file_handles[filenum], off, SEEK_SET);
         }
@@ -6894,9 +6998,10 @@ void pb_put_str(int filenum, long long pos, const char* s) {
 void pb_get_str(int filenum, long long pos, char** dest) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum] && dest) {
         if (file_modes[filenum] <= 2) { pb_err_var = pb_err = 54; return; }
+        if (file_access[filenum] == 2) { pb_err_var = pb_err = 70; return; }
         /* Omitted position (pos <= 0) reads at the CURRENT file pointer. */
         if (pos > 0) {
-            long long off = pos - 1;
+            long long off = pos - pb_file_base(filenum);
             if (file_modes[filenum] == 4) off *= (long long)rec_len[filenum];
             _fseeki64(file_handles[filenum], off, SEEK_SET);
         }

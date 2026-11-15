@@ -670,6 +670,15 @@ pub struct OpenStmt {
     pub mode: OpenMode,
     pub file_num: Expr,
     pub reclen: Option<Expr>, // LEN=n (RANDOM mode record length)
+    /// CHW ACCESS: 0 = READ WRITE (default), 1 = READ, 2 = WRITE.
+    pub access: u8,
+    /// CHW LOCK: 0 = READ WRITE (default, deny both), 1 = SHARED,
+    /// 2 = WRITE (deny others write), 3 = READ (deny others read).
+    pub lock: u8,
+    /// CHW BASE = 0|1: first record / byte number (default 1).
+    pub base: Option<Expr>,
+    /// CHW CHR = ANSI|WIDE; the fork currently only implements ANSI.
+    pub chr_wide: bool,
     pub line: usize,
 }
 
@@ -737,7 +746,8 @@ pub struct FieldSpec {
 
 #[derive(Debug, Clone)]
 pub struct CloseStmt {
-    pub file_num: Expr,
+    /// Empty = bare `CLOSE` (close every open file, CHW).
+    pub file_nums: Vec<Expr>,
     pub line: usize,
 }
 

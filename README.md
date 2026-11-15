@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 358 (v0.2.149). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 359 (v0.2.150). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 359 (v0.2.150) - OPEN ACCESS/LOCK/BASE implemented with runtime enforcement, OPEN failures set ERR 53/70/75, bare CLOSE and multiple-file CLOSE implemented, FIELD no longer overflows pointer-sized string slots (i686 C0000005 fixed), CHR=WIDE rejected explicitly; TCP LINE INPUT drained-line behaviour confirmed against CHW; CHR=WIDE, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, REDIM PRESERVE edge semantics remain open.
 > batch 358 (v0.2.149) - CSET ABS/USING implemented, $$CRLF/$$DQ2/$$SQ2/$$QCQ/$$WHITESPACE wide equates with code-unit LEN, BYVAL VARIANT expression arguments via a temporary container, STR$/PRINT # single-precision literal formatting aligned with PBWin10, TCP CLOSE drains queued bytes so a reply in flight is not lost to an RST (batch205 loopback is now 10/10), UNION/TYPE bit fields covered by a regression probe; OPEN clauses, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT remain open.
 > batch 357 (v0.2.148) - i686 THREAD CREATE Error 7 gone (stdcall boot thunk), DIALOG NEW creates hidden and SHOW reveals it, thread-local CALLSTK (F4 heap corruption 9/100 -> 0/200), NOTIFY window-message probes on both targets, 32-bit Hello 155,648 B; TXT/THREAD OBJECT still open with explicit diagnostics.
 > - **batch 356**: i686 `WNDCLASSEX`/`MSG`/`NMHDR`/`TCITEMA` use the 32-bit layout and `pb_wndproc` the 32-bit ABI; 32-bit GUI windows are created again and no longer crash.
@@ -1025,6 +1026,63 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.150 (2026-11-16)
+
+Batch 359. Closes the OPEN file-mode clauses and the CLOSE forms that were
+still accepted-but-ignored, and fixes a stack-overflow defect that FIELD
+inherited from pointer-sized string slots.
+
+- **Added - OPEN ACCESS.** `OPEN ... ACCESS READ`, `ACCESS WRITE` and
+  `ACCESS READ WRITE` (the default) are parsed as values and passed to the
+  runtime. A random or binary file opened `ACCESS READ` is opened read-only
+  and is never created; `ACCESS WRITE` opens it write-only; `INPUT` with
+  `ACCESS WRITE` and `OUTPUT`/`APPEND` with `ACCESS READ` fail with Error 70.
+  Record and byte writes on a read-only handle, and reads on a write-only
+  handle, also report Error 70 instead of silently succeeding.
+- **Added - OPEN LOCK.** `LOCK SHARED` (default, no restriction),
+  `LOCK WRITE` (other processes may not write), `LOCK READ` (other processes
+  may not read) and `LOCK READ WRITE` are mapped to the CRT `_fsopen` deny
+  modes. A second writer against a `LOCK WRITE` file now fails with Error 70
+  on both targets (verified by `batch359_test.bas`). The `SHARED` lexer token
+  is handled explicitly: it is not an identifier, so `LOCK SHARED` used to
+  fail to parse.
+- **Added - OPEN BASE.** `BASE=0` and `BASE=1` (default 1) now reach the
+  runtime and shift record and byte numbering, exactly as CHW describes:
+  `SEEK`, `GET`, `PUT`, `LOC`, `SEEK`-based positions and `FILEATTR(-2)`
+  all honour the base. With `LEN=8`, `PUT #3, 5` writes at offset 40 under
+  `BASE=0` (LOF 48) and at offset 32 under the default base (LOF 40). The
+  clause is accepted after `AS [#]filenum [LEN=...]`, which is where CHW
+  places it; before this it was parsed before `AS` and silently dropped.
+- **Added - CLOSE without arguments and CLOSE with several files.** A bare
+  `CLOSE` closes every open file (CHW), and `CLOSE #1, #2, ...` closes the
+  listed handles. The parser used to reject a bare `CLOSE` and the statement
+  held a single file number.
+- **Fixed - OPEN failures now set ERR.** A failed `OPEN` used to return
+  without touching `ERR`, so a program could not tell that the file was
+  never opened. Failures now map to Error 53 (file not found), 70
+  (permission denied) or 75 (path/file access error).
+- **Fixed - FIELD overflowed pointer-sized string slots.** `FIELD #n, ... AS
+  var` stores a `pb_field_t` (data pointer, offset, length, kind) inside the
+  bound variable. A STRING scalar was allocated as one pointer (8 bytes on
+  x64, 4 on x86), so the struct write ran past the slot and clobbered
+  neighbouring stack; on i686 a FIELD assignment followed by PUT crashed
+  with C0000005 at process exit. STRING locals, globals and STATIC variables
+  now reserve four pointer slots (32 bytes on x64, 16 on x86), enough for
+  the struct on both targets while ordinary string variables keep using
+  only the first slot.
+- **Verified - TCP LINE INPUT drained-line behaviour.** CHW states that
+  `TCP LINE` returns the bytes available even when no CRLF has arrived and
+  sets EOF to true when no further data is available. The fork already
+  behaves that way; a stale note claiming a difference is corrected in the
+  development Skill. No code change.
+- **Still open (unchanged, explicit diagnostics).** `CHR=WIDE` needs a
+  character-set conversion layer; the parser now rejects it with
+  "OPEN CHR=WIDE is not implemented" instead of silently writing ANSI. `CHR=ANSI`
+  is accepted. MACROTEMP / MACRO FUNCTION / EXIT MACRO, legacy PBRES/PBR
+  resources, EnumPrintersW, and the TXT / THREAD OBJECT diagnostics are
+  unchanged. REDIM PRESERVE with a repeated `AS type` still needs more
+  PBWin10 evidence before the fork changes behaviour.
+
 ### v0.2.149 (2026-11-16)
 
 Batch 358. Closes four items from the controlled-gap list: the CSET ABS/USING

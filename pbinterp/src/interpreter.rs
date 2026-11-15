@@ -896,14 +896,26 @@ impl Interpreter {
     }
 
     fn exec_close(&mut self, close_stmt: &CloseStmt) -> PbResult<()> {
-        let file_num = self.eval_expr(&close_stmt.file_num)?.to_i32();
+        // CHW: `CLOSE [[#] filenum& [, [#] filenum&] ...]`; no file number
+        // closes every open file (batch 359).
+        let file_nums: Vec<i32> = if close_stmt.file_nums.is_empty() {
+            self.env.open_files.keys().copied().collect()
+        } else {
+            let mut nums = Vec::with_capacity(close_stmt.file_nums.len());
+            for expr in &close_stmt.file_nums {
+                nums.push(self.eval_expr(expr)?.to_i32());
+            }
+            nums
+        };
 
-        if let Some(file) = self.env.open_files.remove(&file_num) {
-            // Write content to actual file
-            match std::fs::write(&file.path, &file.content) {
-                Ok(_) => {}
-                Err(e) => {
-                    eprintln!("Warning: failed to write {}: {}", file.path, e);
+        for file_num in file_nums {
+            if let Some(file) = self.env.open_files.remove(&file_num) {
+                // Write content to actual file
+                match std::fs::write(&file.path, &file.content) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("Warning: failed to write {}: {}", file.path, e);
+                    }
                 }
             }
         }

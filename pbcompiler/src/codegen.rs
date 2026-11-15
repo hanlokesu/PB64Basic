@@ -2461,6 +2461,33 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::I32],
             false,
         );
+        // OPEN with CHW ACCESS / LOCK / BASE clauses (batch 359)
+        self.module.declare_function(
+            "pb_open_ex",
+            &IrType::I32,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_open_random_ex",
+            &IrType::I32,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
         self.module
             .declare_function("pb_close", &IrType::Void, &[IrType::I32], false);
         self.module.declare_function(
@@ -8319,9 +8346,18 @@ impl Compiler {
             }
         } else {
             if Self::is_string_pb(&vd.pb_type) {
-                // String globals init to empty string pointer
-                self.module
-                    .add_global(&name, &ir_type, &self.empty_string_name.clone());
+                // String globals init to empty string pointer.  The storage is
+                // four pointer slots so a later FIELD ... AS <global> can hold
+                // the 24-byte (x64) / 16-byte (x86) pb_field_t without
+                // clobbering the next global (batch 359).
+                self.module.add_global(
+                    &name,
+                    &IrType::Array(4, Box::new(IrType::Ptr)),
+                    &format!(
+                        "[ptr {}, ptr null, ptr null, ptr null]",
+                        self.empty_string_name
+                    ),
+                );
             } else {
                 self.module
                     .add_global(&name, &ir_type, &ir_type.zero_literal());
@@ -11533,8 +11569,16 @@ impl Compiler {
             }
             let ir_type = Self::ir_type_for(&dim.pb_type);
             if Self::is_string_pb(&dim.pb_type) {
-                self.module
-                    .add_global(&global_name, &ir_type, &self.empty_string_name.clone());
+                // Four pointer slots for the same FIELD-target reason as
+                // declare_global / compile_dim (batch 359).
+                self.module.add_global(
+                    &global_name,
+                    &IrType::Array(4, Box::new(IrType::Ptr)),
+                    &format!(
+                        "[ptr {}, ptr null, ptr null, ptr null]",
+                        self.empty_string_name
+                    ),
+                );
             } else {
                 self.module
                     .add_global(&global_name, &ir_type, &ir_type.zero_literal());
@@ -11561,7 +11605,18 @@ impl Compiler {
             return Ok(());
         }
         let ir_type = Self::ir_type_for(&dim.pb_type);
-        let ptr = fb.alloca(&ir_type);
+        // FIELD #n, ... AS var stores a pb_field_t (pointer + offset + len +
+        // kind) *in* the variable slot.  A plain pointer-sized alloca is only
+        // 8 bytes on x64 / 4 on x86, so the struct write used to clobber the
+        // neighbouring stack slots (observed as a C0000005 at process exit on
+        // i686).  Reserve four pointer slots (32 B on x64, 16 B on x86) for
+        // every STRING scalar; ordinary string variables only use the first
+        // slot, and pb_field_t fits entirely on both targets.
+        let ptr = if Self::is_string_pb(&dim.pb_type) {
+            fb.alloca(&IrType::Array(4, Box::new(IrType::Ptr)))
+        } else {
+            fb.alloca(&ir_type)
+        };
         if Self::is_string_pb(&dim.pb_type) {
             fb.store(&Val::new(self.empty_string_name.clone(), IrType::Ptr), &ptr);
         } else {
@@ -23835,10 +23890,19 @@ impl Compiler {
 
     fn compile_open(&mut self, fb: &mut FunctionBuilder, open: &OpenStmt) -> PbResult<()> {
         let filename = self.compile_expr(fb, &open.filename)?;
-        // RANDOM mode: OPEN "f" FOR RANDOM AS #n LEN=reclen → pb_open_random
+        let filenum = self.compile_expr(fb, &open.file_num)?;
+        let filenum_i32 = self.to_i32(fb, &filenum);
+        let access = fb.const_i32(open.access as i32);
+        let lock = fb.const_i32(open.lock as i32);
+        let base = match &open.base {
+            Some(e) => {
+                let b = self.compile_expr(fb, e)?;
+                self.to_i32(fb, &b)
+            }
+            None => fb.const_i32(1),
+        };
+        // RANDOM mode: OPEN "f" FOR RANDOM AS #n LEN=reclen → pb_open_random_ex
         if matches!(open.mode, OpenMode::Random) {
-            let filenum = self.compile_expr(fb, &open.file_num)?;
-            let filenum_i32 = self.to_i32(fb, &filenum);
             let reclen = match &open.reclen {
                 Some(e) => {
                     let r = self.compile_expr(fb, e)?;
@@ -23846,7 +23910,11 @@ impl Compiler {
                 }
                 None => fb.const_i32(128),
             };
-            fb.call_void("pb_open_random", &[filename, filenum_i32, reclen]);
+            fb.call(
+                &IrType::I32,
+                "pb_open_random_ex",
+                &[filename, filenum_i32, reclen, access, lock, base],
+            );
             return Ok(());
         }
         let mode = match open.mode {
@@ -23856,16 +23924,26 @@ impl Compiler {
             OpenMode::Binary => fb.const_i32(3),
             OpenMode::Random => unreachable!(),
         };
-        let filenum = self.compile_expr(fb, &open.file_num)?;
-        let filenum_i32 = self.to_i32(fb, &filenum);
-        fb.call(&IrType::I32, "pb_open", &[filename, mode, filenum_i32]);
+        fb.call(
+            &IrType::I32,
+            "pb_open_ex",
+            &[filename, mode, filenum_i32, access, lock, base],
+        );
         Ok(())
     }
 
     fn compile_close(&mut self, fb: &mut FunctionBuilder, close: &CloseStmt) -> PbResult<()> {
-        let filenum = self.compile_expr(fb, &close.file_num)?;
-        let filenum_i32 = self.to_i32(fb, &filenum);
-        fb.call_void("pb_close", &[filenum_i32]);
+        if close.file_nums.is_empty() {
+            // CHW: bare CLOSE closes every open file.
+            let zero = fb.const_i32(0);
+            fb.call_void("pb_close", &[zero]);
+            return Ok(());
+        }
+        for num in &close.file_nums {
+            let filenum = self.compile_expr(fb, num)?;
+            let filenum_i32 = self.to_i32(fb, &filenum);
+            fb.call_void("pb_close", &[filenum_i32]);
+        }
         Ok(())
     }
 
