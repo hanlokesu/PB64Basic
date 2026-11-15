@@ -429,7 +429,44 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 356 (v0.2.147). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 357 (v0.2.148). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Batch 357 audit note - v0.2.148 - 2026-11-15
+
+Scope
+  pbcompiler/runtime/pb_runtime.c
+    - i686 THREAD CREATE: stdcall boot thunk (pb_thread_boot32 /
+      pb_thread_boot32_proc) calls the cdecl PB function; Error 7 removed.
+    - DIALOG NEW: pb_window_new_dlg no longer sets WS_VISIBLE and no longer
+      calls ShowWindow/UpdateWindow; pb_show_modal_to reveals the dialog before
+      its modal loop.  The WINDOW statement (pb_window_new) is unchanged.
+    - CALLSTK: pb_callstk_frames / pb_callstk_depth are __declspec(thread).
+    - pb_tls_trace_open() reads PB_TLS_TRACE (default off).
+  pbcompiler/src/codegen.rs
+    - the 32-bit THREAD CREATE compile-time warning is removed.
+  examples/
+    - batch357_test.bas (new): four THREAD CREATE workers with THREADED
+      numeric and string arrays; the in-tree regression for the CALLSTK fix.
+    - b357_dialog_semantics.bas (new): Win32 IsWindowVisible / IsZoomed readback.
+    - b357_notify32.bas / b357_notify64.bas (new): PeekMessageA assertions for
+      the UDP NOTIFY window message.  These bind a loopback UDP port and may
+      trigger a Windows Firewall prompt; they are manual probes.
+
+Evidence
+  batch357_test        x64 exit 0, i686 exit 0, "workers done= 4 failures= 0"
+  b357_dialog_semantics x64/i686 exit 0, visible 0 -> 1, zoomed 0 -> 1,
+                       "=== FAILURES: 0"
+  b357_notify32        i686 exit 0, message= 1024 wParam= 928 event= 1,
+                       "=== FAILURES: 0"
+  b357_notify64        x64 exit 0, message= 1025 wParam= 536 event= 1,
+                       "=== FAILURES: 0"
+  batch021_test        i686 exit 0, thread id= 224 / status= 259 / THREAD OK
+  batch028_test        i686 exit 0, worker_val= 2 worker_msg=worker / TLS OK
+  batch325_test        9/100 crashes before the CALLSTK fix, 0/200 after
+  hello (#CONSOLE ON)  x64 164,864 B / i686 155,648 B (ratio 0.944)
+
+Open (not implemented, explicit diagnostics retained)
+  TXT pseudo-object (11 members) - parser error.
+  THREAD OBJECT / IPowerThread - parser error.
 > - **batch 356**: i686 `WNDCLASSEX`/`MSG`/`NMHDR`/`TCITEMA` use the 32-bit layout and `pb_wndproc` the 32-bit ABI; 32-bit GUI windows are created again and no longer crash.
 > batch 355 (v0.2.146) - new FORK EXTENSION `VERSION$()`: a zero-argument string function that returns the release version the running compiler was built from, baked in from the repository VERSION file at build time (the same string the banner and `PB64Basic --version` report). Both `VERSION$()` and the bare `VERSION$` spelling compile; the value is copied into a real BSTR. Coverage now 948 rows with 31 fork extensions. Self-check: `examples/batch355_test.bas`.
 > batch 354 (v0.2.145) - compiler banner prints `[PB64Basic] Version ...` first; `--version` added; version is baked in from the repository VERSION file at build time; release gate `versionfile` blocks a stale banner.
@@ -1023,6 +1060,56 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.148 (2026-11-15)
+
+Batch 357. Closes three long-standing runtime defects, adds automated assertions
+for a fourth, and re-measures the 32-bit executable size.
+
+- **Fixed - i686 THREAD CREATE runtime Error 7.** The 32-bit branch of
+  `pb_thread_create` hard-coded `Error 7` because a PB procedure uses the cdecl
+  convention while `CreateThread` needs a stdcall thread procedure. A small
+  stdcall thunk now receives the LPARAM, recovers the cdecl function pointer and
+  its argument, calls the PB function, and frees the boot record. The 32-bit
+  compile-time warning is gone. Verified on both targets: batch021 prints
+  `thread id= 224 / status= 259 / priority= 0 / THREAD OK`; batch028 prints
+  `worker_val= 2 worker_msg=worker` and `TLS OK`.
+- **Fixed - DIALOG NEW now creates its window hidden.** CHW has always specified
+  that `DIALOG NEW` creates the dialog hidden and only `SHOW` makes it visible;
+  `pb_window_new_dlg` used to add `WS_VISIBLE` and call `ShowWindow`/`UpdateWindow`
+  immediately. It no longer does, and `pb_show_modal_to` reveals the dialog before
+  its modal loop. The `WINDOW` statement keeps its historical create-and-show
+  behaviour. `examples/b357_dialog_semantics.bas` reads the real Win32
+  `IsWindowVisible`/`IsZoomed` state on both targets: visible 0 after
+  `DIALOG NEW`, 1 after `SHOW MODELESS`, zoomed 1 after `SHOW STATE 3`
+  (`FAILURES: 0`).
+- **Fixed - multi-thread heap corruption (0xC0000374).** The CALLSTK frame table
+  was process-wide while the code generator emits `pb_callstk_push`,
+  `pb_callstk_setargs` and `pb_callstk_pop` at every procedure boundary. Four
+  workers overwrote each other's frame and then freed the same `args` pointer
+  twice, which the heap reported as `STATUS_HEAP_CORRUPTION`. The frame array and
+  depth are now `__declspec(thread)`. Measured on `examples/batch325_test.bas`
+  (four workers, THREADED numeric and string arrays): 9/100 crashes before,
+  0/200 after; a four-thread probe without THREADED arrays went 1/100 to 0/200;
+  the single-thread baseline was 0/200 throughout. `examples/batch357_test.bas`
+  is the in-tree regression.
+- **Added - NOTIFY now has automated assertions for the real window message.**
+  `UDP NOTIFY` delivers `WM_USER+` to the named window through
+  `WSAAsyncSelect`; two new probes read the thread queue with `PeekMessageA` and
+  check the message number, the socket handle in `wParam` and `FD_READ` in the
+  low word of `lParam`. i686: `message= 1024 wParam= 928 event= 1`; x64:
+  `message= 1025 wParam= 536 event= 1`; both `FAILURES: 0`. The probes bind a
+  loopback UDP port, so Windows Firewall may prompt once; they are kept out of
+  the automatic gate for that reason.
+- **Measured - 32-bit executable size.** A minimal `#CONSOLE ON` Hello program
+  links to 155,648 B with the packaged i686 runtime and 164,864 B with x64
+  (ratio 0.944). The 516,096 B reported from another machine is not reproducible
+  with the current source and the packaged objects, so no root cause is claimed
+  and no code was changed for it.
+- **Still open (unchanged, explicit diagnostics).** The TXT pseudo-object
+  (11 members) and the THREAD OBJECT / IPowerThread model are still not
+  implemented; the parser keeps its explicit errors instead of silently
+  accepting the syntax.
+
 ### v0.2.147 (2026-11-15)
 
 Batch 356. Fixes the 32-bit GUI defect reported by Erol Ojalvo (Batch140_test.bas):

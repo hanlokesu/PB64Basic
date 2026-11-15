@@ -4678,8 +4678,15 @@ typedef struct {
     char* args; /* parameter snapshot: "7,\"hello\"" (NULL = none captured) */
     long long enter_tick; /* 0 when profiling is off */
 } pb_callstk_frame_t;
-static pb_callstk_frame_t pb_callstk_frames[PB_CALLSTK_MAX];
-static int pb_callstk_depth = 0;
+/* batch 357: CALLSTK frames are per-thread.  The code generator emits
+   pb_callstk_push / pb_callstk_setargs at the entry of every procedure, and
+   pb_callstk_pop on return.  A process-wide table let two threads overwrite
+   each other's frame and then free the same args pointer twice, which
+   surfaced as an intermittent 0xC0000374 heap corruption under THREAD CREATE
+   (measured 9/100 with four workers, 0/200 with one).  Each thread now owns
+   its own frame stack, matching the per-thread CPU stack it describes. */
+static __declspec(thread) pb_callstk_frame_t pb_callstk_frames[PB_CALLSTK_MAX];
+static __declspec(thread) int pb_callstk_depth = 0;
 static int pb_profile_enabled = 0;
 #define PB_PROFILE_MAX 256
 static const char* pb_profile_names[PB_PROFILE_MAX];
@@ -8197,6 +8204,27 @@ typedef struct _pb_thread_slot {
 
 static pb_thread_slot pb_thr[256];
 
+#if !defined(_WIN64)
+/* 32-bit THREAD CREATE bridge.  A PB Sub/Function is compiled with the cdecl
+   convention, while CreateThread requires a __stdcall ThreadProc.  Calling a
+   cdecl entry through a stdcall pointer corrupts the stack (the callee pops
+   its own argument), which is why the i686 target used to fail closed with
+   error 7.  This thunk supplies the missing stdcall frame: it receives the
+   LPARAM, loads the real cdecl function pointer and its argument from the
+   heap block handed to CreateThread, then calls the PB function normally. */
+typedef unsigned long (__cdecl* pb_thread_fn32)(unsigned long);
+typedef struct pb_thread_boot32 {
+    pb_thread_fn32 fn;
+    unsigned long param;
+} pb_thread_boot32;
+
+static unsigned long __stdcall pb_thread_boot32_proc(void* raw) {
+    pb_thread_boot32 boot = *(pb_thread_boot32*)raw;
+    free(raw);
+    return boot.fn ? boot.fn(boot.param) : 0;
+}
+#endif
+
 int pb_thread_create(void* func, unsigned long param,
                      unsigned long stack_size, unsigned long create_flags,
                      unsigned long* out_id) {
@@ -8223,13 +8251,24 @@ int pb_thread_create(void* func, unsigned long param,
     if (out_id) *out_id = (unsigned long)(uintptr_t)pb_thr[i].h;
     return 0;
 #else
-    /* 32-bit: PB functions use cdecl but CreateThread requires stdcall �
-       calling a cdecl function through a stdcall pointer corrupts the stack. */
-    (void)param;
-    (void)stack_size;
-    (void)create_flags;
-    if (out_id) *out_id = 0;
-    pb_err_var = pb_err = 7; return -1;
+    /* 32-bit: route the cdecl PB entry point through a stdcall thunk (see
+       pb_thread_boot32_proc above) so CreateThread gets a valid frame. */
+    pb_thread_boot32* boot;
+    for (i = 0; i < 256; i++) {
+        if (!pb_thr[i].h) break;
+    }
+    if (i >= 256) { pb_err_var = pb_err = 5; return -1; }
+    boot = (pb_thread_boot32*)malloc(sizeof(pb_thread_boot32));
+    if (boot == NULL) { pb_err_var = pb_err = 7; return -1; }
+    boot->fn = (pb_thread_fn32)func;
+    boot->param = param;
+    pb_thr[i].h = CreateThread(NULL, stack_size, pb_thread_boot32_proc,
+                               boot, create_flags, &tid);
+    if (!pb_thr[i].h) { free(boot); pb_err_var = pb_err = 7; return -1; }
+    pb_thr[i].tid = tid;
+    pb_thr[i].state = 1;
+    if (out_id) *out_id = (unsigned long)(uintptr_t)pb_thr[i].h;
+    return 0;
 #endif
 }
 
@@ -8344,6 +8383,34 @@ typedef struct pb_tls_block_node {
     struct pb_tls_block_node* next;
 } pb_tls_block_node;
 
+/* batch 357 diagnostic: PB_TLS_TRACE=1 appends every THREADED array
+   allocation / release to pb_tls_trace.log, so the intermittent
+   0xC0000374 heap-corruption report can be pinned to the last block
+   operation of the crashing thread.  Off by default. */
+__declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
+static FILE* pb_tls_trace_fp = NULL;
+static int pb_tls_trace_inited = 0;
+static void pb_tls_trace_open(void) {
+    const char* e;
+    char v[8];
+    if (pb_tls_trace_inited) { return; }
+    pb_tls_trace_inited = 1;
+    memset(v, 0, sizeof(v));
+    e = getenv("PB_TLS_TRACE");
+    if (e && e[0] && e[0] != '0') {
+        pb_tls_trace_fp = fopen(
+            "C:\\Users\\HANLO\\Doubao\\chats\\2026-09-05\\new-chat\\powerbasilisk_test\\pbsrc\\pb_tls_trace.log",
+            "a");
+    }
+}
+static void pb_tls_trace(const char* tag, void* p, void* q) {
+    pb_tls_trace_open();
+    if (pb_tls_trace_fp == NULL) { return; }
+    fprintf(pb_tls_trace_fp, "%s tid=%lu p=%p q=%p\n", tag,
+            (unsigned long)GetCurrentThreadId(), p, q);
+    fflush(pb_tls_trace_fp);
+}
+
 static unsigned long pb_tls_fls_index = PB_FLS_OUT_OF_INDEXES;
 /* 0 uninitialised, 1 initialising, 2 ready, 3 unavailable.  A plain int here was a
    data race: every worker thread dimensions the same THREADED array during start-up,
@@ -8360,6 +8427,7 @@ static void __stdcall pb_threaded_fls_callback(void* value) {
     pb_tls_block_node* node = (pb_tls_block_node*)value;
     while (node != NULL) {
         pb_tls_block_node* next = node->next;
+        pb_tls_trace("FLS_FREE", node->block, node);
         if (node->block != NULL) { free(node->block); }
         free(node);
         node = next;
@@ -8399,6 +8467,7 @@ void* pb_threaded_array_alloc(long long nbytes) {
             node->block = block;
             node->next = (pb_tls_block_node*)FlsGetValue(pb_tls_fls_index);
             FlsSetValue(pb_tls_fls_index, (void*)node);
+            pb_tls_trace("ALLOC", block, node);
         }
     }
     return block;
@@ -8406,11 +8475,13 @@ void* pb_threaded_array_alloc(long long nbytes) {
 
 void pb_threaded_array_free(void* block) {
     if (block == NULL) { return; }
+    pb_tls_trace("FREE_IN", block, 0);
     if (__atomic_load_n(&pb_tls_fls_state, __ATOMIC_ACQUIRE) == 2) {
         pb_tls_block_node* node = (pb_tls_block_node*)FlsGetValue(pb_tls_fls_index);
         pb_tls_block_node* prev = NULL;
         while (node != NULL) {
             if (node->block == block) {
+                pb_tls_trace("UNLINK", block, node);
                 if (prev == NULL) {
                     FlsSetValue(pb_tls_fls_index, (void*)node->next);
                 } else {
@@ -12859,10 +12930,10 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
    - Background: COLOR_BTNFACE (3D dialog grey, what a PBWin dialog shows),
              via its own window class PBWIN_DLG_CLASS (WINDOW keeps
              PBWIN_CLASS / COLOR_WINDOW, unchanged).
-   - NOTE: like pb_window_new, the dialog is shown immediately (WS_VISIBLE).
-             PBWin semantics create the dialog hidden and DIALOG SHOW MODAL /
-             MODELESS reveal it; aligning that requires reworking
-             pb_message_loop (TODO, see SKILL). */
+   - NOTE: batch 357 aligns DIALOG NEW with PBWin: the dialog is created
+             HIDDEN and DIALOG SHOW / SHOW MODAL / SHOW MODELESS reveals it.
+             pb_window_new (the WINDOW statement) keeps its historical
+             create-and-show behaviour. */
 void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
                         unsigned long style, unsigned long exstyle, int units) {
     __declspec(dllimport) void __stdcall InitCommonControls(void); InitCommonControls();
@@ -12893,13 +12964,12 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
         ch = (h * dluY) / 8;
     }
     unsigned long dwStyle = style ? style : 0x84C000D4u; /* official default */
-    dwStyle |= 0x10000000u; /* WS_VISIBLE (see NOTE above) */
+    /* batch 357: no WS_VISIBLE - PBWin creates the dialog hidden and only
+       DIALOG SHOW / SHOW MODAL / SHOW MODELESS makes it visible. */
     unsigned long dwEx = exstyle ? exstyle : 0x101u;
     void* hwnd = CreateWindowExA(dwEx, "PBWIN_DLG_CLASS", title, dwStyle,
         px, py, cw + 6, ch + 29, 0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
-        ShowWindow(hwnd, 5);
-        UpdateWindow(hwnd);
         SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
                      (unsigned long long)(size_t)pb_dialog_font(), 1);
     }
@@ -13537,6 +13607,9 @@ int pb_show_modal_to(void* hDlg) {
        batch 243: IsDialogMessage routes Enter/Tab to the dialog so a
        BS_DEFPUSHBUTTON control fires like a native default button. */
     pb_msg_t msg;
+    /* batch 357: DIALOG NEW now creates the dialog hidden (PBWin semantics),
+       so SHOW MODAL must reveal it before entering the message loop. */
+    if (hDlg) { ShowWindow(hDlg, 5); UpdateWindow(hDlg); }
     pb_modal_done = 0;
     pb_modal_result = 0;
     int gm = 0;

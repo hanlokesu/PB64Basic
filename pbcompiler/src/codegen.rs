@@ -22387,17 +22387,9 @@ impl Compiler {
                 return Ok(());
             }
             "THREAD CREATE" => {
-                // batch 350: the i686 runtime has no safe way to call a PB
-                // function as a stdcall thread entry (cdecl callee through a
-                // stdcall pointer corrupts the stack), so pb_thread_create
-                // fails closed with error 7 at RUN time.  Say so at compile
-                // time instead of letting the user find out from error 7.
-                if self.module.is_32bit() {
-                    self.warnings.push(format!(
-                        "line {}: THREAD CREATE on the i686 target is not supported - the runtime fails closed with error 7 (Out of memory); build with --target x86_64-pc-windows-msvc to use threads",
-                        call.line
-                    ));
-                }
+                // batch 357: the i686 runtime routes the cdecl PB entry
+                // through a stdcall thunk (pb_thread_boot32_proc), so the
+                // statement works on both targets and no warning is emitted.
                 if !call.args.is_empty() {
                     let func_name = match &call.args[0] {
                         Expr::Variable(n) => normalize_name(n),
