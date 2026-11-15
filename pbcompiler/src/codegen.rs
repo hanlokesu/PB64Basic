@@ -8332,11 +8332,19 @@ impl Compiler {
         let name = normalize_name(&vd.name);
         let ir_type = Self::ir_type_for(&vd.pb_type);
         if self.session_mode {
-            // Defer: collect into session_fields for struct emission later
+            // Defer: collect into session_fields for struct emission later.
+            // A dynamic STRING field needs the same four-pointer slot as a
+            // non-session global so FIELD ... AS <global> can store its
+            // pb_field_t without clobbering the next struct field.
+            let storage_ir = if Self::is_string_pb(&vd.pb_type) {
+                IrType::Array(4, Box::new(IrType::Ptr))
+            } else {
+                ir_type.clone()
+            };
             if !self.session_fields.iter().any(|f| f.name == name) {
                 self.session_fields.push(SessionFieldInfo {
                     name,
-                    ir_type,
+                    ir_type: storage_ir,
                     pb_type: vd.pb_type.clone(),
                     is_array: false,
                     elem_ir_type: None,
@@ -31678,10 +31686,13 @@ impl Compiler {
                     },
                 );
             } else {
+                // The struct storage for a dynamic STRING is a four-pointer
+                // array, but the symbol still addresses its first pointer slot.
+                let symbol_ir = Self::ir_type_for(&field.pb_type);
                 self.symbols.insert_global_with_ptr(
                     field.name.clone(),
                     gep_expr,
-                    field.ir_type.clone(),
+                    symbol_ir,
                     field.pb_type.clone(),
                 );
             }

@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 359 (v0.2.150). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 360 (v0.2.151). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 360 (v0.2.151) - SESSION-struct global STRING fields reserve four FIELD-descriptor pointer slots, CHR=WIDE is accepted as a CHW no-op for BINARY/RANDOM files while sequential WIDE remains an explicit compile error; REDIM PRESERVE repeated AS type confirmed against PBWin10 to preserve prefix values, no code change; sequential UTF-16 conversion and other known gaps remain open.
 > batch 359 (v0.2.150) - OPEN ACCESS/LOCK/BASE implemented with runtime enforcement, OPEN failures set ERR 53/70/75, bare CLOSE and multiple-file CLOSE implemented, FIELD no longer overflows pointer-sized string slots (i686 C0000005 fixed), CHR=WIDE rejected explicitly; TCP LINE INPUT drained-line behaviour confirmed against CHW; CHR=WIDE, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, REDIM PRESERVE edge semantics remain open.
 > batch 358 (v0.2.149) - CSET ABS/USING implemented, $$CRLF/$$DQ2/$$SQ2/$$QCQ/$$WHITESPACE wide equates with code-unit LEN, BYVAL VARIANT expression arguments via a temporary container, STR$/PRINT # single-precision literal formatting aligned with PBWin10, TCP CLOSE drains queued bytes so a reply in flight is not lost to an RST (batch205 loopback is now 10/10), UNION/TYPE bit fields covered by a regression probe; OPEN clauses, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT remain open.
 > batch 357 (v0.2.148) - i686 THREAD CREATE Error 7 gone (stdcall boot thunk), DIALOG NEW creates hidden and SHOW reveals it, thread-local CALLSTK (F4 heap corruption 9/100 -> 0/200), NOTIFY window-message probes on both targets, 32-bit Hello 155,648 B; TXT/THREAD OBJECT still open with explicit diagnostics.
@@ -1026,6 +1027,36 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.151 (2026-11-16)
+
+Batch 360. Closes two retained file-layout and OPEN clause edges, and records a
+fresh PBWin10 REDIM PRESERVE verdict.
+
+- **Fixed - SESSION-struct STRING field slots.** In session-struct mode a
+  deferred global dynamic STRING was collected as a single pointer field, while
+  `FIELD ... AS <global>` stores a `pb_field_t` descriptor (24 bytes on x64,
+  16 bytes on x86). The STRING field now reserves the same four-pointer storage
+  as a non-session global; the registered symbol still addresses the first
+  pointer slot, so ordinary string access is unchanged. Covered by
+  `pbcompiler/tests/l15_session_field.bas` and `examples/batch360_test.bas` on
+  both targets.
+- **Changed - CHR=WIDE by file mode.** CHW states `CHR=WIDE` has no effect in
+  BINARY/RANDOM files; those clauses are now accepted as a documented no-op.
+  Sequential `INPUT`/`OUTPUT`/`APPEND` WIDE still fails at compile time because
+  the fork has no UTF-16 sequential conversion layer for `LINE INPUT#`,
+  `INPUT#`, formatted output, newline handling, or EOF/peek. The b359 OUTPUT
+  WIDE and new b360 INPUT WIDE probes remain negative cases.
+- **Verified - REDIM PRESERVE repeated AS type.** Fresh PBWin10 probes grow a
+  four-element array to eight with and without a repeated `AS LONG`; both retain
+  101/202/303/404 in the prefix and zero-fill the new elements. The fork's
+  prefix-preserving direction matches CHW/PBWin10, so no code change was made.
+  The older shrink/regrow sample that appeared to reset values reflects heap
+  reuse after shrinking, not a repeated-AS reset.
+- **Still open.** Sequential `CHR=WIDE` UTF-16 read/write conversion remains
+  unimplemented; MACROTEMP / MACRO FUNCTION / EXIT MACRO, legacy PBRES/PBR,
+  EnumPrintersW, the TXT pseudo-object, THREAD OBJECT, THREADED per-thread array
+  shapes, and the other recorded architecture gaps are unchanged.
+
 ### v0.2.150 (2026-11-16)
 
 Batch 359. Closes the OPEN file-mode clauses and the CLOSE forms that were

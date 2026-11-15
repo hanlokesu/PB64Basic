@@ -16025,8 +16025,8 @@ impl Parser {
         //   [ACCESS access] [LOCK lock] [BASE = 0|1] [CHR = ANSI|WIDE]
         // ACCESS and LOCK are enforced by the runtime (sharing modes on the
         // underlying handle); BASE is passed through and used for random
-        // record numbering / FILEATTR(-2).  CHR=WIDE needs a charset layer and
-        // is reported loudly instead of being silently ignored.
+        // record numbering / FILEATTR(-2).  CHR=WIDE is a no-op in
+        // BINARY/RANDOM per CHW; sequential WIDE remains an explicit error.
         let mut access: u8 = 0; // READ WRITE (default)
         let mut lock: u8 = 0; // READ WRITE (default)
         let mut base: Option<Expr> = None;
@@ -16060,12 +16060,18 @@ impl Parser {
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
                             self.advance();
                             chr_wide = true;
-                            eprintln!(
-                                "Error: OPEN CHR=WIDE is not implemented (line {}); \
-                                 CHR=ANSI is the supported mode",
-                                line
-                            );
-                            self.error_count += 1;
+                            // CHW: CHR=WIDE has no effect on BINARY/RANDOM files;
+                            // it is accepted there as self-documentation.  Sequential
+                            // files require a UTF-16 conversion layer, which is not
+                            // implemented yet, so that combination stays explicit.
+                            if !matches!(mode, OpenMode::Binary | OpenMode::Random) {
+                                eprintln!(
+                                    "Error: OPEN CHR=WIDE sequential files are not \
+                                     implemented (line {}); CHR=ANSI is the supported mode",
+                                    line
+                                );
+                                self.error_count += 1;
+                            }
                         }
                         _ => {
                             eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);
@@ -16120,12 +16126,18 @@ impl Parser {
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
                             self.advance();
                             chr_wide = true;
-                            eprintln!(
-                                "Error: OPEN CHR=WIDE is not implemented (line {}); \
-                                 CHR=ANSI is the supported mode",
-                                line
-                            );
-                            self.error_count += 1;
+                            // CHW: CHR=WIDE has no effect on BINARY/RANDOM files;
+                            // it is accepted there as self-documentation.  Sequential
+                            // files require a UTF-16 conversion layer, which is not
+                            // implemented yet, so that combination stays explicit.
+                            if !matches!(mode, OpenMode::Binary | OpenMode::Random) {
+                                eprintln!(
+                                    "Error: OPEN CHR=WIDE sequential files are not \
+                                     implemented (line {}); CHR=ANSI is the supported mode",
+                                    line
+                                );
+                                self.error_count += 1;
+                            }
                         }
                         _ => {
                             eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);

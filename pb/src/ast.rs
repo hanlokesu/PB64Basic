@@ -677,7 +677,8 @@ pub struct OpenStmt {
     pub lock: u8,
     /// CHW BASE = 0|1: first record / byte number (default 1).
     pub base: Option<Expr>,
-    /// CHW CHR = ANSI|WIDE; the fork currently only implements ANSI.
+    /// CHW CHR = ANSI|WIDE.  WIDE is accepted as a no-op for BINARY/RANDOM;
+    /// sequential WIDE is still rejected at parse time.
     pub chr_wide: bool,
     pub line: usize,
 }
