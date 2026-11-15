@@ -12714,31 +12714,62 @@ impl Compiler {
                 );
             }
             "TCP_NOTIFY" => {
-                // batch 350: the runtime stores the event mask but nothing ever
-                // delivers a window message (this build has no GUI message pump),
-                // so the statement used to compile and run as a silent no-op.
-                // Report it instead of letting the user believe it works.
-                self.warnings.push(format!(
-                    "line {}: TCP NOTIFY accepted but has no effect (async GUI message dispatch is not implemented - the event mask is stored, never delivered)",
-                    call.line
-                ));
-                let s0 = self.compile_expr(fb, &call.args[0])?;
-                let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
-                let s1 = self.compile_expr(fb, &call.args[1])?;
-                let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_tcp_notify", &[i0, i1]);
+                if call.args.len() >= 4 {
+                    // CHW: TCP NOTIFY #f, event TO hWnd AS wMsg.  The runtime
+                    // registers the socket with WSAAsyncSelect, so Winsock itself
+                    // posts wMsg to the window (wParam = socket handle,
+                    // lParam = event code in the low word, error in the high word).
+                    let s0 = self.compile_expr(fb, &call.args[0])?;
+                    let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
+                    let s1 = self.compile_expr(fb, &call.args[1])?;
+                    let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
+                    let s2 = self.compile_expr(fb, &call.args[2])?;
+                    let i2 = self.convert_value(fb, &s2, &IrType::I64, &PbType::Quad);
+                    let s3 = self.compile_expr(fb, &call.args[3])?;
+                    let i3 = self.convert_value(fb, &s3, &IrType::I32, &PbType::Long);
+                    // runtime order: (filenum, hwnd, wmsg, eventmask)
+                    fb.call_void("pb_tcp_notify", &[i0, i2, i3, i1]);
+                } else {
+                    // Legacy two-argument form: no window is named, so the event
+                    // mask can only be stored - it cannot be delivered.
+                    self.warnings.push(format!(
+                        "line {}: TCP NOTIFY without TO hWnd AS wMsg has no effect (the event mask is stored, never delivered)",
+                        call.line
+                    ));
+                    let s0 = self.compile_expr(fb, &call.args[0])?;
+                    let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
+                    let s1 = self.compile_expr(fb, &call.args[1])?;
+                    let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
+                    let z64 = fb.const_i64(0);
+                    let z32 = fb.const_i32(0);
+                    fb.call_void("pb_tcp_notify", &[i0, z64, z32, i1]);
+                }
             }
             "UDP_NOTIFY" => {
-                // batch 350: same silent-no-op problem as TCP_NOTIFY above.
-                self.warnings.push(format!(
-                    "line {}: UDP NOTIFY accepted but has no effect (async GUI message dispatch is not implemented - the event mask is stored, never delivered)",
-                    call.line
-                ));
-                let s0 = self.compile_expr(fb, &call.args[0])?;
-                let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
-                let s1 = self.compile_expr(fb, &call.args[1])?;
-                let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_udp_notify", &[i0, i1]);
+                if call.args.len() >= 4 {
+                    let s0 = self.compile_expr(fb, &call.args[0])?;
+                    let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
+                    let s1 = self.compile_expr(fb, &call.args[1])?;
+                    let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
+                    let s2 = self.compile_expr(fb, &call.args[2])?;
+                    let i2 = self.convert_value(fb, &s2, &IrType::I64, &PbType::Quad);
+                    let s3 = self.compile_expr(fb, &call.args[3])?;
+                    let i3 = self.convert_value(fb, &s3, &IrType::I32, &PbType::Long);
+                    // runtime order: (filenum, hwnd, wmsg, eventmask)
+                    fb.call_void("pb_udp_notify", &[i0, i2, i3, i1]);
+                } else {
+                    self.warnings.push(format!(
+                        "line {}: UDP NOTIFY without TO hWnd AS wMsg has no effect (the event mask is stored, never delivered)",
+                        call.line
+                    ));
+                    let s0 = self.compile_expr(fb, &call.args[0])?;
+                    let i0 = self.convert_value(fb, &s0, &IrType::I32, &PbType::Long);
+                    let s1 = self.compile_expr(fb, &call.args[1])?;
+                    let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
+                    let z64 = fb.const_i64(0);
+                    let z32 = fb.const_i32(0);
+                    fb.call_void("pb_udp_notify", &[i0, z64, z32, i1]);
+                }
             }
             // The "PROGRESSBAR" (4-arg legacy form) and "HEADER_CTRL" arms were
             // removed in batch 163.  The parser only ever emits the official
@@ -26762,9 +26793,15 @@ impl Compiler {
             "PRINTER" => Some(self.builtin_printer(fb, args)),
             "THREADID" => Some(self.builtin_threadid(fb)),
             "CHRBYTES" => {
-                // CHRBYTES(var) — returns 1 for ANSI strings, 2 for wide strings
-                // We only support ANSI strings, so always return 1
-                Some(Ok(fb.const_i32(1)))
+                // CHW CHRBYTES_function: 1 for the ANSI string families (STRING,
+                // STRINGZ, STRING*N, FIELD) and 2 for the wide families
+                // (WSTRING, WSTRINGZ, WSTRING*N, WFIELD).  The operand type is
+                // static, so fold the answer here instead of hard-coding 1.
+                let width = match args.first().and_then(|e| self.expr_pb_type(e)) {
+                    Some(PbType::WString) | Some(PbType::FixedWString(_)) => 2,
+                    _ => 1,
+                };
+                Some(Ok(fb.const_i32(width)))
             }
             "ACODE" => {
                 Some(self.builtin_code_page(fb, args, "pb_acode", "ACODE$ requires 1 argument"))

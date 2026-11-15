@@ -3528,6 +3528,11 @@ static long long rec_pos[MAX_FILE_HANDLES] = {0};
 /* Forward declaration: socket state array is defined in the Winsock section
    (pb_sock_state). pb_freefile must account for occupied sockets. */
 static int pb_sock_state[256];
+/* batch 353: mirror of the socket's OS handle, kept here because pb_fileattr()
+   is defined before the Winsock section.  CHW TCP NOTIFY hands the WPARAM of
+   the notification message to FILEATTR, so a socket channel must report its
+   real SOCKET here rather than 0. */
+static long long pb_sock_os_handle[256];
 
 int pb_freefile(void) {
     for (int i = 1; i < MAX_FILE_HANDLES; i++) {
@@ -3621,7 +3626,11 @@ long long pb_fileattr(int filenum, int attr) {
                 case 3: return 32;   /* Binary */
             }
             return 0;
-        case 2: return f ? (long long)_fileno(f) : 0;   /* OS file handle */
+        case 2:
+            if (f) return (long long)_fileno(f);   /* OS file handle */
+            if (filenum < 256 && pb_sock_state[filenum] != 0)
+                return pb_sock_os_handle[filenum]; /* OS socket handle (batch 353) */
+            return 0;
         case 3: {                                    /* enumerate: nth open file number */
             int cnt = 0;
             for (int i = 1; i < MAX_FILE_HANDLES; i++) {
@@ -7365,6 +7374,9 @@ __declspec(dllimport) unsigned long __stdcall inet_addr(const char* cp);
 __declspec(dllimport) int __stdcall setsockopt(pb_sock_t s, int level, int optname, const char* optval, int optlen);
 __declspec(dllimport) int __stdcall ioctlsocket(pb_sock_t s, long cmd, unsigned long* argp);
 __declspec(dllimport) int __stdcall WSAGetLastError(void);
+/* batch 353: TCP/UDP NOTIFY registers the socket with WSAAsyncSelect, which
+   makes Winsock post wMsg to the given window on the selected events. */
+__declspec(dllimport) int __stdcall WSAAsyncSelect(pb_sock_t s, void* hWnd, unsigned int wMsg, long lEvent);
 __declspec(dllimport) unsigned short __stdcall ntohs(unsigned short netshort);
 
 /* servent layout returned by getservbyname (winsock.h struct servent). Only
@@ -7476,6 +7488,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
         pb_net_fill_addr(&a, bind_addr, port);
         if (bind(s, &a, sizeof(a)) != 0 || listen(s, 8) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
         pb_sock[filenum] = s;
+        pb_sock_os_handle[filenum] = (long long)s;
         pb_sock_state[filenum] = 3;
         pb_sock_eof[filenum] = 0;
         pb_sock_timeout[filenum] = timeout;
@@ -7491,6 +7504,7 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
         closesocket(s); pb_err_var = pb_err = e; return -1;
     }
     pb_sock[filenum] = s;
+    pb_sock_os_handle[filenum] = (long long)s;
     pb_sock_state[filenum] = 1;
     pb_sock_eof[filenum] = 0;
     pb_sock_timeout[filenum] = timeout;
@@ -7511,6 +7525,7 @@ int pb_tcp_accept(int srv, int* out_newf) {
     while (f < PB_MAX_SOCK && pb_sock_state[f] != 0) f++;
     if (f >= PB_MAX_SOCK) { closesocket(s); pb_err_var = pb_err = 52; return -1; }
     pb_sock[f] = s;
+    pb_sock_os_handle[f] = (long long)s;
     pb_sock_state[f] = 1;
     pb_sock_eof[f] = 0;
     /* Inherit the listening server's SEND/RECV timeout so the accepted socket
@@ -7666,6 +7681,7 @@ int pb_udp_open(int port, int filenum, long timeout) {
     }
     if (bind(s, &a, sizeof(a)) != 0) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
     pb_sock[filenum] = s;
+    pb_sock_os_handle[filenum] = (long long)s;
     pb_sock_state[filenum] = 2;
     pb_sock_eof[filenum] = 0;
     return 0;
@@ -10612,20 +10628,54 @@ int pb_xprint_imagelist(int op, int arg1, int arg2) {
     }
     return 1;
 }
-/* === Batch 77: TCP/UDP NOTIFY + PROGRESSBAR + HEADER + ARRAY SELECT/TAGARRAY === */
-/* TCP/UDP NOTIFY: save event mask per socket (async mode flag) */
+/* === Batch 77/353: TCP/UDP NOTIFY — store mask and deliver window messages === */
+/* CHW: TCP NOTIFY [#] fNum&, {SEND|RECV|ACCEPT|CONNECT|CLOSE} TO hWnd& AS wMsg&
+   WSAAsyncSelect asks Winsock to post wMsg to hWnd when a selected socket event
+   occurs.  The posted lParam is (error << 16) | event and wParam is the socket's
+   OS handle - exactly the layout the CHW documents.  hwnd == 0 keeps the legacy
+   two-argument behaviour (mask stored, nothing delivered because no window was
+   named). */
 static int g_socket_event_mask[256] = {0};
+static long long g_socket_notify_hwnd[256] = {0};
+static int g_socket_notify_msg[256] = {0};
 
-int pb_tcp_notify(int socket, int eventmask) {
-    if (socket < 0 || socket >= 256) return 0;
+static int pb_sock_notify(int socket, long long hwnd, int wmsg, int eventmask) {
+    if (socket < 1 || socket >= PB_MAX_SOCK) {
+        pb_err_var = pb_err = 52;                /* Error 52: bad file number */
+        return 0;
+    }
+    if (hwnd == 0) {                             /* legacy form: remember the mask only */
+        g_socket_event_mask[socket] = eventmask;
+        g_socket_notify_hwnd[socket] = 0;
+        g_socket_notify_msg[socket] = 0;
+        return 1;
+    }
+    if (pb_sock_state[socket] == 0) {            /* no open socket on that number */
+        pb_err_var = pb_err = 57;                /* PBWin Error 57: device I/O error */
+        return 0;
+    }
+    if (pb_winsock_init() != 0) {
+        pb_err_var = pb_err = 57;
+        return 0;
+    }
+    if (WSAAsyncSelect(pb_sock[socket], (void*)(long long)hwnd,
+                       (unsigned int)wmsg, (long)eventmask) != 0) {
+        g_socket_event_mask[socket] = 0;
+        pb_err_var = pb_err = 57;                /* PBWin Error 57: device I/O error */
+        return 0;
+    }
     g_socket_event_mask[socket] = eventmask;
+    g_socket_notify_hwnd[socket] = hwnd;
+    g_socket_notify_msg[socket] = wmsg;
     return 1;
 }
 
-int pb_udp_notify(int socket, int eventmask) {
-    if (socket < 0 || socket >= 256) return 0;
-    g_socket_event_mask[socket] = eventmask;
-    return 1;
+int pb_tcp_notify(int socket, long long hwnd, int wmsg, int eventmask) {
+    return pb_sock_notify(socket, hwnd, wmsg, eventmask);
+}
+
+int pb_udp_notify(int socket, long long hwnd, int wmsg, int eventmask) {
+    return pb_sock_notify(socket, hwnd, wmsg, eventmask);
 }
 
 /* PROGRESSBAR: Win32 progress bar control (comctl32) */

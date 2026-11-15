@@ -13136,20 +13136,90 @@ impl Parser {
                         line,
                     }));
                 }
-                // TCP NOTIFY ... / UDP NOTIFY ... — async notify window (accepted; no-op)
+                // TCP NOTIFY ... / UDP NOTIFY ... — async socket notification.
+                // CHW: TCP NOTIFY [#] fNum&, {SEND|RECV|ACCEPT|CONNECT|CLOSE}
+                //      TO hWnd& AS wMsg&
+                // A full clause becomes a WSAAsyncSelect registration:
+                // args = [fnum, event mask, hWnd, wMsg].  The older two-argument
+                // form (`TCP NOTIFY #f, mask`) is still accepted, but it names no
+                // window, so codegen keeps warning that it cannot deliver.
                 if (name_upper == "TCP" || name_upper == "UDP")
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase() == "NOTIFY")
                 {
                     let kw = name_upper.clone();
                     self.advance();
                     self.advance();
-                    let mut args = Vec::new();
-                    if self.peek() != &Token::Eol {
-                        args.push(self.parse_expression()?);
-                        while self.peek() == &Token::Comma {
+                    if self.peek() == &Token::Hash {
+                        self.advance(); // optional `#` file-number marker
+                    }
+                    let fnum = self.parse_expression()?;
+                    self.expect(&Token::Comma)?;
+                    let is_event = matches!(
+                        self.peek_plain_upper().as_str(),
+                        "SEND" | "RECV" | "ACCEPT" | "CONNECT" | "CLOSE"
+                    );
+                    if is_event {
+                        let mut mask: i64 = 0;
+                        loop {
+                            match self.peek_plain_upper().as_str() {
+                                "SEND" => mask |= 0x02,    // FD_WRITE
+                                "RECV" => mask |= 0x01,    // FD_READ
+                                "ACCEPT" => mask |= 0x08,  // FD_ACCEPT
+                                "CONNECT" => mask |= 0x10, // FD_CONNECT
+                                "CLOSE" => mask |= 0x20,   // FD_CLOSE
+                                other => {
+                                    self.error_count += 1;
+                                    eprintln!(
+                                        "Error: Parse error at line {}: expected a {} NOTIFY event name (SEND, RECV, ACCEPT, CONNECT, CLOSE), got {}",
+                                        line, kw, other
+                                    );
+                                    self.consume_to_eol();
+                                    return Ok(Statement::Call(CallStmt {
+                                        name: format!("{}_NOTIFY", kw),
+                                        args: vec![fnum],
+                                        line,
+                                    }));
+                                }
+                            }
                             self.advance();
-                            args.push(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                continue;
+                            }
+                            break;
                         }
+                        if !(self.peek() == &Token::To
+                            || matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("TO")))
+                        {
+                            self.error_count += 1;
+                            eprintln!(
+                                "Error: Parse error at line {}: expected TO hWnd AS wMsg after the {} NOTIFY event list",
+                                line, kw
+                            );
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: format!("{}_NOTIFY", kw),
+                                args: vec![fnum, Expr::IntegerLit(mask)],
+                                line,
+                            }));
+                        }
+                        self.advance();
+                        let hwnd = self.parse_expression()?;
+                        self.expect(&Token::As)?;
+                        let msg = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: format!("{}_NOTIFY", kw),
+                            args: vec![fnum, Expr::IntegerLit(mask), hwnd, msg],
+                            line,
+                        }));
+                    }
+                    // Legacy two-argument form: `TCP NOTIFY #f, mask`.
+                    let mut args = vec![fnum];
+                    args.push(self.parse_expression()?);
+                    while self.peek() == &Token::Comma {
+                        self.advance();
+                        args.push(self.parse_expression()?);
                     }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
