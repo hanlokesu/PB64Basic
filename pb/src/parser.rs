@@ -1790,7 +1790,8 @@ impl Parser {
     /// `UNION name ... END UNION` (CHW UNION/END UNION): a user-defined type
     /// whose members all overlap at offset 0. Same member syntax as TYPE
     /// (`name [(subscripts)] AS type`), including embedded arrays. Bit fields
-    /// (`AS BIT * n`) are not supported yet — they surface as parse errors.
+    /// (`AS BIT * n [IN base]`) go through the shared `parse_type_inner` path
+    /// (batch 358); the first bit member of a field must carry `IN <base>`.
     fn parse_union_decl(&mut self, line: usize) -> PbResult<TypeDecl> {
         self.advance(); // UNION
         let name = self.consume_identifier()?;
