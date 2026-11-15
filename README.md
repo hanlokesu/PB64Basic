@@ -430,43 +430,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 357 (v0.2.148). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> Batch 357 audit note - v0.2.148 - 2026-11-15
-
-Scope
-  pbcompiler/runtime/pb_runtime.c
-    - i686 THREAD CREATE: stdcall boot thunk (pb_thread_boot32 /
-      pb_thread_boot32_proc) calls the cdecl PB function; Error 7 removed.
-    - DIALOG NEW: pb_window_new_dlg no longer sets WS_VISIBLE and no longer
-      calls ShowWindow/UpdateWindow; pb_show_modal_to reveals the dialog before
-      its modal loop.  The WINDOW statement (pb_window_new) is unchanged.
-    - CALLSTK: pb_callstk_frames / pb_callstk_depth are __declspec(thread).
-    - pb_tls_trace_open() reads PB_TLS_TRACE (default off).
-  pbcompiler/src/codegen.rs
-    - the 32-bit THREAD CREATE compile-time warning is removed.
-  examples/
-    - batch357_test.bas (new): four THREAD CREATE workers with THREADED
-      numeric and string arrays; the in-tree regression for the CALLSTK fix.
-    - b357_dialog_semantics.bas (new): Win32 IsWindowVisible / IsZoomed readback.
-    - b357_notify32.bas / b357_notify64.bas (new): PeekMessageA assertions for
-      the UDP NOTIFY window message.  These bind a loopback UDP port and may
-      trigger a Windows Firewall prompt; they are manual probes.
-
-Evidence
-  batch357_test        x64 exit 0, i686 exit 0, "workers done= 4 failures= 0"
-  b357_dialog_semantics x64/i686 exit 0, visible 0 -> 1, zoomed 0 -> 1,
-                       "=== FAILURES: 0"
-  b357_notify32        i686 exit 0, message= 1024 wParam= 928 event= 1,
-                       "=== FAILURES: 0"
-  b357_notify64        x64 exit 0, message= 1025 wParam= 536 event= 1,
-                       "=== FAILURES: 0"
-  batch021_test        i686 exit 0, thread id= 224 / status= 259 / THREAD OK
-  batch028_test        i686 exit 0, worker_val= 2 worker_msg=worker / TLS OK
-  batch325_test        9/100 crashes before the CALLSTK fix, 0/200 after
-  hello (#CONSOLE ON)  x64 164,864 B / i686 155,648 B (ratio 0.944)
-
-Open (not implemented, explicit diagnostics retained)
-  TXT pseudo-object (11 members) - parser error.
-  THREAD OBJECT / IPowerThread - parser error.
+> batch 357 (v0.2.148) - i686 THREAD CREATE Error 7 gone (stdcall boot thunk), DIALOG NEW creates hidden and SHOW reveals it, thread-local CALLSTK (F4 heap corruption 9/100 -> 0/200), NOTIFY window-message probes on both targets, 32-bit Hello 155,648 B; TXT/THREAD OBJECT still open with explicit diagnostics.
 > - **batch 356**: i686 `WNDCLASSEX`/`MSG`/`NMHDR`/`TCITEMA` use the 32-bit layout and `pb_wndproc` the 32-bit ABI; 32-bit GUI windows are created again and no longer crash.
 > batch 355 (v0.2.146) - new FORK EXTENSION `VERSION$()`: a zero-argument string function that returns the release version the running compiler was built from, baked in from the repository VERSION file at build time (the same string the banner and `PB64Basic --version` report). Both `VERSION$()` and the bare `VERSION$` spelling compile; the value is copied into a real BSTR. Coverage now 948 rows with 31 fork extensions. Self-check: `examples/batch355_test.bas`.
 > batch 354 (v0.2.145) - compiler banner prints `[PB64Basic] Version ...` first; `--version` added; version is baked in from the repository VERSION file at build time; release gate `versionfile` blocks a stale banner.
