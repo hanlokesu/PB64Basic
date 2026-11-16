@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 370 (v0.2.160). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 371 (v0.2.161). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 371 (v0.2.161) - THREAD OBJECT member semantics match CHW: CLOSE, JOIN, LAUNCH, PRIORITY SET and STACKSIZE SET return no value, direct THREAD METHOD calls are rejected in statement and expression position, and `AS MyType POINTER` plus `BYVAL VARPTR(...)` now read fields through the pointer; batch371_test passes on x86_64 and i686.
 > batch 370 (v0.2.160) - THREADED array DIM bounds are evaluated at run time, so `DIM tA(1 TO n)` publishes the real per-thread shape, and `UBOUND` is -1 before that thread dimensions the array; batch370_test passes on x86_64 and i686.
 > batch 368 (v0.2.159) - the 12-member TXT pseudo-object and the 18-member IPowerThread model are implemented, zero-length PBR entries are accepted, and the 32-bit WNDPROC ABI is fixed; batch368_test and batch369_test pass on x86_64 and i686.
 > batch 367 (v0.2.158) - legacy PBR/PBRES resources are decoded and embedded; batch367_test reads its RT_STRING payload on x86_64 and i686; TXT/THREAD OBJECT, printer/serial, and #314 remain open.
@@ -1037,6 +1038,35 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.161 (2026-11-17)
+
+Batch 371. Aligns THREAD OBJECT / IPowerThread member semantics with CHW and
+closes the `ThreadParam AS MyType POINTER` parameter path.
+
+- **Fixed - void members.** CHW lists `CLOSE`, `JOIN`, `LAUNCH`, `PRIORITY SET`
+  and `STACKSIZE SET` without a return value. Their synthesized bridges now
+  return `void`, so a statement call lowers as a void call; the getters and the
+  remaining members keep their documented numeric or 64-bit result.
+- **Fixed - direct THREAD METHOD calls.** A THREAD METHOD is executed by
+  `LAUNCH` and must never be called from source. Calls such as
+  `worker.Main()` are rejected at compile time in both statement and expression
+  position with a diagnostic naming the method.
+- **Fixed - void calls in expressions.** A void member used as an expression
+  (for example `x = worker.Close()`) now fails with "has no return value"
+  instead of producing an invalid intermediate.
+- **Fixed - `POINTER` type suffix.** `INSTANCE ThreadParam AS MyType POINTER`
+  is parsed as a typed pointer. Before this change only `PTR` was recognised
+  and the field was laid out as an inline value structure.
+- **Fixed - typed-pointer field access.** Reading `ThreadParam.member` now
+  loads the pointer slot before the field GEP. The old lowering used the slot
+  address as the structure address and returned garbage.
+- **Verified.** `examples/batch371_test.bas` exercises the void statement calls,
+  the getters and a `Payload POINTER` parameter passed with
+  `BYVAL VARPTR(payload)`; the payload sums to 579 and the test prints
+  `FAILURES: 0` on x86_64 and i686. Two negative probes pin the direct
+  THREAD METHOD call and the void-in-expression diagnostics. No coverage row
+  changes; coverage stays at 948 rows with 31 fork extensions.
+
 ### v0.2.160 (2026-11-17)
 
 Batch 370. Completes the THREADED-array per-thread shape model by evaluating

@@ -1501,6 +1501,11 @@ struct Compiler {
     /// CLASS and checks this set at compile time (the fork has no runtime
     /// vtable query; CLASS objects are statically typed structs).
     class_ifaces: std::collections::HashMap<String, Vec<String>>,
+    /// CLASS name (uppercase) -> THREAD METHOD name (normalized).  CHW says
+    /// the THREAD METHOD is executed automatically when LAUNCH runs and may
+    /// never be called from source; the dotted-call lowering consults this map
+    /// to reject such a call (batch 371).
+    thread_methods: std::collections::HashMap<String, String>,
 
     // String variables bound via FIELD dyn$ — their assignments must copy
     // into a fresh mutable buffer (a plain store would point at a read-only
@@ -1712,6 +1717,7 @@ impl Compiler {
             interface_impls: std::collections::HashMap::new(),
             class_ids: std::collections::HashMap::new(),
             class_ifaces: std::collections::HashMap::new(),
+            thread_methods: std::collections::HashMap::new(),
             current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
@@ -8217,6 +8223,30 @@ impl Compiler {
         }
     }
 
+    /// CHW THREAD_Object: the THREAD METHOD runs automatically when LAUNCH
+    /// starts the thread and may never be called from source.  Direct calls
+    /// used to lower to an ordinary CLASS METHOD call, so reject them here.
+    fn reject_thread_method_call(&self, class: &str, method: &str, line: usize) -> PbResult<()> {
+        let class = class.to_uppercase();
+        let method = normalize_name(method);
+        if self
+            .thread_methods
+            .get(&class)
+            .map(|m| m == &method)
+            .unwrap_or(false)
+        {
+            return Err(PbError::parser(
+                format!(
+                    "THREAD METHOD `{}.{}` is executed automatically by LAUNCH and may never be called",
+                    class, method
+                ),
+                None,
+                line,
+            ));
+        }
+        Ok(())
+    }
+
     /// THREAD OBJECT / IPowerThread (batch 369).
     ///
     /// The parser records `thread_method` and the `IPOWERTHREAD` sentinel on
@@ -8246,6 +8276,11 @@ impl Compiler {
                     td.name
                 )));
             };
+            // CHW: the THREAD METHOD is executed automatically by LAUNCH and
+            // may never be called from source.  Record the mapping so the
+            // dotted-call lowering can reject `obj.ThreadMethod(...)`.
+            self.thread_methods
+                .insert(class.clone(), normalize_name(method));
             let Some(layout) = self.type_layouts.get(&class) else {
                 continue;
             };
@@ -8362,8 +8397,8 @@ impl Compiler {
                 );
             };
 
-            mk(self, "LAUNCH", IrType::I32, &[("PARAM", IrType::Ptr)]);
-            mk(self, "CLOSE", IrType::I32, &[]);
+            mk(self, "LAUNCH", IrType::Void, &[("PARAM", IrType::Ptr)]);
+            mk(self, "CLOSE", IrType::Void, &[]);
             mk(self, "EQUALS", IrType::I32, &[("OTHER", IrType::Ptr)]);
             mk(self, "HANDLE", IrType::I32, &[]);
             mk(self, "ID", IrType::I32, &[]);
@@ -8371,16 +8406,26 @@ impl Compiler {
             mk(
                 self,
                 "JOIN",
-                IrType::I32,
+                IrType::Void,
                 &[("OTHER", IrType::Ptr), ("TIMEOUT", IrType::I32)],
             );
             mk(self, "RESULT", IrType::I32, &[]);
             mk(self, "RESUME", IrType::I32, &[]);
             mk(self, "SUSPEND", IrType::I32, &[]);
             mk(self, "PRIORITY_GET", IrType::I32, &[]);
-            mk(self, "PRIORITY_SET", IrType::I32, &[("LEVEL", IrType::I32)]);
+            mk(
+                self,
+                "PRIORITY_SET",
+                IrType::Void,
+                &[("LEVEL", IrType::I32)],
+            );
             mk(self, "STACKSIZE_GET", IrType::I32, &[]);
-            mk(self, "STACKSIZE_SET", IrType::I32, &[("SIZE", IrType::I32)]);
+            mk(
+                self,
+                "STACKSIZE_SET",
+                IrType::Void,
+                &[("SIZE", IrType::I32)],
+            );
             mk(self, "TIMECREATE", IrType::I64, &[]);
             mk(self, "TIMEEXIT", IrType::I64, &[]);
             mk(self, "TIMEKERNEL", IrType::I64, &[]);
@@ -8397,11 +8442,10 @@ impl Compiler {
                 .collect();
             let mut fb = self
                 .module
-                .create_function_builder_ex(&ir, &IrType::I32, &params, false);
+                .create_function_builder_ex(&ir, &IrType::Void, &params, false);
             let field = fb.gep_struct(&t.class, &this, t.field_idx);
             let entry = Val::new(format!("@{}", t.entry), IrType::Ptr);
-            let call = fb.call(
-                &IrType::I32,
+            fb.call_void(
                 "pb_thread_object_launch",
                 &[
                     this.clone(),
@@ -8412,38 +8456,100 @@ impl Compiler {
                     Val::new("0".to_string(), IrType::I32),
                 ],
             );
-            fb.ret(&call);
+            fb.ret_void();
             self.module.add_function_body(fb.finish());
             self.defined_ir.insert(ir);
 
             let simple = [
-                ("CLOSE", "pb_thread_object_close", IrType::I32),
-                ("EQUALS", "pb_thread_object_equals", IrType::I32),
-                ("HANDLE", "pb_thread_object_handle", IrType::I32),
-                ("ID", "pb_thread_object_id", IrType::I32),
-                ("ISALIVE", "pb_thread_object_isalive", IrType::I32),
-                ("JOIN", "pb_thread_object_join", IrType::I32),
-                ("RESULT", "pb_thread_object_result", IrType::I32),
-                ("RESUME", "pb_thread_object_resume", IrType::I32),
-                ("SUSPEND", "pb_thread_object_suspend", IrType::I32),
-                ("PRIORITY_GET", "pb_thread_object_get_priority", IrType::I32),
-                ("PRIORITY_SET", "pb_thread_object_set_priority", IrType::I32),
+                ("CLOSE", "pb_thread_object_close", IrType::I32, IrType::Void),
+                (
+                    "EQUALS",
+                    "pb_thread_object_equals",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                (
+                    "HANDLE",
+                    "pb_thread_object_handle",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                ("ID", "pb_thread_object_id", IrType::I32, IrType::I32),
+                (
+                    "ISALIVE",
+                    "pb_thread_object_isalive",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                ("JOIN", "pb_thread_object_join", IrType::I32, IrType::Void),
+                (
+                    "RESULT",
+                    "pb_thread_object_result",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                (
+                    "RESUME",
+                    "pb_thread_object_resume",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                (
+                    "SUSPEND",
+                    "pb_thread_object_suspend",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                (
+                    "PRIORITY_GET",
+                    "pb_thread_object_get_priority",
+                    IrType::I32,
+                    IrType::I32,
+                ),
+                (
+                    "PRIORITY_SET",
+                    "pb_thread_object_set_priority",
+                    IrType::I32,
+                    IrType::Void,
+                ),
                 (
                     "STACKSIZE_GET",
                     "pb_thread_object_get_stacksize",
+                    IrType::I32,
                     IrType::I32,
                 ),
                 (
                     "STACKSIZE_SET",
                     "pb_thread_object_set_stacksize",
                     IrType::I32,
+                    IrType::Void,
                 ),
-                ("TIMECREATE", "pb_thread_object_timecreate", IrType::I64),
-                ("TIMEEXIT", "pb_thread_object_timeexit", IrType::I64),
-                ("TIMEKERNEL", "pb_thread_object_timekernel", IrType::I64),
-                ("TIMEUSER", "pb_thread_object_timeuser", IrType::I64),
+                (
+                    "TIMECREATE",
+                    "pb_thread_object_timecreate",
+                    IrType::I64,
+                    IrType::I64,
+                ),
+                (
+                    "TIMEEXIT",
+                    "pb_thread_object_timeexit",
+                    IrType::I64,
+                    IrType::I64,
+                ),
+                (
+                    "TIMEKERNEL",
+                    "pb_thread_object_timekernel",
+                    IrType::I64,
+                    IrType::I64,
+                ),
+                (
+                    "TIMEUSER",
+                    "pb_thread_object_timeuser",
+                    IrType::I64,
+                    IrType::I64,
+                ),
             ];
-            for (name, rt, ret) in simple {
+            for (name, rt, runtime_ret, bridge_ret) in simple {
                 let ir = format!("{}_{}", t.class, name);
                 let info = self.functions.get(&ir).cloned().unwrap();
                 let params: Vec<(String, IrType)> = info
@@ -8451,15 +8557,20 @@ impl Compiler {
                     .iter()
                     .map(|p| (p.name.clone(), p.ir_type.clone()))
                     .collect();
-                let mut fb = self
-                    .module
-                    .create_function_builder_ex(&ir, &ret, &params, false);
+                let mut fb =
+                    self.module
+                        .create_function_builder_ex(&ir, &bridge_ret, &params, false);
                 let mut args = vec![this.clone()];
                 for p in info.params.iter().skip(1) {
                     args.push(Val::new(format!("%{}", p.name), p.ir_type.clone()));
                 }
-                let v = fb.call(&ret, rt, &args);
-                fb.ret(&v);
+                if bridge_ret == IrType::Void {
+                    fb.call_void(rt, &args);
+                    fb.ret_void();
+                } else {
+                    let v = fb.call(&runtime_ret, rt, &args);
+                    fb.ret(&v);
+                }
                 self.module.add_function_body(fb.finish());
                 self.defined_ir.insert(ir);
             }
@@ -11428,25 +11539,45 @@ impl Compiler {
             }
             Expr::TypeMember(base_expr, member) => {
                 let (base_ptr, base_pb) = self.compile_lvalue_ptr(fb, base_expr)?;
-                if let PbType::UserDefined(type_name) = &base_pb {
-                    let type_name = normalize_name(type_name);
-                    let layout = self
-                        .type_layouts
-                        .get(&type_name)
-                        .ok_or_else(|| PbError::runtime(format!("Unknown TYPE: {}", type_name)))?;
-                    let member_norm = normalize_name(member);
-                    let field_idx = *layout.field_map.get(&member_norm).ok_or_else(|| {
-                        PbError::runtime(format!("Unknown field: {}.{}", type_name, member_norm))
-                    })?;
-                    let field_pb = layout.fields[field_idx].pb_type.clone();
-                    let field_ptr =
-                        fb.gep_struct(&type_name, &base_ptr, layout.fields[field_idx].gep_idx);
-                    Ok((field_ptr, field_pb))
-                } else {
-                    Err(PbError::runtime(
-                        "TypeMember on non-TYPE variable".to_string(),
-                    ))
-                }
+                // A typed pointer member (`INSTANCE ThreadParam AS MyType
+                // POINTER`) holds the object address in its slot.  CHW's
+                // ThreadParam example reads `ThreadParam.member1`, so the slot
+                // must be loaded before the field GEP.  Without this the GEP
+                // treated the pointer SLOT as the struct and returned the low
+                // 32 bits of the address (batch 371 probe: 123 became
+                // -1968177512).
+                let (type_name, struct_ptr) = match &base_pb {
+                    PbType::UserDefined(type_name) => (normalize_name(type_name), base_ptr),
+                    PbType::Pointer(target) => match target.as_ref() {
+                        PbType::UserDefined(type_name) => {
+                            let loaded = fb.load(&IrType::Ptr, &base_ptr);
+                            (normalize_name(type_name), loaded)
+                        }
+                        _ => {
+                            return Err(PbError::runtime(format!(
+                                "TypeMember on non-TYPE pointer: {:?}",
+                                target
+                            )))
+                        }
+                    },
+                    _ => {
+                        return Err(PbError::runtime(
+                            "TypeMember on non-TYPE variable".to_string(),
+                        ))
+                    }
+                };
+                let layout = self
+                    .type_layouts
+                    .get(&type_name)
+                    .ok_or_else(|| PbError::runtime(format!("Unknown TYPE: {}", type_name)))?;
+                let member_norm = normalize_name(member);
+                let field_idx = *layout.field_map.get(&member_norm).ok_or_else(|| {
+                    PbError::runtime(format!("Unknown field: {}.{}", type_name, member_norm))
+                })?;
+                let field_pb = layout.fields[field_idx].pb_type.clone();
+                let field_ptr =
+                    fb.gep_struct(&type_name, &struct_ptr, layout.fields[field_idx].gep_idx);
+                Ok((field_ptr, field_pb))
             }
             Expr::MethodCall { base, name, args } => {
                 // VARPTR(u.arr(i)): the address of a TYPE member-array element.
@@ -23663,6 +23794,7 @@ impl Compiler {
                                     ))
                                 })?;
                             let qualified = format!("{}_{}", first, method);
+                            self.reject_thread_method_call(&first, method, call.line)?;
                             let info = self
                                 .functions
                                 .get(&qualified)
@@ -23685,6 +23817,7 @@ impl Compiler {
                             ));
                         }
                         let class = c;
+                        self.reject_thread_method_call(&class, method, call.line)?;
                         let qualified = format!("{}_{}", class, method);
                         let info = self
                             .functions
@@ -26708,6 +26841,7 @@ impl Compiler {
                         })?;
                     let mut qualified = format!("{}_{}", first, normalize_name(name));
                     let mut is_get = false;
+                    self.reject_thread_method_call(&first, name, self.current_line)?;
                     let want = self
                         .functions
                         .get(&qualified)
@@ -26733,6 +26867,17 @@ impl Compiler {
                             ))
                         })?;
                     let suffix = if is_get { "_GET" } else { "" };
+                    if want.ret_type == IrType::Void {
+                        return Err(PbError::parser(
+                            format!(
+                                "METHOD `{}.{}` has no return value and cannot be used in an expression",
+                                first,
+                                normalize_name(name)
+                            ),
+                            None,
+                            self.current_line,
+                        ));
+                    }
                     return self
                         .compile_interface_dispatch(fb, &iface, name, suffix, base, args, &want);
                 }
@@ -26741,6 +26886,7 @@ impl Compiler {
                 // (batch 264): the METHOD was compiled as <Class>_<Method>, so
                 // the mangle must use the class name, not the interface name.
                 let mut qualified = format!("{}_{}", class, normalize_name(name));
+                self.reject_thread_method_call(&class, name, self.current_line)?;
                 if !self.functions.contains_key(&qualified) {
                     // batch298: PROPERTY GET — a bare `o.Prop` / `o.Prop(i)`
                     // resolves to the <Class>_<Prop>_Get procedure when no
@@ -26756,6 +26902,24 @@ impl Compiler {
                             normalize_name(name),
                             qualified
                         )));
+                    }
+                }
+                if let Some(info) = self
+                    .functions
+                    .get(&qualified)
+                    .cloned()
+                    .or_else(|| self.subs.get(&qualified).cloned())
+                {
+                    if info.ret_type == IrType::Void {
+                        return Err(PbError::parser(
+                            format!(
+                                "METHOD `{}.{}` has no return value and cannot be used in an expression",
+                                class,
+                                normalize_name(name)
+                            ),
+                            None,
+                            self.current_line,
+                        ));
                     }
                 }
                 let mut call_args = Vec::with_capacity(args.len() + 1);

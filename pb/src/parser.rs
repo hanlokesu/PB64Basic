@@ -1363,11 +1363,14 @@ impl Parser {
 
     fn parse_type(&mut self) -> PbResult<PbType> {
         let t = self.parse_type_inner()?;
-        // PTR suffix: DWORD PTR / ASCIIZ PTR / LONG PTR — x64 pointers are 64-bit.
-        // Keep the pointed-to type so `@ptr.member` can resolve member layouts
-        // (official WinAPI inline helpers, batch306).
+        // PTR / POINTER suffix: DWORD PTR / ASCIIZ PTR / LONG PTR, and CHW's
+        // `AS MyType POINTER` spelling.  Both name the same typed pointer; x64
+        // pointers are 64-bit.  Keep the pointed-to type so `ptr.member` /
+        // `@ptr.member` can resolve member layouts.  Before batch 371 only
+        // `PTR` was accepted, so `INSTANCE ThreadParam AS MyType POINTER`
+        // silently laid the field out as a value struct.
         if let Token::Identifier(s) = self.peek() {
-            if s.eq_ignore_ascii_case("PTR") {
+            if s.eq_ignore_ascii_case("PTR") || s.eq_ignore_ascii_case("POINTER") {
                 self.advance();
                 return Ok(PbType::Pointer(Box::new(t)));
             }

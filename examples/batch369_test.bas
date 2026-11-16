@@ -58,23 +58,20 @@ FUNCTION PBMAIN () AS LONG
     IF xx.ISALIVE() <> 0 THEN Fail "isalive before launch"
     v = xx.SUSPEND()
     IF v <> 1 THEN Fail "suspend before launch=" + STR$(v)
-    v = xx.STACKSIZE_SET(65536)
-    IF v <> 0 THEN Fail "stacksize set=" + STR$(v)
+    xx.STACKSIZE_SET(65536)
     v = xx.STACKSIZE_GET()
     IF v <> 65536 THEN Fail "stacksize get=" + STR$(v)
     xx.StackSize = 65536
     v = xx.StackSize
     IF v <> 65536 THEN Fail "StackSize property=" + STR$(v)
-    v = xx.PRIORITY_SET(-1)
-    IF v <> 0 THEN Fail "priority set=" + STR$(v)
+    xx.PRIORITY_SET(-1)
     v = xx.PRIORITY_GET()
     IF v <> -1 THEN Fail "priority get=" + STR$(v)
     xx.Priority = -1
     v = xx.Priority
     IF v <> -1 THEN Fail "Priority property=" + STR$(v)
 
-    v = xx.LAUNCH(oo)
-    IF v <> 0 THEN Fail "launch=" + STR$(v)
+    xx.LAUNCH(oo)
     alive1 = xx.ISALIVE()
     IF alive1 = 0 THEN Fail "isalive after launch"
 
@@ -87,8 +84,7 @@ FUNCTION PBMAIN () AS LONG
 
     v = xx.RESUME()
     IF v <> 1 THEN Fail "resume=" + STR$(v)
-    v = xx.JOIN(xx, 5000)
-    IF v <> 0 THEN Fail "join=" + STR$(v)
+    xx.JOIN(xx, 5000)
 
     result1 = xx.RESULT()
     IF result1 <> 77 THEN Fail "result=" + STR$(result1)
@@ -102,14 +98,12 @@ FUNCTION PBMAIN () AS LONG
     v = xx.TIMEUSER()
     IF v < 0 THEN Fail "timeuser<0"
 
-    v = xx.CLOSE()
-    IF v <> -1 THEN Fail "close=" + STR$(v)
+    xx.CLOSE()
     IF xx.HANDLE() <> 0 THEN Fail "handle after close"
 
     yy = CLASS "NumWorker"
-    v = yy.LAUNCH(BYVAL 41)
-    IF v <> 0 THEN Fail "numeric launch=" + STR$(v)
-    IF yy.JOIN(yy, 5000) <> 0 THEN Fail "numeric join"
+    yy.LAUNCH(BYVAL 41)
+    yy.JOIN(yy, 5000)
     IF yy.RESULT() <> 42 THEN Fail "numeric result=" + STR$(yy.RESULT())
     yy.CLOSE()
 
