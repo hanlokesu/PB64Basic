@@ -9105,22 +9105,46 @@ impl Compiler {
             total *= count;
         }
         let elem_size = Self::array_elem_size(&elem_ir) as i64;
-        let nbytes = (total as i64) * elem_size;
         let slot = Val::new(prev.ptr_name.clone(), IrType::Ptr);
         let old = fb.load(&IrType::Ptr, &slot);
         // batch 366: allocate a per-thread descriptor that records THIS DIM's
         // bounds.  Two threads may therefore dimension the same THREADED array
         // with different shapes; indexing asks the descriptor, not the
-        // compile-time shape baked into ArrayInfo.
+        // compile-time shape baked into ArrayInfo.  The bounds are evaluated at
+        // RUN time (batch 370), so `DIM a(1 TO n)` with a variable n allocates
+        // and publishes the real shape instead of a compile-time fallback.
+        let mut runtime_total = fb.const_i64(1);
+        let mut runtime_lowers = Vec::new();
+        let mut runtime_counts = Vec::new();
+        for bound in &dim.bounds {
+            let lo_expr = self.compile_expr(fb, &bound.lower)?;
+            let lo = self.to_i64(fb, &lo_expr);
+            let up_expr = self.compile_expr(fb, &bound.upper)?;
+            let up = self.to_i64(fb, &up_expr);
+            let diff = fb.sub(&up, &lo);
+            let one = fb.const_i64(1);
+            let count = fb.add(&diff, &one);
+            runtime_total = fb.mul(&runtime_total, &count);
+            runtime_lowers.push(lo);
+            runtime_counts.push(count);
+        }
+        let runtime_nbytes = fb.mul(&runtime_total, &fb.const_i64(elem_size));
         let mut meta_args = vec![
-            fb.const_i64(nbytes),
+            runtime_nbytes,
             fb.const_i64(dims.len() as i64),
             fb.const_i64(elem_size),
         ];
         for i in 0..8 {
-            let (lower, count) = dims.get(i).copied().unwrap_or((0, 0));
-            meta_args.push(fb.const_i64(lower));
-            meta_args.push(fb.const_i64(count));
+            let lower = runtime_lowers
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| fb.const_i64(0));
+            let count = runtime_counts
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| fb.const_i64(0));
+            meta_args.push(lower);
+            meta_args.push(count);
         }
         let new_meta = fb.call(&IrType::Ptr, "pb_threaded_meta_alloc", &meta_args);
         if dim.preserve {

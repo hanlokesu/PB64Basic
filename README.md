@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 368 (v0.2.159). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 370 (v0.2.160). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 370 (v0.2.160) - THREADED array DIM bounds are evaluated at run time, so `DIM tA(1 TO n)` publishes the real per-thread shape, and `UBOUND` is -1 before that thread dimensions the array; batch370_test passes on x86_64 and i686.
 > batch 368 (v0.2.159) - the 12-member TXT pseudo-object and the 18-member IPowerThread model are implemented, zero-length PBR entries are accepted, and the 32-bit WNDPROC ABI is fixed; batch368_test and batch369_test pass on x86_64 and i686.
 > batch 367 (v0.2.158) - legacy PBR/PBRES resources are decoded and embedded; batch367_test reads its RT_STRING payload on x86_64 and i686; TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 366 (v0.2.157) - THREADED arrays now use a per-thread runtime descriptor: threads may DIM the same array with different shapes, and indexing, LBOUND/UBOUND, ARRAYATTR, REDIM PRESERVE and bulk array operations read the calling thread's live bounds; batch366_test passes on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, printer/serial, and #314 remain open.
@@ -1036,6 +1037,30 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.160 (2026-11-17)
+
+Batch 370. Completes the THREADED-array per-thread shape model by evaluating
+DIM bounds at run time and by defining UBOUND for a thread that has not
+dimensioned the array yet.
+
+- **Fixed - runtime DIM bounds.** `DIM tA(1 TO n)` inside a thread now evaluates
+  both bounds at run time, computes the element count and byte size from the
+  live values, and stores the resulting shape in that thread's descriptor.
+  Before this change an expression whose value was not known at compile time
+  fell back to zero, so the descriptor published a one-element shape and
+  indexing could write past the allocation.
+- **Fixed - UBOUND before DIM.** `UBOUND(tA())` in a thread that has not
+  executed `DIM tA(...)` now returns -1, matching CHW, instead of 0. `LBOUND`
+  remains 0.
+- **Verified - independent shapes.** WorkerC dimensions `tB(1 TO n)` with n=7
+  and WorkerD uses n=11; each thread sees its own lower bound, upper bound,
+  ARRAYATTR(4) element total and element values. The main thread has no
+  descriptor until its own `DIM tB(1 TO 5)`, observes UBOUND=-1 before that,
+  then sees shape 1 TO 5. `examples/batch370_test.bas` prints FAILURES: 0 on
+  x86_64 and i686.
+- **Note.** `DIM` bounds are evaluated once, in the thread that executes the
+  statement; `REDIM PRESERVE` keeps the existing overlap copy semantics.
+
 ### v0.2.159 (2026-11-17)
 
 Batch 368. Implements the 12-member TXT pseudo-object, the 18-member

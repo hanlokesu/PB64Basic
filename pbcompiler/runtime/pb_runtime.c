@@ -9389,7 +9389,10 @@ long long pb_threaded_meta_count(void* meta, long long dim) {
    an invalid dimension returns 0 with ERR unchanged. */
 long long pb_threaded_meta_bound(void* meta, long long dim, long long upper) {
     pb_threaded_meta* m = (pb_threaded_meta*)meta;
-    if (m == NULL || dim < 0 || dim > m->ndims) { return 0; }
+    /* CHW UBOUND on an array whose thread-local descriptor does not exist yet
+       (the current thread never executed DIM) is -1; LBOUND stays 0. */
+    if (m == NULL) { return (dim > 0 && upper) ? -1 : 0; }
+    if (dim < 0 || dim > m->ndims) { return 0; }
     if (dim == 0) { return upper ? 0 : m->bytes; }
     return upper ? m->lower[dim - 1] + m->count[dim - 1] - 1 : m->lower[dim - 1];
 }
