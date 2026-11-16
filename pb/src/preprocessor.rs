@@ -106,6 +106,11 @@ struct MacroDef {
     body: Vec<String>,
     temps: Vec<String>,
     kind: MacroKind,
+    /// `END MACRO = returnexpression` for a multi-line MACRO FUNCTION.  The
+    /// statement body is hoisted in front of the call site and this expression
+    /// replaces the call, which is exactly PBWin's compile-time text
+    /// substitution semantics (the macro does not create a real function).
+    return_expr: Option<String>,
 }
 
 /// Strip trailing comment from a line, respecting string literals.
@@ -1185,9 +1190,9 @@ impl Preprocessor {
     ///   * `MACRO FUNCTION name(params) = expr`
     ///   * multi-line `MACRO name(params)` with MACROTEMP and EXIT MACRO
     ///
-    /// A multi-line `MACRO FUNCTION` whose body contains statements still
-    /// requires an inline-function lowering; that block is consumed but not
-    /// registered here.
+    /// A multi-line `MACRO FUNCTION` is collected as a statement body plus its
+    /// `END MACRO = returnexpression`, then lowered at the reference site by
+    /// `expand_macro_function_calls`.
     fn collect_macro(&mut self, raw_lines: &[&str], start_i: usize, first_line: &str) -> usize {
         let rest = first_line[5..].trim();
         let upper_rest = rest.to_uppercase();
@@ -1207,22 +1212,73 @@ impl Preprocessor {
                             body: vec![body_text],
                             temps: Vec::new(),
                             kind: MacroKind::Function,
+                            return_expr: None,
                         },
                     );
                 }
                 return start_i + 1;
             }
-            // Multi-line macro function: consume the whole block.  The statement
-            // body cannot be substituted into an expression position without an
-            // inline-function lowering, so it remains an explicit open boundary.
+            // Multi-line macro function: collect the statement body and the
+            // `END MACRO = returnexpression` text.  PBWin performs a pure
+            // compile-time text substitution: the statements are hoisted in
+            // front of the reference and the return expression replaces the
+            // call.  We keep the block here and perform that lowering in
+            // `expand_macro_function_calls`.
+            let mut body: Vec<String> = Vec::new();
+            let mut temps: Vec<String> = Vec::new();
+            let mut return_expr: Option<String> = None;
             let mut j = start_i + 1;
             while j < raw_lines.len() {
-                if raw_lines[j].trim().to_uppercase().starts_with("END MACRO") {
-                    return j + 1;
+                let t = strip_trailing_comment(raw_lines[j].trim()).trim();
+                let u = t.to_uppercase();
+                if u.starts_with("END MACRO") {
+                    if let Some(eqpos) = find_eq_outside_parens(t) {
+                        let expr = t[eqpos + 1..].trim();
+                        if !expr.is_empty() {
+                            return_expr = Some(expr.to_string());
+                        }
+                    }
+                    break;
                 }
+                if u.starts_with("MACROTEMP") {
+                    let temp_list = t[9..].trim();
+                    temps.extend(
+                        split_args(temp_list)
+                            .into_iter()
+                            .map(|x| x.trim().to_string())
+                            .filter(|x| !x.is_empty()),
+                    );
+                    j += 1;
+                    continue;
+                }
+                body.push(t.to_string());
                 j += 1;
             }
-            return j;
+            if !name.is_empty() {
+                if let Some(ret) = return_expr {
+                    self.macros.insert(
+                        name.clone(),
+                        MacroDef {
+                            name,
+                            params,
+                            body,
+                            temps,
+                            kind: MacroKind::Function,
+                            return_expr: Some(ret),
+                        },
+                    );
+                } else {
+                    // A multi-line MACRO FUNCTION without the required
+                    // `END MACRO = expression` is malformed.  Keep the
+                    // diagnostic loud; the reference will then fail to parse
+                    // instead of silently expanding to nothing.
+                    eprintln!(
+                        "[PB64Basic] warning: MACRO FUNCTION {} has no END MACRO = returnexpression",
+                        name
+                    );
+                }
+            }
+            return j + 1;
         }
 
         let (name, params) = parse_macro_proto(rest);
@@ -1239,6 +1295,7 @@ impl Preprocessor {
                         body: vec![body_text],
                         temps: Vec::new(),
                         kind: MacroKind::Regular,
+                        return_expr: None,
                     },
                 );
             }
@@ -1279,6 +1336,7 @@ impl Preprocessor {
                     body,
                     temps,
                     kind: MacroKind::Regular,
+                    return_expr: None,
                 },
             );
         }
@@ -1289,10 +1347,13 @@ impl Preprocessor {
     /// (line start); single-line macros expand anywhere in the line. Returns
     /// the expanded text, possibly containing embedded newlines.
     fn expand_macros(&mut self, trimmed: &str, full: &str) -> String {
-        // Multi-line macros: statement position (line start).
+        // Multi-line regular macros: statement position (line start).
+        // Multi-line MACRO FUNCTION blocks are deliberately excluded here:
+        // they are expression-position macros whose statements must be hoisted
+        // before the reference (see expand_macro_function_calls below).
         let trimmed_upper = trimmed.to_uppercase();
         for (name, def) in &self.macros.clone() {
-            if def.body.len() > 1 {
+            if def.body.len() > 1 && def.kind == MacroKind::Regular {
                 if let Some(rest) = trimmed_upper.strip_prefix(&name.to_uppercase()) {
                     let ok = rest.is_empty()
                         || rest.starts_with('(')
@@ -1303,7 +1364,8 @@ impl Preprocessor {
                             .unwrap_or(false);
                     if ok {
                         let args = extract_paren_args(trimmed, name.len());
-                        return self.expand_multiline_macro(def, &args);
+                        let expanded = self.expand_multiline_macro(def, &args);
+                        return self.expand_macro_function_calls(&expanded);
                     }
                 }
             }
@@ -1320,7 +1382,218 @@ impl Preprocessor {
                 break;
             }
         }
-        result
+        self.expand_macro_function_calls(&result)
+    }
+
+    /// Lower every multi-line MACRO FUNCTION reference in `text`.
+    ///
+    /// PBWin defines the macro function as a text-substitution block, not a
+    /// real procedure: the body statements are emitted in front of the
+    /// statement containing the reference, and `END MACRO = returnexpression`
+    /// replaces the reference itself.  Keeping that inline model avoids
+    /// inventing a function signature (macro parameters are untyped), so
+    /// string, numeric and UDT-returning macro functions all keep their
+    /// original type at the call site.
+    fn expand_macro_function_calls(&mut self, text: &str) -> String {
+        let mut pending: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+        let mut out: Vec<String> = Vec::new();
+        let mut guard = 0usize;
+        while let Some(line) = pending.first().cloned() {
+            pending.remove(0);
+            if let Some((hoisted, replacement)) = self.expand_first_macro_function_call(&line) {
+                // Process the hoisted statements first, then the rewritten
+                // statement.  Inserting them back at the front preserves the
+                // source order when several macro functions appear in one
+                // expression.
+                let mut items = hoisted;
+                items.push(replacement);
+                for item in items.into_iter().rev() {
+                    pending.insert(0, item);
+                }
+                guard += 1;
+                if guard > 8192 {
+                    // Circular macro functions (CHW warns about them) must
+                    // terminate compilation rather than hang the preprocessor.
+                    out.push(line);
+                    break;
+                }
+            } else {
+                // A macro function body may itself reference a regular
+                // multi-line macro (or a single-line macro).  Run the
+                // non-function macro levels once more on this line so the
+                // hoisted body becomes ordinary PB source before it reaches
+                // the parser.
+                match self.expand_regular_macros_in_line(&line) {
+                    Some(expanded) if expanded != line => {
+                        for item in expanded.lines().rev() {
+                            pending.insert(0, item.to_string());
+                        }
+                        guard += 1;
+                        if guard > 8192 {
+                            out.push(line);
+                            break;
+                        }
+                    }
+                    _ => out.push(line),
+                }
+            }
+        }
+        out.join("\n")
+    }
+
+    /// Expand a multi-line regular macro or a single-line macro in one line.
+    /// Returns None when nothing changed.  This is the fallback used for lines
+    /// produced by MACRO FUNCTION lowering, so nested macro references in a
+    /// function body do not reach the parser as unknown statements.
+    fn expand_regular_macros_in_line(&mut self, line: &str) -> Option<String> {
+        let trimmed = line.trim();
+        let name_end = trimmed
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(trimmed.len());
+        if name_end > 0 {
+            let key = trimmed[..name_end].to_uppercase();
+            if let Some(def) = self.macros.get(&key).cloned() {
+                if def.body.len() > 1 && def.kind == MacroKind::Regular {
+                    let rest = &trimmed[name_end..];
+                    let ok = rest.is_empty()
+                        || rest.starts_with('(')
+                        || rest
+                            .chars()
+                            .next()
+                            .map(|c| c.is_whitespace())
+                            .unwrap_or(false);
+                    if ok {
+                        let args = extract_paren_args(trimmed, name_end);
+                        return Some(self.expand_multiline_macro(&def, &args));
+                    }
+                }
+            }
+        }
+
+        let mut result = line.to_string();
+        let mut changed = false;
+        for _ in 0..8 {
+            let (next, round_changed) = Self::expand_single_macros_once(&result, &self.macros);
+            result = next;
+            changed |= round_changed;
+            if !round_changed {
+                break;
+            }
+        }
+        if changed {
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    /// Expand the first multi-line MACRO FUNCTION reference in one source
+    /// line.  Returns `(hoisted_body_lines, rewritten_line)` or None.
+    ///
+    /// The scanner respects string literals and trailing comments, and accepts
+    /// both `name(args)` and bare zero-parameter `name` references.  A name
+    /// followed by `:` is a label, not a call.
+    fn expand_first_macro_function_call(&mut self, line: &str) -> Option<(Vec<String>, String)> {
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        let mut in_string = false;
+        while i < bytes.len() {
+            let c = bytes[i] as char;
+            if c == '"' {
+                in_string = !in_string;
+                i += 1;
+                continue;
+            }
+            if c == '\'' && !in_string {
+                break;
+            }
+            if in_string || !(c.is_ascii_alphabetic() || c == '_') {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            while i < bytes.len()
+                && ((bytes[i] as char).is_ascii_alphanumeric()
+                    || bytes[i] == b'_'
+                    || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            let word = &line[start..i];
+            let key = word.to_uppercase();
+            let def = match self.macros.get(&key) {
+                Some(d) if d.kind == MacroKind::Function && d.return_expr.is_some() => d.clone(),
+                _ => continue,
+            };
+            let mut j = i;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b':' {
+                continue; // label, not a macro reference
+            }
+            let (args, call_end) = if j < bytes.len() && bytes[j] == b'(' {
+                let tail = &line[j..];
+                let close = match find_matching_paren(tail) {
+                    Some(rel) => j + rel,
+                    None => continue,
+                };
+                (split_args(&line[j + 1..close]), close + 1)
+            } else {
+                if !def.params.is_empty() {
+                    continue;
+                }
+                (Vec::new(), i)
+            };
+
+            let expansion = self
+                .macro_expansions
+                .entry(def.name.clone())
+                .and_modify(|v| *v += 1)
+                .or_insert(1);
+            let suffix = format!("{:04}", *expansion);
+
+            let mut body: Vec<String> = def
+                .body
+                .iter()
+                .map(|body| substitute_params(body, &def.params, &args))
+                .collect();
+            for temp in &def.temps {
+                let renamed = format!("{}{}", temp, suffix);
+                for body_line in body.iter_mut() {
+                    *body_line = replace_word(body_line, temp, &renamed);
+                }
+            }
+            let ret = substitute_params(
+                def.return_expr.as_deref().unwrap_or("0"),
+                &def.params,
+                &args,
+            );
+            let mut ret = ret;
+            for temp in &def.temps {
+                let renamed = format!("{}{}", temp, suffix);
+                ret = replace_word(&ret, temp, &renamed);
+            }
+
+            let end_label = format!("PB_MFEND_{}_{}", def.name, suffix);
+            let mut hoisted: Vec<String> = body
+                .into_iter()
+                .map(|body_line| replace_exit_macro(&body_line, &end_label))
+                .collect();
+            // EXIT MACRO is GOTO END-MACRO; the label must sit after all
+            // replacement text and before the statement that uses the return
+            // expression.
+            hoisted.push(format!("{}:", end_label));
+
+            let mut rewritten = String::with_capacity(line.len());
+            rewritten.push_str(&line[..start]);
+            rewritten.push('(');
+            rewritten.push_str(&ret);
+            rewritten.push(')');
+            rewritten.push_str(&line[call_end..]);
+            return Some((hoisted, rewritten));
+        }
+        None
     }
 
     /// Expand a multi-line macro for one call site. MACROTEMP identifiers are
@@ -1383,7 +1656,9 @@ impl Preprocessor {
                 }
                 let word = &result[start..i];
                 let key = word.to_uppercase();
-                let hit = macros.get(&key).filter(|d| d.body.len() == 1);
+                let hit = macros.get(&key).filter(|d| {
+                    d.body.len() == 1 && !(d.kind == MacroKind::Function && d.return_expr.is_some())
+                });
                 if let Some(def) = hit {
                     let body = def.body.first().cloned().unwrap_or_default();
                     let mut j = i;

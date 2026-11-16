@@ -236,6 +236,7 @@ PB64Basic build program.bas --exe \
   If omitted, the compiler auto-detects the newest installed Windows SDK.
 - `--include-dir <dir>` (repeatable) - optional. Adds a directory that a bare `#INCLUDE "header.inc"` name searches in, before the built-in PBWin install candidates and the source file's own directory. The PB-style alias `/I` accepts the attached `/I<dir>` or separate `/I <dir>` form, case-insensitive. A separator-bearing relative `#INCLUDE` path still resolves against the source file's parent only; absolute paths are used as-is.
 
+
 ---
 
 ## Embedding Binary Data with OBJEXTERN
@@ -429,8 +430,9 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 363 (v0.2.154). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> batch 363 (v0.2.154) - sequential CHR=WIDE is implemented as a UTF-16LE text layer (PRINT #/WRITE # formatting, wide CRLF, LINE INPUT #/INPUT # lexing, FILESCAN and EOF, 0x1A marker); fixed WSTRING storage is inline [n x i16] with capacity LEN and space padding, mixed STRING/WSTRING comparisons promote to UTF-16, and EOF(#n) is accepted; batch363_test passes on both targets with fails=0 and a 140-byte output matching PBWin10 SHA256 8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE; PRINT # comma print zones and multi-line MACRO FUNCTION remain open.
+> Updated through batch 364 (v0.2.155). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 364 (v0.2.155) - multi-line MACRO FUNCTION statement bodies now lower inline; batch364_test matches PBWin10 on both targets; PRINT # comma zones, PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
+> batch 363 (v0.2.154) - sequential CHR=WIDE is implemented as a UTF-16LE text layer (PRINT #/WRITE # formatting, wide CRLF, LINE INPUT #/INPUT # lexing, FILESCAN and EOF, 0x1A marker); fixed WSTRING storage is inline [n x i16] with capacity LEN and space padding, mixed STRING/WSTRING comparisons promote to UTF-16, and EOF(#n) is accepted; batch363_test passes on both targets with fails=0 and a 140-byte output matching PBWin10 SHA256 8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE; the multi-line MACRO FUNCTION form was closed in batch 364; PRINT # comma print zones remain open.
 > batch 362 (v0.2.153) - REDIM PRESERVE shrink clears every dropped tail slot (PBWin10 101 202 0 0), EnumPrintersW is resolved dynamically and no longer crashes PB-linked executables, and the existing OEMTEXT/CB.NM*/D4 probes are recorded; multi-line MACRO FUNCTION, sequential CHR=WIDE, PBRES/PBR, TXT/THREAD OBJECT, THREADED per-thread shapes, and other recorded gaps remain open.
 > batch 361 (v0.2.152) - one-line MACRO FUNCTION expands as an expression macro, multi-line MACROTEMP identifiers receive unique four-digit expansion suffixes, and EXIT MACRO jumps to a generated end label; multi-line MACRO FUNCTION lowering, sequential CHR=WIDE, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, and other recorded gaps remain open.
 > batch 360 (v0.2.151) - SESSION-struct global STRING fields reserve four FIELD-descriptor pointer slots, CHR=WIDE is accepted as a CHW no-op for BINARY/RANDOM files while sequential WIDE remains an explicit compile error; REDIM PRESERVE repeated AS type confirmed against PBWin10 to preserve prefix values, no code change; sequential UTF-16 conversion and other known gaps remain open.
@@ -1030,6 +1032,56 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.155 (2026-11-17)
+
+Batch 364. Implements multi-line `MACRO FUNCTION` lowering in the
+preprocessor: a statement body plus `END MACRO = returnexpression` is expanded
+at the call site instead of remaining an unimplemented form.
+
+- **Implemented - multi-line MACRO FUNCTION.** A definition such as
+  `MACRO FUNCTION name(params)` with a statement body and a closing
+  `END MACRO = returnexpression` is now registered as a function macro. At a
+  reference the body statements are emitted before the containing statement,
+  and the return expression replaces the call. This follows the CHW/PBWin
+  model: a macro function is a compile-time text substitution, not a real
+  procedure. It avoids inventing a signature for untyped macro parameters, so
+  string, numeric and UDT-returning substitutions keep their original type.
+- **Implemented - arguments and MACROTEMP.** Parameter substitution is
+  word-boundary and case-insensitive. Every `MACROTEMP` identifier receives
+  the per-expansion four-digit suffix (`0001`, `0002`, ...) in both the body
+  and the return expression, so repeated calls do not collide. A one-statement
+  body and a zero-parameter bare reference are handled by the same lowering.
+- **Implemented - EXIT MACRO and nested macros.** `EXIT MACRO` and inline
+  `THEN EXIT MACRO` become a `GOTO` to a generated end label placed after the
+  hoisted body. A macro function body may reference another multi-line macro
+  or a one-line macro; those levels are expanded before the parser sees the
+  body.
+- **Verified - dual-target and PBWin10 reference.** `examples/batch364_test.bas`
+  covers parameters, `MACROTEMP`, `EXIT MACRO`, a one-statement body, a
+  zero-parameter call, nested one-line/regular macros, a string return and a
+  numeric return. It exits 0 on x86_64 and i686; both targets produce the
+  same 35-byte `batch364_out.txt` with SHA256
+  `ADF694FDBDA4910AABCB77A7DCA4A9107CEC4C9C1A1533738FD8A1E1F81A48A5`.
+  PBWin10 compiles the same source and produces the same 35-byte file and
+  hash.
+- **Known boundary.** The inline hoist executes body statements in textual
+  order. PBWin's expression evaluator can execute numeric `+` right-to-left
+  and string `&` left-to-right; when one expression contains multiple
+  macro-function calls whose bodies have side effects, this lowering follows
+  the hoist order rather than that operator-specific evaluation order.
+  Value-only calls and one call per statement match PBWin. A macro function
+  used as a standalone statement is rejected by both PBWin (Error 565) and
+  this compiler (parse error).
+- **Gates.** Compile-all 423 selected / 423 ok / 0 failed; headless 279
+  compiled / 276 ran / 0 failed / 0 timeout / 3 SKIP-NO-EXE; negative probes
+  32 / 0 BAD; dual-target link smoke 20 sources / 0 failures; `cargo fmt
+  --check` rc0; `cargo clippy --all-targets -- -D warnings` rc0; coverage
+  docs 35 checks / 0 FAIL.
+- **Still open.** `PRINT #` comma print zones (the 14-column rule), legacy
+  PBRES/PBR, the TXT pseudo-object, THREAD OBJECT/IPowerThread, THREADED
+  per-thread array shapes, non-zero printer enumeration, a real serial-port
+  round trip, and #314 remain outside this batch.
+
 ### v0.2.154 (2026-11-16)
 
 Batch 363. Implements the sequential-file CHR=WIDE UTF-16LE layer and fixes the
