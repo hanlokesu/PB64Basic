@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 361 (v0.2.152). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 362 (v0.2.153). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 362 (v0.2.153) - REDIM PRESERVE shrink clears every dropped tail slot (PBWin10 101 202 0 0), EnumPrintersW is resolved dynamically and no longer crashes PB-linked executables, and the existing OEMTEXT/CB.NM*/D4 probes are recorded; multi-line MACRO FUNCTION, sequential CHR=WIDE, PBRES/PBR, TXT/THREAD OBJECT, THREADED per-thread shapes, and other recorded gaps remain open.
 > batch 361 (v0.2.152) - one-line MACRO FUNCTION expands as an expression macro, multi-line MACROTEMP identifiers receive unique four-digit expansion suffixes, and EXIT MACRO jumps to a generated end label; multi-line MACRO FUNCTION lowering, sequential CHR=WIDE, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, and other recorded gaps remain open.
 > batch 360 (v0.2.151) - SESSION-struct global STRING fields reserve four FIELD-descriptor pointer slots, CHR=WIDE is accepted as a CHW no-op for BINARY/RANDOM files while sequential WIDE remains an explicit compile error; REDIM PRESERVE repeated AS type confirmed against PBWin10 to preserve prefix values, no code change; sequential UTF-16 conversion and other known gaps remain open.
 > batch 359 (v0.2.150) - OPEN ACCESS/LOCK/BASE implemented with runtime enforcement, OPEN failures set ERR 53/70/75, bare CLOSE and multiple-file CLOSE implemented, FIELD no longer overflows pointer-sized string slots (i686 C0000005 fixed), CHR=WIDE rejected explicitly; TCP LINE INPUT drained-line behaviour confirmed against CHW; CHR=WIDE, MACROTEMP/EXIT MACRO, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, REDIM PRESERVE edge semantics remain open.
@@ -1028,6 +1029,37 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.153 (2026-11-16)
+
+Batch 362. Closes the REDIM PRESERVE shrink-then-regrow tail and replaces the
+static EnumPrintersW import that crashed PB-linked executables.
+
+- **Fixed - REDIM PRESERVE shrink-then-regrow.** When a REDIM PRESERVE shrinks
+  an array, the compiler now clears every dropped tail slot through
+  pb_erase_array; a later regrow exposes zero/empty values instead of the
+  values that were truncated away. The sequence 101/202/303/404 -> shrink to
+  2 -> regrow to 4 produces 101 202 0 0 under PBWin10 and now the same under
+  this compiler. Covered by xamples/batch362_test.bas.
+- **Fixed - PRINTERCOUNT no longer crashes.** pb_printer_count resolves
+  EnumPrintersW with LoadLibraryA("winspool.drv") + GetProcAddress instead
+  of a static __declspec(dllimport) import, so the PB-linked executable no
+  longer trips the loader crash. If enumeration fails, the registry subkey
+  count remains the fallback. Covered by the PRINTERCOUNT smoke in
+  xamples/batch362_test.bas; this host has zero printers, so a non-zero
+  enumeration was not exercised.
+- **Verified - existing probes.** xamples/batch302o_test.bas (OEMTEXT high
+  bytes) produces a 35-byte output with SHA256
+  F5D869D84F7F3EC034FEDAC07E6AA34681343457A30AF2166236C6C030439CE0 under both
+  compilers; xamples/batch266_cbnm_click.bas captured real WM_NOTIFY values
+  (NMCODE=-100/-101 NMID=401 NMHDR=12); xamples/batch325_test.bas with
+  PB_TLS_TRACE=1 shows an FLS_FREE for every THREADED allocation, including
+  the main thread's blocks at process exit.
+- **Still open.** Multi-line MACRO FUNCTION with statement bodies,
+  sequential-file CHR=WIDE UTF-16, legacy PBRES/PBR, the TXT pseudo-object,
+  THREAD OBJECT/IPowerThread, THREADED per-thread array shapes, non-zero
+  printer enumeration, a real serial-port round trip, and #314 remain outside
+  this batch.
+
 ### v0.2.152 (2026-11-16)
 
 Batch 361. Closes the preprocessor MACRO subset that can be lowered by text

@@ -9177,11 +9177,36 @@ void pb_import_close(void* hndl) {
 #define PB_PRINTER_ENUM_CONNECTIONS 0x00000004
 #define PB_PRINTER_INFO_LEVEL2 2
 typedef int (__stdcall* PB_EnumPrintersW_t)(unsigned long, const char*, unsigned long, char*, unsigned long, unsigned long*, unsigned long*);
-__declspec(dllimport) int __stdcall EnumPrintersW(unsigned long Flags, const char* Name, unsigned long Level, char* pPrinterEnum, unsigned long cbBuf, unsigned long* pcbNeeded, unsigned long* pcReturned);
 long long pb_printer_count(void) {
-    /* PRINTERCOUNT: count installed printers via the registry (winspool's
-       EnumPrintersW crashed inside PB-linked exes for reasons not yet found;
-       registry path is stable and PB-exe-safe). */
+    /* PRINTERCOUNT: enumerate printers through winspool.  The old static
+       dllimport call crashed inside PB-linked exes in batch 43; resolve the
+       entry point dynamically instead, which keeps the import out of the
+       executable's import table and cannot destabilise the loader. */
+    unsigned long needed = 0, returned = 0;
+    void* h = LoadLibraryA("winspool.drv");
+    if (h) {
+        PB_EnumPrintersW_t fn =
+            (PB_EnumPrintersW_t)GetProcAddress(h, "EnumPrintersW");
+        if (fn) {
+            fn(PB_PRINTER_ENUM_LOCAL | PB_PRINTER_ENUM_CONNECTIONS,
+               NULL, PB_PRINTER_INFO_LEVEL2, NULL, 0, &needed, &returned);
+            if (needed) {
+                char* buf = (char*)malloc(needed);
+                if (buf) {
+                    unsigned long got = 0;
+                    int ok = fn(PB_PRINTER_ENUM_LOCAL | PB_PRINTER_ENUM_CONNECTIONS,
+                                NULL, PB_PRINTER_INFO_LEVEL2, buf, needed,
+                                &got, &returned);
+                    free(buf);
+                    if (ok) {
+                        FreeLibrary(h);
+                        return (long long)returned;
+                    }
+                }
+            }
+        }
+        FreeLibrary(h);
+    }
     HKEY_PB hk = 0;
     unsigned long count = 0;
     if (RegOpenKeyExA((HKEY_PB)0x80000002L, "SYSTEM\\CurrentControlSet\\Control\\Print\\Printers",

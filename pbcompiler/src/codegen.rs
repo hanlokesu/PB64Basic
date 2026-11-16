@@ -11479,18 +11479,42 @@ impl Compiler {
                 // array (HEX of redim_test: PB prints a(1)=0 after re-REDIM and
                 // fails its own assertion). So clear the whole max-size buffer
                 // before updating metadata.
-                if dim.is_redim && !prev.dims.is_empty() && !dim.preserve {
-                    // Dynamic arrays (DIM x() AS type) have dims == [] and no
-                    // backing buffer yet; skip the [0 x T] zeroinitializer
-                    // store, which would produce invalid LLVM IR.
-                    // REDIM PRESERVE (CHW) keeps old element values, so the
-                    // whole-buffer zeroinitializer is skipped too; new elements
-                    // are only guaranteed zeroed by fresh stores (noted limit,
-                    // batch 307).
-                    fb.store(
-                        &Val::new("zeroinitializer", prev.array_ir_type.clone()),
-                        &Val::new(prev.ptr_name.clone(), IrType::Ptr),
-                    );
+                if dim.is_redim && !prev.dims.is_empty() {
+                    if !dim.preserve {
+                        // Dynamic arrays (DIM x() AS type) have dims == [] and no
+                        // backing buffer yet; skip the [0 x T] zeroinitializer
+                        // store, which would produce invalid LLVM IR.
+                        // REDIM without PRESERVE zeroes the whole max-size buffer.
+                        fb.store(
+                            &Val::new("zeroinitializer", prev.array_ir_type.clone()),
+                            &Val::new(prev.ptr_name.clone(), IrType::Ptr),
+                        );
+                    } else if total < prev.total_elements {
+                        // PBWin10 measured: REDIM PRESERVE that shrinks the array
+                        // clears the dropped tail slots; a later re-grow reads
+                        // zero there (probe: 101 202 303 404 -> shrink 1 TO 2 ->
+                        // grow 1 TO 4 -> 101 202 0 0).  Zero the tail now, while
+                        // the old element count is still known, so the preserved
+                        // prefix is untouched and the regrown slots are defined.
+                        let tail = fb.gep_array(
+                            &prev.array_ir_type,
+                            &Val::new(prev.ptr_name.clone(), IrType::Ptr),
+                            &Val::new(total.to_string(), IrType::I32),
+                        );
+                        let elem_size =
+                            Val::new(Self::array_elem_size(&elem_ir).to_string(), IrType::I32);
+                        let count =
+                            Val::new((prev.total_elements - total).to_string(), IrType::I32);
+                        let is_string = Val::new(
+                            if Self::is_string_pb(&arr_pb_type) {
+                                "1"
+                            } else {
+                                "0"
+                            },
+                            IrType::I32,
+                        );
+                        fb.call_void("pb_erase_array", &[tail, elem_size, count, is_string]);
+                    }
                 }
                 self.symbols.insert_local_array(
                     name,
