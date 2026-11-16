@@ -7090,6 +7090,85 @@ impl Compiler {
             &[IrType::Ptr],
             false,
         );
+        // batch 366: per-thread THREADED-array shape descriptor.  The alloc
+        // takes nbytes, ndims, elem_size and eight (lower,count) pairs; the
+        // getters expose the calling thread's bounds to indexing/LBOUND.
+        self.module.declare_function(
+            "pb_threaded_meta_alloc",
+            &IrType::Ptr,
+            &[
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_free",
+            &IrType::Void,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_threaded_meta_data", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_threaded_meta_total",
+            &IrType::I64,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_bytes",
+            &IrType::I64,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_ndims",
+            &IrType::I64,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_lower",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_count",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_bound",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_threaded_meta_copy",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         // LPRINT (batch 22)
         self.module
             .declare_function("pb_lprint_attach", &IrType::I32, &[IrType::Ptr], false);
@@ -8710,38 +8789,28 @@ impl Compiler {
         let nbytes = (total as i64) * elem_size;
         let slot = Val::new(prev.ptr_name.clone(), IrType::Ptr);
         let old = fb.load(&IrType::Ptr, &slot);
-        if dim.preserve {
-            // REDIM PRESERVE (CHW): allocate the new block first, copy the
-            // overlapping prefix of the old block, then release the old one.
-            let block = fb.call(
-                &IrType::Ptr,
-                "pb_threaded_array_alloc",
-                &[fb.const_i64(nbytes)],
-            );
-            let old_bytes = (prev.total_elements as i64) * elem_size;
-            let copy_bytes = old_bytes.min(nbytes);
-            fb.call(
-                &IrType::Ptr,
-                "memcpy",
-                &[
-                    block.clone(),
-                    old.clone(),
-                    fb.const_int(&IrType::I32, copy_bytes),
-                ],
-            );
-            fb.call_void("pb_threaded_array_free", &[old]);
-            fb.store(&block, &slot);
-        } else {
-            // DIM / REDIM without PRESERVE: release the old block, then
-            // allocate a fresh zeroed block for the calling thread.
-            fb.call_void("pb_threaded_array_free", &[old]);
-            let block = fb.call(
-                &IrType::Ptr,
-                "pb_threaded_array_alloc",
-                &[fb.const_i64(nbytes)],
-            );
-            fb.store(&block, &slot);
+        // batch 366: allocate a per-thread descriptor that records THIS DIM's
+        // bounds.  Two threads may therefore dimension the same THREADED array
+        // with different shapes; indexing asks the descriptor, not the
+        // compile-time shape baked into ArrayInfo.
+        let mut meta_args = vec![
+            fb.const_i64(nbytes),
+            fb.const_i64(dims.len() as i64),
+            fb.const_i64(elem_size),
+        ];
+        for i in 0..8 {
+            let (lower, count) = dims.get(i).copied().unwrap_or((0, 0));
+            meta_args.push(fb.const_i64(lower));
+            meta_args.push(fb.const_i64(count));
         }
+        let new_meta = fb.call(&IrType::Ptr, "pb_threaded_meta_alloc", &meta_args);
+        if dim.preserve {
+            // REDIM PRESERVE (CHW): copy the overlapping prefix from the old
+            // descriptor's block before releasing it.
+            fb.call_void("pb_threaded_meta_copy", &[old.clone(), new_meta.clone()]);
+        }
+        fb.call_void("pb_threaded_meta_free", &[old]);
+        fb.store(&new_meta, &slot);
         let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
         self.symbols.insert_global_array(
             name,
@@ -11237,29 +11306,12 @@ impl Compiler {
                 Some(a) => a,
                 None => continue,
             };
-            // D3: a THREADED array has ONE compile-time shape shared by every
-            // procedure.  Conflicting DIM bounds used to let the first observed
-            // shape silently win, so other procedures indexed with the wrong
-            // stride / element count.  Report the conflict instead.
-            let first = &candidates[0];
-            if let Some(other) = candidates.iter().find(|c| c.0 != first.0 || c.1 != first.1) {
-                let show = |c: &(Vec<(i64, i64)>, usize)| {
-                    c.0.iter()
-                        .map(|(lo, n)| format!("{} TO {}", lo, lo + *n - 1))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                return Err(PbError::parser(
-                    format!(
-                        "THREADED array `{}` is dimensioned with mismatched shapes ({} elements) vs ({} elements)",
-                        name,
-                        show(first),
-                        show(other)
-                    ),
-                    None,
-                    0,
-                ));
-            }
+            // batch 366: differing DIM shapes are legal for a THREADED array
+            // because every thread owns its own descriptor and block.  The
+            // first observed shape is retained only as the compile-time
+            // fallback metadata; indexing and LBOUND/UBOUND use the runtime
+            // descriptor.  (Batch 348 D3 rejected these shapes because the
+            // old model had one shared shape; that limitation is now gone.)
             let (dims, total) = candidates.into_iter().next().unwrap();
             let array_ir = IrType::Array(total, Box::new(prev.elem_ir_type.clone()));
             self.symbols.insert_global_array(
@@ -11390,9 +11442,40 @@ impl Compiler {
     fn array_base(&self, fb: &mut FunctionBuilder, info: &ArrayInfo) -> Val {
         let raw = Val::new(info.ptr_name.clone(), IrType::Ptr);
         if info.indirect_base {
-            fb.load(&IrType::Ptr, &raw)
+            // batch 366: the TLS slot points at the per-thread descriptor,
+            // not directly at the element block.
+            let meta = fb.load(&IrType::Ptr, &raw);
+            fb.call(&IrType::Ptr, "pb_threaded_meta_data", &[meta])
         } else {
             raw
+        }
+    }
+
+    /// Element count for bulk array operations.  For a THREADED array this
+    /// must be the calling thread's descriptor total, not the compile-time
+    /// shape (threads may DIM different shapes).
+    fn array_total(&self, fb: &mut FunctionBuilder, info: &ArrayInfo) -> Val {
+        if info.indirect_base {
+            let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            fb.call(&IrType::I64, "pb_threaded_meta_total", &[meta])
+        } else {
+            fb.const_i64(info.total_elements as i64)
+        }
+    }
+
+    /// Count of dimension `dim` (1-based) for the current thread.  Used by
+    /// MAT, whose callers pass the live shape rather than the compile-time
+    /// one for THREADED arrays.
+    fn array_count(&self, fb: &mut FunctionBuilder, info: &ArrayInfo, dim: usize) -> Val {
+        if info.indirect_base {
+            let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            fb.call(
+                &IrType::I64,
+                "pb_threaded_meta_count",
+                &[meta, fb.const_i64(dim as i64)],
+            )
+        } else {
+            fb.const_i64(info.dims.get(dim - 1).map(|d| d.1).unwrap_or(0))
         }
     }
 
@@ -13074,10 +13157,9 @@ impl Compiler {
                         let s32 = self.to_i32(fb, &s);
                         let e = self.compile_expr(fb, &call.args[2])?;
                         let e32 = self.to_i32(fb, &e);
-                        fb.call_void(
-                            "pb_array_select",
-                            &[base, fb.const_i32(arr_info.total_elements as i32), s32, e32],
-                        );
+                        let total = self.array_total(fb, &arr_info);
+                        let total32 = self.to_i32(fb, &total);
+                        fb.call_void("pb_array_select", &[base, total32, s32, e32]);
                     }
                 }
             }
@@ -13104,7 +13186,7 @@ impl Compiler {
                         };
                         let val = self.compile_expr(fb, &call.args[2])?;
                         let v64 = self.to_i64(fb, &val);
-                        let total = fb.const_i64(arr_info.total_elements as i64);
+                        let total = self.array_total(fb, &arr_info);
                         let result = if arr_info.elem_ir_type == IrType::Ptr {
                             fb.call(
                                 &IrType::I64,
@@ -14802,12 +14884,14 @@ impl Compiler {
                         } else {
                             0
                         };
+                        let total = self.array_total(fb, &arr_info);
+                        let total32 = self.to_i32(fb, &total);
                         fb.call_void(
                             "pb_erase_array",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i32(arr_info.total_elements as i32),
+                                total32,
                                 fb.const_i32(is_string),
                             ],
                         );
@@ -14836,7 +14920,8 @@ impl Compiler {
                 };
                 if let Some(info) = self.symbols.lookup_array(&arr_name).cloned() {
                     let base = self.array_base(fb, &info);
-                    let cap = fb.const_i32(info.total_elements as i32);
+                    let cap64 = self.array_total(fb, &info);
+                    let cap = self.to_i32(fb, &cap64);
                     fb.call_void("pb_parse_array", &[start, delim, mode, base, cap]);
                 }
                 return Ok(());
@@ -14963,8 +15048,8 @@ impl Compiler {
                     let s_info = self.symbols.lookup_array(&sname).cloned();
                     let d_info = self.symbols.lookup_array(&dname).cloned();
                     if let (Some(si), Some(di)) = (s_info, d_info) {
-                        let sbase = Val::new(si.ptr_name.clone(), IrType::Ptr);
-                        let dbase = Val::new(di.ptr_name.clone(), IrType::Ptr);
+                        let sbase = self.array_base(fb, &si);
+                        let dbase = self.array_base(fb, &di);
                         let elem_size = match &si.elem_ir_type {
                             IrType::I8 | IrType::I1 => 1,
                             IrType::I16 => 2,
@@ -14972,7 +15057,10 @@ impl Compiler {
                             IrType::I64 | IrType::Double | IrType::Ptr => 8,
                             _ => 4,
                         };
-                        let total = si.total_elements.min(di.total_elements) as i64;
+                        let st = self.array_total(fb, &si);
+                        let dt = self.array_total(fb, &di);
+                        let sle = fb.icmp("slt", &st, &dt);
+                        let total = fb.select(&sle, &st, &dt);
                         let fn_name = if call.name == "ARRAY SWAP" {
                             "pb_array_swap"
                         } else if call.name == "ARRAY ADD" {
@@ -14989,14 +15077,11 @@ impl Compiler {
                                     dbase,
                                     fb.const_i32(elem_size),
                                     fb.const_i32(if is_fl { 1 } else { 0 }),
-                                    fb.const_i64(total),
+                                    total.clone(),
                                 ],
                             );
                         } else {
-                            fb.call_void(
-                                fn_name,
-                                &[dbase, sbase, fb.const_i32(elem_size), fb.const_i64(total)],
-                            );
+                            fb.call_void(fn_name, &[dbase, sbase, fb.const_i32(elem_size), total]);
                         }
                     }
                 }
@@ -15018,8 +15103,8 @@ impl Compiler {
                             if let Some(Expr::FunctionCall(sn, _)) = call.args.get(1) {
                                 let sname = normalize_name(sn);
                                 if let Some(si) = self.symbols.lookup_array(&sname).cloned() {
-                                    let tbase = Val::new(ti.ptr_name.clone(), IrType::Ptr);
-                                    let sbase = Val::new(si.ptr_name.clone(), IrType::Ptr);
+                                    let tbase = self.array_base(fb, &ti);
+                                    let sbase = self.array_base(fb, &si);
                                     let elem_size = match &ti.elem_ir_type {
                                         IrType::I8 | IrType::I1 => 1,
                                         IrType::I16 => 2,
@@ -15027,15 +15112,13 @@ impl Compiler {
                                         IrType::I64 | IrType::Double | IrType::Ptr => 8,
                                         _ => 4,
                                     };
-                                    let total = ti.total_elements.min(si.total_elements) as i64;
+                                    let tt = self.array_total(fb, &ti);
+                                    let st = self.array_total(fb, &si);
+                                    let sle = fb.icmp("slt", &tt, &st);
+                                    let total = fb.select(&sle, &tt, &st);
                                     fb.call_void(
                                         "pb_array_copy",
-                                        &[
-                                            tbase,
-                                            sbase,
-                                            fb.const_i32(elem_size),
-                                            fb.const_i64(total),
-                                        ],
+                                        &[tbase, sbase, fb.const_i32(elem_size), total],
                                     );
                                     return Ok(());
                                 }
@@ -15046,10 +15129,10 @@ impl Compiler {
                         // the assignment starts at the first array element).  More
                         // values than elements are ignored; fewer leave the rest
                         // untouched.
-                        let base = Val::new(ti.ptr_name.clone(), IrType::Ptr);
-                        let total = ti.total_elements as i64;
+                        let base = self.array_base(fb, &ti);
+                        let total = self.array_total(fb, &ti);
                         for (v_idx, val_expr) in call.args.iter().skip(1).enumerate() {
-                            if v_idx as i64 >= total {
+                            if !ti.indirect_base && v_idx as i64 >= ti.total_elements as i64 {
                                 break;
                             }
                             let v = self.compile_expr(fb, val_expr)?;
@@ -15057,7 +15140,21 @@ impl Compiler {
                                 self.convert_value(fb, &v, &ti.elem_ir_type, &ti.pb_type);
                             let flat = fb.const_i32(v_idx as i32);
                             let elem_ptr = fb.gep_array(&ti.array_ir_type, &base, &flat);
-                            fb.store(&converted, &elem_ptr);
+                            if ti.indirect_base {
+                                // This thread's shape may be smaller than the
+                                // compile-time fallback; never write past the
+                                // descriptor's live element count.
+                                let inrange = fb.icmp("sgt", &total, &fb.const_i64(v_idx as i64));
+                                let store_lbl = fb.next_label("assign.store");
+                                let cont_lbl = fb.next_label("assign.cont");
+                                fb.condbr(&inrange, &store_lbl, &cont_lbl);
+                                fb.label(&store_lbl);
+                                fb.store(&converted, &elem_ptr);
+                                fb.br(&cont_lbl);
+                                fb.label(&cont_lbl);
+                            } else {
+                                fb.store(&converted, &elem_ptr);
+                            }
                         }
                     }
                 }
@@ -21141,12 +21238,13 @@ impl Compiler {
                         };
                         // start is 1-based in PB; ignore range for now, scan whole array
                         let _ = start;
+                        let total = self.array_total(fb, &arr_info);
                         fb.call_void(
                             "pb_array_unique",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i64(arr_info.total_elements as i64),
+                                total,
                                 fb.const_i32(is_string),
                             ],
                         );
@@ -21278,12 +21376,13 @@ impl Compiler {
                         if is_dynamic_str && has_from {
                             return Ok(());
                         }
+                        let total = self.array_total(fb, &arr_info);
                         fb.call_void(
                             "pb_array_sort2",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i64(arr_info.total_elements as i64),
+                                total,
                                 idx,
                                 count,
                                 fb.const_i32(sort_type),
@@ -21593,13 +21692,11 @@ impl Compiler {
                                 IrType::I64 | IrType::Double | IrType::Ptr => 8,
                                 _ => 4,
                             };
+                            let total = self.array_total(fb, &arr_info);
+                            let total32 = self.to_i32(fb, &total);
                             fb.call_void(
                                 "pb_array_reverse",
-                                &[
-                                    base,
-                                    fb.const_i32(elem_size),
-                                    fb.const_i32(arr_info.total_elements as i32),
-                                ],
+                                &[base, fb.const_i32(elem_size), total32],
                             );
                         }
                     }
@@ -22054,29 +22151,15 @@ impl Compiler {
                         };
                         if arr_info.elem_ir_type == IrType::Ptr {
                             let val = self.compile_expr(fb, &call.args[2])?;
-                            fb.call_void(
-                                "pb_array_insert_str",
-                                &[
-                                    base,
-                                    fb.const_i64(arr_info.total_elements as i64),
-                                    idx64,
-                                    count,
-                                    val,
-                                ],
-                            );
+                            let total = self.array_total(fb, &arr_info);
+                            fb.call_void("pb_array_insert_str", &[base, total, idx64, count, val]);
                         } else {
                             let val = self.compile_expr(fb, &call.args[2])?;
                             let v64 = self.to_i64(fb, &val);
+                            let total = self.array_total(fb, &arr_info);
                             fb.call_void(
                                 "pb_array_insert_num",
-                                &[
-                                    base,
-                                    fb.const_i32(elem_size),
-                                    fb.const_i64(arr_info.total_elements as i64),
-                                    idx64,
-                                    count,
-                                    v64,
-                                ],
+                                &[base, fb.const_i32(elem_size), total, idx64, count, v64],
                             );
                         }
                     }
@@ -22101,12 +22184,13 @@ impl Compiler {
                         } else {
                             0
                         };
+                        let total = self.array_total(fb, &arr_info);
                         fb.call_void(
                             "pb_array_arrayix",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i64(arr_info.total_elements as i64),
+                                total,
                                 fb.const_i32(is_string),
                             ],
                         );
@@ -22339,12 +22423,13 @@ impl Compiler {
                         } else {
                             (fb.const_i64(0), fb.const_null_ptr())
                         };
+                        let total = self.array_total(fb, &arr_info);
                         fb.call_void(
                             "pb_array_delete",
                             &[
                                 base,
                                 fb.const_i32(elem_size),
-                                fb.const_i64(arr_info.total_elements as i64),
+                                total,
                                 idx64,
                                 count,
                                 fb.const_i32(is_string),
@@ -22375,13 +22460,11 @@ impl Compiler {
                                 IrType::I64 | IrType::Double | IrType::Ptr => 8,
                                 _ => 4,
                             };
+                            let total = self.array_total(fb, &arr_info);
+                            let total32 = self.to_i32(fb, &total);
                             fb.call_void(
                                 "pb_array_shuffle",
-                                &[
-                                    base,
-                                    fb.const_i32(elem_size),
-                                    fb.const_i32(arr_info.total_elements as i32),
-                                ],
+                                &[base, fb.const_i32(elem_size), total32],
                             );
                         }
                     }
@@ -24170,7 +24253,7 @@ impl Compiler {
                 return Ok(());
             }
         };
-        let dst_base = Val::new(dst.ptr_name.clone(), IrType::Ptr);
+        let dst_base = self.array_base(fb, &dst);
         let es = Self::array_elem_size(&dst.elem_ir_type);
         let es_i32 = fb.const_i32(es);
         let is_float = fb.const_i32(
@@ -24183,19 +24266,17 @@ impl Compiler {
 
         let dims = dst.dims.len();
         let (rows_i32, cols_i32): (Option<Val>, Option<Val>) = if dims >= 2 {
-            (
-                Some(fb.const_i32(dst.dims[0].1 as i32)),
-                Some(fb.const_i32(dst.dims[1].1 as i32)),
-            )
+            let rows = self.array_count(fb, &dst, 1);
+            let cols = self.array_count(fb, &dst, 2);
+            (Some(self.to_i32(fb, &rows)), Some(self.to_i32(fb, &cols)))
         } else {
             (None, None)
         };
-        let total = dst.total_elements as i64;
-        let total_i64 = fb.const_i64(total);
+        let total_i64 = self.array_total(fb, &dst);
 
         let src1_base = match &m.src1 {
             Some(n) => match self.symbols.lookup_array(&normalize_name(n)) {
-                Some(info) => Some(Val::new(info.ptr_name.clone(), IrType::Ptr)),
+                Some(info) => Some(self.array_base(fb, info)),
                 None => {
                     self.warnings
                         .push(format!("MAT: source array '{}' not declared", n));
@@ -24206,7 +24287,7 @@ impl Compiler {
         };
         let src2_base = match &m.src2 {
             Some(n) => match self.symbols.lookup_array(&normalize_name(n)) {
-                Some(info) => Some(Val::new(info.ptr_name.clone(), IrType::Ptr)),
+                Some(info) => Some(self.array_base(fb, info)),
                 None => {
                     self.warnings
                         .push(format!("MAT: source array '{}' not declared", n));
@@ -24325,8 +24406,10 @@ impl Compiler {
                         .lookup_array(&normalize_name(m.src1.as_ref().unwrap()))
                         .unwrap()
                         .clone();
-                    let src_rows = fb.const_i32(src_info.dims[0].1 as i32);
-                    let src_cols = fb.const_i32(src_info.dims[1].1 as i32);
+                    let src_rows_v = self.array_count(fb, &src_info, 1);
+                    let src_cols_v = self.array_count(fb, &src_info, 2);
+                    let src_rows = self.to_i32(fb, &src_rows_v);
+                    let src_cols = self.to_i32(fb, &src_cols_v);
                     fb.call_void(
                         "pb_mat_trn",
                         &[
@@ -28585,6 +28668,27 @@ impl Compiler {
             })?;
         // CHW: LBOUND of an undimensioned array returns 0, UBOUND returns -1,
         // so that UBOUND(arr) - LBOUND(arr) + 1 yields zero.
+        if info.indirect_base {
+            // batch 366: ask the calling thread's descriptor.  This is what
+            // makes LBOUND/UBOUND follow the shape that THIS thread DIMed,
+            // not the first shape observed by the whole-program pre-scan.
+            let dim_expr: Option<&Expr> = match bracket_dim.as_ref() {
+                Some(d) => Some(d),
+                None if args.len() >= 2 => Some(&args[1]),
+                None => None,
+            };
+            let dim_val = match dim_expr {
+                Some(d) => self.compile_expr(fb, d)?,
+                None => fb.const_i64(1),
+            };
+            let dim64 = self.to_i64(fb, &dim_val);
+            let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            return Ok(fb.call(
+                &IrType::I64,
+                "pb_threaded_meta_bound",
+                &[meta, dim64, fb.const_i64(if upper { 1 } else { 0 })],
+            ));
+        }
         if info.dims.is_empty() {
             return Ok(fb.const_i64(if upper { -1 } else { 0 }));
         }
@@ -28707,6 +28811,21 @@ impl Compiler {
         } else {
             0
         };
+        if info.indirect_base {
+            // batch 366: dimension count and element total come from the
+            // calling thread's descriptor.
+            let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            let v = match attr {
+                0 => fb.const_i64(-1),
+                1 => fb.const_i64(Self::varclass_of(&info.pb_type)),
+                2 => fb.const_i64(0),
+                3 => fb.call(&IrType::I64, "pb_threaded_meta_ndims", &[meta]),
+                4 => fb.call(&IrType::I64, "pb_threaded_meta_total", &[meta]),
+                5 => fb.const_i64(Self::elem_size_of(&info.elem_ir_type)),
+                _ => fb.const_i64(0),
+            };
+            return Ok(v);
+        }
         let v: i64 = match attr {
             0 => -1, // always dimensioned (static arrays)
             1 => Self::varclass_of(&info.pb_type),
@@ -29834,7 +29953,7 @@ impl Compiler {
             .cloned()
             .ok_or_else(|| PbError::runtime("JOIN$: unknown array"))?;
         let base = self.array_base(fb, &arr_info);
-        let count = fb.const_i64(arr_info.total_elements as i64);
+        let count = self.array_total(fb, &arr_info);
         let delim = self.compile_expr(fb, &args[1])?;
         let delim_ptr = self.convert_value(fb, &delim, &IrType::Ptr, &PbType::String);
         Ok(fb.call(&IrType::Ptr, "pb_join", &[base, count, delim_ptr]))
@@ -30663,13 +30782,14 @@ impl Compiler {
                     } else {
                         (0i32, fb.const_null_ptr())
                     };
+                let total = self.array_total(fb, &arr_info);
                 let res = fb.call(
                     &IrType::I64,
                     "pb_array_scan",
                     &[
                         base,
                         fb.const_i32(elem_size),
-                        fb.const_i64(arr_info.total_elements as i64),
+                        total,
                         idx,
                         count,
                         fb.const_i32(op),
@@ -31797,6 +31917,9 @@ impl Compiler {
         indices: &[Val],
         arr_info: &ArrayInfo,
     ) -> Val {
+        if arr_info.indirect_base {
+            return self.compute_threaded_flat_index(fb, indices, arr_info);
+        }
         let ndims = arr_info.dims.len();
 
         // Compute strides: stride[last] = 1, stride[i] = stride[i+1] * count[i+1]
@@ -31842,6 +31965,52 @@ impl Compiler {
             }
         }
         result
+    }
+
+    /// Index a THREADED array through the calling thread's descriptor.  The
+    /// lower bound and count come from the DIM that THIS thread executed, so
+    /// two threads can use different shapes for the same `THREADED a()`.
+    fn compute_threaded_flat_index(
+        &self,
+        fb: &mut FunctionBuilder,
+        indices: &[Val],
+        arr_info: &ArrayInfo,
+    ) -> Val {
+        let meta = fb.load(
+            &IrType::Ptr,
+            &Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+        );
+        let mut result = fb.const_i64(0);
+        for (i, idx) in indices.iter().enumerate() {
+            let dim = fb.const_i64((i + 1) as i64);
+            let lower = fb.call(
+                &IrType::I64,
+                "pb_threaded_meta_lower",
+                &[meta.clone(), dim.clone()],
+            );
+            let count = fb.call(
+                &IrType::I64,
+                "pb_threaded_meta_count",
+                &[meta.clone(), dim.clone()],
+            );
+            let idx64 = self.to_i64(fb, idx);
+            let lower_plus_count = fb.add(&lower, &count);
+            let upper = fb.sub(&lower_plus_count, &fb.const_i64(1));
+            let below = fb.icmp("slt", &idx64, &lower);
+            let above = fb.icmp("sgt", &idx64, &upper);
+            let oob = fb.or(&below, &above);
+            let l_ok = fb.next_label("idx.ok");
+            let l_oob = fb.next_label("idx.oob");
+            fb.condbr(&oob, &l_oob, &l_ok);
+            fb.label(&l_oob);
+            fb.raise_error(9);
+            fb.label(&l_ok);
+            let adjusted = fb.sub(&idx64, &lower);
+            // Row-major fold: flat = flat * count_i + (index_i - lower_i).
+            let scaled = fb.mul(&result, &count);
+            result = fb.add(&scaled, &adjusted);
+        }
+        self.to_i32(fb, &result)
     }
 
     /// Declare a global array and register it in the symbol table.

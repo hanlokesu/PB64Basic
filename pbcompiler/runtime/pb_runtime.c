@@ -9040,6 +9040,130 @@ void* pb_threaded_array_alloc(long long nbytes) {
     return block;
 }
 
+void pb_threaded_array_free(void* block);
+
+/* batch 366: per-thread THREADED-array shape descriptor.  Each thread's TLS
+   slot now points at one of these instead of directly at the element block.
+   The descriptor carries the bounds of the DIM that this thread executed, so
+   two threads may dimension the same THREADED array with different shapes
+   (the CHW model: every thread owns an independent set of thread-local
+   variables).  The element block and the descriptor are both registered with
+   the FLS teardown list, so the existing thread-exit cleanup frees them. */
+#define PB_THREADED_MAX_DIMS 8
+typedef struct pb_threaded_meta {
+    long long ndims;
+    long long total;       /* product of every count */
+    long long elem_size;
+    long long bytes;       /* total * elem_size, the block byte count */
+    long long lower[PB_THREADED_MAX_DIMS];
+    long long count[PB_THREADED_MAX_DIMS];
+    void* data;
+} pb_threaded_meta;
+
+/* Allocate one descriptor + one zeroed element block.  The 16 bound
+   parameters are passed by value so codegen never needs a temporary stack
+   array (DIM may appear inside a loop). */
+void* pb_threaded_meta_alloc(long long nbytes, long long ndims,
+                             long long elem_size,
+                             long long l0, long long c0,
+                             long long l1, long long c1,
+                             long long l2, long long c2,
+                             long long l3, long long c3,
+                             long long l4, long long c4,
+                             long long l5, long long c5,
+                             long long l6, long long c6,
+                             long long l7, long long c7) {
+    pb_threaded_meta* m;
+    long long lo[PB_THREADED_MAX_DIMS];
+    long long co[PB_THREADED_MAX_DIMS];
+    long long total = 1;
+    long long i;
+    if (ndims < 1 || ndims > PB_THREADED_MAX_DIMS || nbytes < 0) { return NULL; }
+    lo[0] = l0; co[0] = c0; lo[1] = l1; co[1] = c1;
+    lo[2] = l2; co[2] = c2; lo[3] = l3; co[3] = c3;
+    lo[4] = l4; co[4] = c4; lo[5] = l5; co[5] = c5;
+    lo[6] = l6; co[6] = c6; lo[7] = l7; co[7] = c7;
+    for (i = 0; i < ndims; i++) {
+        if (co[i] < 0) { return NULL; }
+        total *= co[i];
+    }
+    m = (pb_threaded_meta*)pb_threaded_array_alloc((long long)sizeof(pb_threaded_meta));
+    if (m == NULL) { return NULL; }
+    m->data = pb_threaded_array_alloc(nbytes);
+    if (m->data == NULL && nbytes > 0) {
+        pb_threaded_array_free(m);
+        return NULL;
+    }
+    m->ndims = ndims;
+    m->total = total;
+    m->elem_size = elem_size;
+    m->bytes = nbytes;
+    for (i = 0; i < ndims; i++) {
+        m->lower[i] = lo[i];
+        m->count[i] = co[i];
+    }
+    return m;
+}
+
+void pb_threaded_meta_free(void* meta) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    if (m == NULL) { return; }
+    pb_threaded_array_free(m->data);
+    pb_threaded_array_free(m);
+}
+
+void* pb_threaded_meta_data(void* meta) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    return m == NULL ? NULL : m->data;
+}
+
+long long pb_threaded_meta_total(void* meta) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    return m == NULL ? 0 : m->total;
+}
+
+long long pb_threaded_meta_bytes(void* meta) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    return m == NULL ? 0 : m->bytes;
+}
+
+long long pb_threaded_meta_ndims(void* meta) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    return m == NULL ? 0 : m->ndims;
+}
+
+long long pb_threaded_meta_lower(void* meta, long long dim) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    if (m == NULL || dim < 1 || dim > m->ndims) { return 0; }
+    return m->lower[dim - 1];
+}
+
+long long pb_threaded_meta_count(void* meta, long long dim) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    if (m == NULL || dim < 1 || dim > m->ndims) { return 0; }
+    return m->count[dim - 1];
+}
+
+/* LBOUND/UBOUND for the current thread's shape.  dim 0 is the PBWin
+   descriptor convention (LBOUND(arr, 0) = total bytes, UBOUND(arr, 0) = 0);
+   an invalid dimension returns 0 with ERR unchanged. */
+long long pb_threaded_meta_bound(void* meta, long long dim, long long upper) {
+    pb_threaded_meta* m = (pb_threaded_meta*)meta;
+    if (m == NULL || dim < 0 || dim > m->ndims) { return 0; }
+    if (dim == 0) { return upper ? 0 : m->bytes; }
+    return upper ? m->lower[dim - 1] + m->count[dim - 1] - 1 : m->lower[dim - 1];
+}
+
+/* REDIM PRESERVE copies the overlapping prefix of the old block. */
+void pb_threaded_meta_copy(void* old_meta, void* new_meta) {
+    pb_threaded_meta* o = (pb_threaded_meta*)old_meta;
+    pb_threaded_meta* n = (pb_threaded_meta*)new_meta;
+    long long bytes;
+    if (o == NULL || n == NULL || o->data == NULL || n->data == NULL) { return; }
+    bytes = o->bytes < n->bytes ? o->bytes : n->bytes;
+    if (bytes > 0) { memcpy(n->data, o->data, (size_t)bytes); }
+}
+
 void pb_threaded_array_free(void* block) {
     if (block == NULL) { return; }
     pb_tls_trace("FREE_IN", block, 0);

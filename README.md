@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 365 (v0.2.156). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 366 (v0.2.157). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 366 (v0.2.157) - THREADED arrays now use a per-thread runtime descriptor: threads may DIM the same array with different shapes, and indexing, LBOUND/UBOUND, ARRAYATTR, REDIM PRESERVE and bulk array operations read the calling thread's live bounds; batch366_test passes on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 365 (v0.2.156) - PRINT # comma separators now advance to the next 14-column print zone; batch365_test matches the PBWin10 reference byte-for-byte on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
 > batch 364 (v0.2.155) - multi-line MACRO FUNCTION statement bodies now lower inline; batch364_test matches PBWin10 on both targets; PRINT # comma zones, PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
 > batch 363 (v0.2.154) - sequential CHR=WIDE is implemented as a UTF-16LE text layer (PRINT #/WRITE # formatting, wide CRLF, LINE INPUT #/INPUT # lexing, FILESCAN and EOF, 0x1A marker); fixed WSTRING storage is inline [n x i16] with capacity LEN and space padding, mixed STRING/WSTRING comparisons promote to UTF-16, and EOF(#n) is accepted; batch363_test passes on both targets with fails=0 and a 140-byte output matching PBWin10 SHA256 8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE; the multi-line MACRO FUNCTION form was closed in batch 364; PRINT # comma print zones remain open.
@@ -1033,6 +1034,67 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.157 (2026-11-17)
+
+Batch 366. Implements the CHW `THREADED` array model with per-thread shapes:
+every thread that executes a `DIM` now owns its own bounds, element count and
+element block for the same `THREADED` array.
+
+- **Implemented - runtime descriptor.** The thread-local slot no longer points
+  directly at the element block. It points at a `pb_threaded_meta` descriptor
+  that records `ndims`, `total`, `elem_size`, `bytes`, the eight `(lower,count)`
+  pairs and the data pointer. Both the descriptor and the data block are
+  registered with the existing FLS teardown list, so thread exit still releases
+  both.
+- **Implemented - DIM and REDIM.** `dim_threaded_array` builds the 19 scalar
+  arguments of `pb_threaded_meta_alloc` (byte count, dimension count, element
+  size and eight lower/count pairs), stores the new descriptor in the TLS slot
+  and releases the old one. `REDIM PRESERVE` copies the overlapping byte prefix
+  from the old descriptor before the old block is freed.
+- **Implemented - indexing and bounds.** `compute_flat_index` branches to a
+  runtime row-major fold for `THREADED` arrays: it reads each dimension's lower
+  bound and count from the calling thread's descriptor, raises PB Error 9 on an
+  out-of-bounds index and computes
+  `flat = flat * count_i + (index_i - lower_i)`. `LBOUND` and `UBOUND` read the
+  same descriptor, including the PBWin dimension-0 convention
+  (`LBOUND(arr,0)` = total bytes, `UBOUND(arr,0)` = 0).
+- **Implemented - ARRAYATTR.** For a `THREADED` array, attribute 3 is the
+  descriptor's dimension count, attribute 4 is its live element total and
+  attribute 5 is the element size; attributes 0/1/2 keep their previous
+  meanings.
+- **Implemented - bulk array operations.** `ERASE`, `ARRAY SELECT`, `ARRAY
+  SCAN`, `ARRAY UNIQUE`, `ARRAY SORT`, `ARRAY REVERSE`, `ARRAY INSERT`,
+  `ARRAY DELETE`, `ARRAY SHUFFLE`, `PARSE`, `JOIN$`, `ARRAY ADD/SWAP/COPY`,
+  `ARRAY ASSIGN` and the `MAT` family now take the calling thread's live
+  element total instead of the compile-time fallback shape. `MAT IDN/TRN` also
+  reads the live row/column counts.
+- **Implemented - pre-scan relaxation.** The batch-348 D3 conflict check is
+  removed. Differing DIM shapes for one `THREADED` array are accepted; the
+  first observed shape remains only as compile-time fallback metadata.
+- **Verified - dual target.** `examples/batch366_test.bas` runs two worker
+  threads that dimension the same `THREADED tA()` as `1 TO 10` and `1 TO 20`,
+  checks each thread's `LBOUND`/`UBOUND`, `ARRAYATTR` values and element
+  contents, then `REDIM PRESERVE`s to `1 TO 14` / `1 TO 24` and verifies the
+  preserved prefix and the new zeroed tail. The main thread then dimensions a
+  third shape (`1 TO 3`) and verifies it independently. The test prints
+  `=== FAILURES: 0` and exits 0 on x86_64 and i686.
+- **Verified - regression.** `batch348_test` still passes, including repeated
+  thread create/exit and the D2 element-type checks. Compile-all now covers
+  425 examples.
+- **Known boundary.** The `CONTROL ADD LISTBOX/COMBOBOX` item-count argument
+  still uses the compile-time fallback total when the item array is
+  `THREADED`; those GUI paths are not covered by this batch. `MAT IDN/TRN`
+  requires the compile-time fallback to be two-dimensional, although the
+  runtime row/column counts themselves are live. Accessing a `THREADED` array
+  before the current thread has dimensioned it raises PB Error 9 through the
+  zero-count descriptor.
+- **Gates.** Compile-all, headless selection, negative probes, dual-target
+  link smoke, `cargo fmt --check`, `cargo clippy --all-targets -- -D
+  warnings`, coverage docs and release-zip checks are run before publication.
+- **Still open.** Legacy PBRES/PBR private offset tables, the 12-member TXT
+  pseudo-object, THREAD OBJECT/IPowerThread, non-zero printer enumeration, a
+  real serial-port round trip, and #314 remain outside this batch.
+
 ### v0.2.156 (2026-11-17)
 
 Batch 365. Implements the CHW `PRINT #` comma rule: a comma advances the
