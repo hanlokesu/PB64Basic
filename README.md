@@ -429,7 +429,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 362 (v0.2.153). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 363 (v0.2.154). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 363 (v0.2.154) - sequential CHR=WIDE is implemented as a UTF-16LE text layer (PRINT #/WRITE # formatting, wide CRLF, LINE INPUT #/INPUT # lexing, FILESCAN and EOF, 0x1A marker); fixed WSTRING storage is inline [n x i16] with capacity LEN and space padding, mixed STRING/WSTRING comparisons promote to UTF-16, and EOF(#n) is accepted; batch363_test passes on both targets with fails=0 and a 140-byte output matching PBWin10 SHA256 8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE; PRINT # comma print zones and multi-line MACRO FUNCTION remain open.
 > batch 362 (v0.2.153) - REDIM PRESERVE shrink clears every dropped tail slot (PBWin10 101 202 0 0), EnumPrintersW is resolved dynamically and no longer crashes PB-linked executables, and the existing OEMTEXT/CB.NM*/D4 probes are recorded; multi-line MACRO FUNCTION, sequential CHR=WIDE, PBRES/PBR, TXT/THREAD OBJECT, THREADED per-thread shapes, and other recorded gaps remain open.
 > batch 361 (v0.2.152) - one-line MACRO FUNCTION expands as an expression macro, multi-line MACROTEMP identifiers receive unique four-digit expansion suffixes, and EXIT MACRO jumps to a generated end label; multi-line MACRO FUNCTION lowering, sequential CHR=WIDE, PBRES/PBR, EnumPrintersW, TXT/THREAD OBJECT, and other recorded gaps remain open.
 > batch 360 (v0.2.151) - SESSION-struct global STRING fields reserve four FIELD-descriptor pointer slots, CHR=WIDE is accepted as a CHW no-op for BINARY/RANDOM files while sequential WIDE remains an explicit compile error; REDIM PRESERVE repeated AS type confirmed against PBWin10 to preserve prefix values, no code change; sequential UTF-16 conversion and other known gaps remain open.
@@ -1029,6 +1030,53 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.154 (2026-11-16)
+
+Batch 363. Implements the sequential-file CHR=WIDE UTF-16LE layer and fixes the
+fixed-length WSTRING storage and mixed-comparison defects exposed by it.
+
+- **Implemented - sequential `CHR=WIDE` text layer.** `OPEN ... FOR
+  INPUT/OUTPUT/APPEND ... CHR=WIDE` now reads and writes UTF-16LE text.
+  `PRINT #`, `WRITE #`, fixed `WSTRING * n` items, wide CRLF, `LINE INPUT #`,
+  `INPUT #`, `FILESCAN` and `EOF` all operate on UTF-16 code units. BINARY and
+  RANDOM files keep the CHW no-op behaviour.
+- **Implemented - write formatting.** `PRINT #` writes wide CRLF (`0D 00 0A
+  00`), suppresses it after a trailing `;` or `,`, and emits fixed WSTRING
+  values at their declared capacity. `WRITE #` emits UTF-16LE commas, quotes,
+  numbers and CRLF; fixed WSTRING values are quoted at capacity.
+- **Implemented - read lexing and EOF.** `LINE INPUT #` terminates on CR,
+  consumes an immediately following LF, treats a bare LF as content, and stops
+  at the `0x1A` DOS EOF marker. `INPUT #` tokenises on comma/CR, skips leading
+  spaces, keeps trailing spaces, strips one pair of surrounding quotes, and
+  reads numeric fields from `" 42 , 7 "` as 42 and 7. `FILESCAN` counts
+  UTF-16 code units, terminates records only on CR, and stops at `0x1A`.
+  `EOF` reports true for the marker and for an incomplete final code unit.
+- **Fixed - `WSTRING * n` storage model.** Fixed WSTRING variables, globals,
+  STATIC variables, array elements and TYPE fields are now inline `[n x i16]`
+  buffers instead of pointer slots. `LEN` returns the declared character
+  capacity; assignments, `LINE INPUT #` and `INPUT #` space-pad the remainder;
+  `PRINT #` and `WRITE #` emit the full capacity. This removes the pointer-byte
+  output and the stack overwrite in the previous fixed-WSTRING paths.
+- **Fixed - mixed STRING/WSTRING comparison.** Comparisons promote the ANSI
+  operand to UTF-16 before `pb_str_cmp`, including `SELECT CASE` value, range
+  and `IS` patterns. Previously a WSTRING read back from a WIDE file never
+  equalled an ANSI literal.
+- **Fixed - `EOF(#n)` syntax.** The CHW form `y = EOF([#] filenum&)` is
+  accepted with the optional number sign; both `EOF(#1)` and `EOF(1)` compile.
+- **Verified.** `examples/batch363_test.bas` passes on x86_64 and i686 with
+  `fails= 0`; its 140-byte `batch363_wide.out` has SHA256
+  8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE,
+  byte-identical to the PBWin10 probe9 reference. The same source compiles and runs
+  under PBWin10 with `fails= 0`. A separate SELECT CASE probe matches PBWin10
+  (`fails= 0 n= 3`). Compile-all 422/0; headless 278 compiled / 275 ran / 0
+  failed / 3 SKIP-NO-EXE; negative probes 32/0 BAD; dual-target link smoke
+  20 sources / 0 failures.
+- **Still open.** `PRINT #` comma print zones (the 14-column rule), multi-line
+  `MACRO FUNCTION` lowering, legacy PBRES/PBR, the TXT pseudo-object,
+  THREAD OBJECT/IPowerThread, THREADED per-thread array shapes, non-zero printer
+  enumeration, a real serial-port round trip, and #314 remain outside this
+  batch.
+
 ### v0.2.153 (2026-11-16)
 
 Batch 362. Closes the REDIM PRESERVE shrink-then-regrow tail and replaces the
@@ -1039,19 +1087,19 @@ static EnumPrintersW import that crashed PB-linked executables.
   pb_erase_array; a later regrow exposes zero/empty values instead of the
   values that were truncated away. The sequence 101/202/303/404 -> shrink to
   2 -> regrow to 4 produces 101 202 0 0 under PBWin10 and now the same under
-  this compiler. Covered by xamples/batch362_test.bas.
+  this compiler. Covered by examples/batch362_test.bas.
 - **Fixed - PRINTERCOUNT no longer crashes.** pb_printer_count resolves
   EnumPrintersW with LoadLibraryA("winspool.drv") + GetProcAddress instead
   of a static __declspec(dllimport) import, so the PB-linked executable no
   longer trips the loader crash. If enumeration fails, the registry subkey
   count remains the fallback. Covered by the PRINTERCOUNT smoke in
-  xamples/batch362_test.bas; this host has zero printers, so a non-zero
+  examples/batch362_test.bas; this host has zero printers, so a non-zero
   enumeration was not exercised.
-- **Verified - existing probes.** xamples/batch302o_test.bas (OEMTEXT high
+- **Verified - existing probes.** examples/batch302o_test.bas (OEMTEXT high
   bytes) produces a 35-byte output with SHA256
   F5D869D84F7F3EC034FEDAC07E6AA34681343457A30AF2166236C6C030439CE0 under both
-  compilers; xamples/batch266_cbnm_click.bas captured real WM_NOTIFY values
-  (NMCODE=-100/-101 NMID=401 NMHDR=12); xamples/batch325_test.bas with
+  compilers; examples/batch266_cbnm_click.bas captured real WM_NOTIFY values
+  (NMCODE=-100/-101 NMID=401 NMHDR=12); examples/batch325_test.bas with
   PB_TLS_TRACE=1 shows an FLS_FREE for every THREADED allocation, including
   the main thread's blocks at process exit.
 - **Still open.** Multi-line MACRO FUNCTION with statement bodies,

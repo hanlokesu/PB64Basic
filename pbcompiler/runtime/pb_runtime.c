@@ -3531,6 +3531,12 @@ static long long rec_pos[MAX_FILE_HANDLES] = {0};
 static int file_access[MAX_FILE_HANDLES] = {0};
 static int file_locks[MAX_FILE_HANDLES] = {0};
 static int file_base_code[MAX_FILE_HANDLES] = {0};
+/* batch 363: CHR=WIDE applies only to sequential files (INPUT/OUTPUT/APPEND).
+   BINARY/RANDOM keep the CHW no-op semantics, so this stays 0 there. */
+static int file_wide[MAX_FILE_HANDLES] = {0};
+/* Set once a CHR=WIDE reader consumed the DOS EOF marker (CHR$(26)); PBWin10
+   then reports EOF TRUE for the rest of the file even if bytes follow it. */
+static int file_wide_eof[MAX_FILE_HANDLES] = {0};
 
 /* CHW BASE defaults to 1; the encoded array distinguishes "unset" from the
    legal BASE 0. */
@@ -3598,9 +3604,11 @@ long long pb_fre(void) {
 extern int pb_err;
 extern int pb_err_var;
 
-/* OPEN with the CHW ACCESS / LOCK / BASE clauses.  access: 0 = READ WRITE,
-   1 = READ, 2 = WRITE.  lock: see pb_fsopen_lock.  base: 0 or 1. */
-int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, int base) {
+/* OPEN with the CHW ACCESS / LOCK / BASE / CHR clauses.  access: 0 = READ
+   WRITE, 1 = READ, 2 = WRITE.  lock: see pb_fsopen_lock.  base: 0 or 1.
+   wide: CHR=WIDE (batch 363); ignored for BINARY/RANDOM per CHW. */
+int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, int base,
+               int wide) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES) { pb_err_var = pb_err = 52; return -1; }
     if (base != 0 && base != 1) { pb_err_var = pb_err = 5; return -1; }
     const char* fmode;
@@ -3642,6 +3650,10 @@ int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, in
     file_access[filenum] = access;
     file_locks[filenum] = lock;
     file_base_code[filenum] = (base == 0) ? 1 : 2;
+    /* CHW: CHR has no effect on BINARY/RANDOM; only sequential files carry
+       the UTF-16 conversion mode. */
+    file_wide[filenum] = (mode <= 2) ? (wide ? 1 : 0) : 0;
+    file_wide_eof[filenum] = 0;
     strncpy(file_names[filenum], path, 259);
     file_names[filenum][259] = 0;
     return 0;
@@ -3649,7 +3661,7 @@ int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, in
 
 /* Legacy entry point (defaults: ACCESS READ WRITE, LOCK READ WRITE, BASE 1). */
 int pb_open(const char* path, int mode, int filenum) {
-    return pb_open_ex(path, mode, filenum, 0, 0, 1);
+    return pb_open_ex(path, mode, filenum, 0, 0, 1, 0);
 }
 
 void pb_close(int filenum) {
@@ -3666,6 +3678,8 @@ void pb_close(int filenum) {
         file_access[filenum] = 0;
         file_locks[filenum] = 0;
         file_base_code[filenum] = 0;
+        file_wide[filenum] = 0;
+        file_wide_eof[filenum] = 0;
         file_names[filenum][0] = 0;
         if (rec_buf[filenum]) {
             free(rec_buf[filenum]);
@@ -3752,6 +3766,42 @@ void pb_filescan(int filenum, long long* records, long long* width) {
             rec++;
             if ((long long)len > w) w = len;
         }
+    } else if (file_wide[filenum]) {
+        /* CHR=WIDE INPUT: records are UTF-16 code units; WIDTH is in
+           characters, not bytes (PBWin10 probe: 50-byte file -> width 8).
+           PBWin10 probe7: only CR terminates a record; a bare LF is CONTENT
+           (f6 "A"+LF -> records 1 width 2, f9 "A"+LF+"B" -> records 1
+           width 3), matching LINE INPUT#. */
+        long long cur = 0;
+        int in_rec = 0;
+        for (;;) {
+            unsigned char b[2];
+            unsigned u;
+            if (fread(b, 1, 2, f) < 2) break;
+            u = (unsigned)b[0] | ((unsigned)b[1] << 8);
+            if (u == 0x1A) {
+                /* DOS EOF marker: stop scanning; text before it is the last
+                   record (PBWin10 probe8 f10/f12). */
+                if (in_rec) { rec++; if (cur > w) w = cur; cur = 0; in_rec = 0; }
+                break;
+            }
+            if (u == 0x0D) {
+                long pos = ftell(f);
+                unsigned char p[2];
+                if (in_rec) { rec++; if (cur > w) w = cur; cur = 0; in_rec = 0; }
+                /* CRLF is one terminator; a bare LF after CR is not record content. */
+                if (fread(p, 1, 2, f) == 2 &&
+                    ((unsigned)p[0] | ((unsigned)p[1] << 8)) == 0x0A) {
+                    /* consumed */
+                } else {
+                    fseek(f, pos, SEEK_SET);
+                }
+            } else {
+                in_rec = 1;
+                cur++;
+            }
+        }
+        if (in_rec) { rec++; if (cur > w) w = cur; }
     } else {
         /* INPUT: CRLF-delimited records */
         int ch;
@@ -3772,65 +3822,199 @@ void pb_filescan(int filenum, long long* records, long long* width) {
     *width = w;
 }
 
-void pb_print_file(int filenum, const char* text) {
+/* ===== CHR=WIDE sequential text layer (batch 363) =====
+   CHW: for sequential files the selected CHR mode applies to every read and
+   write, regardless of the variable/expression's own type.  The helpers below
+   are the single conversion point; BINARY/RANDOM never set file_wide. */
+
+static void pb_file_write_ansi(int filenum, const char* s, size_t n) {
+    FILE* f;
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !s || n == 0) return;
+    f = file_handles[filenum];
+    if (!f) return;
+    if (!file_wide[filenum]) {
+        fwrite(s, 1, n, f);
+        return;
+    }
+    {
+        int wlen = MultiByteToWideChar(PB_CP_ACP, 0, s, (int)n, NULL, 0);
+        short* w;
+        if (wlen <= 0) return;
+        w = (short*)malloc((size_t)wlen * sizeof(short));
+        if (!w) return;
+        if (MultiByteToWideChar(PB_CP_ACP, 0, s, (int)n, w, wlen) > 0)
+            fwrite(w, sizeof(short), (size_t)wlen, f);
+        free(w);
+    }
+}
+
+static void pb_file_write_wide(int filenum, const short* w, size_t n) {
+    FILE* f;
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !w || n == 0) return;
+    f = file_handles[filenum];
+    if (!f) return;
+    if (file_wide[filenum]) {
+        fwrite(w, sizeof(short), n, f);
+        return;
+    }
+    {
+        int alen = WideCharToMultiByte(PB_CP_ACP, 0, w, (int)n, NULL, 0, NULL, NULL);
+        char* a;
+        if (alen <= 0) return;
+        a = (char*)malloc((size_t)alen);
+        if (!a) return;
+        if (WideCharToMultiByte(PB_CP_ACP, 0, w, (int)n, a, alen, NULL, NULL) > 0)
+            fwrite(a, 1, (size_t)alen, f);
+        free(a);
+    }
+}
+
+static void pb_file_write_newline(int filenum) {
+    pb_file_write_ansi(filenum, "\r\n", 2);
+}
+
+void pb_print_file(int filenum, const char* text, int wide) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        /* batch 262: PRINT # must write the FULL string bytes, not strlen --
-           embedded NULs (e.g. CLIPBOARD GET UNICODE UTF-16LE) would be
-           truncated by fputs.  text is a BSTR data pointer (SysStringByteLen
-           reads the real byte count). */
-        unsigned long n = SysStringByteLen(text);
-        fwrite(text, 1, n, file_handles[filenum]);
+        int n = pb_str_len(text);
+        if (wide)
+            pb_file_write_wide(filenum, (const short*)text, (size_t)(n / 2));
+        else
+            pb_file_write_ansi(filenum, text, (size_t)n);
     }
 }
 
 void pb_print_file_item(int filenum, const char* text) {
     /* PRINT # item writer (batch284): PBWin appends one space AFTER every
-       item (strings and numbers alike), including the last one before CR/LF.
-       The number itself carries no leading space (pb_dec_file), so
-       `PRINT #1, "x="; r` yields "x= -1 " exactly as PBWin. */
+       numeric item, including the last one before CR/LF.  A string item
+       (pb_print_file) gets no such space, which is why "A";"B" -> "AB". */
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        unsigned long n = SysStringByteLen(text);
-        fwrite(text, 1, n, file_handles[filenum]);
-        fputc(' ', file_handles[filenum]);
+        int n = pb_str_len(text);
+        pb_file_write_ansi(filenum, text, (size_t)n);
+        pb_file_write_ansi(filenum, " ", 1);
     }
 }
 
 void pb_print_file_newline(int filenum) {
-    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        /* batch 270: PBWin writes CRLF (0d 0a) to PRINT # files; fork wrote
-           bare LF because the file handle is opened in binary mode ("wb",
-           "ab", "r+b") where fputc('\n') stays LF.  Write both bytes. */
-        fputc('\r', file_handles[filenum]);
-        fputc('\n', file_handles[filenum]);
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum])
+        pb_file_write_newline(filenum);
+}
+
+/* Read one UTF-16LE line.  PBWin10 measured (batch 363): CR terminates and
+   consumes an immediately following LF; a bare LF is CONTENT, not a terminator;
+   an incomplete final code unit is ignored. */
+static short* pb_read_wide_line(int filenum, int* out_n) {
+    size_t cap = 256, n = 0;
+    short* w = (short*)malloc(cap * sizeof(short));
+    *out_n = 0;
+    if (!w) return NULL;
+    if (file_wide_eof[filenum]) return w;
+    for (;;) {
+        unsigned char b[2];
+        unsigned u;
+        if (fread(b, 1, 2, file_handles[filenum]) < 2) break;
+        u = (unsigned)b[0] | ((unsigned)b[1] << 8);
+        if (u == 0x1A) { file_wide_eof[filenum] = 1; break; }
+        if (u == 0x0D) {
+            long pos = ftell(file_handles[filenum]);
+            unsigned char p[2];
+            if (fread(p, 1, 2, file_handles[filenum]) == 2 &&
+                ((unsigned)p[0] | ((unsigned)p[1] << 8)) == 0x0A) {
+                /* CRLF consumed as one terminator */
+            } else {
+                fseek(file_handles[filenum], pos, SEEK_SET);
+            }
+            break;
+        }
+        if (n == cap) {
+            short* nw;
+            cap *= 2;
+            nw = (short*)realloc(w, cap * sizeof(short));
+            if (!nw) break;
+            w = nw;
+        }
+        w[n++] = (short)u;
     }
+    *out_n = (int)n;
+    return w;
 }
 
 char* pb_line_input(int filenum) {
-    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) {
-        char* empty = (char*)malloc(1);
-        empty[0] = '\0';
-        return bstr_from_buf(empty);
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum])
+        return pb_bstr_alloc("", 0);
+    if (file_wide[filenum]) {
+        int n = 0;
+        short* w = pb_read_wide_line(filenum, &n);
+        char* out;
+        if (n <= 0) { free(w); return pb_bstr_alloc("", 0); }
+        {
+            int alen = WideCharToMultiByte(PB_CP_ACP, 0, w, n, NULL, 0, NULL, NULL);
+            char* a;
+            if (alen <= 0) { free(w); return pb_bstr_alloc("", 0); }
+            a = (char*)malloc((size_t)alen);
+            if (!a) { free(w); return pb_bstr_alloc("", 0); }
+            WideCharToMultiByte(PB_CP_ACP, 0, w, n, a, alen, NULL, NULL);
+            out = pb_bstr_alloc(a, (unsigned int)alen);
+            free(a);
+        }
+        free(w);
+        return out;
     }
-    char buf[4096];
-    if (fgets(buf, sizeof(buf), file_handles[filenum]) == NULL) {
-        char* empty = (char*)malloc(1);
-        empty[0] = '\0';
-        return bstr_from_buf(empty);
+    /* ANSI sequential file: byte-oriented fgets, as before. */
+    {
+        char buf[4096];
+        if (fgets(buf, sizeof(buf), file_handles[filenum]) == NULL)
+            return pb_bstr_alloc("", 0);
+        int len = (int)strlen(buf);
+        if (len > 0 && buf[len-1] == '\n') { buf[len-1] = '\0'; len--; }
+        if (len > 0 && buf[len-1] == '\r') { buf[len-1] = '\0'; len--; }
+        return pb_bstr_alloc(buf, (unsigned int)len);
     }
-    /* Strip trailing newline */
-    int len = (int)strlen(buf);
-    if (len > 0 && buf[len-1] == '\n') {
-        buf[len-1] = '\0';
-        len--;
+}
+
+/* WSTRING-target sibling: returns UTF-16LE BSTR even when the file is ANSI. */
+char* pb_line_input_w(int filenum) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum])
+        return pb_bstr_alloc("", 0);
+    if (file_wide[filenum]) {
+        int n = 0;
+        short* w = pb_read_wide_line(filenum, &n);
+        char* out = pb_bstr_alloc((const char*)w, (unsigned int)(n * 2));
+        free(w);
+        return out;
     }
-    if (len > 0 && buf[len-1] == '\r') {
-        buf[len-1] = '\0';
-        len--;
+    {
+        char* a = pb_line_input(filenum);
+        char* w = pb_ucode(a, PB_CP_ACP);
+        pb_bstr_free(a);
+        return w;
     }
-    char* result = (char*)malloc(len + 1);
-    memcpy(result, buf, len);
-    result[len] = '\0';
-    return bstr_from_buf(result);
+}
+
+/* Count UTF-16 code units until the NUL terminator of an inline buffer. */
+static int pb_fixedw_len(const short* w, int n) {
+    int i = 0;
+    if (!w || n <= 0) return 0;
+    while (i < n && w[i] != 0) i++;
+    return i;
+}
+
+void pb_copy_wstr_to_fixed(char* buf, const char* src, long long n) {
+    const short* w = (const short*)src;
+    int len, i;
+    if (!buf || n <= 0) return;
+    len = src ? pb_str_len(src) / 2 : 0;
+    if (len > (int)n) len = (int)n;
+    if (len > 0) memcpy(buf, w, (size_t)len * 2);
+    /* PB fixed-length strings are space-padded to their declared capacity;
+       PBWin10 LEN(WSTRING*n) is n and LINE INPUT# yields "ABC     " for
+       WSTRING * 8 (batch 363 probe6). */
+    for (i = len; i < (int)n; i++) ((short*)buf)[i] = 0x20;
+}
+
+void pb_line_input_fixed_w(int filenum, char* buf, long long n) {
+    char* w = pb_line_input_w(filenum);
+    pb_copy_wstr_to_fixed(buf, w, n);
+    pb_bstr_free(w);
 }
 
 /* COMM LINE timeout EOF query (batch 260); defined in the COMM section. */
@@ -3847,6 +4031,16 @@ int pb_eof(int filenum) {
     int se = pb_socket_eof_state(filenum);
     if (se != -2) return se;
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return -1;
+    if (file_wide[filenum]) {
+        if (file_wide_eof[filenum]) return -1;
+        /* PBWin10 measured: a sequential WIDE file is at EOF when fewer than
+           two bytes remain (an incomplete final code unit is not data). */
+        long pos = ftell(file_handles[filenum]);
+        unsigned char b[2];
+        size_t got = fread(b, 1, 2, file_handles[filenum]);
+        fseek(file_handles[filenum], pos, SEEK_SET);
+        return (got < 2) ? -1 : 0;
+    }
     /* PB EOF() returns true when no more data to read � need to peek ahead */
     int ch = fgetc(file_handles[filenum]);
     if (ch == EOF) return -1;  /* PB: -1 = true (EOF) */
@@ -3854,8 +4048,55 @@ int pb_eof(int filenum) {
     return 0;  /* PB: 0 = false (not EOF) */
 }
 
+/* Read one INPUT# token from a UTF-16LE sequential file.  PBWin10 measured
+   (batch 363): comma and CR terminate, LF is ignored, leading spaces are
+   skipped, trailing spaces are preserved; a surrounding pair of quotes is
+   removed. */
+static char* pb_read_wide_token(int filenum) {
+    size_t cap = 64, n = 0;
+    short* w = (short*)malloc(cap * sizeof(short));
+    int quoted = 0;
+    if (!w) return pb_bstr_alloc("", 0);
+    if (file_wide_eof[filenum]) { free(w); return pb_bstr_alloc("", 0); }
+    for (;;) {
+        unsigned char b[2];
+        unsigned u;
+        if (fread(b, 1, 2, file_handles[filenum]) < 2) break;
+        u = (unsigned)b[0] | ((unsigned)b[1] << 8);
+        if (u == 0x1A) { file_wide_eof[filenum] = 1; break; }
+        if (u == ',' || u == 0x0D) break;
+        if (u == 0x0A) continue;
+        if (n == 0 && u == ' ') continue;
+        if (n == cap) {
+            short* nw;
+            cap *= 2;
+            nw = (short*)realloc(w, cap * sizeof(short));
+            if (!nw) break;
+            w = nw;
+        }
+        w[n++] = (short)u;
+    }
+    if (n >= 2 && w[0] == '"' && w[n - 1] == '"') {
+        quoted = 1;
+        n -= 2;
+    }
+    {
+        char* out = pb_bstr_alloc((const char*)(quoted ? w + 1 : w),
+                                  (unsigned int)(n * 2));
+        free(w);
+        return out;
+    }
+}
+
 void pb_input_file_str(int filenum, char** dest) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
+    if (file_wide[filenum]) {
+        char* w = pb_read_wide_token(filenum);
+        char* a = pb_acode(w, PB_CP_ACP);
+        pb_bstr_free(w);
+        *dest = a;
+        return;
+    }
     char buf[4096];
     int i = 0;
     int ch;
@@ -3898,9 +4139,27 @@ char* pb_fixed_to_bstr(const char* buf) {
     return pb_bstr_alloc(buf, (unsigned int)strlen(buf));
 }
 
+/* WSTRING*n inline [N x i16] buffer -> fresh UTF-16 BSTR, stopping at the
+   first NUL code unit so a partially filled fixed buffer prints only its
+   content.  `n` is the declared character capacity. */
+char* pb_fixedw_to_bstr(const char* buf, long long n) {
+    const short* w = (const short*)buf;
+    int len = pb_fixedw_len(w, (int)n);
+    return pb_bstr_alloc((const char*)w, (unsigned int)(len * 2));
+}
+
 void pb_input_file_fixed(int filenum, char* buf, long long n) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     if (!buf || n <= 0) return;
+    if (file_wide[filenum]) {
+        char* w = pb_read_wide_token(filenum);
+        char* a = pb_acode(w, PB_CP_ACP);
+        strncpy(buf, a ? a : "", (size_t)n - 1);
+        buf[n - 1] = '\0';
+        pb_bstr_free(a);
+        pb_bstr_free(w);
+        return;
+    }
     char tmp[4096];
     int i = 0, ch;
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
@@ -3921,6 +4180,33 @@ void pb_input_file_fixed(int filenum, char* buf, long long n) {
     buf[n - 1] = '\0';
 }
 
+/* WSTRING-target INPUT#: returns a UTF-16LE BSTR for both WIDE and ANSI
+   sequential files (ANSI is promoted through CP_ACP). */
+void pb_input_file_wstr(int filenum, char** dest) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
+    if (file_wide[filenum]) {
+        *dest = pb_read_wide_token(filenum);
+        return;
+    }
+    {
+        char* a = NULL;
+        char* w;
+        pb_input_file_str(filenum, &a);
+        w = pb_ucode(a, PB_CP_ACP);
+        pb_bstr_free(a);
+        *dest = w;
+    }
+}
+
+/* WSTRING*n target INPUT#: truncate to n-1 code units + NUL. */
+void pb_input_file_fixed_w(int filenum, char* buf, long long n) {
+    char* w;
+    if (!buf || n <= 0) return;
+    pb_input_file_wstr(filenum, &w);
+    pb_copy_wstr_to_fixed(buf, w, n);
+    pb_bstr_free(w);
+}
+
 /* FixedString target for console INPUT / LINE INPUT / LINE INPUT#:
    copy a freshly read BSTR into an inline [N x i8] buffer truncated to
    N-1 chars with a trailing NUL (legacy #7).  The BSTR is NOT released
@@ -3933,17 +4219,55 @@ void pb_copy_bstr_to_fixed(char* buf, const char* src, long long n) {
     buf[n - 1] = '\0';
 }
 
+/* UTF-16 numeric token: comma/CR/space terminate, LF is ignored, leading
+   spaces are skipped (PBWin10 reads " 42 , 7 " as 42 then 7). */
+static int pb_read_wide_num(int filenum, char* buf, size_t cap) {
+    int i = 0;
+    if (file_wide_eof[filenum]) { buf[0] = '\0'; return 0; }
+    for (;;) {
+        unsigned char b[2];
+        unsigned u;
+        if (fread(b, 1, 2, file_handles[filenum]) < 2) break;
+        u = (unsigned)b[0] | ((unsigned)b[1] << 8);
+        if (u == 0x1A) { file_wide_eof[filenum] = 1; break; }
+        if (u == 0x0D) break;
+        if (u == 0x0A) continue;
+        if (u == ',') {
+            /* Consecutive delimiters (", " around a comma, e.g. the file
+               " 42 , 7 ") must not turn the next numeric field into an
+               empty token: PBWin10 reads 42 then 7 (batch 363 probe6). */
+            if (i == 0) continue;
+            break;
+        }
+        if (u == ' ') {
+            if (i == 0) continue;
+            break;
+        }
+        if (i < (int)cap - 1 && u < 128) buf[i++] = (char)u;
+    }
+    buf[i] = '\0';
+    return i;
+}
+
 void pb_input_file_int(int filenum, int* dest) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     char buf[64];
+    if (file_wide[filenum]) {
+        pb_read_wide_num(filenum, buf, sizeof(buf));
+        *dest = atoi(buf);
+        return;
+    }
     int i = 0;
     int ch;
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
         /* batch 308 (I): a numeric item also terminates on a space, not just
            ',' or '\n' - "42 hello" reads 42 and leaves "hello" for the next
-           item (PBWin INPUT# semantics).  atoi/atof skip leading blanks, so
-           the extra space before the next item is harmless. */
-        if (ch == ',' || ch == '\n' || ch == ' ') break;
+           item (PBWin INPUT# semantics).  Leading spaces are skipped so the
+           one-space numeric prefix written by PRINT# does not yield 0. */
+        if (ch == ',' || ch == '\n' || ch == ' ') {
+            if (ch == ' ' && i == 0) continue;
+            break;
+        }
         if (ch == '\r') continue;
         if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
     }
@@ -3954,10 +4278,18 @@ void pb_input_file_int(int filenum, int* dest) {
 void pb_input_file_dbl(int filenum, double* dest) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     char buf[64];
+    if (file_wide[filenum]) {
+        pb_read_wide_num(filenum, buf, sizeof(buf));
+        *dest = atof(buf);
+        return;
+    }
     int i = 0;
     int ch;
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
-        if (ch == ',' || ch == '\n' || ch == ' ') break;
+        if (ch == ',' || ch == '\n' || ch == ' ') {
+            if (ch == ' ' && i == 0) continue;
+            break;
+        }
         if (ch == '\r') continue;
         if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
     }
@@ -4649,6 +4981,8 @@ int pb_open_random_ex(const char* path, int filenum, unsigned reclen,
     file_access[filenum] = access;
     file_locks[filenum] = lock;
     file_base_code[filenum] = (base == 0) ? 1 : 2;
+    file_wide[filenum] = 0;  /* CHR has no effect on RANDOM */
+    file_wide_eof[filenum] = 0;
     strncpy(file_names[filenum], path, 259);
     file_names[filenum][259] = 0;
     if (rec_buf[filenum]) free(rec_buf[filenum]);
@@ -6829,54 +7163,66 @@ void pb_write_file_keep(int filenum) {
         write_first_field[filenum] = 0;
     }
 }
-void pb_write_file_str(int filenum, const char* s) {
+static void pb_write_file_sep(int filenum) {
+    pb_file_write_ansi(filenum, ",", 1);
+}
+static void pb_write_file_quote(int filenum) {
+    pb_file_write_ansi(filenum, "\"", 1);
+}
+void pb_write_file_str(int filenum, const char* s, int wide) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        if (!write_first_field[filenum]) pb_write_file_sep(filenum);
         write_first_field[filenum] = 0;
-        fputc(34, file_handles[filenum]); /* double quote */
-        fputs(s ? s : "", file_handles[filenum]);
-        fputc(34, file_handles[filenum]);
+        pb_write_file_quote(filenum);
+        if (wide)
+            pb_file_write_wide(filenum, (const short*)(s ? s : ""),
+                               (size_t)(pb_str_len(s) / 2));
+        else
+            pb_file_write_ansi(filenum, s ? s : "", (size_t)pb_str_len(s));
+        pb_write_file_quote(filenum);
     }
 }
 void pb_write_file_int(int filenum, long long v) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        char buf[64];
+        if (!write_first_field[filenum]) pb_write_file_sep(filenum);
         write_first_field[filenum] = 0;
-        fprintf(file_handles[filenum], "%lld", v);
+        snprintf(buf, sizeof(buf), "%lld", v);
+        pb_file_write_ansi(filenum, buf, strlen(buf));
     }
 }
 /* Numeric literal path: emit the pre-normalized source-form text verbatim
    (field separator handled, but no surrounding quotes). */
 void pb_write_file_raw(int filenum, const char* s) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        if (!write_first_field[filenum]) pb_write_file_sep(filenum);
         write_first_field[filenum] = 0;
-        fputs(s ? s : "", file_handles[filenum]);
+        pb_file_write_ansi(filenum, s ? s : "", (size_t)pb_str_len(s));
     }
 }
 void pb_write_file_sng(int filenum, float v) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        if (!write_first_field[filenum]) pb_write_file_sep(filenum);
         write_first_field[filenum] = 0;
         char buf[64];
         snprintf(buf, sizeof(buf), "%.7g", (double)v);
         pb_style_num(buf);
-        fputs(buf, file_handles[filenum]);
+        pb_file_write_ansi(filenum, buf, strlen(buf));
     }
 }
 void pb_write_file_dbl(int filenum, double v) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        if (!write_first_field[filenum]) fputc(',', file_handles[filenum]);
+        if (!write_first_field[filenum]) pb_write_file_sep(filenum);
         write_first_field[filenum] = 0;
         char buf[64];
         snprintf(buf, sizeof(buf), "%.15g", v);
         pb_style_num(buf);
-        fputs(buf, file_handles[filenum]);
+        pb_file_write_ansi(filenum, buf, strlen(buf));
     }
 }
 void pb_write_file_newline(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum]) {
-        fputs("\r\n", file_handles[filenum]);
+        pb_file_write_newline(filenum);
         write_first_field[filenum] = 1;
         write_record_open[filenum] = 0;
         fflush(file_handles[filenum]);

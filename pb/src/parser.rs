@@ -16024,10 +16024,9 @@ impl Parser {
 
         // CHW optional positional clauses between FOR-mode and AS:
         //   [ACCESS access] [LOCK lock] [BASE = 0|1] [CHR = ANSI|WIDE]
-        // ACCESS and LOCK are enforced by the runtime (sharing modes on the
-        // underlying handle); BASE is passed through and used for random
-        // record numbering / FILEATTR(-2).  CHR=WIDE is a no-op in
-        // BINARY/RANDOM per CHW; sequential WIDE remains an explicit error.
+        // ACCESS/LOCK/BASE are enforced by the runtime.  CHR selects the
+        // character mode for sequential files and is passed through as
+        // OpenStmt::chr_wide; BINARY/RANDOM accept it as a CHW no-op.
         let mut access: u8 = 0; // READ WRITE (default)
         let mut lock: u8 = 0; // READ WRITE (default)
         let mut base: Option<Expr> = None;
@@ -16057,22 +16056,11 @@ impl Parser {
                     match self.peek() {
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("ANSI") => {
                             self.advance();
+                            chr_wide = false;
                         }
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
                             self.advance();
                             chr_wide = true;
-                            // CHW: CHR=WIDE has no effect on BINARY/RANDOM files;
-                            // it is accepted there as self-documentation.  Sequential
-                            // files require a UTF-16 conversion layer, which is not
-                            // implemented yet, so that combination stays explicit.
-                            if !matches!(mode, OpenMode::Binary | OpenMode::Random) {
-                                eprintln!(
-                                    "Error: OPEN CHR=WIDE sequential files are not \
-                                     implemented (line {}); CHR=ANSI is the supported mode",
-                                    line
-                                );
-                                self.error_count += 1;
-                            }
                         }
                         _ => {
                             eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);
@@ -16123,22 +16111,11 @@ impl Parser {
                     match self.peek() {
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("ANSI") => {
                             self.advance();
+                            chr_wide = false;
                         }
                         Token::Identifier(w2) if w2.eq_ignore_ascii_case("WIDE") => {
                             self.advance();
                             chr_wide = true;
-                            // CHW: CHR=WIDE has no effect on BINARY/RANDOM files;
-                            // it is accepted there as self-documentation.  Sequential
-                            // files require a UTF-16 conversion layer, which is not
-                            // implemented yet, so that combination stays explicit.
-                            if !matches!(mode, OpenMode::Binary | OpenMode::Random) {
-                                eprintln!(
-                                    "Error: OPEN CHR=WIDE sequential files are not \
-                                     implemented (line {}); CHR=ANSI is the supported mode",
-                                    line
-                                );
-                                self.error_count += 1;
-                            }
                         }
                         _ => {
                             eprintln!("Error: OPEN CHR: expected ANSI or WIDE on line {}", line);
@@ -17026,6 +17003,23 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
+            }
+            Token::Identifier(name) if name.eq_ignore_ascii_case("EOF") => {
+                // CHW EOF_function.htm: y = EOF([#] filenum&) — the number sign
+                // is optional.  The generic argument parser rejects '#' as an
+                // expression token, so accept and discard it here (batch 363).
+                self.advance();
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    if self.peek() == &Token::Hash {
+                        self.advance();
+                    }
+                    let arg = self.parse_expression()?;
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::FunctionCall("EOF".to_string(), vec![arg]))
+                } else {
+                    Ok(Expr::Variable("EOF".to_string()))
+                }
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("DIR$") => {
                 // DIR$(NEXT) or DIR$(mask [, ONLY attr]) — NEXT is a keyword token
