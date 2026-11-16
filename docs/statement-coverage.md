@@ -1,6 +1,6 @@
 # PB64Basic — Official Statement Coverage Matrix
 
-> **Last updated from batch 364 (v0.2.155)** — 2026-11-17. All statements through batch 364 are reflected in this matrix.
+> **Last updated from batch 365 (v0.2.156)** — 2026-11-17. All statements through batch 365 are reflected in this matrix.
 
 Ground truth: **PowerBASIC official documentation** (MIT license, 735 keywords / 1282 topic pages, PB/Win 10+11 / PB/CC 6+7).
 

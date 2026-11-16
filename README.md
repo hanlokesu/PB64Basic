@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 364 (v0.2.155). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 365 (v0.2.156). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 365 (v0.2.156) - PRINT # comma separators now advance to the next 14-column print zone; batch365_test matches the PBWin10 reference byte-for-byte on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
 > batch 364 (v0.2.155) - multi-line MACRO FUNCTION statement bodies now lower inline; batch364_test matches PBWin10 on both targets; PRINT # comma zones, PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
 > batch 363 (v0.2.154) - sequential CHR=WIDE is implemented as a UTF-16LE text layer (PRINT #/WRITE # formatting, wide CRLF, LINE INPUT #/INPUT # lexing, FILESCAN and EOF, 0x1A marker); fixed WSTRING storage is inline [n x i16] with capacity LEN and space padding, mixed STRING/WSTRING comparisons promote to UTF-16, and EOF(#n) is accepted; batch363_test passes on both targets with fails=0 and a 140-byte output matching PBWin10 SHA256 8D4150BA9C552A618DA13AB6D45A135DE767652BAFED929F3D13F5F8B05912CE; the multi-line MACRO FUNCTION form was closed in batch 364; PRINT # comma print zones remain open.
 > batch 362 (v0.2.153) - REDIM PRESERVE shrink clears every dropped tail slot (PBWin10 101 202 0 0), EnumPrintersW is resolved dynamically and no longer crashes PB-linked executables, and the existing OEMTEXT/CB.NM*/D4 probes are recorded; multi-line MACRO FUNCTION, sequential CHR=WIDE, PBRES/PBR, TXT/THREAD OBJECT, THREADED per-thread shapes, and other recorded gaps remain open.
@@ -1032,6 +1033,51 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.156 (2026-11-17)
+
+Batch 365. Implements the CHW `PRINT #` comma rule: a comma advances the
+output column to the next 14-column print zone instead of being discarded.
+
+- **Implemented - separators survive parsing.** `PrintFileStmt` now stores the
+  separator that followed every argument. The previous parser reused the
+  console `PRINT` argument list and kept only a trailing-separator flag, so
+  `PRINT #1, "A", "B"` emitted `AB` with no zone padding. The PRINT # path now
+  has its own `parse_print_file_args`, which records `;`, `,` or no separator
+  per item without changing the console PRINT grammar.
+- **Implemented - code generation.** For each item, codegen emits the existing
+  string or numeric writer and then calls `pb_print_file_comma` only when the
+  source separator was a comma. A semicolon adds no bytes; a final item with no
+  separator adds no bytes.
+- **Implemented - runtime column tracking.** The runtime keeps a per-file
+  `file_col` value, reset on `OPEN` and `CLOSE` and reset to zero after CR/LF.
+  ANSI writes add their byte count; WIDE writes add UTF-16 code units. A comma
+  computes `(column / 14 + 1) * 14` and writes spaces until the column reaches
+  that boundary. This reproduces the PBWin10 measurements: a 1-character item
+  gets 13 spaces, a 13-character item gets 1, and a 14-character item gets 14
+  before the next item.
+- **Verified - PBWin10 reference.** A PBWin10 probe writes five records:
+  `A` + 13 spaces + `B`; `1234567890123` + 1 space + `C`;
+  `12345678901234` + 14 spaces + `D`; ` 5` + 13 spaces + `7 `; and `EF`.
+  The reference file is 88 bytes with SHA256
+  `248AFB9F3FF1C4559F81F80A9D5D5C254D091B8906405DE4A8E569E9A436E27A`.
+- **Verified - dual target.** `examples/batch365_test.bas` writes the same
+  five records, reads them back with `LINE INPUT #`, and checks each exact
+  string. It exits 0 on x86_64 and i686, produces the same 88-byte file, and
+  that file has the same SHA256 as the PBWin10 reference.
+- **Known boundary.** The column is tracked per open handle from zero. Appending
+  to a file whose last line is not CR/LF-terminated therefore starts the zone
+  count at column zero; ANSI multibyte column width has no separate PBWin
+  reference in this batch. Normal OUTPUT/APPEND records ending in CRLF are
+  covered.
+- **Gates.** Compile-all and headless selection include the new example;
+  negative probes, dual-target link smoke, `cargo fmt --check`, `cargo clippy
+  --all-targets -- -D warnings`, coverage docs and release-zip checks are run
+  before publication.
+- **Still open.** Legacy PBRES/PBR private offset tables, the 12-member TXT
+  pseudo-object, THREAD OBJECT/IPowerThread, THREADED per-thread array shapes,
+  non-zero printer enumeration, a real serial-port round trip, and #314 remain
+  outside this batch.
+
 ### v0.2.155 (2026-11-17)
 
 Batch 364. Implements multi-line `MACRO FUNCTION` lowering in the

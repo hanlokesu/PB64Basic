@@ -8,6 +8,9 @@ use crate::error::{PbError, PbResult};
 use crate::token::{Located, Token};
 use std::collections::HashMap;
 
+/// PRINT # argument list with its per-item separators and the trailing one.
+type PrintFileArgs = (Vec<Expr>, Vec<Option<char>>, Option<char>);
+
 /// The 12 official DEFtype statement names (CHW DEFBYT_DEFCUR_DEFCUX_DEFDBL_
 /// DEFDWD_DEFEXT_DEFINT_DEFLNG.htm).  Note DEFtype only affects implicitly
 /// declared variables; under #DIM ALL / OPTION EXPLICIT it has no effect.
@@ -15923,11 +15926,12 @@ impl Parser {
             self.advance();
             let file_num = self.parse_expression()?;
             self.expect(&Token::Comma)?;
-            let (args, trailing) = self.parse_print_args()?;
+            let (args, separators, trailing) = self.parse_print_file_args()?;
             self.consume_to_eol();
             return Ok(Statement::PrintFile(PrintFileStmt {
                 file_num,
                 args,
+                separators,
                 trailing,
                 line,
             }));
@@ -15971,6 +15975,39 @@ impl Parser {
             }
         }
         Ok((args, trailing))
+    }
+
+    /// PRINT # argument list, retaining the separator after each argument.
+    ///
+    /// The console `PRINT` path only needs the trailing-separator flag; PRINT #
+    /// additionally needs to know where a comma appeared so codegen can advance
+    /// the output column to the next 14-column zone.  The previous parser fed
+    /// PRINT # through `parse_print_args` and discarded every inter-argument
+    /// separator, so `PRINT #1, "A", "B"` wrote `AB`.
+    fn parse_print_file_args(&mut self) -> PbResult<PrintFileArgs> {
+        let mut args = Vec::new();
+        let mut separators: Vec<Option<char>> = Vec::new();
+        let mut trailing: Option<char> = None;
+        while !self.at_eol_or_eof() {
+            args.push(self.parse_expression()?);
+            let sep = match self.peek() {
+                Token::Semicolon => Some(';'),
+                Token::Comma => Some(','),
+                _ => None,
+            };
+            if let Some(c) = sep {
+                self.advance();
+                separators.push(Some(c));
+                if self.at_eol_or_eof() {
+                    trailing = Some(c);
+                    break;
+                }
+            } else {
+                separators.push(None);
+                break;
+            }
+        }
+        Ok((args, separators, trailing))
     }
 
     fn parse_open_statement(&mut self) -> PbResult<Statement> {

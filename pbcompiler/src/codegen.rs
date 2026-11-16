@@ -2524,6 +2524,8 @@ impl Compiler {
             false,
         );
         self.module
+            .declare_function("pb_print_file_comma", &IrType::Void, &[IrType::I32], false);
+        self.module
             .declare_function("pb_line_input", &IrType::Ptr, &[IrType::I32], false);
         self.module
             .declare_function("pb_line_input_w", &IrType::Ptr, &[IrType::I32], false);
@@ -24477,7 +24479,7 @@ impl Compiler {
     fn compile_print_file(&mut self, fb: &mut FunctionBuilder, pf: &PrintFileStmt) -> PbResult<()> {
         let filenum = self.compile_expr(fb, &pf.file_num)?;
         let filenum_i32 = self.to_i32(fb, &filenum);
-        for arg in &pf.args {
+        for (arg, sep) in pf.args.iter().zip(pf.separators.iter()) {
             let is_wide = self.expr_is_wstring(arg);
             let val = self.compile_expr(fb, arg)?;
             if val.ty == IrType::Ptr {
@@ -24494,6 +24496,12 @@ impl Compiler {
                 // the last one before CR/LF).
                 let s = self.num_to_string_of(fb, &val, arg);
                 fb.call_void("pb_print_file_item", &[filenum_i32.clone(), s]);
+            }
+            // CHW PRINT#: a comma advances to the next 14-column print zone.
+            // The runtime tracks the current column per file number; a
+            // semicolon and a plain last item add no padding.
+            if matches!(sep, Some(',')) {
+                fb.call_void("pb_print_file_comma", std::slice::from_ref(&filenum_i32));
             }
         }
         // CHW PRINT#: a trailing `;` or `,` suppresses the CR/LF so the next

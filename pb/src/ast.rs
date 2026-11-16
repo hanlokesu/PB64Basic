@@ -656,6 +656,12 @@ pub struct PrintStmt {
 pub struct PrintFileStmt {
     pub file_num: Expr,
     pub args: Vec<Expr>,
+    /// Separator that followed each argument in the source (`;` or `,`).
+    /// `None` means the argument was the last item on the line.  A comma
+    /// advances the file's output column to the next 14-column print zone
+    /// (CHW PRINT#); a semicolon adds nothing.  Keeping the separators here is
+    /// necessary because the old parser discarded them before codegen.
+    pub separators: Vec<Option<char>>,
     /// Trailing separator (`;` or `,`) suppresses the CR/LF, exactly as for
     /// PRINT (CHW PRINT#: "If the final argument of a PRINT# statement is a
     /// semicolon or comma, PRINT# will not append the (default) CR/LF byte

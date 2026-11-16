@@ -3537,6 +3537,9 @@ static int file_wide[MAX_FILE_HANDLES] = {0};
 /* Set once a CHR=WIDE reader consumed the DOS EOF marker (CHR$(26)); PBWin10
    then reports EOF TRUE for the rest of the file even if bytes follow it. */
 static int file_wide_eof[MAX_FILE_HANDLES] = {0};
+/* batch 365: current output column (0-based) for PRINT # comma zones.  A
+   comma advances to the next multiple of 14; CR/LF resets the column. */
+static int file_col[MAX_FILE_HANDLES] = {0};
 
 /* CHW BASE defaults to 1; the encoded array distinguishes "unset" from the
    legal BASE 0. */
@@ -3654,6 +3657,7 @@ int pb_open_ex(const char* path, int mode, int filenum, int access, int lock, in
        the UTF-16 conversion mode. */
     file_wide[filenum] = (mode <= 2) ? (wide ? 1 : 0) : 0;
     file_wide_eof[filenum] = 0;
+    file_col[filenum] = 0;
     strncpy(file_names[filenum], path, 259);
     file_names[filenum][259] = 0;
     return 0;
@@ -3680,6 +3684,7 @@ void pb_close(int filenum) {
         file_base_code[filenum] = 0;
         file_wide[filenum] = 0;
         file_wide_eof[filenum] = 0;
+        file_col[filenum] = 0;
         file_names[filenum][0] = 0;
         if (rec_buf[filenum]) {
             free(rec_buf[filenum]);
@@ -3834,6 +3839,7 @@ static void pb_file_write_ansi(int filenum, const char* s, size_t n) {
     if (!f) return;
     if (!file_wide[filenum]) {
         fwrite(s, 1, n, f);
+        file_col[filenum] += (int)n;
         return;
     }
     {
@@ -3842,8 +3848,10 @@ static void pb_file_write_ansi(int filenum, const char* s, size_t n) {
         if (wlen <= 0) return;
         w = (short*)malloc((size_t)wlen * sizeof(short));
         if (!w) return;
-        if (MultiByteToWideChar(PB_CP_ACP, 0, s, (int)n, w, wlen) > 0)
+        if (MultiByteToWideChar(PB_CP_ACP, 0, s, (int)n, w, wlen) > 0) {
             fwrite(w, sizeof(short), (size_t)wlen, f);
+            file_col[filenum] += wlen;
+        }
         free(w);
     }
 }
@@ -3855,6 +3863,7 @@ static void pb_file_write_wide(int filenum, const short* w, size_t n) {
     if (!f) return;
     if (file_wide[filenum]) {
         fwrite(w, sizeof(short), n, f);
+        file_col[filenum] += (int)n;
         return;
     }
     {
@@ -3863,14 +3872,17 @@ static void pb_file_write_wide(int filenum, const short* w, size_t n) {
         if (alen <= 0) return;
         a = (char*)malloc((size_t)alen);
         if (!a) return;
-        if (WideCharToMultiByte(PB_CP_ACP, 0, w, (int)n, a, alen, NULL, NULL) > 0)
+        if (WideCharToMultiByte(PB_CP_ACP, 0, w, (int)n, a, alen, NULL, NULL) > 0) {
             fwrite(a, 1, (size_t)alen, f);
+            file_col[filenum] += alen;
+        }
         free(a);
     }
 }
 
 static void pb_file_write_newline(int filenum) {
     pb_file_write_ansi(filenum, "\r\n", 2);
+    if (filenum >= 1 && filenum < MAX_FILE_HANDLES) file_col[filenum] = 0;
 }
 
 void pb_print_file(int filenum, const char* text, int wide) {
@@ -3897,6 +3909,19 @@ void pb_print_file_item(int filenum, const char* text) {
 void pb_print_file_newline(int filenum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES && file_handles[filenum])
         pb_file_write_newline(filenum);
+}
+
+/* batch 365: CHW PRINT# comma semantics - advance to the next 14-column
+   print zone.  The zone boundary is a multiple of 14 in the zero-based
+   output column, so a 14-character item followed by a comma pads a full
+   14 spaces (PBWin10 probe b365_zone.txt). */
+void pb_print_file_comma(int filenum) {
+    int target;
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum])
+        return;
+    target = (file_col[filenum] / 14 + 1) * 14;
+    while (file_col[filenum] < target)
+        pb_file_write_ansi(filenum, " ", 1);
 }
 
 /* Read one UTF-16LE line.  PBWin10 measured (batch 363): CR terminates and
