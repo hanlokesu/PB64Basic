@@ -608,6 +608,9 @@ impl Interpreter {
             // VAL statement is executed by the compiled backend, not the
             // interpreter.
             Statement::ValStmt { .. } => Ok(Flow::Normal),
+            // TXT pseudo-object output needs a live text window; the compiled
+            // backend owns that runtime.  The interpreter simply skips it.
+            Statement::TxtPrint(_) => Ok(Flow::Normal),
         }
     }
 

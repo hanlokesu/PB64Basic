@@ -351,6 +351,10 @@ __declspec(dllimport) int __stdcall TerminateThread(void* hThread, unsigned long
 __declspec(dllimport) int __stdcall GetExitCodeThread(void* hThread, unsigned long* lpExitCode);
 __declspec(dllimport) int __stdcall GetThreadPriority(void* hThread);
 __declspec(dllimport) int __stdcall SetThreadPriority(void* hThread, int nPriority);
+typedef struct _pb_filetime { unsigned long lo; unsigned long hi; } pb_filetime;
+__declspec(dllimport) int __stdcall GetThreadTimes(void* hThread, pb_filetime* creation,
+    pb_filetime* exit_time, pb_filetime* kernel, pb_filetime* user);
+__declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(pb_filetime* ft);
 /* Slim Reader/Writer (SRW) locks for THREADSAFE procedures (kernel32).
    An SRWLOCK is one pointer-sized object that is zero-initialized
    (SRWLOCK_INIT == 0), so a global zero-initialized variable needs no
@@ -8912,6 +8916,242 @@ int pb_thread_set_priority(unsigned long id, int prio) {
     return SetThreadPriority(t->h, prio) ? 0 : -1;
 }
 
+/* ============================================================
+ * THREAD OBJECT / IPowerThread (batch 369)
+ *
+ * A thread object is a CLASS that inherits IPowerThread and declares one
+ * THREAD METHOD.  Codegen emits the method bridges and passes the object's
+ * heap pointer here; the runtime owns the Windows handle and the per-object
+ * lifecycle data, keyed by that pointer.  The THREADPARAM instance field is
+ * written by the generated LAUNCH bridge before CreateThread starts.
+ * ============================================================ */
+typedef struct _pb_thread_object {
+    void* self;
+    void* entry;
+    void* h;
+    unsigned long tid;
+    long result;
+    int launched;
+    int finished;
+    int suspended;
+    int stack_size;
+    int priority;
+    int priority_set;
+    pb_filetime create_time;
+    pb_filetime exit_time;
+    pb_filetime kernel_time;
+    pb_filetime user_time;
+    struct _pb_thread_object* next;
+} pb_thread_object;
+
+static pb_thread_object* pb_thread_objects = NULL;
+static long pb_com_hresult; /* tentative; defined with its initializer below */
+
+static pb_thread_object* pb_thread_object_find(void* self) {
+    pb_thread_object* t;
+    for (t = pb_thread_objects; t != NULL; t = t->next) {
+        if (t->self == self) return t;
+    }
+    return NULL;
+}
+
+static pb_thread_object* pb_thread_object_ensure(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    if (t != NULL) return t;
+    t = (pb_thread_object*)calloc(1, sizeof(pb_thread_object));
+    if (t == NULL) return NULL;
+    t->self = self;
+    t->next = pb_thread_objects;
+    pb_thread_objects = t;
+    return t;
+}
+
+static unsigned long __stdcall pb_thread_object_boot(void* raw) {
+    pb_thread_object* t = (pb_thread_object*)raw;
+    unsigned long (*entry)(void*) = (unsigned long (*)(void*))t->entry;
+    pb_filetime create_tmp;
+    pb_filetime exit_tmp;
+    if (entry != NULL && t->self != NULL) {
+        t->result = (long)entry(t->self);
+    }
+    t->finished = 1;
+    /* TIMEEXIT is the moment the thread function returned.  GetThreadTimes
+       reports the real exit time only after the thread has fully terminated;
+       called from inside the thread it returns zero, so stamp the wall clock
+       here and use GetThreadTimes only for creation/kernel/user. */
+    GetSystemTimeAsFileTime(&t->exit_time);
+    if (t->h != NULL) {
+        GetThreadTimes(t->h, &create_tmp, &exit_tmp, &t->kernel_time, &t->user_time);
+        t->create_time = create_tmp;
+    }
+    return (unsigned long)t->result;
+}
+
+int pb_thread_object_launch(void* self, void* entry, void* param,
+                            void* field, int field_size, int stack_size) {
+    pb_thread_object* t;
+    unsigned long flags = 0;
+    int i;
+    if (self == NULL || entry == NULL) { pb_err_var = pb_err = 5; return -1; }
+    t = pb_thread_object_ensure(self);
+    if (t == NULL) { pb_err_var = pb_err = 7; return -1; }
+    if (t->launched) { pb_err_var = pb_err = 5; return -1; }
+    if (field != NULL) {
+        if (field_size == 4) *(unsigned long*)field = (unsigned long)(uintptr_t)param;
+        else *(void**)field = param;
+    }
+    t->entry = entry;
+    if (t->suspended > 0) flags |= 0x00000004UL; /* CREATE_SUSPENDED */
+    t->h = CreateThread(NULL, (unsigned long)t->stack_size,
+                        (void* (__stdcall*)(void*))pb_thread_object_boot,
+                        t, flags, &t->tid);
+    if (t->h == NULL) { pb_err_var = pb_err = 7; return -1; }
+    t->launched = 1;
+    t->finished = 0;
+    /* A pre-LAUNCH suspend count above one keeps the extra levels. */
+    for (i = 1; i < t->suspended; i++) SuspendThread(t->h);
+    if (t->priority_set) SetThreadPriority(t->h, t->priority);
+    GetThreadTimes(t->h, &t->create_time, &t->exit_time,
+                   &t->kernel_time, &t->user_time);
+    return 0;
+}
+
+int pb_thread_object_close(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    int ok;
+    if (t == NULL || t->h == NULL) return 0;
+    ok = CloseHandle(t->h);
+    t->h = NULL;
+    return ok ? -1 : 0;
+}
+
+int pb_thread_object_isalive(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    return (t != NULL && t->launched && !t->finished) ? -1 : 0;
+}
+
+int pb_thread_object_equals(void* self, void* other) {
+    return self == other ? -1 : 0;
+}
+
+long pb_thread_object_handle(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    return (t == NULL || t->h == NULL) ? 0 : (long)(uintptr_t)t->h;
+}
+
+long pb_thread_object_id(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    return t == NULL ? 0 : (long)t->tid;
+}
+
+int pb_thread_object_join(void* self, unsigned long timeout_ms) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    if (t == NULL || t->h == NULL) return -1;
+    WaitForSingleObject(t->h, timeout_ms);
+    return 0;
+}
+
+long pb_thread_object_result(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    if (t == NULL || !t->finished) {
+        pb_com_hresult = 1; /* S_FALSE */
+        return 0;
+    }
+    pb_com_hresult = 0; /* S_OK */
+    return t->result;
+}
+
+int pb_thread_object_suspend(void* self) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    unsigned long prev;
+    if (t == NULL) return -1;
+    if (!t->launched) {
+        t->suspended++;
+        return t->suspended;
+    }
+    if (t->h == NULL) return -1;
+    prev = SuspendThread(t->h);
+    if (prev == (unsigned long)-1) return -1;
+    t->suspended = (int)prev + 1;
+    return (int)prev;
+}
+
+int pb_thread_object_resume(void* self) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    unsigned long prev;
+    if (t == NULL) return -1;
+    if (!t->launched) {
+        if (t->suspended > 0) t->suspended--;
+        return t->suspended + 1;
+    }
+    if (t->h == NULL) return -1;
+    prev = ResumeThread(t->h);
+    if (prev == (unsigned long)-1) return -1;
+    t->suspended = (int)prev > 0 ? (int)prev - 1 : 0;
+    return (int)prev;
+}
+
+int pb_thread_object_get_priority(void* self) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    if (t == NULL) return 0;
+    if (t->launched && t->h != NULL) return GetThreadPriority(t->h);
+    return t->priority;
+}
+
+int pb_thread_object_set_priority(void* self, int priority) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    if (t == NULL) return -1;
+    t->priority = priority;
+    t->priority_set = 1;
+    if (t->launched && t->h != NULL) {
+        return SetThreadPriority(t->h, priority) ? 0 : -1;
+    }
+    return 0;
+}
+
+int pb_thread_object_get_stacksize(void* self) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    return t == NULL ? 0 : t->stack_size;
+}
+
+int pb_thread_object_set_stacksize(void* self, int size) {
+    pb_thread_object* t = pb_thread_object_ensure(self);
+    if (t == NULL) return -1;
+    if (t->launched) return 0; /* CHW: ignored after LAUNCH */
+    t->stack_size = size;
+    return 0;
+}
+
+static unsigned long long pb_filetime_quad(pb_filetime* ft) {
+    return ((unsigned long long)ft->hi << 32) | (unsigned long long)ft->lo;
+}
+
+unsigned long long pb_thread_object_timecreate(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    return t == NULL ? 0 : pb_filetime_quad(&t->create_time);
+}
+
+unsigned long long pb_thread_object_timeexit(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    return t == NULL ? 0 : pb_filetime_quad(&t->exit_time);
+}
+
+unsigned long long pb_thread_object_timekernel(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    if (t == NULL || t->h == NULL) return 0;
+    GetThreadTimes(t->h, &t->create_time, &t->exit_time,
+                   &t->kernel_time, &t->user_time);
+    return pb_filetime_quad(&t->kernel_time);
+}
+
+unsigned long long pb_thread_object_timeuser(void* self) {
+    pb_thread_object* t = pb_thread_object_find(self);
+    if (t == NULL || t->h == NULL) return 0;
+    GetThreadTimes(t->h, &t->create_time, &t->exit_time,
+                   &t->kernel_time, &t->user_time);
+    return pb_filetime_quad(&t->user_time);
+}
+
 /* THREADSAFE procedure guard (CHW THREADSAFE).  The code generator emits one
    global zero-initialized SRWLOCK per THREADSAFE procedure and passes its
    address; exclusive acquisition lets only one thread execute the procedure
@@ -14003,9 +14243,17 @@ double pb_graphic_input_field_num(int idx) {
     return atof(buf);
 }
 
+#if defined(_WIN64)
 static long long __stdcall pb_graphic_wndproc(void* hWnd, unsigned int Msg,
                                               unsigned long long wParam,
                                               unsigned long long lParam) {
+#else
+/* i686 WNDPROC: WPARAM/LPARAM are 4 bytes each.  The 64-bit declaration made
+   the callee clean 24 bytes of arguments for a 16-byte USER32 call, corrupting
+   the stack inside CreateWindowExA (0xC0000005 at 0x80000002). */
+static long __stdcall pb_graphic_wndproc(void* hWnd, unsigned int Msg,
+                                         unsigned int wParam, unsigned int lParam) {
+#endif
     if (Msg == 0x000F) {                       /* WM_PAINT */
         unsigned char ps[64];
         for (int k = 0; k < 64; k++) ps[k] = 0;
@@ -14083,16 +14331,21 @@ static void pb_gw_register(void) {
 }
 
 static void* pb_gw_create(const char* cap, int x, int y, int w, int h,
-                          void* font, int show) {
+                          void* font, int show, int stable) {
     pb_gw_register();
     int i = -1;
     for (int k = 0; k < PB_GW_SLOTS; k++) if (!pb_gw_win[k]) { i = k; break; }
     if (i < 0) return 0;
-    unsigned long style = 0x00CF0000u | (show ? 0x10000000u : 0u);
+    /* A Text Window (CHW TXT.WINDOW) has no System Menu and no Close Box, and
+       ALT+F4 is not recognized.  WS_CAPTION gives the title bar without
+       WS_SYSMENU; the stable flag additionally swallows WM_CLOSE/WM_SYSCOMMAND
+       close requests, so the window can only be destroyed by TXT.END. */
+    unsigned long style = (stable ? 0x00C00000u : 0x00CF0000u) | (show ? 0x10000000u : 0u);
     void* hwnd = CreateWindowExA(0, PB_GW_CLASS, cap, style, x, y, w, h,
                                  0, 0, GetModuleHandleA(0), 0);
     if (!hwnd) return 0;
     pb_gw_win[i] = hwnd;
+    if (stable) pb_set_winlong(hwnd, PB_GWLP_USERDATA, PB_GW_STABLE);
     if (font) SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
                            (pb_wparam_t)(size_t)font, 1);
     if (!pb_gw_alloc(i)) { DestroyWindow(hwnd); return 0; }
@@ -14108,8 +14361,10 @@ static void* pb_gw_create(const char* cap, int x, int y, int w, int h,
 
 void* pb_graphic_window_new(const char* cap, int x, int y, int w, int h,
                             void* font, int show) {
-    return pb_gw_create(cap, x, y, w, h, font, show);
+    return pb_gw_create(cap, x, y, w, h, font, show, 0);
 }
+
+__declspec(dllimport) int __stdcall GetWindowRect(void* hWnd, pb_rect_t* lpRect);
 
 void* pb_graphic_window_text(const char* cap, int x, int y, int rows, int cols,
                              void* font, int show) {
@@ -14118,7 +14373,29 @@ void* pb_graphic_window_text(const char* cap, int x, int y, int rows, int cols,
        mapping is explicit rather than accidental. */
     if (rows <= 0) rows = 1;
     if (cols <= 0) cols = 1;
-    return pb_gw_create(cap, x, y, cols * 8, rows * 16, font, show);
+    void* h = pb_gw_create(cap, x, y, cols * 8, rows * 16, font, show, 1);
+    if (!h) return 0;
+    /* CreateWindowEx sizes the outer window, so the border and title bar came
+       out of the client area and the last row/column were clipped.  Grow the
+       outer window until the client area is exactly rows*16 x cols*8. */
+    pb_rect_t wr;
+    pb_rect_t cr;
+    wr.left = wr.top = wr.right = wr.bottom = 0;
+    cr.left = cr.top = cr.right = cr.bottom = 0;
+    if (GetWindowRect(h, &wr) && GetClientRect(h, (void*)&cr)) {
+        int ww = wr.right - wr.left;
+        int wh = wr.bottom - wr.top;
+        int cw = cr.right - cr.left;
+        int chh = cr.bottom - cr.top;
+        int dw = cols * 8 - cw;
+        int dh = rows * 16 - chh;
+        if (dw || dh) {
+            SetWindowPos(h, 0, 0, 0, ww + dw, wh + dh,
+                         0x0002u /* SWP_NOMOVE */ | 0x0004u /* SWP_NOZORDER */
+                         | 0x0010u /* SWP_NOACTIVATE */);
+        }
+    }
+    return h;
 }
 
 static void* pb_gw_target(void* h) {
@@ -14133,6 +14410,339 @@ int pb_graphic_window_end(void* h) {
     if (g_gr_dc_win == w) pb_graphic_release_dc();
     if (pb_gw_cur == w) { pb_gw_cur = 0; g_gr_dc = 0; g_gr_bmp = 0; }
     return DestroyWindow(w) ? 1 : 0;
+}
+
+/* ---- TXT pseudo-object (CHW TXT_pseudo-object.htm) ------------------------
+   One text window, fixed 8x16 cells, a character/colour buffer that survives
+   WM_PAINT and scrolling.  The window itself is the existing graphic-window
+   class, so the GRAPHIC key queue, pump and message loop are shared: TXT does
+   not create a second keyboard model.  Rows and columns are 1-based on the
+   PB-facing API (0 in CELL means "leave this axis alone"), matching the CHW. */
+__declspec(dllimport) unsigned long __stdcall SetBkColor(void* hdc, unsigned long color);
+
+static void*    g_txt_hwnd = 0;
+static void*    g_txt_dc = 0;
+static void*    g_txt_font = 0;
+static int      g_txt_rows = 0;
+static int      g_txt_cols = 0;
+static int      g_txt_row = 1;
+static int      g_txt_col = 1;
+static int      g_txt_dirty = 0;
+static char*    g_txt_buf = 0;
+static unsigned long* g_txt_colors = 0;
+static unsigned long g_txt_color = 0x00000000u;   /* COLORREF: black */
+static unsigned long g_txt_bg = 0x00FFFFFFu;      /* COLORREF: white */
+
+void pb_txt_cls(void);
+void pb_txt_end(void);
+void pb_txt_newline(void);
+
+static int pb_txt_index(int row, int col) {
+    return (row - 1) * g_txt_cols + (col - 1);
+}
+
+static void pb_txt_paint_cell(int row, int col) {
+    if (!g_txt_dc || !g_txt_font || row < 1 || row > g_txt_rows
+        || col < 1 || col > g_txt_cols) return;
+    long rc[4];
+    void* brush;
+    char ch;
+    rc[0] = (long)((col - 1) * 8);
+    rc[1] = (long)((row - 1) * 16);
+    rc[2] = rc[0] + 8;
+    rc[3] = rc[1] + 16;
+    brush = CreateSolidBrush(g_txt_bg);
+    if (brush) { FillRect(g_txt_dc, rc, brush); DeleteObject(brush); }
+    ch = g_txt_buf[pb_txt_index(row, col)];
+    /* CHW: control codes are NOT interpreted; they are displayed as symbols.
+       NUL terminates a PB string and never reaches the grid. */
+    if (ch >= 1 && ch != 127) {
+        SelectObject(g_txt_dc, g_txt_font);
+        SetBkMode(g_txt_dc, 1 /* TRANSPARENT */);
+        SetTextColor(g_txt_dc, g_txt_colors[pb_txt_index(row, col)]);
+        TextOutA(g_txt_dc, rc[0], rc[1], &ch, 1);
+    }
+    g_txt_dirty = 1;
+}
+
+static void pb_txt_flush_window(void) {
+    if (!g_txt_hwnd) return;
+    if (g_txt_dirty) {
+        InvalidateRect(g_txt_hwnd, 0, 0);
+        UpdateWindow(g_txt_hwnd);
+        g_txt_dirty = 0;
+    }
+}
+
+static void pb_txt_clear_row(int row) {
+    int c;
+    for (c = 1; c <= g_txt_cols; c++) {
+        int i = pb_txt_index(row, c);
+        g_txt_buf[i] = ' ';
+        g_txt_colors[i] = g_txt_color;
+        pb_txt_paint_cell(row, c);
+    }
+}
+
+static void pb_txt_scroll(void) {
+    int r, c;
+    if (g_txt_rows <= 1) { pb_txt_clear_row(1); return; }
+    for (r = 1; r < g_txt_rows; r++) {
+        for (c = 1; c <= g_txt_cols; c++) {
+            int d = pb_txt_index(r, c), s = pb_txt_index(r + 1, c);
+            g_txt_buf[d] = g_txt_buf[s];
+            g_txt_colors[d] = g_txt_colors[s];
+        }
+    }
+    pb_txt_clear_row(g_txt_rows);
+    for (r = 1; r <= g_txt_rows; r++) {
+        for (c = 1; c <= g_txt_cols; c++) pb_txt_paint_cell(r, c);
+    }
+}
+
+static void pb_txt_nl(void) {
+    if (!g_txt_hwnd) return;
+    g_txt_col = 1;
+    g_txt_row += 1;
+    if (g_txt_row > g_txt_rows) {
+        g_txt_row = g_txt_rows;
+        pb_txt_scroll();
+    }
+}
+
+static void pb_txt_putc(char ch) {
+    if (!g_txt_hwnd) return;
+    /* CHW TXT.PRINT: carriage return, line feed and backspace are NOT control
+       functions here - they display as symbols like any other character. */
+    if (ch == 0) return;
+    if (g_txt_col > g_txt_cols) pb_txt_nl();
+    g_txt_buf[pb_txt_index(g_txt_row, g_txt_col)] = ch;
+    g_txt_colors[pb_txt_index(g_txt_row, g_txt_col)] = g_txt_color;
+    pb_txt_paint_cell(g_txt_row, g_txt_col);
+    g_txt_col += 1;
+}
+
+/* TXT.WINDOW(Cap$, x, y [, Rows, Cols]) TO hWin - 0 on failure.  Only one
+   text window exists at a time; a second call fails rather than silently
+   hijacking the first one's handle. */
+void* pb_txt_window(const char* cap, int x, int y, int rows, int cols) {
+    void* h;
+    int i;
+    if (g_txt_hwnd) return 0;
+    if (rows <= 0) rows = 25;
+    if (cols <= 0) cols = 80;
+    if (rows > 200) rows = 200;
+    if (cols > 500) cols = 500;
+    g_txt_font = CreateFontA(16, 8, 0, 0, 400, 0, 0, 0, 1, 0, 0, 0, 0x31,
+                             "Courier New");
+    if (!g_txt_font) return 0;
+    h = pb_graphic_window_text(cap, x, y, rows, cols, g_txt_font, 1);
+    if (!h) { DeleteObject(g_txt_font); g_txt_font = 0; return 0; }
+    g_txt_rows = rows;
+    g_txt_cols = cols;
+    g_txt_buf = (char*)malloc((size_t)rows * (size_t)cols);
+    g_txt_colors = (unsigned long*)malloc((size_t)rows * (size_t)cols * sizeof(unsigned long));
+    if (!g_txt_buf || !g_txt_colors) {
+        free(g_txt_buf); free(g_txt_colors);
+        g_txt_buf = 0; g_txt_colors = 0;
+        pb_graphic_window_end(h);
+        DeleteObject(g_txt_font);
+        g_txt_font = 0;
+        return 0;
+    }
+    g_txt_hwnd = h;
+    g_txt_dc = g_gr_dc;
+    g_txt_row = 1;
+    g_txt_col = 1;
+    g_txt_dirty = 0;
+    for (i = 0; i < rows * cols; i++) {
+        g_txt_buf[i] = ' ';
+        g_txt_colors[i] = g_txt_color;
+    }
+    pb_txt_cls();
+    return h;
+}
+
+void pb_txt_cell_set(int row, int col) {
+    if (!g_txt_hwnd) return;
+    if (row > 0) g_txt_row = row > g_txt_rows ? g_txt_rows : row;
+    if (col > 0) g_txt_col = col > g_txt_cols ? g_txt_cols : col;
+}
+
+void pb_txt_cell_get(int* row, int* col) {
+    if (row) *row = g_txt_row;
+    if (col) *col = g_txt_col;
+}
+
+void pb_txt_row_set(int row) { pb_txt_cell_set(row, 0); }
+void pb_txt_col_set(int col) { pb_txt_cell_set(0, col); }
+int pb_txt_row_value(void) { return g_txt_row; }
+int pb_txt_col_value(void) { return g_txt_col; }
+void pb_txt_row_get(int* row) { if (row) *row = g_txt_row; }
+void pb_txt_col_get(int* col) { if (col) *col = g_txt_col; }
+
+void pb_txt_color_set(unsigned long color) { g_txt_color = color; }
+
+void pb_txt_cls(void) {
+    int r, c;
+    if (!g_txt_hwnd) return;
+    for (r = 1; r <= g_txt_rows; r++) {
+        for (c = 1; c <= g_txt_cols; c++) {
+            int i = pb_txt_index(r, c);
+            g_txt_buf[i] = ' ';
+            g_txt_colors[i] = g_txt_color;
+        }
+    }
+    g_txt_row = 1;
+    g_txt_col = 1;
+    for (r = 1; r <= g_txt_rows; r++) {
+        long rc[4];
+        void* brush;
+        rc[0] = 0;
+        rc[1] = (long)((r - 1) * 16);
+        rc[2] = (long)(g_txt_cols * 8);
+        rc[3] = rc[1] + 16;
+        brush = CreateSolidBrush(g_txt_bg);
+        if (brush) { FillRect(g_txt_dc, rc, brush); DeleteObject(brush); }
+    }
+    g_txt_dirty = 1;
+    pb_txt_flush_window();
+}
+
+void pb_txt_print_str(const char* s) {
+    if (!s) return;
+    while (*s) pb_txt_putc(*s++);
+    pb_txt_flush_window();
+}
+
+void pb_txt_print_i64(long long v) {
+    char buf[40];
+    snprintf(buf, sizeof(buf), "% lld", v);
+    pb_txt_print_str(buf);
+}
+
+void pb_txt_print_f64(double v) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "% .6g", v);
+    pb_txt_print_str(buf);
+}
+
+void pb_txt_print_spc(int n) {
+    while (n-- > 0) pb_txt_putc(' ');
+    pb_txt_flush_window();
+}
+
+void pb_txt_print_tab(int n) {
+    if (n < 1) n = 1;
+    if (n > g_txt_cols) n = g_txt_cols;
+    while (g_txt_col < n) pb_txt_putc(' ');
+    pb_txt_flush_window();
+}
+
+void pb_txt_print_zone(void) {
+    int next = ((g_txt_col - 1) / 14 + 1) * 14 + 1;
+    if (next > g_txt_cols) pb_txt_newline();
+    else while (g_txt_col < next) pb_txt_putc(' ');
+    pb_txt_flush_window();
+}
+
+void pb_txt_newline(void) {
+    pb_txt_nl();
+    pb_txt_flush_window();
+}
+
+char* pb_txt_inkey(void) {
+    /* No text window -> empty string (CHW).  Extended keys are ignored by the
+       TXT pseudo-object: the graphic queue encodes them as NUL + scan code,
+       so a two-byte entry is discarded and the next standard key is read. */
+    if (!g_txt_hwnd) return pb_bstr_alloc("", 0);
+    for (;;) {
+        char* s = pb_graphic_inkey();
+        if (!s) return s;
+        if (pb_str_len(s) == 1) return s;
+        SysFreeString(s);
+        if (g_gr_kn <= 0) return pb_bstr_alloc("", 0);
+    }
+}
+
+char* pb_txt_waitkey(void) {
+    unsigned char b[2];
+    if (!g_txt_hwnd) return pb_bstr_alloc("", 0);
+    for (;;) {
+        pb_gr_pump();
+        if (g_gr_kn <= 0) { Sleep(1); continue; }
+        int n = pb_gr_key_pop(b);
+        if (n == 1 && b[0] != 0) return pb_bstr_alloc((const char*)b, 1);
+        /* n == 2: extended key, ignored; loop for the next standard one. */
+    }
+}
+
+int pb_txt_instat(void) {
+    if (!g_txt_hwnd) return 0;
+    pb_gr_pump();
+    for (int i = 0; i < g_gr_kn;) {
+        if (g_gr_keys[i] == 0) {
+            if (i + 1 >= g_gr_kn) break;   /* incomplete extended pair */
+            i += 2;                        /* skip NUL + scan code */
+        } else {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* TXT.LINE.INPUT: the CHW line editor, but echoed into the TXT grid instead
+   of the graphic-window text cursor. */
+char* pb_txt_line_input(const char* prompt) {
+    unsigned char b[2];
+    int n, len = 0;
+    char line[260];
+    if (prompt) pb_txt_print_str(prompt);
+    for (;;) {
+        pb_gr_pump();
+        if (g_gr_kn <= 0) { Sleep(1); continue; }
+        n = pb_gr_key_pop(b);
+        if (n != 1) continue;
+        if (b[0] == 13 || b[0] == 10) break;
+        if (b[0] == 8 || b[0] == 127) {
+            if (len > 0) {
+                len -= 1;
+                if (g_txt_col > 1) g_txt_col -= 1;
+                else if (g_txt_row > 1) {
+                    g_txt_row -= 1;
+                    g_txt_col = g_txt_cols;
+                }
+                g_txt_buf[pb_txt_index(g_txt_row, g_txt_col)] = ' ';
+                pb_txt_paint_cell(g_txt_row, g_txt_col);
+                pb_txt_flush_window();
+            }
+            continue;
+        }
+        if (b[0] < 32) continue;
+        if (len < PB_GR_LINECAP - 1) {
+            line[len++] = (char)b[0];
+            pb_txt_putc((char)b[0]);
+            pb_txt_flush_window();
+        }
+    }
+    line[len] = '\0';
+    pb_txt_newline();
+    pb_txt_flush_window();
+    return pb_bstr_alloc(line, (unsigned int)len);
+}
+
+void pb_txt_end(void) {
+    if (!g_txt_hwnd) return;
+    pb_graphic_window_end(g_txt_hwnd);
+    g_txt_hwnd = 0;
+    g_txt_dc = 0;
+    g_txt_rows = 0;
+    g_txt_cols = 0;
+    g_txt_row = 1;
+    g_txt_col = 1;
+    if (g_txt_font) { DeleteObject(g_txt_font); g_txt_font = 0; }
+    free(g_txt_buf); g_txt_buf = 0;
+    free(g_txt_colors); g_txt_colors = 0;
 }
 
 int pb_graphic_window_hide(void* h) {
@@ -16731,9 +17341,14 @@ static void pb_tab_apply_selection(void* hTab) {
    WM_DESTROY, which would tear the message loop down when a page is
    destroyed.  They also route WM_COMMAND to the callback named in
    `TAB INSERT PAGE ... CALL cb`, falling back to the dialog callback. */
+#if defined(_WIN64)
 static long long __stdcall pb_tabpage_wndproc(void* hWnd, unsigned int Msg,
                                               unsigned long long wParam,
                                               unsigned long long lParam) {
+#else
+static long __stdcall pb_tabpage_wndproc(void* hWnd, unsigned int Msg,
+                                         unsigned int wParam, unsigned int lParam) {
+#endif
     if (Msg == 0x0111 /* WM_COMMAND */) {
         void* fn;
         cb_msg = Msg;

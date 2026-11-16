@@ -311,16 +311,18 @@ fn pbr_walk_dir(
             return Err(format!("PBR language id {} out of range", lang));
         }
         seen.insert(raw_off as usize);
-        if data_size > 0 {
-            out.push(ParsedResEntry {
-                type_int,
-                type_str: type_str.clone(),
-                name_int,
-                name_str: name_str.clone(),
-                lang: lang as u16,
-                data: bytes[payload..payload_end].to_vec(),
-            });
-        }
+        // A PBR entry may legitimately carry a zero-length payload (an empty
+        // RCDATA / STRINGTABLE slot).  It still owns a tree slot, so skipping
+        // it makes `out.len() != count` reject the whole file; keep it with an
+        // empty payload.
+        out.push(ParsedResEntry {
+            type_int,
+            type_str: type_str.clone(),
+            name_int,
+            name_str: name_str.clone(),
+            lang: lang as u16,
+            data: bytes[payload..payload_end].to_vec(),
+        });
     }
     Ok(())
 }
@@ -465,6 +467,19 @@ mod pbr_tests {
         assert_eq!(out[0].name_str.as_deref(), Some("NAMED"));
         assert_eq!(out[0].lang, 1033);
         assert_eq!(out[0].data, [9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn keeps_zero_length_pbr_entry() {
+        // A zero-length payload still owns a tree slot; dropping it made
+        // `out.len() != count` reject the file (batch 367 regression).
+        let mut b = numeric_fixture();
+        put_u32(&mut b, 0x84, 0);
+        let out = super::parse_pbr(&b).expect("empty PBR entry");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].type_int, Some(10));
+        assert_eq!(out[0].lang, 1033);
+        assert!(out[0].data.is_empty());
     }
 
     #[test]

@@ -163,6 +163,11 @@ impl Parser {
                 Token::Union => "UNION",
                 Token::Alias => "ALIAS",
                 Token::Callback => "CALLBACK",
+                // batch 369: IPowerThread members collide with statement
+                // keywords; a dotted method call must still be able to name
+                // them (`xx.Resume()`, `xx.Close()`).
+                Token::Close => "CLOSE",
+                Token::Resume => "RESUME",
                 _ => return None,
             }
             .to_string(),
@@ -606,6 +611,9 @@ impl Parser {
                 // mapping so `LOCAL o AS Iface` + `o.M(a)` can be lowered to the
                 // compiled <Class>_<Method> function.
                 let mut interfaces: Vec<String> = Vec::new();
+                // THREAD METHOD name (batch 369).  Exactly one per CLASS;
+                // codegen turns it into the thread entry point.
+                let mut thread_method: Option<String> = None;
                 loop {
                     if self.at_end() || self.peek() == &Token::Eof {
                         break;
@@ -665,6 +673,35 @@ impl Parser {
                         self.skip_eol();
                         continue;
                     }
+                    // THREAD METHOD name ... END METHOD (CHW THREAD OBJECT):
+                    // a normal METHOD that codegen also uses as the thread entry
+                    // point.  It is still compiled as <Class>_<Method>.
+                    let is_thread_method = matches!(self.peek(), Token::Identifier(k)
+                                                     if k.eq_ignore_ascii_case("THREAD"))
+                        && matches!(self.peek_at(1), Some(Token::Identifier(k2))
+                                    if k2.eq_ignore_ascii_case("METHOD"));
+                    if is_thread_method {
+                        if thread_method.is_some() {
+                            return Err(PbError::parser(
+                                format!(
+                                    "THREAD OBJECT error (627): CLASS {} declares more than one THREAD METHOD",
+                                    name
+                                ),
+                                self.current_file(),
+                                self.current_line(),
+                            ));
+                        }
+                        self.advance(); // THREAD
+                        let item = self.parse_method_decl(Some(&name))?;
+                        if let TopLevel::FunctionDecl(fd) = &item {
+                            let prefix = format!("{}_", name.to_uppercase());
+                            let m = fd.name.to_uppercase();
+                            thread_method = Some(m.strip_prefix(&prefix).unwrap_or(&m).to_string());
+                        }
+                        self.pending.push_back(item);
+                        self.skip_eol();
+                        continue;
+                    }
                     // METHOD name ... END METHOD: a real method body.  It leaves this
                     // branch as an ordinary SUB/FUNCTION (see parse_method_decl), queued in
                     // self.pending because parse_top_level hands back one item per call.
@@ -710,6 +747,25 @@ impl Parser {
                         self.skip_eol();
                         continue;
                     }
+                    // INHERIT IPowerThread — marks the enclosing CLASS as a
+                    // THREAD OBJECT (CHW Error 627).  The interface name itself
+                    // is already recorded above; the sentinel lets codegen
+                    // synthesize the IPowerThread method bridges.
+                    let is_inherit = matches!(self.peek(), Token::Identifier(k)
+                                                  if k.eq_ignore_ascii_case("INHERIT"));
+                    if is_inherit {
+                        self.advance(); // INHERIT
+                        if let Token::Identifier(parent) = self.peek() {
+                            if parent.eq_ignore_ascii_case("IPOWERTHREAD") {
+                                interfaces.push("IPOWERTHREAD".to_string());
+                                self.interface_names.insert("IPOWERTHREAD".to_string());
+                            }
+                            self.advance();
+                        }
+                        self.consume_to_eol();
+                        self.skip_eol();
+                        continue;
+                    }
                     // EVENT SOURCE IfaceName — advertise an event interface this
                     // class can raise (batch 222).  Collected into the TypeDecl so
                     // codegen can validate RAISEEVENT uses.
@@ -745,6 +801,7 @@ impl Parser {
                         fill: false,
                         event_sources,
                         interfaces,
+                        thread_method,
                     })))
                 }
             }
@@ -1787,6 +1844,7 @@ impl Parser {
             fill,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
+            thread_method: None,
         })
     }
 
@@ -1918,6 +1976,7 @@ impl Parser {
             fill: false,
             event_sources: Vec::new(),
             interfaces: Vec::new(),
+            thread_method: None,
         })
     }
 
@@ -5099,6 +5158,250 @@ impl Parser {
                         is_end,
                         line,
                     });
+                }
+
+                // TXT pseudo-object (CHW TXT_pseudo-object.htm).  This is a
+                // statement-level family because CHW mixes `=` assignments,
+                // `TO` getters and the PRINT item/separator rules; the
+                // expression forms used on the right-hand side are handled in
+                // parse_primary.
+                if name_upper == "TXT" && matches!(self.peek_at(1), Some(Token::Dot)) {
+                    self.advance(); // consume TXT
+                    self.expect(&Token::Dot)?;
+                    let member = self.peek_txt_member_upper();
+                    if member.is_empty() {
+                        return Err(PbError::parser(
+                            "Expected a TXT member after '.'".to_string(),
+                            self.current_file(),
+                            line,
+                        ));
+                    }
+                    self.advance(); // consume member
+
+                    if member == "WINDOW" {
+                        self.expect(&Token::LParen)?;
+                        let cap = self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                        let x = self.parse_expression()?;
+                        self.expect(&Token::Comma)?;
+                        let y = self.parse_expression()?;
+                        let mut rows = Expr::IntegerLit(25);
+                        let mut cols = Expr::IntegerLit(80);
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            rows = self.parse_expression()?;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                cols = self.parse_expression()?;
+                            }
+                        }
+                        self.expect(&Token::RParen)?;
+                        self.expect(&Token::To)?;
+                        let target = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "TXT_WINDOW".to_string(),
+                            args: vec![cap, x, y, rows, cols, target],
+                            line,
+                        }));
+                    }
+
+                    if member == "LINE" {
+                        self.expect(&Token::Dot)?;
+                        let sub = self.peek_txt_member_upper();
+                        if sub != "INPUT" {
+                            return Err(PbError::parser(
+                                "TXT.LINE: only LINE.INPUT is defined".to_string(),
+                                self.current_file(),
+                                line,
+                            ));
+                        }
+                        self.advance(); // INPUT
+                        let paren = self.peek() == &Token::LParen;
+                        if paren {
+                            self.advance();
+                        }
+                        let first = self.parse_expression()?;
+                        let (prompt, var) = if self.peek() == &Token::Comma {
+                            self.advance();
+                            let var = self.parse_expression()?;
+                            (Some(first), var)
+                        } else {
+                            (None, first)
+                        };
+                        if paren {
+                            self.expect(&Token::RParen)?;
+                        }
+                        self.consume_to_eol();
+                        let mut args = Vec::new();
+                        if let Some(p) = prompt {
+                            args.push(p);
+                        }
+                        return Ok(Statement::Assign(AssignStmt {
+                            target: var,
+                            value: Expr::FunctionCall("TXT_LINE_INPUT".to_string(), args),
+                            line,
+                        }));
+                    }
+
+                    if member == "PRINT" {
+                        let mut args = Vec::new();
+                        let mut separators = Vec::new();
+                        while self.peek() != &Token::Eol && self.peek() != &Token::Eof {
+                            args.push(self.parse_expression()?);
+                            let sep = if self.peek() == &Token::Comma {
+                                self.advance();
+                                Some(',')
+                            } else if self.peek() == &Token::Semicolon {
+                                self.advance();
+                                Some(';')
+                            } else {
+                                None
+                            };
+                            separators.push(sep);
+                            if sep.is_none() {
+                                break;
+                            }
+                        }
+                        self.consume_to_eol();
+                        let trailing = separators.last().cloned().flatten();
+                        return Ok(Statement::TxtPrint(TxtPrintStmt {
+                            args,
+                            separators,
+                            trailing,
+                            line,
+                        }));
+                    }
+
+                    if member == "CELL" {
+                        if self.peek() == &Token::Eq {
+                            self.advance();
+                            let row = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let col = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "TXT_CELL_SET".to_string(),
+                                args: vec![row, col],
+                                line,
+                            }));
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let row = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let col = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "TXT_CELL_GET".to_string(),
+                                args: vec![row, col],
+                                line,
+                            }));
+                        }
+                    }
+
+                    if member == "COL" || member == "ROW" {
+                        if self.peek() == &Token::Eq {
+                            self.advance();
+                            let value = self.parse_expression()?;
+                            self.consume_to_eol();
+                            let name = if member == "COL" {
+                                "TXT_COL_SET"
+                            } else {
+                                "TXT_ROW_SET"
+                            };
+                            return Ok(Statement::Call(CallStmt {
+                                name: name.to_string(),
+                                args: vec![value],
+                                line,
+                            }));
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            let name = if member == "COL" {
+                                "TXT_COL_GET"
+                            } else {
+                                "TXT_ROW_GET"
+                            };
+                            return Ok(Statement::Call(CallStmt {
+                                name: name.to_string(),
+                                args: vec![target],
+                                line,
+                            }));
+                        }
+                    }
+
+                    if member == "COLOR" {
+                        self.expect(&Token::Eq)?;
+                        let value = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "TXT_COLOR_SET".to_string(),
+                            args: vec![value],
+                            line,
+                        }));
+                    }
+
+                    if member == "CLS" {
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "TXT_CLS".to_string(),
+                            args: Vec::new(),
+                            line,
+                        }));
+                    }
+
+                    if member == "END" {
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "TXT_END".to_string(),
+                            args: Vec::new(),
+                            line,
+                        }));
+                    }
+
+                    if member == "INKEY$" || member == "WAITKEY$" || member == "INSTAT" {
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            let fn_name = format!("TXT_{}", member);
+                            return Ok(Statement::Assign(AssignStmt {
+                                target,
+                                value: Expr::FunctionCall(fn_name, Vec::new()),
+                                line,
+                            }));
+                        }
+                        // CHW TXT.WAITKEY$: the TO clause is optional; the bare
+                        // statement waits for a key and discards it.
+                        if member == "WAITKEY$" {
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "TXT_WAITKEY$".to_string(),
+                                args: Vec::new(),
+                                line,
+                            }));
+                        }
+                        return Err(PbError::parser(
+                            format!(
+                                "TXT.{} is a function value; use it in an expression or with TO",
+                                member
+                            ),
+                            self.current_file(),
+                            line,
+                        ));
+                    }
+
+                    return Err(PbError::parser(
+                        format!(
+                            "TXT.{} is not a recognized TXT pseudo-object member",
+                            member
+                        ),
+                        self.current_file(),
+                        line,
+                    ));
                 }
 
                 // MENU NEW BAR TO hMenu | MENU NEW POPUP TO hPop
@@ -15125,13 +15428,14 @@ impl Parser {
             }
             _ => {
                 self.consume_to_eol();
-                // batch 350: THREAD NEW / THREAD OBJECT are the COM object model
-                // (IPowerThread).  Only the statement family exists here, so name
-                // the missing model instead of a generic "unsupported".
+                // batch 369: the IPowerThread model is the CLASS + THREAD METHOD
+                // form (see THREAD_Object.htm); THREAD NEW / THREAD OBJECT are
+                // not part of it.  Name the supported shape instead of a generic
+                // "unsupported".
                 if op == "NEW" || op == "OBJECT" {
                     eprintln!(
-                        "Error: THREAD OBJECT / THREAD NEW (the IPowerThread COM object model) is not implemented on line {} - use the statement form THREAD CREATE [SUSPEND] TO hThread",
-                        line
+                        "Error: THREAD {} is not the IPowerThread syntax on line {} - declare CLASS ... THREAD METHOD ... INHERIT IPowerThread and use LAUNCH/JOIN/RESULT",
+                        op, line
                     );
                 } else {
                     eprintln!(
@@ -15157,6 +15461,19 @@ impl Parser {
             Token::On => "ON".to_string(),
             Token::Dword => "DWORD".to_string(),
             Token::End => "END".to_string(),
+            _ => String::new(),
+        }
+    }
+
+    /// Member-name spelling for the TXT pseudo-object.  Its `LINE.INPUT`
+    /// member contains the keyword token INPUT, and PRINT/END are keywords
+    /// too, so peek_plain_upper alone reports an empty name for them.
+    fn peek_txt_member_upper(&self) -> String {
+        match self.peek() {
+            Token::Identifier(w) => w.to_uppercase(),
+            Token::Print => "PRINT".to_string(),
+            Token::End => "END".to_string(),
+            Token::Input => "INPUT".to_string(),
             _ => String::new(),
         }
     }
@@ -17613,18 +17930,39 @@ impl Parser {
                     // which previously fell through to a variable reference.
                     Expr::FunctionCall(name.to_uppercase(), vec![self.parse_expression()?])
                 } else {
-                    // batch 350: the TXT pseudo-object (CHW "TXT pseudo-object")
-                    // is a GUI Text Window object model whose members
-                    // (CELL/CLS/COLOR/END/INKEY$/INSTAT/LINE.INPUT/PRINT/
-                    // WAITKEY$/WINDOW/COL/ROW) have no runtime here.  Without
-                    // this guard `TXT.WINDOW` failed with the generic
-                    // "Expected member name after '.'".
+                    // TXT pseudo-object value members.  Statement forms are
+                    // intercepted in parse_statement; this branch covers the
+                    // right-hand side spellings `x = TXT.COL`,
+                    // `x = TXT.INKEY$`, `x = TXT.WAITKEY$` and `x = TXT.INSTAT`.
                     if name.eq_ignore_ascii_case("TXT") && self.peek() == &Token::Dot {
-                        return Err(PbError::parser(
-                            "TXT pseudo-object is not implemented in this build: the GUI Text Window object model (TXT.CELL/CLS/COLOR/END/INKEY$/INSTAT/LINE.INPUT/PRINT/WAITKEY$/WINDOW/COL/ROW) has no runtime - use PRINT with #CONSOLE ON or GRAPHIC WINDOW instead",
-                            self.current_file(),
-                            self.current_line(),
-                        ));
+                        self.advance(); // consume '.'
+                        let member = self.peek_txt_member_upper();
+                        if member.is_empty() {
+                            return Err(PbError::parser(
+                                "Expected a TXT member after '.'",
+                                self.current_file(),
+                                self.current_line(),
+                            ));
+                        }
+                        self.advance();
+                        let fn_name = match member.as_str() {
+                            "COL" => "TXT_COL_GET",
+                            "ROW" => "TXT_ROW_GET",
+                            "INKEY$" => "TXT_INKEY$",
+                            "WAITKEY$" => "TXT_WAITKEY$",
+                            "INSTAT" => "TXT_INSTAT",
+                            _ => {
+                                return Err(PbError::parser(
+                                    format!(
+                                        "TXT.{} is a statement form; use its documented TO/=/PRINT syntax",
+                                        member
+                                    ),
+                                    self.current_file(),
+                                    self.current_line(),
+                                ));
+                            }
+                        };
+                        return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
                     }
                     Expr::Variable(name)
                 };

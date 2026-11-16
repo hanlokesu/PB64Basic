@@ -229,6 +229,10 @@ pub struct TypeDecl {
     /// name used in `LOCAL o AS <Iface>` back to this class so `o.M(a)` can be
     /// lowered to the compiled `<Class>_<Method>` function.
     pub interfaces: Vec<String>,
+    /// THREAD METHOD declared inside this CLASS (batch 369).  The value is the
+    /// method name without the class prefix; codegen uses it as the thread
+    /// entry point and synthesizes the IPowerThread bridges.
+    pub thread_method: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -365,6 +369,7 @@ pub enum Statement {
     WhileWend(WhileWendStmt),
     SelectCase(SelectCaseStmt),
     Print(PrintStmt),
+    TxtPrint(TxtPrintStmt),
     PrintFile(PrintFileStmt),
     Open(OpenStmt),
     Field(FieldStmt),
@@ -648,6 +653,16 @@ pub struct PrintStmt {
     /// the newline, so the next PRINT continues on the same line.  `None`
     /// means the statement prints its own newline.  A separator *between* two
     /// arguments is consumed by the parser and does not set this field.
+    pub trailing: Option<char>,
+    pub line: usize,
+}
+
+/// TXT PRINT pseudo-object form (CHW `TXT pseudo-object`): expressions plus
+/// SPC(n) / TAB(n) items, with the same comma/semicolon rules as PRINT.
+#[derive(Debug, Clone)]
+pub struct TxtPrintStmt {
+    pub args: Vec<Expr>,
+    pub separators: Vec<Option<char>>,
     pub trailing: Option<char>,
     pub line: usize,
 }

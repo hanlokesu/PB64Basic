@@ -4890,6 +4890,71 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_graphic_window_end", &IrType::I32, &[IrType::Ptr], false);
+        // batch 368 - the TXT pseudo-object runtime
+        self.module.declare_function(
+            "pb_txt_window",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_txt_cell_set",
+            &IrType::Void,
+            &[IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_txt_cell_get",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_txt_col_set", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_txt_row_set", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_txt_col_get", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_txt_row_get", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_txt_color_set", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_txt_cls", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_txt_end", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_txt_newline", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_txt_print_zone", &IrType::Void, &[], false);
+        self.module
+            .declare_function("pb_txt_print_str", &IrType::Void, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_txt_print_i64", &IrType::Void, &[IrType::I64], false);
+        self.module
+            .declare_function("pb_txt_print_f64", &IrType::Void, &[IrType::Double], false);
+        self.module
+            .declare_function("pb_txt_print_spc", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_txt_print_tab", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_txt_inkey", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_txt_waitkey", &IrType::Ptr, &[], false);
+        self.module
+            .declare_function("pb_txt_instat", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_txt_col_value", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_txt_row_value", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_txt_line_input", &IrType::Ptr, &[IrType::Ptr], false);
         self.module.declare_function(
             "pb_graphic_window_hide",
             &IrType::I32,
@@ -7496,6 +7561,10 @@ impl Compiler {
         // ArrayInfo before any body is compiled (cross-procedure reads).
         self.prescan_threaded_arrays(program)?;
 
+        // THREAD OBJECT / IPowerThread (batch 369): synthesize the interface
+        // bridges now that every CLASS layout and every THREAD METHOD is known.
+        self.synthesize_thread_object_methods(program)?;
+
         // Second pass: compile function/sub bodies
         let mut codegen_errors = 0usize;
         let mut first_codegen_err: Option<PbError> = None;
@@ -8146,6 +8215,256 @@ impl Compiler {
             self.class_ids
                 .insert(name.clone(), self.class_ids.len() as i64);
         }
+    }
+
+    /// THREAD OBJECT / IPowerThread (batch 369).
+    ///
+    /// The parser records `thread_method` and the `IPOWERTHREAD` sentinel on
+    /// the CLASS.  This pass validates the documented shape (one THREAD METHOD,
+    /// an INSTANCE ThreadParam), registers the IPowerThread signatures so the
+    /// existing interface-dispatch path can resolve `xx.Launch(...)`, and emits
+    /// small bridges into the runtime object-thread table.
+    fn synthesize_thread_object_methods(&mut self, program: &Program) -> PbResult<()> {
+        struct ThreadClass {
+            class: String,
+            entry: String,
+            field_idx: usize,
+            field_size: u32,
+        }
+        let mut todo: Vec<ThreadClass> = Vec::new();
+        for item in &program.items {
+            let TopLevel::TypeDecl(td) = item else {
+                continue;
+            };
+            if !td.is_class || !td.interfaces.iter().any(|i| i == "IPOWERTHREAD") {
+                continue;
+            }
+            let class = normalize_name(&td.name);
+            let Some(method) = td.thread_method.as_ref() else {
+                return Err(PbError::generic(format!(
+                    "THREAD OBJECT error (627): CLASS {} inherits IPowerThread but has no THREAD METHOD",
+                    td.name
+                )));
+            };
+            let Some(layout) = self.type_layouts.get(&class) else {
+                continue;
+            };
+            let Some(&field_idx) = layout.field_map.get("THREADPARAM") else {
+                return Err(PbError::generic(format!(
+                    "THREAD OBJECT error: CLASS {} must declare INSTANCE ThreadParam",
+                    td.name
+                )));
+            };
+            let field_size = Self::ir_size_bytes(&layout.fields[field_idx].ir_type);
+            let entry = format!("{}_{}", class, normalize_name(method));
+            if !self.functions.contains_key(&entry) {
+                return Err(PbError::generic(format!(
+                    "THREAD OBJECT error: THREAD METHOD {}.{} was not compiled",
+                    td.name, method
+                )));
+            }
+            todo.push(ThreadClass {
+                class,
+                entry,
+                field_idx,
+                field_size,
+            });
+        }
+
+        for t in todo {
+            // The synthesized bridges call into the runtime object-thread API;
+            // every callee needs an IR declaration or clang rejects the module
+            // with `use of undefined value` (batch 369).
+            self.module.declare_function(
+                "pb_thread_object_launch",
+                &IrType::I32,
+                &[
+                    IrType::Ptr,
+                    IrType::Ptr,
+                    IrType::Ptr,
+                    IrType::Ptr,
+                    IrType::I32,
+                    IrType::I32,
+                ],
+                false,
+            );
+            for (name, ret, extra) in [
+                ("pb_thread_object_close", IrType::I32, 0usize),
+                ("pb_thread_object_handle", IrType::I32, 0),
+                ("pb_thread_object_id", IrType::I32, 0),
+                ("pb_thread_object_isalive", IrType::I32, 0),
+                ("pb_thread_object_result", IrType::I32, 0),
+                ("pb_thread_object_resume", IrType::I32, 0),
+                ("pb_thread_object_suspend", IrType::I32, 0),
+                ("pb_thread_object_get_priority", IrType::I32, 0),
+                ("pb_thread_object_get_stacksize", IrType::I32, 0),
+                ("pb_thread_object_timecreate", IrType::I64, 0),
+                ("pb_thread_object_timeexit", IrType::I64, 0),
+                ("pb_thread_object_timekernel", IrType::I64, 0),
+                ("pb_thread_object_timeuser", IrType::I64, 0),
+                ("pb_thread_object_equals", IrType::I32, 1),
+                ("pb_thread_object_join", IrType::I32, 2),
+                ("pb_thread_object_set_priority", IrType::I32, 1),
+                ("pb_thread_object_set_stacksize", IrType::I32, 1),
+            ] {
+                let mut params = vec![IrType::Ptr];
+                for _ in 0..extra {
+                    params.push(if name == "pb_thread_object_join" {
+                        if params.len() == 2 {
+                            IrType::Ptr
+                        } else {
+                            IrType::I32
+                        }
+                    } else {
+                        IrType::I32
+                    });
+                }
+                self.module.declare_function(name, &ret, &params, false);
+            }
+            let this = Val::new("%THIS".to_string(), IrType::Ptr);
+            // The receiver reaching an interface bridge is already the heap
+            // object pointer (compile_interface_dispatch passes it BY VALUE).
+            let mk = |cg: &mut Self, name: &str, ret: IrType, extra: &[(&str, IrType)]| {
+                let mut params = vec![("THIS".to_string(), IrType::Ptr)];
+                for (n, ty) in extra {
+                    params.push(((*n).to_string(), ty.clone()));
+                }
+                let ir_name = format!("{}_{}", t.class, name);
+                if cg.functions.contains_key(&ir_name) {
+                    return;
+                }
+                let mut pinfo = vec![ParamInfo {
+                    name: "THIS".to_string(),
+                    pb_type: PbType::UserDefined(t.class.clone()),
+                    ir_type: IrType::Ptr,
+                    is_byval: false,
+                    is_optional: false,
+                }];
+                for (n, ty) in extra {
+                    pinfo.push(ParamInfo {
+                        name: (*n).to_string(),
+                        pb_type: PbType::Long,
+                        ir_type: ty.clone(),
+                        is_byval: true,
+                        is_optional: false,
+                    });
+                }
+                cg.functions.insert(
+                    ir_name,
+                    FuncInfo {
+                        ir_name: format!("{}_{}", t.class, name),
+                        ret_type: ret,
+                        params: pinfo,
+                        export: false,
+                        is_external: false,
+                        is_stdcall: false,
+                    },
+                );
+            };
+
+            mk(self, "LAUNCH", IrType::I32, &[("PARAM", IrType::Ptr)]);
+            mk(self, "CLOSE", IrType::I32, &[]);
+            mk(self, "EQUALS", IrType::I32, &[("OTHER", IrType::Ptr)]);
+            mk(self, "HANDLE", IrType::I32, &[]);
+            mk(self, "ID", IrType::I32, &[]);
+            mk(self, "ISALIVE", IrType::I32, &[]);
+            mk(
+                self,
+                "JOIN",
+                IrType::I32,
+                &[("OTHER", IrType::Ptr), ("TIMEOUT", IrType::I32)],
+            );
+            mk(self, "RESULT", IrType::I32, &[]);
+            mk(self, "RESUME", IrType::I32, &[]);
+            mk(self, "SUSPEND", IrType::I32, &[]);
+            mk(self, "PRIORITY_GET", IrType::I32, &[]);
+            mk(self, "PRIORITY_SET", IrType::I32, &[("LEVEL", IrType::I32)]);
+            mk(self, "STACKSIZE_GET", IrType::I32, &[]);
+            mk(self, "STACKSIZE_SET", IrType::I32, &[("SIZE", IrType::I32)]);
+            mk(self, "TIMECREATE", IrType::I64, &[]);
+            mk(self, "TIMEEXIT", IrType::I64, &[]);
+            mk(self, "TIMEKERNEL", IrType::I64, &[]);
+            mk(self, "TIMEUSER", IrType::I64, &[]);
+
+            // LAUNCH: store the parameter into ThreadParam, then create the
+            // Windows thread with the CLASS THREAD METHOD as its entry point.
+            let ir = format!("{}_LAUNCH", t.class);
+            let info = self.functions.get(&ir).cloned().unwrap();
+            let params: Vec<(String, IrType)> = info
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.ir_type.clone()))
+                .collect();
+            let mut fb = self
+                .module
+                .create_function_builder_ex(&ir, &IrType::I32, &params, false);
+            let field = fb.gep_struct(&t.class, &this, t.field_idx);
+            let entry = Val::new(format!("@{}", t.entry), IrType::Ptr);
+            let call = fb.call(
+                &IrType::I32,
+                "pb_thread_object_launch",
+                &[
+                    this.clone(),
+                    entry,
+                    Val::new("%PARAM".to_string(), IrType::Ptr),
+                    field,
+                    Val::new(t.field_size.to_string(), IrType::I32),
+                    Val::new("0".to_string(), IrType::I32),
+                ],
+            );
+            fb.ret(&call);
+            self.module.add_function_body(fb.finish());
+            self.defined_ir.insert(ir);
+
+            let simple = [
+                ("CLOSE", "pb_thread_object_close", IrType::I32),
+                ("EQUALS", "pb_thread_object_equals", IrType::I32),
+                ("HANDLE", "pb_thread_object_handle", IrType::I32),
+                ("ID", "pb_thread_object_id", IrType::I32),
+                ("ISALIVE", "pb_thread_object_isalive", IrType::I32),
+                ("JOIN", "pb_thread_object_join", IrType::I32),
+                ("RESULT", "pb_thread_object_result", IrType::I32),
+                ("RESUME", "pb_thread_object_resume", IrType::I32),
+                ("SUSPEND", "pb_thread_object_suspend", IrType::I32),
+                ("PRIORITY_GET", "pb_thread_object_get_priority", IrType::I32),
+                ("PRIORITY_SET", "pb_thread_object_set_priority", IrType::I32),
+                (
+                    "STACKSIZE_GET",
+                    "pb_thread_object_get_stacksize",
+                    IrType::I32,
+                ),
+                (
+                    "STACKSIZE_SET",
+                    "pb_thread_object_set_stacksize",
+                    IrType::I32,
+                ),
+                ("TIMECREATE", "pb_thread_object_timecreate", IrType::I64),
+                ("TIMEEXIT", "pb_thread_object_timeexit", IrType::I64),
+                ("TIMEKERNEL", "pb_thread_object_timekernel", IrType::I64),
+                ("TIMEUSER", "pb_thread_object_timeuser", IrType::I64),
+            ];
+            for (name, rt, ret) in simple {
+                let ir = format!("{}_{}", t.class, name);
+                let info = self.functions.get(&ir).cloned().unwrap();
+                let params: Vec<(String, IrType)> = info
+                    .params
+                    .iter()
+                    .map(|p| (p.name.clone(), p.ir_type.clone()))
+                    .collect();
+                let mut fb = self
+                    .module
+                    .create_function_builder_ex(&ir, &ret, &params, false);
+                let mut args = vec![this.clone()];
+                for p in info.params.iter().skip(1) {
+                    args.push(Val::new(format!("%{}", p.name), p.ir_type.clone()));
+                }
+                let v = fb.call(&ret, rt, &args);
+                fb.ret(&v);
+                self.module.add_function_body(fb.finish());
+                self.defined_ir.insert(ir);
+            }
+        }
+        Ok(())
     }
 
     fn register_enum(&mut self, ed: &EnumDecl) {
@@ -9543,6 +9862,7 @@ impl Compiler {
             Statement::WhileWend(w) => self.compile_while_wend(fb, w),
             Statement::SelectCase(s) => self.compile_select_case(fb, s),
             Statement::Print(p) => self.compile_print(fb, p),
+            Statement::TxtPrint(p) => self.compile_txt_print(fb, p),
             Statement::Dim(d) => self.compile_dim(fb, d),
             Statement::FunctionReturn(fr) => self.compile_function_return(fb, fr),
             Statement::ExitSub => {
@@ -10861,7 +11181,14 @@ impl Compiler {
                         };
                     }
                 }
-                let info = self.symbols.lookup(&normalize_name(name))?;
+                let Some(info) = self.symbols.lookup(&normalize_name(name)) else {
+                    // A bare INSTANCE field receiver (`ThreadParam.GetANumber()`):
+                    // the parser keeps it as a plain variable, so type resolution
+                    // must apply the same `this.<field>` rewrite the value path
+                    // uses (batch 369).
+                    let member_expr = self.implicit_this_member(&normalize_name(name))?;
+                    return self.struct_type_of_expr(&member_expr);
+                };
                 match &info.pb_type {
                     PbType::UserDefined(t) => Some(normalize_name(t)),
                     // an interface-typed object variable: the receiver type is
@@ -10969,13 +11296,21 @@ impl Compiler {
                 if let Some(info) = self.symbols.lookup(&normalize_name(name)) {
                     return matches!(info.pb_type, PbType::Interface(_));
                 }
+                // Bare INSTANCE field used as a receiver: resolve through the
+                // implicit `this.<field>` rewrite (batch 369).
+                if let Some(member_expr) = self.implicit_this_member(&normalize_name(name)) {
+                    return self.receiver_is_interface(&member_expr);
+                }
                 false
             }
             Expr::TypeMember(base, member) => {
                 if let Some(t) = self.struct_type_of_expr(base) {
                     if let Some(layout) = self.type_layouts.get(&t) {
                         if let Some(idx) = layout.field_map.get(&normalize_name(member)) {
-                            return matches!(layout.fields[*idx].pb_type, PbType::Interface(_));
+                            let pt = &layout.fields[*idx].pb_type;
+                            return matches!(pt, PbType::Interface(_))
+                                || matches!(pt, PbType::UserDefined(n)
+                                            if self.interface_impls.contains_key(&normalize_name(n)));
                         }
                     }
                 }
@@ -12006,6 +12341,86 @@ impl Compiler {
 
         // System statement-builtins
         match name.as_str() {
+            "TXT_WINDOW" => {
+                // args: caption$, x&, y&, rows&, cols&, TO hWin&
+                let cap = self.compile_expr(fb, &call.args[0])?;
+                let c = self.convert_value(fb, &cap, &IrType::Ptr, &PbType::String);
+                let x0 = self.compile_expr(fb, &call.args[1])?;
+                let x = self.to_i32(fb, &x0);
+                let y0 = self.compile_expr(fb, &call.args[2])?;
+                let y = self.to_i32(fb, &y0);
+                let r0 = self.compile_expr(fb, &call.args[3])?;
+                let rows = self.to_i32(fb, &r0);
+                let c0 = self.compile_expr(fb, &call.args[4])?;
+                let cols = self.to_i32(fb, &c0);
+                let hw = fb.call(&IrType::Ptr, "pb_txt_window", &[c, x, y, rows, cols]);
+                if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[5]) {
+                    let cv = self.convert_value(fb, &hw, &ty, &pty);
+                    fb.store(&cv, &ptr);
+                }
+                return Ok(());
+            }
+            "TXT_CELL_SET" => {
+                let r0 = self.compile_expr(fb, &call.args[0])?;
+                let r = self.to_i32(fb, &r0);
+                let c0 = self.compile_expr(fb, &call.args[1])?;
+                let c = self.to_i32(fb, &c0);
+                fb.call_void("pb_txt_cell_set", &[r, c]);
+                return Ok(());
+            }
+            "TXT_CELL_GET" => {
+                if let (Some((rp, _, _)), Some((cp, _, _))) = (
+                    self.lvalue_ptr(fb, &call.args[0]),
+                    self.lvalue_ptr(fb, &call.args[1]),
+                ) {
+                    fb.call_void("pb_txt_cell_get", &[rp, cp]);
+                }
+                return Ok(());
+            }
+            "TXT_COL_SET" => {
+                let v0 = self.compile_expr(fb, &call.args[0])?;
+                let v = self.to_i32(fb, &v0);
+                fb.call_void("pb_txt_col_set", &[v]);
+                return Ok(());
+            }
+            "TXT_ROW_SET" => {
+                let v0 = self.compile_expr(fb, &call.args[0])?;
+                let v = self.to_i32(fb, &v0);
+                fb.call_void("pb_txt_row_set", &[v]);
+                return Ok(());
+            }
+            "TXT_COL_GET" => {
+                if let Some((p, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    fb.call_void("pb_txt_col_get", &[p]);
+                }
+                return Ok(());
+            }
+            "TXT_ROW_GET" => {
+                if let Some((p, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    fb.call_void("pb_txt_row_get", &[p]);
+                }
+                return Ok(());
+            }
+            "TXT_COLOR_SET" => {
+                let v0 = self.compile_expr(fb, &call.args[0])?;
+                let v = self.to_i32(fb, &v0);
+                fb.call_void("pb_txt_color_set", &[v]);
+                return Ok(());
+            }
+            "TXT_CLS" => {
+                fb.call_void("pb_txt_cls", &[]);
+                return Ok(());
+            }
+            "TXT_END" => {
+                fb.call_void("pb_txt_end", &[]);
+                return Ok(());
+            }
+            "TXT_WAITKEY$" | "TXT_WAITKEY" => {
+                // Bare TXT.WAITKEY$ (CHW: the TO clause is optional): wait for
+                // one standard key and discard the returned string.
+                fb.call(&IrType::Ptr, "pb_txt_waitkey", &[]);
+                return Ok(());
+            }
             "SLEEP" => {
                 // CHW SLEEP_statement.htm: pauses the current thread for m&
                 // milliseconds; m& = 0 relinquishes the rest of the time
@@ -24181,6 +24596,68 @@ impl Compiler {
         Ok(())
     }
 
+    /// TXT PRINT (CHW TXT pseudo-object): writes into the Text Window cell
+    /// grid.  SPC(n) and TAB(n) are positional items, a comma advances to the
+    /// next 14-column zone, and a semicolon suppresses separation.  A final
+    /// item with no separator ends the line, exactly like PRINT.
+    fn compile_txt_print(&mut self, fb: &mut FunctionBuilder, p: &TxtPrintStmt) -> PbResult<()> {
+        for (i, arg) in p.args.iter().enumerate() {
+            if let Expr::FunctionCall(name, args) = arg {
+                let n = name.to_uppercase();
+                if n == "SPC" && args.len() == 1 {
+                    let v = self.compile_expr(fb, &args[0])?;
+                    let n32 = self.to_i32(fb, &v);
+                    fb.call_void("pb_txt_print_spc", &[n32]);
+                } else if n == "TAB" && args.len() == 1 {
+                    let v = self.compile_expr(fb, &args[0])?;
+                    let n32 = self.to_i32(fb, &v);
+                    fb.call_void("pb_txt_print_tab", &[n32]);
+                } else {
+                    let v = self.compile_expr(fb, arg)?;
+                    if v.ty == IrType::Ptr {
+                        let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
+                        fb.call_void("pb_txt_print_str", &[s]);
+                    } else if v.ty.is_float() {
+                        let f = self.to_f64(fb, &v);
+                        fb.call_void("pb_txt_print_f64", &[f]);
+                    } else {
+                        let n = if v.ty == IrType::I64 {
+                            v
+                        } else {
+                            self.to_i64(fb, &v)
+                        };
+                        fb.call_void("pb_txt_print_i64", &[n]);
+                    }
+                }
+            } else {
+                let v = self.compile_expr(fb, arg)?;
+                if v.ty == IrType::Ptr {
+                    let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
+                    fb.call_void("pb_txt_print_str", &[s]);
+                } else if v.ty.is_float() {
+                    let f = self.to_f64(fb, &v);
+                    fb.call_void("pb_txt_print_f64", &[f]);
+                } else {
+                    let n = if v.ty == IrType::I64 {
+                        v
+                    } else {
+                        self.to_i64(fb, &v)
+                    };
+                    fb.call_void("pb_txt_print_i64", &[n]);
+                }
+            }
+            match p.separators.get(i).and_then(|s| *s) {
+                Some(',') => fb.call_void("pb_txt_print_zone", &[]),
+                Some(';') | None => {}
+                _ => {}
+            }
+        }
+        if p.trailing.is_none() {
+            fb.call_void("pb_txt_newline", &[]);
+        }
+        Ok(())
+    }
+
     // ========== File I/O ==========
 
     fn compile_open(&mut self, fb: &mut FunctionBuilder, open: &OpenStmt) -> PbResult<()> {
@@ -26286,6 +26763,32 @@ impl Compiler {
                 }
                 // batch298: parenthesless property GET — `x = o.Prop` resolves
                 // to <Class>_<Prop>_Get when the member is not a struct field.
+                // An interface receiver resolves through the first implementing
+                // CLASS, exactly like a dotted METHOD call (batch 369:
+                // IPowerThread `xx.Priority` / `xx.StackSize`).
+                if self.receiver_is_interface(base_expr) {
+                    if let Some(iface) = self.struct_type_of_expr(base_expr) {
+                        let iface = iface.to_uppercase();
+                        if let Some(first) = self
+                            .interface_impls
+                            .get(&iface)
+                            .and_then(|v| v.first())
+                            .cloned()
+                        {
+                            let get_name = format!("{}_{}_GET", first, normalize_name(member));
+                            if self.functions.contains_key(&get_name) {
+                                return self.compile_expr(
+                                    fb,
+                                    &Expr::MethodCall {
+                                        base: base_expr.clone(),
+                                        name: member.clone(),
+                                        args: Vec::new(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
                 if let Some(class) = self.struct_type_of_expr(base_expr) {
                     let mn = normalize_name(member);
                     let not_a_field = !self
@@ -27441,6 +27944,26 @@ impl Compiler {
                 Some(s.map(|v| fb.call(&IrType::Ptr, "pb_mcase_string", &[v, mode_val])))
             }
             "RGB" | "BGR" => Some(self.builtin_rgb(fb, args, name)),
+            // TXT pseudo-object value members (CHW TXT pseudo-object).
+            "TXT_INKEY$" | "TXT_INKEY" => Some(Ok(fb.call(&IrType::Ptr, "pb_txt_inkey", &[]))),
+            "TXT_WAITKEY$" | "TXT_WAITKEY" => {
+                Some(Ok(fb.call(&IrType::Ptr, "pb_txt_waitkey", &[])))
+            }
+            "TXT_INSTAT" => Some(Ok(fb.call(&IrType::I32, "pb_txt_instat", &[]))),
+            "TXT_COL_GET" => Some(Ok(fb.call(&IrType::I32, "pb_txt_col_value", &[]))),
+            "TXT_ROW_GET" => Some(Ok(fb.call(&IrType::I32, "pb_txt_row_value", &[]))),
+            "TXT_LINE_INPUT" => {
+                let prompt = if let Some(a) = args.first() {
+                    let p = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.convert_value(fb, &p, &IrType::Ptr, &PbType::String)
+                } else {
+                    fb.const_null_ptr()
+                };
+                Some(Ok(fb.call(&IrType::Ptr, "pb_txt_line_input", &[prompt])))
+            }
             "MONTHNAME" => Some(self.builtin_name1(fb, args, "pb_monthname")),
             "DATACOUNT" => Some(self.builtin_count0(fb, "pb_data_count")),
             "THREADCOUNT" => Some(self.builtin_count0(fb, "pb_thread_count")),

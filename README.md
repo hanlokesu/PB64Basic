@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 367 (v0.2.158). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 368 (v0.2.159). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 368 (v0.2.159) - the 12-member TXT pseudo-object and the 18-member IPowerThread model are implemented, zero-length PBR entries are accepted, and the 32-bit WNDPROC ABI is fixed; batch368_test and batch369_test pass on x86_64 and i686.
 > batch 367 (v0.2.158) - legacy PBR/PBRES resources are decoded and embedded; batch367_test reads its RT_STRING payload on x86_64 and i686; TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 366 (v0.2.157) - THREADED arrays now use a per-thread runtime descriptor: threads may DIM the same array with different shapes, and indexing, LBOUND/UBOUND, ARRAYATTR, REDIM PRESERVE and bulk array operations read the calling thread's live bounds; batch366_test passes on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 365 (v0.2.156) - PRINT # comma separators now advance to the next 14-column print zone; batch365_test matches the PBWin10 reference byte-for-byte on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
@@ -1035,6 +1036,68 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.159 (2026-11-17)
+
+Batch 368. Implements the 12-member TXT pseudo-object, the 18-member
+IPowerThread object model, and fixes the 32-bit window-procedure ABI that
+broke every GUI window on i686.
+
+- **Implemented - TXT pseudo-object (12 members).** The parser accepts
+  `TXT.CELL`, `TXT.CLS`, `TXT.COLOR`, `TXT.END`, `TXT.INKEY$`, `TXT.INSTAT`,
+  `TXT.LINE.INPUT`, `TXT.PRINT`, `TXT.WAITKEY$`, `TXT.WINDOW`, `TXT.COL` and
+  `TXT.ROW`; value members also work inside expressions. `TXT.PRINT` supports
+  `SPC`/`TAB`, the 14-column comma zone, semicolon continuation and the
+  trailing-newline rule. The parser only enters the TXT statement path when
+  the token after `TXT` is `.`, so an ordinary variable named `txt` still
+  parses as an assignment.
+- **Implemented - CHW TXT semantics.** `TXT.PRINT` does not interpret control
+  codes: CR, LF and backspace are painted as glyphs, and only NUL and DEL are
+  skipped. A bare `TXT.WAITKEY$` blocks for one standard character and discards
+  it. With no text window, `TXT.INKEY$` returns an empty string, `TXT.INSTAT`
+  returns FALSE and `TXT.WAITKEY$` returns an empty string. Extended keys
+  (the NUL plus scan-code pair) are ignored by all three input members.
+- **Implemented - stable text window.** The window uses `WS_CAPTION` without a
+  system menu or close box, so ALT+F4 does not close it. `TXT.WINDOW` rows and
+  columns now describe the client area; the frame is enlarged after creation
+  using the measured non-client margins. A 12x50 window reports a 400x192
+  client area instead of clipping the last row and column.
+- **Implemented - THREAD OBJECT / IPowerThread (18 members).** A `CLASS` may
+  declare exactly one `THREAD METHOD` and an inner
+  `INTERFACE ... INHERIT IPOWERTHREAD`. Codegen synthesizes `CLOSE`, `EQUALS`,
+  `HANDLE`, `ID`, `ISALIVE`, `JOIN`, `LAUNCH`, `PRIORITY` GET/SET, `RESULT`,
+  `RESUME`, `STACKSIZE` GET/SET, `SUSPEND`, `TIMECREATE`, `TIMEEXIT`,
+  `TIMEKERNEL` and `TIMEUSER`. `LAUNCH` copies the `ThreadParam` instance into
+  the new thread; `THREADPARAM` may be an interface pointer, a `LONG`/`DWORD`
+  passed with `BYVAL`, or a `POINTER` passed with `BYVAL VARPTR(...)`.
+  `Priority` and `StackSize` also work as parenthesless properties.
+  `TIMEEXIT` stamps the wall clock when the thread function returns because
+  `GetThreadTimes` reports zero while the thread is still running.
+  A duplicate `THREAD METHOD` is rejected with `THREAD OBJECT error (627)`.
+- **Fixed - zero-length PBR entries.** A PBR resource may legitimately carry a
+  zero-byte payload (an empty RCDATA or STRINGTABLE slot). `parse_pbr` kept
+  skipping it, so `out.len()` no longer matched the directory count and the
+  whole file was rejected. Empty entries are now kept with an empty payload,
+  and `resfile` has a unit test for the case.
+- **Fixed - i686 WNDPROC stack corruption.** `pb_graphic_wndproc` and
+  `pb_tabpage_wndproc` declared `wParam`/`lParam` as 64-bit values on the
+  32-bit target. USER32 pushes two 32-bit arguments while the callee removed
+  24 bytes, corrupting the stack on every message; `GRAPHIC WINDOW NEW` crashed
+  with `0xC0000005`. Both procedures now use the 32-bit signature under
+  `_WIN64` conditional compilation.
+- **Implemented - regression examples.** `examples/batch368_test.bas` covers all
+  TXT members and no-window paths; `examples/batch369_test.bas` covers all 18
+  THREAD members, parenthesless properties, `TIMEEXIT`, and a numeric
+  `LAUNCH(BYVAL 41)` returning `RESULT = 42`. Both compile and report
+  `FAILURES: 0` on x86_64 and i686.
+- **Gates.** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test -p pbcompiler pbr` (4 passed), compile-all (428 ok / 0 failed),
+  headless selection (279 ok / 0 failed), negative probes (31 / 0 BAD),
+  dual-target link smoke (0 failures), coverage docs (35 / 0 FAIL) and
+  release-zip checks are run before publication.
+- **Still open.** The remaining THREADED array shape gaps, sequential-file
+  wide-mode edge cases, non-zero printer enumeration, a real serial-port round
+  trip and #314 remain outside this batch.
+
 ### v0.2.158 (2026-11-17)
 
 Batch 367. Implements legacy PBR/PBRES resource files in `#RESOURCE PBR`.
