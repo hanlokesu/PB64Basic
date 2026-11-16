@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 366 (v0.2.157). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 367 (v0.2.158). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 367 (v0.2.158) - legacy PBR/PBRES resources are decoded and embedded; batch367_test reads its RT_STRING payload on x86_64 and i686; TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 366 (v0.2.157) - THREADED arrays now use a per-thread runtime descriptor: threads may DIM the same array with different shapes, and indexing, LBOUND/UBOUND, ARRAYATTR, REDIM PRESERVE and bulk array operations read the calling thread's live bounds; batch366_test passes on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, printer/serial, and #314 remain open.
 > batch 365 (v0.2.156) - PRINT # comma separators now advance to the next 14-column print zone; batch365_test matches the PBWin10 reference byte-for-byte on x86_64 and i686; PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
 > batch 364 (v0.2.155) - multi-line MACRO FUNCTION statement bodies now lower inline; batch364_test matches PBWin10 on both targets; PRINT # comma zones, PBRES/PBR, TXT/THREAD OBJECT, THREADED shapes, printer/serial, and #314 remain open.
@@ -1034,6 +1035,39 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.158 (2026-11-17)
+
+Batch 367. Implements legacy PBR/PBRES resource files in `#RESOURCE PBR`.
+
+- **Implemented - PBR directory decoder.** A PBR file is a private container
+  whose header carries a `00 05 43 52` signature, an entry count and a table
+  of 32-bit data-entry offsets relative to a base. The base points at an
+  `IMAGE_RESOURCE_DIRECTORY` tree with the same 16-byte headers and 8-byte
+  entries used by a PE `.rsrc` section; leaves are 16-byte data entries whose
+  `DataRva` and `DataSize` are also relative to the base. The decoder walks the
+  type/name/language tree, accepts numeric and length-prefixed UTF-16 string
+  identifiers, validates every payload range, and cross-checks the header
+  offset table against the entries actually reachable from the tree.
+- **Implemented - real PBRWin10 sample.** `#RESOURCE PBR` of
+  `SEDP_Lookup.pbr` (3,340 bytes) embeds six entries: ICON ID 1 (744 bytes),
+  MENU named `POPUPMENU` (166), DIALOG 100/101/102 (358/574/1004) and
+  GROUP_ICON named `MYICON` (20). The resulting EXE resource tree matches the
+  PBWin10-compiled reference for type, name, language and size.
+- **Implemented - self-check.** `examples/batch367_test.bas` embeds
+  `examples/batch367_test.pbr` and reads the RT_STRING block back with
+  `RESOURCE$(STRING, 100)`. `LoadStringW` returns 12 characters and the payload
+  is `PB64 PBR OK!`; the test passes with FAILURES: 0 on x86_64 and i686.
+- **Parser validation.** Three unit tests cover numeric type/name, string
+  type/name with UTF-16 identifiers, bad signatures and truncated files. The
+  decoder rejects a header offset that no directory entry references instead of
+  silently embedding an orphan payload.
+- **Gates.** Compile-all, headless selection, negative probes, dual-target link
+  smoke, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  coverage docs and release-zip checks are run before publication.
+- **Still open.** The 12-member TXT pseudo-object, THREAD
+  OBJECT/IPowerThread, non-zero printer enumeration, a real serial-port round
+  trip, and #314 remain outside this batch.
+
 ### v0.2.157 (2026-11-17)
 
 Batch 366. Implements the CHW `THREADED` array model with per-thread shapes:
