@@ -2088,13 +2088,8 @@ impl Parser {
         self.advance(); // METHOD
         let mname = self.consume_identifier()?;
 
-        // Optional CDECL/STDCALL/BDECL decoration (ignored, same as parse_sub_decl).
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "CDECL" || u == "STDCALL" || u == "BDECL"
-        }) {
-            self.advance();
-        }
+        // Optional CDECL/STDCALL/BDECL decoration.
+        let call_conv = self.parse_optional_call_conv();
 
         let params = if self.peek() == &Token::LParen {
             self.advance();
@@ -2178,6 +2173,7 @@ impl Parser {
                 alias: None,
                 export,
                 threadsafe,
+                call_conv,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2187,6 +2183,7 @@ impl Parser {
                 alias: None,
                 export,
                 threadsafe,
+                call_conv,
                 line,
             }),
         })
@@ -2205,6 +2202,7 @@ impl Parser {
         let is_get = matches!(self.peek(), Token::Identifier(k) if k.eq_ignore_ascii_case("GET"));
         self.advance(); // GET / SET
         let pname = self.consume_identifier()?;
+        let call_conv = self.parse_optional_call_conv();
 
         let params = if self.peek() == &Token::LParen {
             self.advance();
@@ -2267,6 +2265,7 @@ impl Parser {
                 alias: None,
                 export: false,
                 threadsafe,
+                call_conv,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2276,6 +2275,7 @@ impl Parser {
                 alias: None,
                 export: false,
                 threadsafe,
+                call_conv,
                 line,
             }),
         })
@@ -2308,6 +2308,29 @@ impl Parser {
         }
     }
 
+    /// Parse the optional procedure calling-convention descriptor.  PowerBASIC
+    /// accepts CDECL, SDECL/STDCALL and BDECL after the procedure name (and
+    /// also as comma-delimited descriptors).  The value is preserved instead
+    /// of being skipped: on i686 it decides both the LLVM calling convention
+    /// and the symbol decoration (`_sum` vs `_sum@8`).
+    fn parse_optional_call_conv(&mut self) -> Option<CallConv> {
+        let mut first: Option<CallConv> = None;
+        while let Token::Identifier(s) = self.peek() {
+            let word = s.to_uppercase();
+            let cc = match word.as_str() {
+                "CDECL" => CallConv::CDecl,
+                "STDCALL" | "SDECL" => CallConv::StdCall,
+                "BDECL" => CallConv::BDecl,
+                _ => break,
+            };
+            if first.is_none() {
+                first = Some(cc);
+            }
+            self.advance();
+        }
+        first
+    }
+
     fn parse_sub_decl(&mut self) -> PbResult<SubDecl> {
         let line = self.current_line();
         self.advance(); // SUB
@@ -2318,13 +2341,8 @@ impl Parser {
             self.advance();
         }
 
-        // Optional: CDECL/STDCALL calling convention (skip)
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "CDECL" || u == "STDCALL" || u == "BDECL"
-        }) {
-            self.advance();
-        }
+        // Optional: CDECL/STDCALL/BDECL calling convention.
+        let call_conv = self.parse_optional_call_conv();
 
         // Optional ALIAS "ExternalName"
         let alias = if self.peek() == &Token::Alias {
@@ -2378,6 +2396,7 @@ impl Parser {
             alias,
             export,
             threadsafe,
+            call_conv,
             line,
         })
     }
@@ -2391,13 +2410,7 @@ impl Parser {
         // (the CALLBACK/THREAD peel pattern).  Body terminator: END FASTPROC
         // (END FUNCTION accepted too).
         let name = self.consume_identifier()?;
-
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "CDECL" || u == "STDCALL" || u == "BDECL"
-        }) {
-            self.advance();
-        }
+        let call_conv = self.parse_optional_call_conv();
 
         // Optional THREADSAFE descriptor (CHW FASTPROC header).  CHW places it
         // after the param list, but accept it here too for tolerance.
@@ -2469,6 +2482,7 @@ impl Parser {
             alias,
             export,
             threadsafe,
+            call_conv,
             line,
         })
     }
@@ -2478,13 +2492,8 @@ impl Parser {
         self.advance(); // FUNCTION
         let name = self.consume_identifier()?;
 
-        // Optional: CDECL/STDCALL calling convention (skip)
-        while matches!(self.peek(), Token::Identifier(ref s) if {
-            let u = s.to_uppercase();
-            u == "CDECL" || u == "STDCALL" || u == "BDECL"
-        }) {
-            self.advance();
-        }
+        // Optional: CDECL/STDCALL/BDECL calling convention.
+        let call_conv = self.parse_optional_call_conv();
 
         // Optional ALIAS "ExternalName"
         let alias = if self.peek() == &Token::Alias {
@@ -2550,6 +2559,7 @@ impl Parser {
             alias,
             export,
             threadsafe,
+            call_conv,
             line,
         })
     }
@@ -5407,6 +5417,59 @@ impl Parser {
                     ));
                 }
 
+                // CON.CELL / CON.LOCATE — PB/CC console cursor pseudo-object.
+                // The legacy spellings are LOCATE row, col and CURSORX/CURSORY;
+                // the pseudo-object forms are kept here so PB/CC source compiles
+                // without a separate CONSOLE type.
+                if name_upper == "CON" && self.peek_at(1) == Some(&Token::Dot) {
+                    self.advance(); // consume CON
+                    self.expect(&Token::Dot)?;
+                    let member = self.peek_plain_upper();
+                    if member == "CELL" || member == "LOCATE" {
+                        self.advance(); // consume CELL / LOCATE
+                        if self.peek() == &Token::Eq {
+                            self.advance();
+                            let row = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let col = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "CON_CELL_SET".to_string(),
+                                args: vec![row, col],
+                                line,
+                            }));
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let row = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let col = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "CON_CELL_GET_TO".to_string(),
+                                args: vec![row, col],
+                                line,
+                            }));
+                        }
+                        return Err(PbError::parser(
+                            format!(
+                                "CON.{} is a property; use CON.{} = row, col or CON.{} TO rowVar, colVar",
+                                member, member, member
+                            ),
+                            self.current_file(),
+                            line,
+                        ));
+                    }
+                    return Err(PbError::parser(
+                        format!(
+                            "CON.{} is not implemented; this fork supports CON.CELL and CON.LOCATE",
+                            member
+                        ),
+                        self.current_file(),
+                        line,
+                    ));
+                }
+
                 // MENU NEW BAR TO hMenu | MENU NEW POPUP TO hPop
                 // MENU ADD STRING, hMenu, txt$, id&, state& | MENU ADD POPUP, hMenu, hSub, id&
                 // MENU DELETE hMenu, pos& (batch 50)
@@ -8049,7 +8112,10 @@ impl Parser {
                     }
                 }
 
-                // COLOR fore& [, back&] — console text attribute (PB/CC, batch 49)
+                // COLOR fore& [, back& [, count&]] — console text attribute
+                // (PB/CC, batch 49).  PB/CC's optional Count applies the
+                // attribute to Count cells at the current caret without
+                // moving the caret; it is forwarded to pb_color_count.
                 if name_upper == "COLOR" {
                     self.advance(); // consume COLOR
                     let mut args = Vec::new();
@@ -8058,12 +8124,33 @@ impl Parser {
                         if self.peek() == &Token::Comma {
                             self.advance();
                             args.push(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                         }
                     }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "COLOR".to_string(),
                         args,
+                        line,
+                    }));
+                }
+
+                // LOCATE row, col — PB/CC legacy syntax for CON.CELL.
+                // Both values are 1-based.  Cursor size/visibility belongs to
+                // CON.CURSOR in PB/CC and is deliberately not a third LOCATE
+                // argument here.
+                if name_upper == "LOCATE" {
+                    self.advance(); // consume LOCATE
+                    let row = self.parse_expression()?;
+                    self.expect(&Token::Comma)?;
+                    let col = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "LOCATE".to_string(),
+                        args: vec![row, col],
                         line,
                     }));
                 }
@@ -16267,10 +16354,59 @@ impl Parser {
             }));
         }
 
-        let (args, trailing) = self.parse_print_args()?;
+        // PRINT AT row, col [, args] — fork extension.  Official PowerBASIC
+        // (PB/Win, PB/CC and DOS BASIC) has no PRINT AT; the standard form is
+        // LOCATE row, col followed by PRINT.  This extension is implemented
+        // here because the user explicitly requested it, and it is labeled
+        // FORK EXTENSION in the coverage table.
+        let mut at = None;
+        let mut forced_trailing: Option<char> = None;
+        if self.peek_plain_upper() == "AT" {
+            self.advance(); // AT
+            let (row, col) = if self.peek() == &Token::LParen {
+                self.advance();
+                let row = self.parse_expression()?;
+                self.expect(&Token::Comma)?;
+                let col = self.parse_expression()?;
+                self.expect(&Token::RParen)?;
+                (row, col)
+            } else {
+                let row = self.parse_expression()?;
+                self.expect(&Token::Comma)?;
+                let col = self.parse_expression()?;
+                (row, col)
+            };
+            at = Some((row, col));
+            // A comma after the position introduces the text arguments.
+            let mut position_trailing: Option<char> = None;
+            if self.peek() == &Token::Comma {
+                self.advance();
+                if self.at_eol_or_eof() {
+                    // `PRINT AT 3,1,` keeps the cursor on the same line,
+                    // exactly like a trailing comma on a normal PRINT.
+                    position_trailing = Some(',');
+                }
+            } else if self.peek() == &Token::Semicolon {
+                self.advance();
+                position_trailing = Some(';');
+            } else if !self.at_eol_or_eof() {
+                return Err(PbError::parser(
+                    "PRINT AT: expected a comma between the position and the first argument",
+                    self.current_file(),
+                    line,
+                ));
+            }
+            forced_trailing = position_trailing;
+        }
+
+        let (args, mut trailing) = self.parse_print_args()?;
+        if forced_trailing.is_some() {
+            trailing = forced_trailing;
+        }
         self.consume_to_eol();
         Ok(Statement::Print(PrintStmt {
             args,
+            at,
             trailing,
             line,
         }))
@@ -17926,6 +18062,11 @@ impl Parser {
                     // this entry `#DIM ALL` rejected it as an undeclared
                     // variable (Error 519).
                     || name.eq_ignore_ascii_case("VERSION$")
+                    // PB/CC console cursor queries: CURSORX/CURSORY are the
+                    // legacy spellings of CON.CELL.COL/ROW.  They take no
+                    // arguments in PB/CC, so the bare form must reach codegen.
+                    || name.eq_ignore_ascii_case("CURSORX")
+                    || name.eq_ignore_ascii_case("CURSORY")
                     // The unsuffixed spelling is not a valid PB string
                     // function name; route it through the same bare-call path
                     // so codegen rejects it with "use VERSION$()" instead of
@@ -17975,6 +18116,40 @@ impl Parser {
                                 ));
                             }
                         };
+                        return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
+                    }
+                    // CON.CELL.ROW / CON.CELL.COL — PB/CC console pseudo-object
+                    // value members.  CON.LOCATE.ROW/COL are the documented
+                    // aliases.  The legacy spellings CURSORY/CURSORX are
+                    // handled as bare zero-argument functions below.
+                    if name.eq_ignore_ascii_case("CON") && self.peek() == &Token::Dot {
+                        self.advance(); // consume '.'
+                        let member = self.peek_plain_upper();
+                        if member != "CELL" && member != "LOCATE" {
+                            return Err(PbError::parser(
+                                format!("CON.{} is not implemented; use CON.CELL.ROW/COL", member),
+                                self.current_file(),
+                                self.current_line(),
+                            ));
+                        }
+                        self.advance(); // consume CELL / LOCATE
+                        self.expect(&Token::Dot)?;
+                        let sub = self.peek_plain_upper();
+                        let fn_name = match sub.as_str() {
+                            "ROW" => "CON_CELL_ROW",
+                            "COL" => "CON_CELL_COL",
+                            _ => {
+                                return Err(PbError::parser(
+                                    format!(
+                                        "CON.{}.{} is not a value member; use ROW or COL",
+                                        member, sub
+                                    ),
+                                    self.current_file(),
+                                    self.current_line(),
+                                ))
+                            }
+                        };
+                        self.advance(); // consume ROW / COL
                         return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
                     }
                     Expr::Variable(name)

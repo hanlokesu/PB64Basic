@@ -108,7 +108,7 @@ LLVM IR code generation backend for PB64Basic. Compiles PowerBASIC AST to LLVM I
 
 - `DECLARE FUNCTION Foo LIB "BAR.DLL" ALIAS "Foo" (params) AS type` → `declare dllimport i32 @Foo(...)`
 - `FUNCTION Add2 ALIAS "Add2" (...) EXPORT` → `define dllexport i32 @Add2(...)`
-- Calling conventions: CDECL/STDCALL/BDECL identifiers parsed but mapped to platform ABI (x64 single convention, x86 stdcall for Win32 APIs)
+- Calling conventions: explicit CDECL/SDECL(STDCALL)/BDECL on a `FUNCTION`/`SUB` is preserved and applied on i686 (`x86_stdcallcc` for SDECL/STDCALL, plain cdecl for CDECL). An omitted descriptor defaults to SDECL/STDCALL for `#COMPILE SLL` and `#COMPILE DLL`; an ordinary EXE keeps the fork's cdecl internal ABI (the i686 THREAD CREATE thunk is built around it). x64 has a single platform convention.
 - `--dll` flag: `clang -shared obj -o output.dll`
 
 ### GOSUB/RETURN Implementation

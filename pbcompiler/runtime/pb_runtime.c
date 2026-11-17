@@ -209,6 +209,23 @@ __declspec(dllimport) int __stdcall ImageList_GetIconSize(void* himl, int* cx, i
 __declspec(dllimport) int __stdcall DestroyIcon(void* hIcon);
 __declspec(dllimport) void* __stdcall GetStdHandle(unsigned int nStdHandle);
 __declspec(dllimport) int __stdcall SetConsoleTextAttribute(void* hConsoleOutput, unsigned short wAttributes);
+/* Console cursor / screen buffer API used by LOCATE, CLS, COLOR and the
+   CURSORX/CURSORY queries.  Only the small subset needed here is declared,
+   matching this runtime's existing no-windows.h style. */
+typedef struct { short X; short Y; } PB_COORD;
+typedef struct { short Left; short Top; short Right; short Bottom; } PB_SMALL_RECT;
+typedef struct {
+    PB_COORD dwSize;
+    PB_COORD dwCursorPosition;
+    unsigned short wAttributes;
+    PB_SMALL_RECT srWindow;
+    PB_COORD dwMaximumWindowSize;
+} PB_CONSOLE_SCREEN_BUFFER_INFO;
+__declspec(dllimport) int __stdcall GetConsoleScreenBufferInfo(void* hConsoleOutput, PB_CONSOLE_SCREEN_BUFFER_INFO* lpConsoleScreenBufferInfo);
+__declspec(dllimport) int __stdcall SetConsoleCursorPosition(void* hConsoleOutput, PB_COORD dwCursorPosition);
+__declspec(dllimport) int __stdcall FillConsoleOutputCharacterA(void* hConsoleOutput, char cCharacter, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfCharsWritten);
+__declspec(dllimport) int __stdcall FillConsoleOutputAttribute(void* hConsoleOutput, unsigned short wAttribute, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfAttrsWritten);
+__declspec(dllimport) int __stdcall GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
 __declspec(dllimport) void* __stdcall CreateMenu(void);
 __declspec(dllimport) void* __stdcall CreatePopupMenu(void);
 __declspec(dllimport) int __stdcall AppendMenuA(void* hMenu, unsigned int uFlags, uintptr_t uIDNewItem, const char* lpNewItem);
@@ -4414,9 +4431,114 @@ int pb_kill(const char* path) {
     return 0;
 }
 
-/* CLS: clear the console screen (PB/CC) */
+/* Return the console output handle for this process.
+ *
+ * GetStdHandle(STD_OUTPUT_HANDLE) is per-process, not a global "which CMD
+ * window" selector: a process started from cmd owns that console, while a
+ * process started by a GUI shell may have no console at all.  If stdout is
+ * redirected to a pipe/file, the standard handle is not a console, so fall
+ * back to CONOUT$ - the console attached to this process - to keep
+ * LOCATE/CLS/COLOR/CURSORX/CURSORY working in the same window that launched
+ * the program.  No console => NULL and every console operation is a safe
+ * no-op. */
+static void* pb_console_output_handle(void) {
+    static void* cached = 0;
+    static int tried = 0;
+    if (tried) return cached;
+    tried = 1;
+
+    void* h = GetStdHandle((unsigned int)-11); /* STD_OUTPUT_HANDLE */
+    unsigned long mode = 0;
+    if (h && h != (void*)-1 && GetConsoleMode(h, &mode)) {
+        cached = h;
+        return cached;
+    }
+
+    h = CreateFileA("CONOUT$",
+                    0x80000000UL | 0x40000000UL, /* GENERIC_READ | GENERIC_WRITE */
+                    0x00000001UL | 0x00000002UL, /* FILE_SHARE_READ | FILE_SHARE_WRITE */
+                    0, 3 /* OPEN_EXISTING */, 0, 0);
+    if (h && h != (void*)-1) cached = h;
+    return cached;
+}
+
+/* CLS: clear the whole console buffer with the current attribute and home
+   the cursor.  The old system("cls") spawned a second process and did not
+   target the console reliably when stdout was redirected. */
 void pb_cls(void) {
-    system("cls");
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    unsigned long cells = (unsigned long)info.dwSize.X * (unsigned long)info.dwSize.Y;
+    PB_COORD home;
+    home.X = 0;
+    home.Y = 0;
+    unsigned long written = 0;
+    FillConsoleOutputCharacterA(h, ' ', cells, home, &written);
+    FillConsoleOutputAttribute(h, info.wAttributes, cells, home, &written);
+    SetConsoleCursorPosition(h, home);
+}
+
+/* LOCATE row, col (PB/CC legacy syntax; both values 1-based).  Values
+   outside the buffer are clamped rather than rejected, matching the
+   forgiving console behaviour of PowerBASIC. */
+void pb_locate(int row, int col) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    if (row < 1) row = 1;
+    if (col < 1) col = 1;
+    if (row > (int)info.dwSize.Y) row = (int)info.dwSize.Y;
+    if (col > (int)info.dwSize.X) col = (int)info.dwSize.X;
+    PB_COORD pos;
+    pos.X = (short)(col - 1);
+    pos.Y = (short)(row - 1);
+    SetConsoleCursorPosition(h, pos);
+}
+
+int pb_cursorx(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)info.dwCursorPosition.X + 1;
+}
+
+int pb_cursory(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)info.dwCursorPosition.Y + 1;
+}
+
+/* PRINT SPC(n): n spaces.  n < 1 is ignored, as PB/CC documents. */
+void pb_print_spc(int n) {
+    if (n < 1) return;
+    for (int i = 0; i < n; i++) fputc(' ', stdout);
+}
+
+/* PRINT TAB(n): move to 1-based column n without erasing characters.
+   PB/CC documents n < 1 as ignored.  When stdout is a console, use the
+   real cursor position; otherwise emit from the current logical line start. */
+void pb_print_tab(int n) {
+    if (n < 1) return;
+    fflush(stdout);
+    int target = n - 1;
+    if (target > 32767) target = 32767;
+    int cur = 0;
+    void* h = pb_console_output_handle();
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (h && GetConsoleScreenBufferInfo(h, &info)) {
+        cur = (int)info.dwCursorPosition.X;
+    }
+    if (target <= cur) {
+        fputc('\n', stdout);
+        cur = 0;
+    }
+    for (int i = cur; i < target; i++) fputc(' ', stdout);
 }
 
 /* ENVIRON "VAR=value" (statement form): set / remove an environment variable.
@@ -12933,14 +13055,42 @@ int pb_menu_destroy(long long h) {
     return DestroyMenu((void*)(intptr_t)h) ? 1 : 0;
 }
 
-/* COLOR � console text attribute (PB/CC, batch 49) */
+/* COLOR / CON.COLOR — console text attribute (PB/CC, batch 49).
+ *
+ * Fore/back are 0..15; -1 means "leave that nibble unchanged" as PB/CC
+ * documents.  The optional third argument applies the resulting attribute
+ * immediately to Count character cells starting at the caret without moving
+ * the caret or changing the characters. */
+static unsigned short pb_color_attr(int fore, int back, unsigned short current) {
+    unsigned short attr = current;
+    if (fore >= 0 && fore <= 15) attr = (unsigned short)((attr & 0xF0) | (fore & 0x0F));
+    if (back >= 0 && back <= 15) attr = (unsigned short)((attr & 0x0F) | ((back & 0x0F) << 4));
+    return attr;
+}
+
 void pb_color(int fore, int back) {
-    void* h = GetStdHandle((unsigned int)-11); /* STD_OUTPUT_HANDLE */
-    if (h == 0 || h == (void*)-1) return;
-    unsigned short attr = 7;
-    if (fore >= 0 && fore <= 15) attr = (unsigned short)(fore & 15);
-    if (back >= 0 && back <= 15) attr |= (unsigned short)((back & 15) << 4);
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    unsigned short current = 7;
+    if (GetConsoleScreenBufferInfo(h, &info)) current = info.wAttributes;
+    SetConsoleTextAttribute(h, pb_color_attr(fore, back, current));
+}
+
+void pb_color_count(int fore, int back, int count) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    unsigned short current = 7;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    current = info.wAttributes;
+    unsigned short attr = pb_color_attr(fore, back, current);
     SetConsoleTextAttribute(h, attr);
+    if (count > 0) {
+        PB_COORD pos = info.dwCursorPosition;
+        unsigned long written = 0;
+        FillConsoleOutputAttribute(h, attr, (unsigned long)count, pos, &written);
+    }
 }
 
 /* IMAGELIST � comctl32 image list objects (batch 48) */

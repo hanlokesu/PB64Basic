@@ -1,4 +1,4 @@
-# Last updated from batch 373 (v0.2.163) - 2026-11-17,,,,
+# Last updated from batch 375 (v0.2.164) - 2026-11-17,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented
@@ -218,6 +218,8 @@ CSTR,FUNCTION,codegen builtin,Implemented
 CULNG,FUNCTION,codegen builtin,Implemented
 CURDIR,FUNCTION,codegen builtin,Implemented
 CURDIR$,FUNCTION,Win32,Implemented
+CURSORX,FUNCTION,PB/CC + console,Implemented
+CURSORY,FUNCTION,PB/CC + console,Implemented
 CVBYT,FUNCTION,codegen builtin,Implemented
 CVCUR,FUNCTION,codegen builtin,Implemented
 CVCUX,FUNCTION,codegen builtin,Implemented
@@ -573,6 +575,7 @@ LISTVIEW VISIBLE,STATEMENT,PB/Win only,Implemented
 LO,FUNCTION,codegen builtin,Implemented
 LOC,FUNCTION,Win32,Implemented
 LOCAL,STATEMENT,PB/Win + PB/CC,Implemented
+LOCATE,STATEMENT,PB/CC only,Implemented
 LOCK,STATEMENT,PB/Win + PB/CC,Implemented
 LOF,FUNCTION,Win32,Implemented
 LOG,FUNCTION,LLVM intrinsic,Implemented
@@ -680,6 +683,7 @@ PLAY WAVE,STATEMENT,PB/Win + PB/CC,Implemented
 POKE,FUNCTION,codegen builtin,Implemented
 PREFIX,BLOCK,PB/Win + PB/CC,Implemented
 PRINT#,STATEMENT,PB/Win + PB/CC,Implemented
+PRINT AT,FORK EXTENSION,PB/CC only,Implemented
 PRINTER$,FUNCTION,Win32,Implemented
 PRINTERCOUNT,FUNCTION,codegen builtin,Implemented
 PROCESS GET PRIORITY,STATEMENT,PB/Win + PB/CC,Implemented

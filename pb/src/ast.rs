@@ -283,6 +283,10 @@ pub struct SubDecl {
     pub alias: Option<String>,
     pub export: bool,
     pub threadsafe: bool,
+    /// Explicit CDECL/STDCALL/SDECL/BDECL; None means the compilation mode's
+    /// default (SLL/DLL: stdcall on i686; ordinary EXE: the fork's internal
+    /// cdecl ABI, which the THREAD CREATE runtime thunk depends on).
+    pub call_conv: Option<CallConv>,
     pub line: usize,
 }
 
@@ -295,6 +299,7 @@ pub struct FunctionDecl {
     pub alias: Option<String>,
     pub export: bool,
     pub threadsafe: bool,
+    pub call_conv: Option<CallConv>,
     pub line: usize,
 }
 
@@ -647,6 +652,10 @@ pub enum CaseOp {
 #[derive(Debug, Clone)]
 pub struct PrintStmt {
     pub args: Vec<Expr>,
+    /// `PRINT AT row, col, ...` (fork extension): when present, the cursor is
+    /// positioned before the first argument is written.  Official PowerBASIC
+    /// has no PRINT AT statement; the standard spelling is LOCATE + PRINT.
+    pub at: Option<(Expr, Expr)>,
     /// Trailing separator of the statement, if the source ended with one.
     ///
     /// PowerBASIC documents `;` and `,` at the end of a PRINT as suppressing

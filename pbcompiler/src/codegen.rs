@@ -2589,6 +2589,20 @@ impl Compiler {
             .declare_function("pb_kill", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_cls", &IrType::Void, &[], false);
+        self.module.declare_function(
+            "pb_locate",
+            &IrType::Void,
+            &[IrType::I32, IrType::I32],
+            false,
+        );
+        self.module
+            .declare_function("pb_cursorx", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_cursory", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_print_spc", &IrType::Void, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_print_tab", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("pb_environ_set", &IrType::Void, &[IrType::Ptr], false);
         self.module.declare_function(
@@ -4755,6 +4769,12 @@ impl Compiler {
             "pb_color",
             &IrType::Void,
             &[IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_color_count",
+            &IrType::Void,
+            &[IrType::I32, IrType::I32, IrType::I32],
             false,
         );
         self.module
@@ -7660,7 +7680,11 @@ impl Compiler {
                 if lm.params.is_empty() {
                     // PBLIBMAIN: takes no parameters (CHW pblibmain_function.htm).
                     // Called by Windows each time the DLL is loaded/unloaded.
-                    let ret = fb.call(&IrType::I32, &lm.ir_name, &[]);
+                    let ret = if lm.is_stdcall {
+                        fb.call_stdcall(&IrType::I32, &lm.ir_name, &[])
+                    } else {
+                        fb.call(&IrType::I32, &lm.ir_name, &[])
+                    };
                     fb.ret(&ret);
                 } else {
                     // LIBMAIN(BYVAL hInstance AS DWORD, BYVAL lReason AS LONG,
@@ -7669,7 +7693,12 @@ impl Compiler {
                     // of the register is ignored by the callee).
                     let h32 = fb.trunc(&hinst, &IrType::I32);
                     let rv32 = fb.trunc(&reserved, &IrType::I32);
-                    let ret = fb.call(&IrType::I32, &lm.ir_name, &[h32, reason, rv32]);
+                    let args = [h32, reason, rv32];
+                    let ret = if lm.is_stdcall {
+                        fb.call_stdcall(&IrType::I32, &lm.ir_name, &args)
+                    } else {
+                        fb.call(&IrType::I32, &lm.ir_name, &args)
+                    };
                     fb.ret(&ret);
                 }
             } else {
@@ -7697,7 +7726,11 @@ impl Compiler {
                     &[Val::new(cat, IrType::Ptr), Val::new(msg, IrType::Ptr)],
                 );
             }
-            let ret = fb.call(&IrType::I32, &pbmain_ir_name, &[]);
+            let ret = if pbmain.is_stdcall {
+                fb.call_stdcall(&IrType::I32, &pbmain_ir_name, &[])
+            } else {
+                fb.call(&IrType::I32, &pbmain_ir_name, &[])
+            };
             fb.ret(&ret);
             self.module.add_function_body(fb.finish());
         } else if let Some(winmain) = self
@@ -7746,7 +7779,11 @@ impl Compiler {
             );
             let wide = fb.call(&IrType::Ptr, "pb_ansi_to_wide", &[cmd]);
             let nshow = fb.const_i32(0);
-            let ret = fb.call(&IrType::I32, &winmain_ir_name, &[hinst, hprev, wide, nshow]);
+            let ret = if winmain.is_stdcall {
+                fb.call_stdcall(&IrType::I32, &winmain_ir_name, &[hinst, hprev, wide, nshow])
+            } else {
+                fb.call(&IrType::I32, &winmain_ir_name, &[hinst, hprev, wide, nshow])
+            };
             fb.ret(&ret);
             self.module.add_function_body(fb.finish());
         } else {
@@ -8655,7 +8692,7 @@ impl Compiler {
                 params,
                 export: fd.export,
                 is_external: false,
-                is_stdcall: false,
+                is_stdcall: self.procedure_is_stdcall(fd.call_conv),
             },
         );
     }
@@ -8690,9 +8727,28 @@ impl Compiler {
                 params,
                 export: sd.export,
                 is_external: false,
-                is_stdcall: false,
+                is_stdcall: self.procedure_is_stdcall(sd.call_conv),
             },
         );
+    }
+
+    /// Decide the i686 calling convention for a procedure *defined* in this
+    /// unit.  An explicit CDECL/SDECL/STDCALL/BDECL always wins.  When the
+    /// descriptor is omitted, PowerBASIC's documented default is SDECL
+    /// (stdcall) — that default is applied to SLL/DLL output, whose whole
+    /// purpose is to be consumed by another PB module.  An ordinary EXE keeps
+    /// the fork's historical cdecl internal ABI because the i686 THREAD
+    /// CREATE runtime thunk (pb_thread_boot32_proc) is built around it; `main`
+    /// calls PBMAIN with the matching convention explicitly.
+    fn procedure_is_stdcall(&self, cc: Option<CallConv>) -> bool {
+        if !self.module.is_32bit() {
+            return false;
+        }
+        match cc {
+            Some(CallConv::CDecl) => false,
+            Some(CallConv::StdCall | CallConv::BDecl) => true,
+            None => self.sll_mode || self.dll_mode,
+        }
     }
 
     /// Whether a DECLARE should use the LLVM x86_stdcallcc on the current
@@ -9299,11 +9355,12 @@ impl Compiler {
             .map(|p| (p.name.clone(), p.ir_type.clone()))
             .collect();
 
-        let mut fb = self.module.create_function_builder_ex(
+        let mut fb = self.module.create_function_builder_ex_cc(
             &info.ir_name,
             &info.ret_type,
             &ir_params,
             info.export,
+            info.is_stdcall,
         );
         self.defined_ir.insert(info.ir_name.clone());
 
@@ -9440,11 +9497,12 @@ impl Compiler {
             .map(|p| (p.name.clone(), p.ir_type.clone()))
             .collect();
 
-        let mut fb = self.module.create_function_builder_ex(
+        let mut fb = self.module.create_function_builder_ex_cc(
             &info.ir_name,
             &IrType::Void,
             &ir_params,
             info.export,
+            info.is_stdcall,
         );
         self.defined_ir.insert(info.ir_name.clone());
 
@@ -12854,7 +12912,7 @@ impl Compiler {
             }
 
             "COLOR" => {
-                // args: [fore], [back] — defaults -1 (keep current)
+                // args: [fore], [back], [count] — defaults -1 (keep current)
                 let fore = if let Some(a0) = call.args.first() {
                     self.compile_expr(fb, a0)?
                 } else {
@@ -12867,7 +12925,60 @@ impl Compiler {
                 };
                 let f2 = self.convert_value(fb, &fore, &IrType::I32, &PbType::Long);
                 let b2 = self.convert_value(fb, &back, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_color", &[f2, b2]);
+                if let Some(a2) = call.args.get(2) {
+                    // PB/CC COLOR fore, back, count: apply the attribute
+                    // immediately to count cells at the caret.
+                    let c0 = self.compile_expr(fb, a2)?;
+                    let c2 = self.convert_value(fb, &c0, &IrType::I32, &PbType::Long);
+                    fb.call_void("pb_color_count", &[f2, b2, c2]);
+                } else {
+                    fb.call_void("pb_color", &[f2, b2]);
+                }
+                return Ok(());
+            }
+
+            "LOCATE" => {
+                // PB/CC legacy syntax: LOCATE row, col (both 1-based).
+                let r0 = self.compile_expr(fb, &call.args[0])?;
+                let r = self.to_i32(fb, &r0);
+                let c0 = self.compile_expr(fb, &call.args[1])?;
+                let c = self.to_i32(fb, &c0);
+                fb.call_void("pb_locate", &[r, c]);
+                return Ok(());
+            }
+
+            "CON_CELL_SET" => {
+                // CON.CELL = row, col / CON.LOCATE = row, col
+                let r0 = self.compile_expr(fb, &call.args[0])?;
+                let r = self.to_i32(fb, &r0);
+                let c0 = self.compile_expr(fb, &call.args[1])?;
+                let c = self.to_i32(fb, &c0);
+                fb.call_void("pb_locate", &[r, c]);
+                return Ok(());
+            }
+
+            "CON_CELL_GET_TO" => {
+                // CON.CELL TO rowVar, colVar — PB/CC's two-output getter.
+                let rv = fb.call(&IrType::I32, "pb_cursory", &[]);
+                let cv = fb.call(&IrType::I32, "pb_cursorx", &[]);
+                let (rp, rty, rpty) = self.lvalue_ptr(fb, &call.args[0]).ok_or_else(|| {
+                    PbError::parser(
+                        "CON.CELL TO: the first argument must be a variable",
+                        None,
+                        call.line,
+                    )
+                })?;
+                let rcv = self.convert_value(fb, &rv, &rty, &rpty);
+                fb.store(&rcv, &rp);
+                let (cp, cty, cpty) = self.lvalue_ptr(fb, &call.args[1]).ok_or_else(|| {
+                    PbError::parser(
+                        "CON.CELL TO: the second argument must be a variable",
+                        None,
+                        call.line,
+                    )
+                })?;
+                let ccv = self.convert_value(fb, &cv, &cty, &cpty);
+                fb.store(&ccv, &cp);
                 return Ok(());
             }
 
@@ -24712,7 +24823,35 @@ impl Compiler {
     // ========== PRINT ==========
 
     fn compile_print(&mut self, fb: &mut FunctionBuilder, print_stmt: &PrintStmt) -> PbResult<()> {
+        // PRINT AT row, col (fork extension): position the console cursor
+        // before emitting the expression list.  Official PB has no PRINT AT;
+        // LOCATE + PRINT is the standard equivalent.
+        if let Some((row, col)) = &print_stmt.at {
+            let r0 = self.compile_expr(fb, row)?;
+            let r = self.to_i32(fb, &r0);
+            let c0 = self.compile_expr(fb, col)?;
+            let c = self.to_i32(fb, &c0);
+            fb.call_void("pb_locate", &[r, c]);
+        }
         for arg in &print_stmt.args {
+            // PB/CC PRINT items SPC(n) and TAB(n).  They are positional
+            // items, not ordinary expressions, so handle them before the
+            // generic string/number path.
+            if let Expr::FunctionCall(name, args) = arg {
+                let n = name.to_uppercase();
+                if n == "SPC" && args.len() == 1 {
+                    let v = self.compile_expr(fb, &args[0])?;
+                    let n32 = self.to_i32(fb, &v);
+                    fb.call_void("pb_print_spc", &[n32]);
+                    continue;
+                }
+                if n == "TAB" && args.len() == 1 {
+                    let v = self.compile_expr(fb, &args[0])?;
+                    let n32 = self.to_i32(fb, &v);
+                    fb.call_void("pb_print_tab", &[n32]);
+                    continue;
+                }
+            }
             let val = self.compile_expr(fb, arg)?;
             if val.ty == IrType::Ptr {
                 let (str_name, _len) = self.module.add_string_constant("%s");
@@ -28151,6 +28290,10 @@ impl Compiler {
             }
             "RGB" | "BGR" => Some(self.builtin_rgb(fb, args, name)),
             // TXT pseudo-object value members (CHW TXT pseudo-object).
+            // PB/CC console cursor values.  CON.CELL.ROW/COL and the legacy
+            // CURSORY/CURSORX all read the same CONOUT$ cursor, 1-based.
+            "CON_CELL_ROW" | "CURSORY" => Some(Ok(fb.call(&IrType::I32, "pb_cursory", &[]))),
+            "CON_CELL_COL" | "CURSORX" => Some(Ok(fb.call(&IrType::I32, "pb_cursorx", &[]))),
             "TXT_INKEY$" | "TXT_INKEY" => Some(Ok(fb.call(&IrType::Ptr, "pb_txt_inkey", &[]))),
             "TXT_WAITKEY$" | "TXT_WAITKEY" => {
                 Some(Ok(fb.call(&IrType::Ptr, "pb_txt_waitkey", &[])))

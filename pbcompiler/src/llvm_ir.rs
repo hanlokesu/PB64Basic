@@ -401,7 +401,7 @@ impl ModuleBuilder {
         ret: &IrType,
         params: &[(String, IrType)],
     ) -> FunctionBuilder {
-        FunctionBuilder::new(name, ret, params, false)
+        FunctionBuilder::new(name, ret, params, false, false)
     }
 
     /// Create a function builder with optional dllexport attribute.
@@ -412,7 +412,21 @@ impl ModuleBuilder {
         params: &[(String, IrType)],
         export: bool,
     ) -> FunctionBuilder {
-        FunctionBuilder::new(name, ret, params, export)
+        FunctionBuilder::new(name, ret, params, export, false)
+    }
+
+    /// Create a function builder with optional dllexport and an explicit i686
+    /// x86_stdcallcc calling convention.  On x86_64 the convention flag must
+    /// stay false (the platform has a single convention).
+    pub fn create_function_builder_ex_cc(
+        &self,
+        name: &str,
+        ret: &IrType,
+        params: &[(String, IrType)],
+        export: bool,
+        is_stdcall: bool,
+    ) -> FunctionBuilder {
+        FunctionBuilder::new(name, ret, params, export, is_stdcall)
     }
 
     /// Add a completed function body to the module.
@@ -471,15 +485,23 @@ pub struct FunctionBuilder {
 }
 
 impl FunctionBuilder {
-    fn new(name: &str, ret: &IrType, params: &[(String, IrType)], export: bool) -> Self {
+    fn new(
+        name: &str,
+        ret: &IrType,
+        params: &[(String, IrType)],
+        export: bool,
+        is_stdcall: bool,
+    ) -> Self {
         let params_str: Vec<String> = params
             .iter()
             .map(|(n, t)| format!("{} %{}", t, n))
             .collect();
         let export_attr = if export { "dllexport " } else { "" };
+        let cc = if is_stdcall { "x86_stdcallcc " } else { "" };
         let header = format!(
-            "define {}{} @{}({}) {{\n",
+            "define {}{}{} @{}({}) {{\n",
             export_attr,
+            cc,
             ret,
             name,
             params_str.join(", ")
