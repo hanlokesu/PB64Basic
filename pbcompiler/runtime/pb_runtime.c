@@ -3897,11 +3897,16 @@ void pb_filescan(int filenum, long long* records, long long* width) {
         }
         if (in_rec) { rec++; if (cur > w) w = cur; }
     } else {
-        /* INPUT: CRLF-delimited records */
+        /* INPUT: CRLF-delimited records; the ANSI path also honours the DOS
+           EOF marker CHR$(26), matching the WIDE reader. */
         int ch;
         long long cur = 0;
         int in_rec = 0;
         while ((ch = fgetc(f)) != EOF) {
+            if (ch == 0x1A) {
+                if (in_rec) { rec++; if (cur > w) w = cur; cur = 0; in_rec = 0; }
+                break;
+            }
             if (ch == '\r' || ch == '\n') {
                 if (in_rec) { rec++; if (cur > w) w = cur; cur = 0; in_rec = 0; }
             } else {
@@ -4073,11 +4078,20 @@ char* pb_line_input(int filenum) {
         free(w);
         return out;
     }
-    /* ANSI sequential file: byte-oriented fgets, as before. */
+    /* ANSI sequential file: byte-oriented fgets, as before.  A DOS EOF marker
+       (CHR$(26)) truncates the line and latches EOF for later reads, matching
+       the WIDE reader and PBWin10. */
     {
         char buf[4096];
+        char* eof_mark;
+        if (file_wide_eof[filenum]) return pb_bstr_alloc("", 0);
         if (fgets(buf, sizeof(buf), file_handles[filenum]) == NULL)
             return pb_bstr_alloc("", 0);
+        eof_mark = strchr(buf, 0x1A);
+        if (eof_mark != NULL) {
+            *eof_mark = '\0';
+            file_wide_eof[filenum] = 1;
+        }
         int len = (int)strlen(buf);
         if (len > 0 && buf[len-1] == '\n') { buf[len-1] = '\0'; len--; }
         if (len > 0 && buf[len-1] == '\r') { buf[len-1] = '\0'; len--; }
@@ -4145,8 +4159,8 @@ int pb_eof(int filenum) {
     int se = pb_socket_eof_state(filenum);
     if (se != -2) return se;
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return -1;
+    if (file_wide_eof[filenum]) return -1;
     if (file_wide[filenum]) {
-        if (file_wide_eof[filenum]) return -1;
         /* PBWin10 measured: a sequential WIDE file is at EOF when fewer than
            two bytes remain (an incomplete final code unit is not data). */
         long pos = ftell(file_handles[filenum]);
@@ -4162,10 +4176,29 @@ int pb_eof(int filenum) {
     return 0;  /* PB: 0 = false (not EOF) */
 }
 
-/* Read one INPUT# token from a UTF-16LE sequential file.  PBWin10 measured
-   (batch 363): comma and CR terminate, LF is ignored, leading spaces are
-   skipped, trailing spaces are preserved; a surrounding pair of quotes is
-   removed. */
+/* LINE INPUT #filenum, Arr$() [RECORDS n] [TO count].
+   Each slot is a BSTR pointer; `stride` is the target pointer width (4 or 8).
+   Returns the number of lines actually read.  Stops at physical EOF or the
+   DOS EOF marker, and also at the RECORDS limit or the array element count. */
+long long pb_line_input_array(int filenum, void* base, long long total,
+                              long long stride, long long records, long long wide) {
+    long long i, limit;
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum] ||
+        !base || total <= 0)
+        return 0;
+    if (stride <= 0) stride = (long long)sizeof(char*);
+    limit = total;
+    if (records > 0 && records < limit) limit = records;
+    for (i = 0; i < limit; i++) {
+        char* slot;
+        if (pb_eof(filenum)) break;
+        slot = (char*)base + (size_t)i * (size_t)stride;
+        *(char**)slot = wide ? pb_line_input_w(filenum) : pb_line_input(filenum);
+    }
+    return i;
+}
+
+
 static char* pb_read_wide_token(int filenum) {
     size_t cap = 64, n = 0;
     short* w = (short*)malloc(cap * sizeof(short));
@@ -4214,7 +4247,12 @@ void pb_input_file_str(int filenum, char** dest) {
     char buf[4096];
     int i = 0;
     int ch;
+    if (file_wide_eof[filenum]) {
+        *dest = pb_bstr_alloc("", 0);
+        return;
+    }
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
+        if (ch == 0x1A) { file_wide_eof[filenum] = 1; break; }
         if (ch == ',' || ch == '\n') break;
         if (ch == '\r') continue;
         /* batch 308 (I): a string item ignores leading spaces (PBWin INPUT#
@@ -4276,7 +4314,12 @@ void pb_input_file_fixed(int filenum, char* buf, long long n) {
     }
     char tmp[4096];
     int i = 0, ch;
+    if (file_wide_eof[filenum]) {
+        buf[0] = '\0';
+        return;
+    }
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
+        if (ch == 0x1A) { file_wide_eof[filenum] = 1; break; }
         if (ch == ',' || ch == '\n') break;
         if (ch == '\r') continue;
         if (i < (int)sizeof(tmp) - 1) tmp[i++] = (char)ch;
@@ -4920,14 +4963,28 @@ void pb_con_page_set(int active, int visible) {
 }
 
 void pb_con_page_active_set(int n) {
-    pb_con_page_set(n, pb_con_visible);
+    if (!pb_con_page_ensure()) return;
+    /* CON.PAGE.ACTIVE is a property, not the legacy PAGE statement: the
+       CHW range is 1-8, so 0/9 are illegal (Error 5) rather than the legacy
+       "leave unchanged" sentinel. */
+    if (n < 1 || n > PB_CON_PAGES) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    pb_con_active = n;
+    pb_err_var = pb_err = 0;
 }
 
 void pb_con_page_visible_set(int n) {
     if (!pb_con_page_ensure()) return;
-    pb_con_visible = pb_con_clamp_page(n);
+    if (n < 1 || n > PB_CON_PAGES) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    pb_con_visible = n;
     void* vh = pb_con_pages[pb_con_visible - 1];
     if (vh) SetConsoleActiveScreenBuffer(vh);
+    pb_err_var = pb_err = 0;
 }
 
 int pb_con_page_active_get(void) { return pb_con_active; }
@@ -8344,12 +8401,22 @@ int HiScore(int x, const char* Winner, const char* PathSpec) {
     return 1;  /* Not highest score */
 }
 
-/* Example DLL stub � RemarksData: returns STRPTR to a string
- * Stubbed: linked directly into exe (cdecl, not dllimport) */
-int RemarksData(int x) {
+/* Example DLL stub — RemarksData: returns STRPTR to a string.
+ * Keep the pointer width: returning int truncated the 64-bit address on x64.
+ * Stubbed: linked directly into exe (cdecl, not dllimport). */
+const char* RemarksData(int x) {
     static char humor[] = "No remarks available.";
     (void)x;
-    return (int)(size_t)humor;  /* Return pointer as integer (32-bit) */
+    return humor;
+}
+
+/* PB identifiers normalize to upper case; expose the names the linker sees
+ * when a .bas file declares HiScore / RemarksData without an ALIAS clause. */
+int HISCORE(int x, const char* Winner, const char* PathSpec) {
+    return HiScore(x, Winner, PathSpec);
+}
+const char* REMARKSDATA(int x) {
+    return RemarksData(x);
 }
 
 /* EZLIB functions are now nooped in the compiler (should_noop_function).
@@ -13750,11 +13817,111 @@ void* pb_class_create(const char* classname) {
 }
 void pb_class_destroy(void* obj) { if (obj) free(obj); }
 int pb_method_call(void* obj, const char* methodname) { return 1; } /* noop dispatch stub */
+
+/* Heap-backed array descriptor for the fork's ARRAY REDIM INCR/DECR extension.
+   Existing element access loads `data` through this descriptor, so a realloc
+   that moves the block is immediately visible to every generated GEP. */
+typedef struct {
+    void* data;
+    long long count;
+    long long cap;
+    int elem_size;
+} pb_dyn_array;
+
+static void pb_dyn_zero_range(void* data, long long from, long long to, int elem_size) {
+    if (!data || from >= to || elem_size <= 0) return;
+    memset((char*)data + (size_t)from * (size_t)elem_size, 0,
+           (size_t)(to - from) * (size_t)elem_size);
+}
+
+void* pb_dynamic_array_new(int elem_size, long long count) {
+    if (elem_size <= 0) elem_size = 1;
+    pb_dyn_array* d = (pb_dyn_array*)calloc(1, sizeof(pb_dyn_array));
+    if (!d) return NULL;
+    d->elem_size = elem_size;
+    d->count = count < 1 ? 0 : count;
+    d->cap = d->count;
+    if (d->cap > 0) {
+        d->data = calloc((size_t)d->cap, (size_t)elem_size);
+        if (!d->data) {
+            free(d);
+            return NULL;
+        }
+    }
+    return d;
+}
+
+void* pb_dynamic_array_data(void* v) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    return d ? d->data : NULL;
+}
+
+long long pb_dynamic_array_total(void* v) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    return d ? d->count : 0;
+}
+
+/* INCR/DECR: preserve the prefix, realloc only when growing past capacity.
+   Shrinking zeroes the dropped tail so a later INCR starts from defined zero
+   slots (the same observable rule as REDIM PRESERVE shrink + regrow). */
+long long pb_dynamic_array_grow(void* v, long long delta, int elem_size, int increase) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d || delta < 0) return d ? d->count : 0;
+    if (elem_size <= 0) elem_size = d->elem_size;
+    long long next = increase ? d->count + delta : d->count - delta;
+    if (next < 0) next = 0;
+    if (next > d->cap) {
+        long long old_cap = d->cap;
+        void* p = realloc(d->data, (size_t)next * (size_t)elem_size);
+        if (!p) return d->count;
+        d->data = p;
+        d->cap = next;
+        pb_dyn_zero_range(d->data, old_cap, next, elem_size);
+    } else if (next < d->count) {
+        pb_dyn_zero_range(d->data, next, d->count, elem_size);
+    }
+    d->count = next;
+    return d->count;
+}
+
+/* REDIM / DIM on a heap-backed array.  preserve=0 zeroes the whole live range
+   (PBWin REDIM semantics); preserve=1 keeps the prefix and zeroes only the
+   newly exposed tail. */
+long long pb_dynamic_array_resize(void* v, long long count, int elem_size, int preserve) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d) return 0;
+    if (elem_size <= 0) elem_size = d->elem_size;
+    if (count < 0) count = 0;
+    long long old_count = d->count;
+    if (count > d->cap) {
+        long long old_cap = d->cap;
+        void* p = realloc(d->data, (size_t)count * (size_t)elem_size);
+        if (!p) return old_count;
+        d->data = p;
+        d->cap = count;
+        pb_dyn_zero_range(d->data, old_cap, count, elem_size);
+    }
+    if (preserve) {
+        if (count > old_count) {
+            pb_dyn_zero_range(d->data, old_count, count, elem_size);
+        } else if (count < old_count) {
+            pb_dyn_zero_range(d->data, count, old_count, elem_size);
+        }
+    } else {
+        pb_dyn_zero_range(d->data, 0, count, elem_size);
+    }
+    d->count = count;
+    return d->count;
+}
+
 int pb_array_redim_incr(void* arr_ptr, int elem_size, int old_count, int increment) {
-    /* simplified: report requested new size; actual realloc needs dynamic array model */
+    /* Legacy helper retained for any externally emitted old IR.  New codegen
+       routes ARRAY REDIM through pb_dynamic_array_grow. */
+    (void)arr_ptr; (void)elem_size;
     return old_count + increment;
 }
 int pb_array_redim_decr(void* arr_ptr, int elem_size, int old_count, int decrement) {
+    (void)arr_ptr; (void)elem_size;
     int n = old_count - decrement;
     return n < 0 ? 0 : n;
 }

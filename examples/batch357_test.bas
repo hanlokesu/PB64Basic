@@ -9,7 +9,10 @@
 THREADED tarr%()
 THREADED sarr$()
 
-GLOBAL g_done AS LONG
+GLOBAL g_done1 AS LONG
+GLOBAL g_done2 AS LONG
+GLOBAL g_done3 AS LONG
+GLOBAL g_done4 AS LONG
 GLOBAL g_failures AS LONG
 
 THREAD FUNCTION Worker(BYVAL tid AS LONG) AS LONG
@@ -28,7 +31,12 @@ THREAD FUNCTION Worker(BYVAL tid AS LONG) AS LONG
     IF sarr(1) <> "s" + FORMAT$(tid) THEN g_failures = g_failures + 1
     IF sarr(2) <> "mid" THEN g_failures = g_failures + 1
     IF sarr(3) <> "tail" THEN g_failures = g_failures + 1
-    g_done = g_done + 1
+    SELECT CASE tid
+        CASE 1: g_done1 = 1
+        CASE 2: g_done2 = 1
+        CASE 3: g_done3 = 1
+        CASE 4: g_done4 = 1
+    END SELECT
     FUNCTION = 0
 END FUNCTION
 
@@ -44,18 +52,18 @@ FUNCTION PBMAIN () AS LONG
         END IF
     NEXT i
     spins = 0
-    DO WHILE g_done < 4 AND spins < 1000
+    DO WHILE (g_done1 + g_done2 + g_done3 + g_done4) < 4 AND spins < 1000
         SLEEP 10
         spins = spins + 1
     LOOP
     FOR i = 1 TO 4
         THREAD CLOSE h(i)
     NEXT i
-    IF g_done <> 4 THEN
-        PRINT "only "; g_done; " of 4 workers finished"
+    IF (g_done1 + g_done2 + g_done3 + g_done4) <> 4 THEN
+        PRINT "only "; (g_done1 + g_done2 + g_done3 + g_done4); " of 4 workers finished"
         g_failures = g_failures + 1
     END IF
-    PRINT "workers done="; g_done; " failures="; g_failures
+    PRINT "workers done="; (g_done1 + g_done2 + g_done3 + g_done4); " failures="; g_failures
     PRINT "=== FAILURES: "; g_failures
     FUNCTION = 0
 END FUNCTION

@@ -4988,6 +4988,7 @@ impl Parser {
                     at: None,
                     trailing,
                     from_question: true,
+                    to_printer: false,
                     line,
                 }))
             }
@@ -5117,10 +5118,29 @@ impl Parser {
                             let file_num = self.parse_expression()?;
                             self.expect(&Token::Comma)?;
                             let var = self.parse_expression()?;
+                            let mut records = None;
+                            let mut to_count = None;
+                            loop {
+                                if let Token::Identifier(word) = self.peek() {
+                                    if word.eq_ignore_ascii_case("RECORDS") {
+                                        self.advance();
+                                        records = Some(self.parse_expression()?);
+                                        continue;
+                                    }
+                                }
+                                if self.peek() == &Token::To {
+                                    self.advance();
+                                    to_count = Some(self.parse_expression()?);
+                                    continue;
+                                }
+                                break;
+                            }
                             self.consume_to_eol();
                             return Ok(Statement::LineInputFile(LineInputFileStmt {
                                 file_num,
                                 var,
+                                records,
+                                to_count,
                                 line,
                             }));
                         }
@@ -15882,11 +15902,15 @@ impl Parser {
             }
             _ => {
                 // LPRINT [expr][SPC(n)][TAB(n)][,][;] — same arg grammar as PRINT
-                let (args, _seps, _trailing) = self.parse_print_args()?;
+                let (args, separators, trailing) = self.parse_print_args()?;
                 self.consume_to_eol();
-                Ok(Statement::Call(CallStmt {
-                    name: "LPRINT".to_string(),
+                Ok(Statement::Print(PrintStmt {
                     args,
+                    separators,
+                    at: None,
+                    trailing,
+                    from_question: false,
+                    to_printer: true,
                     line,
                 }))
             }
@@ -16596,6 +16620,7 @@ impl Parser {
             at,
             trailing,
             from_question: false,
+            to_printer: false,
             line,
         }))
     }
@@ -16772,6 +16797,7 @@ impl Parser {
             at: None,
             trailing,
             from_question: false,
+            to_printer: false,
             line,
         }))
     }

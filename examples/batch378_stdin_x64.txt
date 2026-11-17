@@ -1,0 +1,4 @@
+in= 0  out= 0 
+line1=[alpha ]
+line2=[beta ]
+eof= 1 

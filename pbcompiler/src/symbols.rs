@@ -34,6 +34,9 @@ pub struct ArrayInfo {
     /// base pointer (inttoptr of the address expression); element access must
     /// load it before GEP rather than GEP on the slot itself.
     pub indirect_base: bool,
+    /// `ARRAY REDIM INCR/DECR` backing: ptr_name holds a runtime descriptor
+    /// whose data buffer can be realloc'd without changing the LLVM array type.
+    pub dynamic: bool,
 }
 
 /// Tracks variables during codegen.

@@ -1,0 +1,2 @@
+batch379 lineinput array, failures= 0 
+n1= 3  s1=[L1] s4=[] n2= 5  s6=[]

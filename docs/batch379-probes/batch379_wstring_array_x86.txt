@@ -1,0 +1,2 @@
+batch379 wstring array, failures= 0 
+w1=[ABC     ] len= 8  ts=[ABC     ]

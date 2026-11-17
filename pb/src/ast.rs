@@ -672,6 +672,10 @@ pub struct PrintStmt {
     /// program `?` is `CON.PRINT` (CHW Screen_Text_Commands); in a GUI
     /// program the same token is PB/Win's MSGBOX shorthand (CHW msgbox_s).
     pub from_question: bool,
+    /// `LPRINT` shares the PRINT argument grammar but targets the attached
+    /// printer device.  This flag keeps its separators/trailing metadata on the
+    /// same PrintStmt instead of a parallel statement node.
+    pub to_printer: bool,
     pub line: usize,
 }
 
@@ -801,7 +805,9 @@ pub struct InputFileStmt {
 #[derive(Debug, Clone)]
 pub struct LineInputFileStmt {
     pub file_num: Expr,
-    pub var: Expr, // string variable to read into
+    pub var: Expr,              // string variable or string array to read into
+    pub records: Option<Expr>,  // optional RECORDS rcds limit (array form)
+    pub to_count: Option<Expr>, // optional TO count output (array form)
     pub line: usize,
 }
 

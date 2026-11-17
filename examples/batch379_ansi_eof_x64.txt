@@ -1,0 +1,2 @@
+batch379 ansi eof, failures= 0 
+s=[A] e=-1 

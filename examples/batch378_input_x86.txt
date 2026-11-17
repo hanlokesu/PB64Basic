@@ -1,0 +1,7 @@
+n= 123 s=[alpha]
+line=[hello world]
+key len= 1 hex=5A
+mouse stat= 1 keylen= 4
+mouse key=FFFF0401
+mouse row= 10 col= 62
+mouse buttons= 2

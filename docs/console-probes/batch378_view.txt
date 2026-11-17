@@ -1,0 +1,5 @@
+screen= 10, 80 err= 0
+virtual= 40, 120 err= 0
+after CON.VIEW 5,7: row= 1 col= 1 err= 0
+CONSOLE GET VIEW: row= 1 col= 1
+after CONSOLE SET VIEW 3,4: row= 1 col= 1 err= 0

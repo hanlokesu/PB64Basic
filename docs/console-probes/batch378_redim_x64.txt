@@ -1,0 +1,6 @@
+g1 ub= 8  lb= 1  a1..8= 11  22  33  44  0  0  0  0  fails= 0 
+g2 ub= 6  lb= 1  a1..6= 11  22  33  44  0  0  fails= 0 
+g3 ub= 10  lb= 1  a1..10= 11  22  33  44  0  0  0  0  0  0  fails= 0 
+g4 ub= 1  lb= 1  a1= 11  fails= 0 
+g5 ub= 3  lb= 1  a1..3= 11  0  0  fails= 0 
+batch378 redim, failures= 0 

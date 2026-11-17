@@ -1,0 +1,12 @@
+start: size=80,10 win=0,0..79,9 max=80,10
+shrink=1 err=0
+buffer=1 err=0
+after buffer: size=120,40 win=0,0..0,0 max=120,40
+window10=1 err=0
+after setup: size=80,10 win=0,0..79,9 max=80,10
+abs=1 err=0
+after abs: size=80,10 win=0,0..79,9 max=80,10
+rel=1 err=0
+after rel: size=159,19 win=0,0..158,18 max=159,19
+abs10=1 err=0
+after abs10: size=80,10 win=0,0..79,9 max=80,10

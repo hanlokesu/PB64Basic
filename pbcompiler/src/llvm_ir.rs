@@ -583,12 +583,17 @@ impl FunctionBuilder {
         Val::new(r, ty.clone())
     }
 
-    /// `%r = getelementptr inbounds [N x T], ptr %base, i32 0, i32 %idx`
+    /// `%r = getelementptr [N x T], ptr %base, i32 0, i32 %idx`
+    ///
+    /// Deliberately not `inbounds`: an `ARRAY REDIM` backing buffer is a heap
+    /// block whose live element count may exceed the compile-time `N` used for
+    /// the GEP type.  The address computation is still correct; dropping
+    /// `inbounds` keeps LLVM from treating the runtime growth as UB.
     pub fn gep_array(&mut self, array_ty: &IrType, base: &Val, index: &Val) -> Val {
         let r = self.next_reg();
         writeln!(
             self.body,
-            "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 {}",
+            "  {} = getelementptr {}, ptr {}, i32 0, i32 {}",
             r, array_ty, base.name, index.name
         )
         .unwrap();

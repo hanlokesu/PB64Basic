@@ -2542,6 +2542,19 @@ impl Compiler {
         self.module
             .declare_function("pb_line_input_w", &IrType::Ptr, &[IrType::I32], false);
         self.module.declare_function(
+            "pb_line_input_array",
+            &IrType::I64,
+            &[
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_line_input_fixed_w",
             &IrType::Void,
             &[IrType::I32, IrType::Ptr, IrType::I64],
@@ -6088,6 +6101,32 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
             false,
         );
+        self.module.declare_function(
+            "pb_dynamic_array_new",
+            &IrType::Ptr,
+            &[IrType::I32, IrType::I64],
+            false,
+        );
+        self.module
+            .declare_function("pb_dynamic_array_data", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_dynamic_array_total",
+            &IrType::I64,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_dynamic_array_grow",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64, IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_dynamic_array_resize",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64, IrType::I32, IrType::I32],
+            false,
+        );
         self.module
             .declare_function("pb_graphic_clear", &IrType::I32, &[IrType::I32], false);
         self.module.declare_function(
@@ -9427,6 +9466,7 @@ impl Compiler {
                 dims: Vec::new(),
                 total_elements: 0,
                 indirect_base: true,
+                dynamic: false,
             },
         );
     }
@@ -9530,6 +9570,7 @@ impl Compiler {
                 dims,
                 total_elements: total,
                 indirect_base: true,
+                dynamic: false,
             },
         );
         Ok(())
@@ -10253,7 +10294,9 @@ impl Compiler {
             Statement::WhileWend(w) => self.compile_while_wend(fb, w),
             Statement::SelectCase(s) => self.compile_select_case(fb, s),
             Statement::Print(p) => {
-                if p.from_question && !self.console_mode {
+                if p.to_printer {
+                    self.compile_lprint(fb, p)
+                } else if p.from_question && !self.console_mode {
                     let call = CallStmt {
                         name: "MSGBOX".to_string(),
                         args: p.args.clone(),
@@ -11515,6 +11558,7 @@ impl Compiler {
                                 dims,
                                 total_elements: n,
                                 indirect_base: false,
+                                dynamic: false,
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -11897,6 +11941,7 @@ impl Compiler {
                     dims,
                     total_elements: n,
                     indirect_base: false,
+                    dynamic: false,
                 };
                 let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                 let elem_ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -12081,6 +12126,7 @@ impl Compiler {
                     dims,
                     total_elements: total,
                     indirect_base: true,
+                    dynamic: false,
                 },
             );
         }
@@ -12152,10 +12198,126 @@ impl Compiler {
         }
         collect_dims(body, &elem_types, &mut max_total, eval_const);
 
-        // Pass 3: allocate each array at its max size (skips globals; those are
-        // allocated by declare_global_array when the real REDIM is compiled).
+        // Pass 3: arrays targeted by ARRAY REDIM INCR/DECR need a heap-backed
+        // descriptor.  The runtime descriptor owns the data pointer and live
+        // count; element access loads the data pointer afresh, so a realloc
+        // never leaves codegen GEP'ing a stale stack block.
+        let mut dynamic_names: HashSet<String> = HashSet::new();
+        fn collect_dynamic_names(stmts: &[Statement], set: &mut HashSet<String>) {
+            for st in stmts {
+                match st {
+                    Statement::Call(c)
+                        if c.name == "ARRAY_REDIM_INCR" || c.name == "ARRAY_REDIM_DECR" =>
+                    {
+                        let target = match c.args.first() {
+                            Some(Expr::ArrayAccess(n, _)) | Some(Expr::Variable(n)) => Some(n),
+                            Some(Expr::FunctionCall(n, args)) if args.is_empty() => Some(n),
+                            _ => None,
+                        };
+                        if let Some(n) = target {
+                            set.insert(normalize_name(n));
+                        }
+                    }
+                    Statement::Block(b) => collect_dynamic_names(b, set),
+                    _ => {}
+                }
+            }
+        }
+        collect_dynamic_names(body, &mut dynamic_names);
+
+        fn shape_of(
+            d: &DimStatement,
+            elem_types: &HashMap<String, PbType>,
+            eval_const: fn(&Expr) -> Result<i64, &'static str>,
+        ) -> (PbType, Vec<(i64, i64)>, usize) {
+            let n = normalize_name(&d.name);
+            let pb_type = if matches!(d.pb_type, PbType::Variant) {
+                elem_types.get(&n).cloned().unwrap_or(PbType::Long)
+            } else {
+                d.pb_type.clone()
+            };
+            let mut dims = Vec::new();
+            let mut total = 1usize;
+            for b in &d.bounds {
+                let lo = eval_const(&b.lower).unwrap_or(0);
+                let up = eval_const(&b.upper).unwrap_or(0);
+                let count = (up - lo + 1) as usize;
+                dims.push((lo, count as i64));
+                total *= count;
+            }
+            (pb_type, dims, total)
+        }
+
+        #[allow(clippy::type_complexity)]
+        fn find_shape(
+            stmts: &[Statement],
+            target: &str,
+            elem_types: &HashMap<String, PbType>,
+            eval_const: fn(&Expr) -> Result<i64, &'static str>,
+        ) -> Option<(PbType, Vec<(i64, i64)>, usize)> {
+            for st in stmts {
+                match st {
+                    Statement::Dim(d)
+                        if normalize_name(&d.name) == target && !d.bounds.is_empty() =>
+                    {
+                        return Some(shape_of(d, elem_types, eval_const));
+                    }
+                    Statement::Redim(d)
+                        if normalize_name(&d.name) == target && !d.bounds.is_empty() =>
+                    {
+                        return Some(shape_of(d, elem_types, eval_const));
+                    }
+                    Statement::Block(b) => {
+                        if let Some(shape) = find_shape(b, target, elem_types, eval_const) {
+                            return Some(shape);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
+        for name in &dynamic_names {
+            if self.pending_global_arrays.contains_key(name)
+                || self.symbols.lookup_array(name).is_some()
+            {
+                continue;
+            }
+            let (pb_type, dims, total) = find_shape(body, name, &elem_types, eval_const)
+                .unwrap_or_else(|| (PbType::Long, Vec::new(), 0usize));
+            let elem_ir = Self::array_elem_ir(&pb_type);
+            let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
+            let elem_size = Self::array_elem_size(&elem_ir);
+            let slot = fb.alloca(&IrType::Ptr);
+            let desc = fb.call(
+                &IrType::Ptr,
+                "pb_dynamic_array_new",
+                &[fb.const_i32(elem_size), fb.const_i64(total as i64)],
+            );
+            fb.store(&desc, &slot);
+            self.symbols.insert_local_array(
+                name.clone(),
+                ArrayInfo {
+                    ptr_name: slot.name,
+                    array_ir_type: array_ir,
+                    elem_ir_type: elem_ir,
+                    pb_type,
+                    dims,
+                    total_elements: total,
+                    indirect_base: false,
+                    dynamic: true,
+                },
+            );
+        }
+
+        // Pass 4: allocate ordinary REDIM-backed arrays at their max size
+        // (skips globals and the heap-backed ARRAY REDIM arrays above).
         for (name, (pb_type, total)) in max_total {
             if self.pending_global_arrays.contains_key(&name) {
+                continue;
+            }
+            if dynamic_names.contains(&name) {
                 continue;
             }
             if self.symbols.lookup_array(&name).is_some() {
@@ -12187,6 +12349,7 @@ impl Compiler {
                     dims,
                     total_elements,
                     indirect_base: false,
+                    dynamic: false,
                 },
             );
         }
@@ -12198,7 +12361,12 @@ impl Compiler {
     /// slot must be loaded before GEP; ordinary arrays GEP the alloca directly.
     fn array_base(&self, fb: &mut FunctionBuilder, info: &ArrayInfo) -> Val {
         let raw = Val::new(info.ptr_name.clone(), IrType::Ptr);
-        if info.indirect_base {
+        if info.dynamic {
+            // ptr_name is a slot holding the runtime descriptor; the data
+            // pointer may move on every realloc.
+            let desc = fb.load(&IrType::Ptr, &raw);
+            fb.call(&IrType::Ptr, "pb_dynamic_array_data", &[desc])
+        } else if info.indirect_base {
             // batch 366: the TLS slot points at the per-thread descriptor,
             // not directly at the element block.
             let meta = fb.load(&IrType::Ptr, &raw);
@@ -12212,7 +12380,10 @@ impl Compiler {
     /// must be the calling thread's descriptor total, not the compile-time
     /// shape (threads may DIM different shapes).
     fn array_total(&self, fb: &mut FunctionBuilder, info: &ArrayInfo) -> Val {
-        if info.indirect_base {
+        if info.dynamic {
+            let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            fb.call(&IrType::I64, "pb_dynamic_array_total", &[desc])
+        } else if info.indirect_base {
             let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
             fb.call(&IrType::I64, "pb_threaded_meta_total", &[meta])
         } else {
@@ -12224,7 +12395,14 @@ impl Compiler {
     /// MAT, whose callers pass the live shape rather than the compile-time
     /// one for THREADED arrays.
     fn array_count(&self, fb: &mut FunctionBuilder, info: &ArrayInfo, dim: usize) -> Val {
-        if info.indirect_base {
+        if info.dynamic {
+            let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+            if dim == 1 {
+                fb.call(&IrType::I64, "pb_dynamic_array_total", &[desc])
+            } else {
+                fb.const_i64(info.dims.get(dim - 1).map(|d| d.1).unwrap_or(0))
+            }
+        } else if info.indirect_base {
             let meta = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
             fb.call(
                 &IrType::I64,
@@ -12234,6 +12412,22 @@ impl Compiler {
         } else {
             fb.const_i64(info.dims.get(dim - 1).map(|d| d.1).unwrap_or(0))
         }
+    }
+
+    /// `ARRAY REDIM INCR/DECR arr(...), n`: the argument is an element
+    /// expression, but the runtime needs the whole heap-backed descriptor.
+    fn dynamic_array_for_expr(&self, expr: &Expr) -> Option<ArrayInfo> {
+        let name = match expr {
+            Expr::ArrayAccess(name, _) | Expr::Variable(name) => name,
+            Expr::FunctionCall(name, args) if args.is_empty() => name,
+            _ => return None,
+        };
+        if let Some(info) = self.symbols.lookup_array(&normalize_name(name)) {
+            if info.dynamic {
+                return Some(info.clone());
+            }
+        }
+        None
     }
 
     fn compile_dim(&mut self, fb: &mut FunctionBuilder, dim: &DimStatement) -> PbResult<()> {
@@ -12284,6 +12478,43 @@ impl Compiler {
             return Ok(());
         }
 
+        // Heap-backed ARRAY REDIM array: the descriptor already owns the
+        // buffer.  A DIM/REDIM here changes the live count through the runtime
+        // instead of replacing a stack alloca.
+        if let Some(prev) = self.symbols.lookup_array(&name).cloned() {
+            if prev.dynamic {
+                if dim.bounds.is_empty() {
+                    return Ok(());
+                }
+                let mut dims = Vec::new();
+                let mut total = 1usize;
+                for bound in &dim.bounds {
+                    let lower = Self::eval_const_expr(&bound.lower).unwrap_or(0);
+                    let upper = Self::eval_const_expr(&bound.upper).unwrap_or(0);
+                    let count = (upper - lower + 1) as usize;
+                    dims.push((lower, count as i64));
+                    total *= count;
+                }
+                let elem_size = Self::array_elem_size(&prev.elem_ir_type);
+                let desc = fb.load(&IrType::Ptr, &Val::new(prev.ptr_name.clone(), IrType::Ptr));
+                let preserve = if dim.is_redim && dim.preserve { 1 } else { 0 };
+                fb.call_void(
+                    "pb_dynamic_array_resize",
+                    &[
+                        desc,
+                        fb.const_i64(total as i64),
+                        fb.const_i32(elem_size),
+                        fb.const_i32(preserve),
+                    ],
+                );
+                let mut next = prev;
+                next.dims = dims;
+                next.total_elements = total;
+                self.symbols.insert_local_array(name, next);
+                return Ok(());
+            }
+        }
+
         // CHW `DIM x() AS type`: undimensioned (dynamic) array. Metadata-only
         // registration so LBOUND returns 0 / UBOUND returns -1 until REDIM
         // assigns real bounds (batch289 A-class audit). Previously this fell
@@ -12312,6 +12543,7 @@ impl Compiler {
                     dims: Vec::new(),
                     total_elements: 0,
                     indirect_base: false,
+                    dynamic: false,
                 },
             );
             return Ok(());
@@ -12358,6 +12590,7 @@ impl Compiler {
                     dims,
                     total_elements: total,
                     indirect_base: true,
+                    dynamic: false,
                 },
             );
             return Ok(());
@@ -12426,6 +12659,7 @@ impl Compiler {
                                     dims,
                                     total_elements: total,
                                     indirect_base: false,
+                                    dynamic: false,
                                 },
                             );
                             return Ok(());
@@ -12446,6 +12680,7 @@ impl Compiler {
                             dims,
                             total_elements: total,
                             indirect_base: false,
+                            dynamic: false,
                         },
                     );
                     return Ok(());
@@ -12504,6 +12739,7 @@ impl Compiler {
                         dims,
                         total_elements: total,
                         indirect_base: false,
+                        dynamic: false,
                     },
                 );
                 return Ok(());
@@ -12552,6 +12788,7 @@ impl Compiler {
                     dims,
                     total_elements: total,
                     indirect_base: false,
+                    dynamic: false,
                 },
             );
             return Ok(());
@@ -14396,6 +14633,21 @@ impl Compiler {
             }
 
             "ARRAY_REDIM_INCR" => {
+                if let Some(info) = call
+                    .args
+                    .first()
+                    .and_then(|e| self.dynamic_array_for_expr(e))
+                {
+                    let a1 = self.compile_expr(fb, &call.args[1])?;
+                    let delta = self.to_i64(fb, &a1);
+                    let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+                    let elem_size = Self::array_elem_size(&info.elem_ir_type);
+                    fb.call_void(
+                        "pb_dynamic_array_grow",
+                        &[desc, delta, fb.const_i32(elem_size), fb.const_i32(1)],
+                    );
+                    return Ok(());
+                }
                 let a0 = self.compile_expr(fb, &call.args[0])?;
                 let pa0 = self.convert_value(fb, &a0, &IrType::Ptr, &PbType::Long);
                 let a1 = self.compile_expr(fb, &call.args[1])?;
@@ -14406,6 +14658,21 @@ impl Compiler {
                 );
             }
             "ARRAY_REDIM_DECR" => {
+                if let Some(info) = call
+                    .args
+                    .first()
+                    .and_then(|e| self.dynamic_array_for_expr(e))
+                {
+                    let a1 = self.compile_expr(fb, &call.args[1])?;
+                    let delta = self.to_i64(fb, &a1);
+                    let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+                    let elem_size = Self::array_elem_size(&info.elem_ir_type);
+                    fb.call_void(
+                        "pb_dynamic_array_grow",
+                        &[desc, delta, fb.const_i32(elem_size), fb.const_i32(0)],
+                    );
+                    return Ok(());
+                }
                 let a0 = self.compile_expr(fb, &call.args[0])?;
                 let pa0 = self.convert_value(fb, &a0, &IrType::Ptr, &PbType::Long);
                 let a1 = self.compile_expr(fb, &call.args[1])?;
@@ -25433,6 +25700,34 @@ impl Compiler {
         Ok(())
     }
 
+    /// LPRINT carries the PRINT argument grammar but writes to the attached
+    /// printer device.  Each argument's own separator must reach codegen:
+    /// `;` emits nothing, `,` advances the printer column to the next 14-column
+    /// zone, and a trailing separator suppresses the closing CRLF.
+    fn compile_lprint(&mut self, fb: &mut FunctionBuilder, print_stmt: &PrintStmt) -> PbResult<()> {
+        for (i, arg) in print_stmt.args.iter().enumerate() {
+            let val = self.compile_expr(fb, arg)?;
+            if val.ty == IrType::Ptr {
+                fb.call_void("pb_lprint_bstr", std::slice::from_ref(&val));
+            } else if val.ty == IrType::I64 {
+                fb.call_void("pb_lprint_i64", std::slice::from_ref(&val));
+            } else if val.ty.is_int() {
+                let v = self.to_i32(fb, &val);
+                fb.call_void("pb_lprint_int", std::slice::from_ref(&v));
+            } else if val.ty.is_float() {
+                let v = self.to_f64(fb, &val);
+                fb.call_void("pb_lprint_dbl", std::slice::from_ref(&v));
+            }
+            if print_stmt.separators.get(i).cloned().flatten() == Some(',') {
+                fb.call_void("pb_lprint_tab", &[]);
+            }
+        }
+        if print_stmt.trailing.is_none() {
+            fb.call_void("pb_lprint_crlf", &[]);
+        }
+        Ok(())
+    }
+
     /// TXT PRINT (CHW TXT pseudo-object): writes into the Text Window cell
     /// grid.  SPC(n) and TAB(n) are positional items, a comma advances to the
     /// next 14-column zone, and a semicolon suppresses separation.  A final
@@ -25955,6 +26250,14 @@ impl Compiler {
         fb: &mut FunctionBuilder,
         li: &LineInputFileStmt,
     ) -> PbResult<()> {
+        // Array form: LINE INPUT #f, Arr$() [RECORDS n] [TO count].
+        if let Expr::FunctionCall(name, indices) | Expr::ArrayAccess(name, indices) = &li.var {
+            if indices.is_empty() {
+                if let Some(arr_info) = self.symbols.lookup_array(&normalize_name(name)).cloned() {
+                    return self.compile_line_input_array(fb, li, &arr_info);
+                }
+            }
+        }
         let filenum = self.compile_expr(fb, &li.file_num)?;
         let filenum_i32 = self.to_i32(fb, &filenum);
         let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &li.var)?;
@@ -25977,6 +26280,67 @@ impl Compiler {
                 let result = fb.call(&IrType::Ptr, "pb_line_input", &[filenum_i32]);
                 fb.store(&result, &ptr);
             }
+        }
+        Ok(())
+    }
+
+    fn compile_line_input_array(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        li: &LineInputFileStmt,
+        arr_info: &ArrayInfo,
+    ) -> PbResult<()> {
+        let wide = match &arr_info.pb_type {
+            PbType::String => 0i64,
+            PbType::WString => 1i64,
+            PbType::FixedString(_) | PbType::FixedWString(_) => {
+                return Err(PbError::generic(
+                    "LINE INPUT # array form requires a dynamic or WSTRING string array"
+                        .to_string(),
+                ));
+            }
+            _ => {
+                return Err(PbError::generic(
+                    "LINE INPUT # array form requires a string array".to_string(),
+                ));
+            }
+        };
+        let filenum = self.compile_expr(fb, &li.file_num)?;
+        let filenum_i32 = self.to_i32(fb, &filenum);
+        let base = self.array_base(fb, arr_info);
+        let total = self.array_total(fb, arr_info);
+        // stride 0 asks the runtime for sizeof(char*), so the same IR works
+        // for both the x64 and i686 targets.
+        let stride = fb.const_i64(0);
+        let records = match &li.records {
+            Some(expr) => {
+                let v = self.compile_expr(fb, expr)?;
+                self.to_i64(fb, &v)
+            }
+            None => fb.const_i64(-1),
+        };
+        let (out_ptr, out_pb) = match &li.to_count {
+            Some(expr) => {
+                let (ptr, pb_type) = self.compile_lvalue_ptr(fb, expr)?;
+                (ptr, Some(pb_type))
+            }
+            None => (fb.const_null_ptr(), None),
+        };
+        let count = fb.call(
+            &IrType::I64,
+            "pb_line_input_array",
+            &[
+                filenum_i32,
+                base,
+                total,
+                stride,
+                records,
+                fb.const_i64(wide),
+            ],
+        );
+        if let Some(pb_type) = out_pb {
+            let converted = self.convert_value(fb, &count, &IrType::Ptr, &pb_type);
+            fb.store(&converted, &out_ptr);
         }
         Ok(())
     }
@@ -27543,6 +27907,7 @@ impl Compiler {
                                 dims,
                                 total_elements: n,
                                 indirect_base: false,
+                                dynamic: false,
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
@@ -29944,12 +30309,16 @@ impl Compiler {
                 };
                 let av = self.compile_expr(fb, ae);
                 Some(av.map(|av| {
-                    let av64 = if av.ty == IrType::I32 {
-                        fb.sext(&av, &IrType::I64)
-                    } else {
+                    let addr = if av.ty == IrType::Ptr {
                         av
+                    } else {
+                        let av64 = if av.ty == IrType::I32 {
+                            fb.sext(&av, &IrType::I64)
+                        } else {
+                            av
+                        };
+                        fb.inttoptr(&av64)
                     };
-                    let addr = fb.inttoptr(&av64);
                     match dt.as_str() {
                         "BYTE" => fb.call(&IrType::I32, "pb_peek8", &[addr]),
                         "INTEGER" => fb.call(&IrType::I32, "pb_peek16s", &[addr]),
@@ -30232,6 +30601,30 @@ impl Compiler {
         }
         if info.dims.is_empty() {
             return Ok(fb.const_i64(if upper { -1 } else { 0 }));
+        }
+        if info.dynamic {
+            // LBOUND is the declared lower bound; UBOUND follows the live count
+            // held by the heap descriptor, so ARRAY REDIM INCR/DECR is visible
+            // immediately.  The fork extension is one-dimensional.
+            let dim_expr: Option<&Expr> = match bracket_dim.as_ref() {
+                Some(d) => Some(d),
+                None if args.len() >= 2 => Some(&args[1]),
+                None => None,
+            };
+            let dim_is_one = match dim_expr {
+                Some(d) => Self::eval_const_expr(d).map(|v| v == 1).unwrap_or(false),
+                None => true,
+            };
+            if dim_is_one {
+                let lower = fb.const_i64(info.dims[0].0);
+                if !upper {
+                    return Ok(lower);
+                }
+                let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+                let count = fb.call(&IrType::I64, "pb_dynamic_array_total", &[desc]);
+                let lower_plus_count = fb.add(&lower, &count);
+                return Ok(fb.sub(&lower_plus_count, &fb.const_i64(1)));
+            }
         }
         // Resolve the dimension expression: bracket form a(d) takes precedence,
         // then the second argument a, d; otherwise dimension 1 by default.
@@ -33461,6 +33854,9 @@ impl Compiler {
         if arr_info.indirect_base {
             return self.compute_threaded_flat_index(fb, indices, arr_info);
         }
+        if arr_info.dynamic {
+            return self.compute_dynamic_flat_index(fb, indices, arr_info);
+        }
         let ndims = arr_info.dims.len();
 
         // Compute strides: stride[last] = 1, stride[i] = stride[i+1] * count[i+1]
@@ -33506,6 +33902,36 @@ impl Compiler {
             }
         }
         result
+    }
+
+    /// Index a heap-backed ARRAY REDIM array.  The live count comes from the
+    /// runtime descriptor, so a slot added by INCR is addressable immediately.
+    fn compute_dynamic_flat_index(
+        &self,
+        fb: &mut FunctionBuilder,
+        indices: &[Val],
+        arr_info: &ArrayInfo,
+    ) -> Val {
+        let desc = fb.load(
+            &IrType::Ptr,
+            &Val::new(arr_info.ptr_name.clone(), IrType::Ptr),
+        );
+        let count = fb.call(&IrType::I64, "pb_dynamic_array_total", &[desc]);
+        let lower = fb.const_i64(arr_info.dims.first().map(|d| d.0).unwrap_or(0));
+        let idx64 = self.to_i64(fb, indices.first().expect("array index"));
+        let lower_plus_count = fb.add(&lower, &count);
+        let upper = fb.sub(&lower_plus_count, &fb.const_i64(1));
+        let below = fb.icmp("slt", &idx64, &lower);
+        let above = fb.icmp("sgt", &idx64, &upper);
+        let oob = fb.or(&below, &above);
+        let l_ok = fb.next_label("idx.ok");
+        let l_oob = fb.next_label("idx.oob");
+        fb.condbr(&oob, &l_oob, &l_ok);
+        fb.label(&l_oob);
+        fb.raise_error(9);
+        fb.label(&l_ok);
+        let adjusted = fb.sub(&idx64, &lower);
+        self.to_i32(fb, &adjusted)
     }
 
     /// Index a THREADED array through the calling thread's descriptor.  The
@@ -33600,6 +34026,7 @@ impl Compiler {
                     dims,
                     total_elements: total,
                     indirect_base: false,
+                    dynamic: false,
                 },
             );
             self.pending_global_arrays.remove(&norm_name);
@@ -33708,6 +34135,7 @@ impl Compiler {
                         dims,
                         total_elements: total,
                         indirect_base: false,
+                        dynamic: false,
                     },
                 );
             } else {
