@@ -226,6 +226,64 @@ __declspec(dllimport) int __stdcall SetConsoleCursorPosition(void* hConsoleOutpu
 __declspec(dllimport) int __stdcall FillConsoleOutputCharacterA(void* hConsoleOutput, char cCharacter, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfCharsWritten);
 __declspec(dllimport) int __stdcall FillConsoleOutputAttribute(void* hConsoleOutput, unsigned short wAttribute, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfAttrsWritten);
 __declspec(dllimport) int __stdcall GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
+__declspec(dllimport) int __stdcall SetConsoleMode(void* hConsoleHandle, unsigned long dwMode);
+/* PB/CC console pseudo-object family (batch 376): screen buffers, window
+   geometry, cell reads/writes, input records and cursor shape. */
+typedef struct { unsigned long dwSize; int bVisible; } PB_CONSOLE_CURSOR_INFO;
+typedef struct { unsigned short Char; unsigned short Attributes; } PB_CHAR_INFO;
+typedef struct {
+    int bKeyDown;
+    unsigned short wRepeatCount;
+    unsigned short wVirtualKeyCode;
+    unsigned short wVirtualScanCode;
+    union { char AsciiChar; short UnicodeChar; } uChar;
+    unsigned long dwControlKeyState;
+} PB_KEY_EVENT_RECORD;
+typedef struct {
+    PB_COORD dwMousePosition;
+    unsigned long dwButtonState;
+    unsigned long dwControlKeyState;
+    unsigned long dwEventFlags;
+} PB_MOUSE_EVENT_RECORD;
+typedef struct {
+    unsigned short EventType;
+    unsigned short _pad;
+    union {
+        PB_KEY_EVENT_RECORD KeyEvent;
+        PB_MOUSE_EVENT_RECORD MouseEvent;
+        char _raw[16];
+    } Event;
+} PB_INPUT_RECORD;
+#define PB_KEY_EVENT 0x0001
+#define PB_MOUSE_EVENT 0x0002
+__declspec(dllimport) void* __stdcall CreateConsoleScreenBuffer(unsigned long dwDesiredAccess, unsigned long dwShareMode, const void* lpSecurityAttributes, unsigned long dwFlags, void* lpScreenBufferData);
+__declspec(dllimport) int __stdcall SetConsoleActiveScreenBuffer(void* hConsoleOutput);
+__declspec(dllimport) int __stdcall SetConsoleScreenBufferSize(void* hConsoleOutput, PB_COORD dwSize);
+__declspec(dllimport) int __stdcall SetConsoleWindowInfo(void* hConsoleOutput, int bAbsolute, const PB_SMALL_RECT* lpConsoleWindow);
+__declspec(dllimport) PB_COORD __stdcall GetLargestConsoleWindowSize(void* hConsoleOutput);
+__declspec(dllimport) int __stdcall ReadConsoleOutputCharacterA(void* hConsoleOutput, char* lpCharacter, unsigned long nLength, PB_COORD dwReadCoord, unsigned long* lpNumberOfCharsRead);
+__declspec(dllimport) int __stdcall WriteConsoleOutputCharacterA(void* hConsoleOutput, const char* lpCharacter, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfCharsWritten);
+__declspec(dllimport) int __stdcall ReadConsoleOutputAttribute(void* hConsoleOutput, unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwReadCoord, unsigned long* lpNumberOfAttrsRead);
+__declspec(dllimport) int __stdcall WriteConsoleOutputAttribute(void* hConsoleOutput, const unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfAttrsWritten);
+__declspec(dllimport) int __stdcall ScrollConsoleScreenBufferA(void* hConsoleOutput, const PB_SMALL_RECT* lpScrollRectangle, const PB_SMALL_RECT* lpClipRectangle, PB_COORD dwDestinationOrigin, const PB_CHAR_INFO* lpFill);
+__declspec(dllimport) int __stdcall GetConsoleCursorInfo(void* hConsoleOutput, PB_CONSOLE_CURSOR_INFO* lpConsoleCursorInfo);
+__declspec(dllimport) int __stdcall SetConsoleCursorInfo(void* hConsoleOutput, const PB_CONSOLE_CURSOR_INFO* lpConsoleCursorInfo);
+__declspec(dllimport) void* __stdcall GetConsoleWindow(void);
+typedef struct { int left; int top; int right; int bottom; } pb_rect_t;
+__declspec(dllimport) int __stdcall GetWindowRect(void* hWnd, pb_rect_t* lpRect);
+__declspec(dllimport) int __stdcall SetWindowPos(void* hWnd, void* hWndInsertAfter, int X, int Y, int cx, int cy, unsigned int uFlags);
+__declspec(dllimport) int __stdcall SetForegroundWindow(void* hWnd);
+__declspec(dllimport) int __stdcall ShowWindow(void* hWnd, int nCmdShow);
+__declspec(dllimport) int __stdcall AllocConsole(void);
+__declspec(dllimport) int __stdcall FreeConsole(void);
+__declspec(dllimport) unsigned long __stdcall GetFileType(void* hFile);
+__declspec(dllimport) int __stdcall ReadConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, unsigned long* lpNumberOfEventsRead);
+__declspec(dllimport) int __stdcall PeekConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, unsigned long* lpNumberOfEventsRead);
+__declspec(dllimport) int __stdcall GetNumberOfConsoleInputEvents(void* hConsoleInput, unsigned long* lpNumberOfEvents);
+__declspec(dllimport) int __stdcall FlushConsoleInputBuffer(void* hConsoleInput);
+__declspec(dllimport) int __stdcall WriteConsoleA(void* hConsoleOutput, const void* lpBuffer, unsigned long nNumberOfCharsToWrite, unsigned long* lpNumberOfCharsWritten, void* lpReserved);
+__declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
+
 __declspec(dllimport) void* __stdcall CreateMenu(void);
 __declspec(dllimport) void* __stdcall CreatePopupMenu(void);
 __declspec(dllimport) int __stdcall AppendMenuA(void* hMenu, unsigned int uFlags, uintptr_t uIDNewItem, const char* lpNewItem);
@@ -4441,26 +4499,114 @@ int pb_kill(const char* path) {
  * LOCATE/CLS/COLOR/CURSORX/CURSORY working in the same window that launched
  * the program.  No console => NULL and every console operation is a safe
  * no-op. */
-static void* pb_console_output_handle(void) {
-    static void* cached = 0;
-    static int tried = 0;
-    if (tried) return cached;
-    tried = 1;
+static void* pb_console_cached = 0;
+static int pb_console_tried = 0;
+
+#define PB_CON_PAGES 8
+static void* pb_con_pages[PB_CON_PAGES] = {0};
+static int pb_con_active = 1;
+static int pb_con_visible = 1;
+static int pb_con_pages_ready = 0;
+
+static void pb_console_reset_handle(void) {
+    pb_console_cached = 0;
+    pb_console_tried = 0;
+}
+
+static void* pb_console_base_handle(void) {
+    if (pb_console_tried) return pb_console_cached;
+    pb_console_tried = 1;
 
     void* h = GetStdHandle((unsigned int)-11); /* STD_OUTPUT_HANDLE */
     unsigned long mode = 0;
     if (h && h != (void*)-1 && GetConsoleMode(h, &mode)) {
-        cached = h;
-        return cached;
+        pb_console_cached = h;
+        return pb_console_cached;
     }
 
     h = CreateFileA("CONOUT$",
                     0x80000000UL | 0x40000000UL, /* GENERIC_READ | GENERIC_WRITE */
                     0x00000001UL | 0x00000002UL, /* FILE_SHARE_READ | FILE_SHARE_WRITE */
                     0, 3 /* OPEN_EXISTING */, 0, 0);
-    if (h && h != (void*)-1) cached = h;
-    return cached;
+    if (h && h != (void*)-1) pb_console_cached = h;
+    return pb_console_cached;
 }
+
+/* Active page handle: PRINT, CLS, LOCATE and COLOR all target the page
+   selected by PAGE / CON.PAGE.ACTIVE, not necessarily the visible one. */
+static void* pb_console_output_handle(void) {
+    if (pb_con_pages_ready && pb_con_active >= 1 && pb_con_active <= PB_CON_PAGES
+        && pb_con_pages[pb_con_active - 1]) {
+        return pb_con_pages[pb_con_active - 1];
+    }
+    return pb_console_base_handle();
+}
+
+static int pb_con_clamp_page(int n) {
+    if (n < 1) return 1;
+    if (n > PB_CON_PAGES) return PB_CON_PAGES;
+    return n;
+}
+
+/* Allocate the eight screen buffers on first use.  Page 1 is the console's
+   original stdout buffer; pages 2..8 are new console screen buffers. */
+static int pb_con_page_ensure(void) {
+    if (pb_con_pages_ready) return 1;
+    void* base = pb_console_base_handle();
+    if (!base) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(base, &info)) return 0;
+    pb_con_pages[0] = base;
+    for (int i = 1; i < PB_CON_PAGES; i++) {
+        void* h = CreateConsoleScreenBuffer(
+            0x80000000UL | 0x40000000UL, /* GENERIC_READ | GENERIC_WRITE */
+            0x00000001UL | 0x00000002UL, /* FILE_SHARE_READ | FILE_SHARE_WRITE */
+            0, 1 /* CONSOLE_TEXTMODE_BUFFER */, 0);
+        if (h && h != (void*)-1) {
+            PB_COORD sz;
+            sz.X = info.dwSize.X;
+            sz.Y = info.dwSize.Y;
+            SetConsoleScreenBufferSize(h, sz);
+            pb_con_pages[i] = h;
+        }
+    }
+    pb_con_active = 1;
+    pb_con_visible = 1;
+    pb_con_pages_ready = 1;
+    return 1;
+}
+
+static void pb_con_apply_window_size(void* h, int rows, int cols) {
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    PB_COORD largest = GetLargestConsoleWindowSize(h);
+    if (largest.X < 1) largest.X = 80;
+    if (largest.Y < 1) largest.Y = 25;
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    if (rows > (int)largest.Y) rows = (int)largest.Y;
+    if (cols > (int)largest.X) cols = (int)largest.X;
+
+    /* Shrink the window to one cell first: Windows refuses a buffer smaller
+       than its window, and a full-size window resize can otherwise fail while
+       the old buffer is still large. */
+    PB_SMALL_RECT one;
+    one.Left = 0; one.Top = 0; one.Right = 0; one.Bottom = 0;
+    SetConsoleWindowInfo(h, 1, &one);
+
+    PB_COORD sz;
+    sz.X = (short)cols;
+    sz.Y = (short)rows;
+    SetConsoleScreenBufferSize(h, sz);
+
+    PB_SMALL_RECT full;
+    full.Left = 0; full.Top = 0;
+    full.Right = (short)(cols - 1);
+    full.Bottom = (short)(rows - 1);
+    SetConsoleWindowInfo(h, 1, &full);
+}
+
 
 /* CLS: clear the whole console buffer with the current attribute and home
    the cursor.  The old system("cls") spawned a second process and did not
@@ -4514,18 +4660,130 @@ int pb_cursory(void) {
     return (int)info.dwCursorPosition.Y + 1;
 }
 
+/* Write one console line at the active page caret.  WriteConsoleOutputCharacterA
+ * writes literal character cells: CR, LF and BS are not interpreted, matching
+ * CHW CON.PRINT.  Without a console the same bytes go to stdout. */
+static void pb_print_write(const char* s, unsigned long len) {
+    if (!s || len == 0) return;
+    void* h = pb_console_output_handle();
+    if (!h) {
+        fwrite(s, 1, (size_t)len, stdout);
+        return;
+    }
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) {
+        fwrite(s, 1, (size_t)len, stdout);
+        return;
+    }
+    PB_COORD pos = info.dwCursorPosition;
+    unsigned long written = 0;
+    WriteConsoleOutputCharacterA(h, s, len, pos, &written);
+    unsigned long col = (unsigned long)pos.X + written;
+    unsigned long row = (unsigned long)pos.Y;
+    col += 0;
+    row += col / (unsigned long)info.dwSize.X;
+    col %= (unsigned long)info.dwSize.X;
+    if (row >= (unsigned long)info.dwSize.Y) {
+        row = (unsigned long)info.dwSize.Y - 1;
+    }
+    PB_COORD next;
+    next.X = (short)col;
+    next.Y = (short)row;
+    SetConsoleCursorPosition(h, next);
+}
+
+void pb_print_str(const char* s) {
+    if (!s) return;
+    unsigned int len = (unsigned int)strlen(s);
+    pb_print_write(s, len);
+}
+
+void pb_print_i32(int v) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "% d", v);
+    pb_print_str(buf);
+}
+
+void pb_print_i64(long long v) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "% lld", v);
+    pb_print_str(buf);
+}
+
+void pb_print_f64(double v) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "% .6g", v);
+    pb_print_str(buf);
+}
+
+/* PRINT newline: move to column 0 of the next line and scroll the page up
+   when the caret is already on the last row. */
+void pb_print_newline(void) {
+    void* h = pb_console_output_handle();
+    if (!h) {
+        fputc('\n', stdout);
+        return;
+    }
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    PB_COORD pos;
+    pos.X = 0;
+    pos.Y = (short)(info.dwCursorPosition.Y + 1);
+    if (pos.Y >= info.dwSize.Y) {
+        PB_COORD home = {0, 0};
+        PB_SMALL_RECT scroll;
+        scroll.Left = 0;
+        scroll.Top = 0;
+        scroll.Right = (short)(info.dwSize.X - 1);
+        scroll.Bottom = (short)(info.dwSize.Y - 1);
+        PB_CHAR_INFO fill;
+        fill.Char = ' ';
+        fill.Attributes = info.wAttributes;
+        ScrollConsoleScreenBufferA(h, &scroll, &scroll, home, &fill);
+        pos.Y = (short)(info.dwSize.Y - 1);
+    }
+    SetConsoleCursorPosition(h, pos);
+}
+
+/* PRINT comma: advance to the next 14-column print zone (CHW PRINT). */
+void pb_print_spc(int n);
+void pb_print_comma(void) {
+    void* h = pb_console_output_handle();
+    int cur = 0;
+    int width = 80;
+    if (h) {
+        PB_CONSOLE_SCREEN_BUFFER_INFO info;
+        if (GetConsoleScreenBufferInfo(h, &info)) {
+            cur = (int)info.dwCursorPosition.X;
+            width = (int)info.dwSize.X;
+        }
+    } else {
+        cur = 0;
+    }
+    int next = ((cur / 14) + 1) * 14;
+    if (next >= width) {
+        pb_print_newline();
+        return;
+    }
+    pb_print_spc(next - cur);
+}
+
+void pb_print_flush(void) {
+    fflush(stdout);
+}
+
 /* PRINT SPC(n): n spaces.  n < 1 is ignored, as PB/CC documents. */
 void pb_print_spc(int n) {
     if (n < 1) return;
-    for (int i = 0; i < n; i++) fputc(' ', stdout);
+    for (int i = 0; i < n; i++) pb_print_write(" ", 1);
 }
 
 /* PRINT TAB(n): move to 1-based column n without erasing characters.
-   PB/CC documents n < 1 as ignored.  When stdout is a console, use the
-   real cursor position; otherwise emit from the current logical line start. */
+   PB/CC documents n < 1 as ignored.  When a console is present, use the
+   page's real cursor position; otherwise emit from the current logical
+   line start. */
 void pb_print_tab(int n) {
     if (n < 1) return;
-    fflush(stdout);
     int target = n - 1;
     if (target > 32767) target = 32767;
     int cur = 0;
@@ -4535,10 +4793,710 @@ void pb_print_tab(int n) {
         cur = (int)info.dwCursorPosition.X;
     }
     if (target <= cur) {
-        fputc('\n', stdout);
+        pb_print_newline();
         cur = 0;
     }
-    for (int i = cur; i < target; i++) fputc(' ', stdout);
+    pb_print_spc(target - cur);
+}
+
+/* ENVIRON "VAR=value" (statement form): set / remove an environment variable.
+   With '=' ? set. Without '=' ? remove the variable. */
+/* ================= PB/CC console pseudo-object family ================= */
+void pb_color(int fore, int back);
+void pb_color_count(int fore, int back, int count);
+void pb_console_set_title(const char* s);
+char* pb_console_get_title(void);
+__declspec(dllimport) void __stdcall Sleep(unsigned long dwMilliseconds);
+static void pb_con_input_reset(void);
+void pb_print_spc(int n);
+
+static void* pb_con_page_handle(int page) {
+    if (!pb_con_page_ensure()) return 0;
+    page = pb_con_clamp_page(page);
+    return pb_con_pages[page - 1];
+}
+
+void pb_con_cls(void) { pb_cls(); }
+
+void pb_con_color(int fore, int back, int count) {
+    if (count > 0) pb_color_count(fore, back, count);
+    else pb_color(fore, back);
+}
+
+void pb_con_cell_set(int row, int col) { pb_locate(row, col); }
+int pb_con_cell_row(void) { return pb_cursory(); }
+int pb_con_cell_col(void) { return pb_cursorx(); }
+
+void pb_con_cursor_set(int n) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    if (n < 1) n = 1;
+    if (n > 100) n = 100;
+    PB_CONSOLE_CURSOR_INFO ci;
+    ci.dwSize = (unsigned long)n;
+    ci.bVisible = 1;
+    SetConsoleCursorInfo(h, &ci);
+}
+
+void pb_con_cursor_on(int n) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_CURSOR_INFO ci;
+    ci.dwSize = 25;
+    ci.bVisible = 1;
+    if (GetConsoleCursorInfo(h, &ci)) {
+        ci.bVisible = 1;
+    } else {
+        ci.dwSize = 25;
+        ci.bVisible = 1;
+    }
+    SetConsoleCursorInfo(h, &ci);
+    if (n > 0) pb_con_cursor_set(n);
+}
+
+void pb_con_cursor_off(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_CURSOR_INFO ci;
+    ci.dwSize = 25;
+    ci.bVisible = 0;
+    if (GetConsoleCursorInfo(h, &ci)) ci.bVisible = 0;
+    SetConsoleCursorInfo(h, &ci);
+}
+
+int pb_con_cursor_get(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_CURSOR_INFO ci;
+    if (!GetConsoleCursorInfo(h, &ci)) return 0;
+    return ci.bVisible ? (int)ci.dwSize : 0;
+}
+
+/* ---- pages ---- */
+void pb_con_page_set(int active, int visible) {
+    if (!pb_con_page_ensure()) return;
+    pb_con_active = pb_con_clamp_page(active);
+    pb_con_visible = visible ? pb_con_clamp_page(visible) : pb_con_active;
+    void* vh = pb_con_pages[pb_con_visible - 1];
+    if (vh) SetConsoleActiveScreenBuffer(vh);
+}
+
+void pb_con_page_active_set(int n) {
+    pb_con_page_set(n, pb_con_visible);
+}
+
+void pb_con_page_visible_set(int n) {
+    if (!pb_con_page_ensure()) return;
+    pb_con_visible = pb_con_clamp_page(n);
+    void* vh = pb_con_pages[pb_con_visible - 1];
+    if (vh) SetConsoleActiveScreenBuffer(vh);
+}
+
+int pb_con_page_active_get(void) { return pb_con_active; }
+int pb_con_page_visible_get(void) { return pb_con_visible; }
+
+void pb_con_pcopy(int src, int dst) {
+    if (!pb_con_page_ensure()) return;
+    src = pb_con_clamp_page(src);
+    dst = pb_con_clamp_page(dst);
+    if (src == dst) return;
+    void* sh = pb_con_pages[src - 1];
+    void* dh = pb_con_pages[dst - 1];
+    if (!sh || !dh) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO si, di;
+    if (!GetConsoleScreenBufferInfo(sh, &si)) return;
+    if (!GetConsoleScreenBufferInfo(dh, &di)) return;
+    int cols = si.dwSize.X < di.dwSize.X ? si.dwSize.X : di.dwSize.X;
+    int rows = si.dwSize.Y < di.dwSize.Y ? si.dwSize.Y : di.dwSize.Y;
+    char* cbuf = (char*)malloc((size_t)cols);
+    unsigned short* abuf = (unsigned short*)malloc((size_t)cols * sizeof(unsigned short));
+    if (!cbuf || !abuf) { free(cbuf); free(abuf); return; }
+    for (int y = 0; y < rows; y++) {
+        PB_COORD pos;
+        pos.X = 0;
+        pos.Y = (short)y;
+        unsigned long got = 0;
+        if (ReadConsoleOutputCharacterA(sh, cbuf, (unsigned long)cols, pos, &got)
+            && got == (unsigned long)cols) {
+            WriteConsoleOutputCharacterA(dh, cbuf, (unsigned long)cols, pos, &got);
+        }
+        if (ReadConsoleOutputAttribute(sh, abuf, (unsigned long)cols, pos, &got)
+            && got == (unsigned long)cols) {
+            WriteConsoleOutputAttribute(dh, abuf, (unsigned long)cols, pos, &got);
+        }
+    }
+    free(cbuf);
+    free(abuf);
+}
+
+void pb_con_scroll(int dir, int lines, int row1, int col1, int row2, int col2) {
+    if (lines < 1) lines = 1;
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    int w = info.dwSize.X;
+    int ht = info.dwSize.Y;
+    PB_SMALL_RECT rect;
+    rect.Left = (short)((col1 > 0 ? col1 - 1 : 0));
+    rect.Top = (short)((row1 > 0 ? row1 - 1 : 0));
+    rect.Right = (short)((col2 > 0 ? col2 - 1 : w - 1));
+    rect.Bottom = (short)((row2 > 0 ? row2 - 1 : ht - 1));
+    if (rect.Left < 0) rect.Left = 0;
+    if (rect.Top < 0) rect.Top = 0;
+    if (rect.Right >= w) rect.Right = (short)(w - 1);
+    if (rect.Bottom >= ht) rect.Bottom = (short)(ht - 1);
+    if (rect.Left > rect.Right || rect.Top > rect.Bottom) return;
+
+    PB_COORD dest;
+    dest.X = rect.Left;
+    dest.Y = rect.Top;
+    PB_SMALL_RECT fill_rect;
+    fill_rect.Left = rect.Left;
+    fill_rect.Top = rect.Top;
+    fill_rect.Right = rect.Right;
+    fill_rect.Bottom = rect.Bottom;
+    if (dir == 1) { /* UP: content moves up, blank at the bottom */
+        dest.Y = (short)(rect.Top - lines);
+        fill_rect.Top = (short)(rect.Bottom - lines + 1);
+    } else if (dir == 2) { /* DOWN: content moves down, blank at the top */
+        dest.Y = (short)(rect.Top + lines);
+        fill_rect.Bottom = (short)(rect.Top + lines - 1);
+    } else if (dir == 3) { /* LEFT */
+        dest.X = (short)(rect.Left - lines);
+        fill_rect.Left = (short)(rect.Right - lines + 1);
+    } else { /* RIGHT */
+        dest.X = (short)(rect.Left + lines);
+        fill_rect.Right = (short)(rect.Left + lines - 1);
+    }
+    if (dest.X < rect.Left) dest.X = rect.Left;
+    if (dest.Y < rect.Top) dest.Y = rect.Top;
+    if (dest.X > rect.Right) dest.X = rect.Right;
+    if (dest.Y > rect.Bottom) dest.Y = rect.Bottom;
+    PB_CHAR_INFO fill;
+    fill.Char = ' ';
+    fill.Attributes = info.wAttributes;
+    ScrollConsoleScreenBufferA(h, &rect, &rect, dest, &fill);
+    /* ScrollConsoleScreenBuffer leaves the uncovered strip with the source
+       content, so blank it explicitly with the current attribute. */
+    int fw = fill_rect.Right - fill_rect.Left + 1;
+    int fh = fill_rect.Bottom - fill_rect.Top + 1;
+    if (fw > 0 && fh > 0) {
+        PB_COORD fpos;
+        fpos.X = fill_rect.Left;
+        fpos.Y = fill_rect.Top;
+        unsigned long written = 0;
+        FillConsoleOutputCharacterA(h, ' ', (unsigned long)fw * (unsigned long)fh, fpos, &written);
+        FillConsoleOutputAttribute(h, info.wAttributes, (unsigned long)fw * (unsigned long)fh, fpos, &written);
+    }
+}
+
+/* ---- geometry ---- */
+int pb_con_screen_rows(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)(info.srWindow.Bottom - info.srWindow.Top + 1);
+}
+
+int pb_con_screen_cols(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)(info.srWindow.Right - info.srWindow.Left + 1);
+}
+
+int pb_con_virtual_rows(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)info.dwSize.Y;
+}
+
+int pb_con_virtual_cols(void) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    return (int)info.dwSize.X;
+}
+
+int pb_con_view_rows(void) { return pb_con_screen_rows(); }
+int pb_con_view_cols(void) { return pb_con_screen_cols(); }
+
+void pb_con_screen_set(int rows, int cols) {
+    if (!pb_con_page_ensure()) return;
+    for (int i = 0; i < PB_CON_PAGES; i++) {
+        if (pb_con_pages[i]) pb_con_apply_window_size(pb_con_pages[i], rows, cols);
+    }
+}
+
+void pb_con_virtual_set(int rows, int cols) {
+    if (!pb_con_page_ensure()) return;
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    int min_rows = info.srWindow.Bottom - info.srWindow.Top + 1;
+    int min_cols = info.srWindow.Right - info.srWindow.Left + 1;
+    if (rows < min_rows) rows = min_rows;
+    if (cols < min_cols) cols = min_cols;
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    PB_COORD sz;
+    sz.X = (short)cols;
+    sz.Y = (short)rows;
+    for (int i = 0; i < PB_CON_PAGES; i++) {
+        if (pb_con_pages[i]) SetConsoleScreenBufferSize(pb_con_pages[i], sz);
+    }
+}
+
+void pb_con_view_set(int rows, int cols) {
+    void* h = pb_console_output_handle();
+    if (!h) return;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    if (rows < 1) rows = 1;
+    if (cols < 1) cols = 1;
+    PB_COORD largest = GetLargestConsoleWindowSize(h);
+    if (largest.X < 1) largest.X = 80;
+    if (largest.Y < 1) largest.Y = 25;
+    if (rows > (int)largest.Y) rows = (int)largest.Y;
+    if (cols > (int)largest.X) cols = (int)largest.X;
+    if (rows > (int)info.dwSize.Y) rows = (int)info.dwSize.Y;
+    if (cols > (int)info.dwSize.X) cols = (int)info.dwSize.X;
+    PB_SMALL_RECT win;
+    win.Left = info.srWindow.Left;
+    win.Top = info.srWindow.Top;
+    win.Right = (short)(win.Left + cols - 1);
+    win.Bottom = (short)(win.Top + rows - 1);
+    if (win.Right >= info.dwSize.X) {
+        win.Right = (short)(info.dwSize.X - 1);
+        win.Left = (short)(win.Right - cols + 1);
+        if (win.Left < 0) win.Left = 0;
+    }
+    if (win.Bottom >= info.dwSize.Y) {
+        win.Bottom = (short)(info.dwSize.Y - 1);
+        win.Top = (short)(win.Bottom - rows + 1);
+        if (win.Top < 0) win.Top = 0;
+    }
+    SetConsoleWindowInfo(h, 1, &win);
+}
+
+static pb_rect_t pb_con_window_rect(void) {
+    pb_rect_t r;
+    r.left = 0; r.top = 0; r.right = 0; r.bottom = 0;
+    void* w = GetConsoleWindow();
+    if (w) GetWindowRect(w, &r);
+    return r;
+}
+
+int pb_con_size_x(void) {
+    pb_rect_t r = pb_con_window_rect();
+    return (int)(r.right - r.left);
+}
+
+int pb_con_size_y(void) {
+    pb_rect_t r = pb_con_window_rect();
+    return (int)(r.bottom - r.top);
+}
+
+void pb_con_size_set(int w, int h) {
+    pb_rect_t r = pb_con_window_rect();
+    if (w < 1 || h < 1) return;
+    SetWindowPos(GetConsoleWindow(), 0, r.left, r.top, w, h, 0x0004);
+}
+
+int pb_con_loc_x(void) { return pb_con_window_rect().left; }
+int pb_con_loc_y(void) { return pb_con_window_rect().top; }
+
+void pb_con_loc_set(int x, int y) {
+    pb_rect_t r = pb_con_window_rect();
+    SetWindowPos(GetConsoleWindow(), 0, x, y, r.right - r.left, r.bottom - r.top, 0x0004);
+}
+
+/* ---- cells ---- */
+int pb_con_screen_attr(int row, int col) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    if (row == 0 && col == 0) return (int)info.wAttributes;
+    if (row < 1) row = 1;
+    if (col < 1) col = 1;
+    if (row > info.dwSize.Y) row = info.dwSize.Y;
+    if (col > info.dwSize.X) col = info.dwSize.X;
+    PB_COORD pos;
+    pos.X = (short)(col - 1);
+    pos.Y = (short)(row - 1);
+    unsigned short attr = info.wAttributes;
+    unsigned long got = 0;
+    if (!ReadConsoleOutputAttribute(h, &attr, 1, pos, &got) || got != 1) return 0;
+    return (int)attr;
+}
+
+int pb_con_screen_char(int row, int col) {
+    void* h = pb_console_output_handle();
+    if (!h) return 0;
+    PB_CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(h, &info)) return 0;
+    if (row == 0 && col == 0) return 0;
+    if (row < 1) row = 1;
+    if (col < 1) col = 1;
+    if (row > info.dwSize.Y) row = info.dwSize.Y;
+    if (col > info.dwSize.X) col = info.dwSize.X;
+    PB_COORD pos;
+    pos.X = (short)(col - 1);
+    pos.Y = (short)(row - 1);
+    char c = 0;
+    unsigned long got = 0;
+    if (!ReadConsoleOutputCharacterA(h, &c, 1, pos, &got) || got != 1) return 0;
+    return (unsigned char)c;
+}
+
+/* ---- title / window / handle ---- */
+void pb_con_caption_set(const char* s) { pb_console_set_title(s); }
+char* pb_con_caption_get(void) { return pb_console_get_title(); }
+
+void pb_con_focus(void) {
+    void* w = GetConsoleWindow();
+    if (!w) return;
+    ShowWindow(w, 9 /* SW_RESTORE */);
+    SetForegroundWindow(w);
+}
+
+long long pb_con_handle(void) { return (long long)(intptr_t)GetConsoleWindow(); }
+
+void pb_con_new(void) {
+    if (GetConsoleWindow()) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    if (!AllocConsole()) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    pb_console_reset_handle();
+    pb_con_input_reset();
+    pb_con_pages_ready = 0;
+    for (int i = 0; i < PB_CON_PAGES; i++) pb_con_pages[i] = 0;
+    pb_con_page_ensure();
+    pb_err = 0;
+}
+
+void pb_con_end(void) {
+    FreeConsole();
+    pb_console_reset_handle();
+    pb_con_input_reset();
+    pb_con_pages_ready = 0;
+    for (int i = 0; i < PB_CON_PAGES; i++) pb_con_pages[i] = 0;
+    pb_con_active = 1;
+    pb_con_visible = 1;
+    pb_err = 0;
+}
+
+/* ---- input ---- */
+static int pb_con_mouse_enabled = 0;
+static int pb_con_mouse_event_mask = 0;
+static int pb_con_mouse_button_mask = 0;
+static unsigned long g_con_mouse_btn_state = 0;
+static int g_con_mouse_row_state = 0;
+static int g_con_mouse_col_state = 0;
+static int g_con_mouse_event_state = 0;
+static int pb_con_shift_state = 0;
+static char* pb_con_keys[12] = {0};
+
+static void* pb_con_kbd_cached = 0;
+static int pb_con_kbd_tried = 0;
+static void pb_con_input_reset(void) {
+    pb_con_kbd_cached = 0;
+    pb_con_kbd_tried = 0;
+}
+static void* pb_con_input_handle(void) {
+    if (pb_con_kbd_tried) return pb_con_kbd_cached;
+    pb_con_kbd_tried = 1;
+    void* h = GetStdHandle((unsigned int)-10); /* STD_INPUT_HANDLE */
+    unsigned long mode = 0;
+    if (h && h != (void*)-1 && GetConsoleMode(h, &mode)) {
+        pb_con_kbd_cached = h;
+        return pb_con_kbd_cached;
+    }
+    h = CreateFileA("CONIN$",
+                    0x80000000UL | 0x40000000UL,
+                    0x00000001UL | 0x00000002UL,
+                    0, 3, 0, 0);
+    if (h && h != (void*)-1) pb_con_kbd_cached = h;
+    return pb_con_kbd_cached;
+}
+
+static int pb_con_proc_mouse(PB_MOUSE_EVENT_RECORD* m) {
+    int event = 0;
+    if (m->dwEventFlags & 0x0001) event = 0;          /* MOUSE_MOVED */
+    else if (m->dwEventFlags & 0x0002) event = 1;     /* DOUBLE_CLICK */
+    else {
+        unsigned long changed = m->dwButtonState ^ g_con_mouse_btn_state;
+        if (m->dwButtonState & changed) event = 1;    /* press */
+        else if (changed) event = 2;                  /* release */
+    }
+    int button = 0;
+    if (m->dwButtonState & 0x0001) button = 1;
+    else if (m->dwButtonState & 0x0002) button = 2;
+    else if (m->dwButtonState & 0x0004) button = 3;
+    g_con_mouse_btn_state = m->dwButtonState;
+    g_con_mouse_row_state = m->dwMousePosition.Y + 1;
+    g_con_mouse_col_state = m->dwMousePosition.X + 1;
+    g_con_mouse_event_state = event;
+    pb_con_shift_state = (int)m->dwControlKeyState;
+    if (!pb_con_mouse_enabled) return 0;
+    if (pb_con_mouse_event_mask && !(pb_con_mouse_event_mask & (1 << event))) return 0;
+    if (pb_con_mouse_button_mask && button && !(pb_con_mouse_button_mask & (1 << (button - 1)))) return 0;
+    return 1;
+}
+
+/* Convert one console input record to a 1/2/4-byte PB key string.
+   Returns 0 for records that should be skipped. */
+static int pb_con_event_key(PB_INPUT_RECORD* ir, char out[4]) {
+    if (ir->EventType == PB_MOUSE_EVENT) {
+        if (!pb_con_proc_mouse(&ir->Event.MouseEvent)) return 0;
+        out[0] = (char)0xFF;
+        out[1] = (char)0xFF;
+        out[2] = (char)g_con_mouse_event_state;
+        out[3] = (char)(g_con_mouse_btn_state ? g_con_mouse_btn_state : 0);
+        if (!out[3]) out[3] = 1;
+        return 4;
+    }
+    if (ir->EventType != PB_KEY_EVENT) return 0;
+    PB_KEY_EVENT_RECORD* k = &ir->Event.KeyEvent;
+    if (!k->bKeyDown) return 0;
+    pb_con_shift_state = (int)k->dwControlKeyState;
+    if (k->wVirtualKeyCode == 0x70 && k->wVirtualScanCode) {
+        /* fall through: F1..F12 are handled by caller with the key macro */
+    }
+    if (k->uChar.UnicodeChar) {
+        out[0] = (char)k->uChar.AsciiChar;
+        return 1;
+    }
+    out[0] = 0;
+    out[1] = (char)k->wVirtualScanCode;
+    return 2;
+}
+
+static char* pb_con_bstr_from_chars(const char* s, unsigned int n) {
+    return pb_bstr_alloc(s, n);
+}
+
+char* pb_con_inkey(void) {
+    void* h = pb_con_input_handle();
+    if (!h) return pb_bstr_alloc("", 0);
+    unsigned long count = 0;
+    if (!GetNumberOfConsoleInputEvents(h, &count) || count == 0) {
+        /* Redirected stdin: fall back to the CRT keyboard buffer. */
+        if (_kbhit()) {
+            char c = (char)_getch();
+            return pb_con_bstr_from_chars(&c, 1);
+        }
+        return pb_bstr_alloc("", 0);
+    }
+    for (unsigned long i = 0; i < count; i++) {
+        PB_INPUT_RECORD ir;
+        unsigned long got = 0;
+        if (!ReadConsoleInputA(h, &ir, 1, &got) || got != 1) break;
+        char out[4];
+        int n = pb_con_event_key(&ir, out);
+        if (n == 0) continue;
+        if (n == 2 && ir.EventType == PB_KEY_EVENT) {
+            int vk = ir.Event.KeyEvent.wVirtualKeyCode;
+            if (vk >= 0x70 && vk <= 0x7B) {
+                int idx = vk - 0x70;
+                if (pb_con_keys[idx] && pb_con_keys[idx][0]) {
+                    return pb_bstr_alloc(pb_con_keys[idx], (unsigned int)strlen(pb_con_keys[idx]));
+                }
+            }
+        }
+        return pb_con_bstr_from_chars(out, (unsigned int)n);
+    }
+    return pb_bstr_alloc("", 0);
+}
+
+char* pb_con_waitkey(const char* mask, int timeout_ms) {
+    unsigned long start = (unsigned long)GetTickCount64();
+    int has_mask = mask && mask[0];
+    for (;;) {
+        void* h = pb_con_input_handle();
+        unsigned long count = 0;
+        if (h && GetNumberOfConsoleInputEvents(h, &count) && count > 0) {
+            PB_INPUT_RECORD ir;
+            unsigned long got = 0;
+            if (ReadConsoleInputA(h, &ir, 1, &got) && got == 1) {
+                char out[4];
+                int n = pb_con_event_key(&ir, out);
+                if (n > 0) {
+                    if (has_mask && n <= 2) {
+                        int allow = 0;
+                        for (const char* p = mask; *p; p++) {
+                            if (n == 1 && *p == out[0]) { allow = 1; break; }
+                            if (n == 2 && (unsigned char)*p == (unsigned char)out[1]) { allow = 1; break; }
+                        }
+                        if (!allow) continue;
+                    }
+                    if (n == 2 && ir.EventType == PB_KEY_EVENT) {
+                        int vk = ir.Event.KeyEvent.wVirtualKeyCode;
+                        if (vk >= 0x70 && vk <= 0x7B) {
+                            int idx = vk - 0x70;
+                            if (pb_con_keys[idx] && pb_con_keys[idx][0]) {
+                                return pb_bstr_alloc(pb_con_keys[idx], (unsigned int)strlen(pb_con_keys[idx]));
+                            }
+                        }
+                    }
+                    return pb_con_bstr_from_chars(out, (unsigned int)n);
+                }
+            }
+        } else if (_kbhit()) {
+            char c = (char)_getch();
+            if (has_mask) {
+                int allow = 0;
+                for (const char* p = mask; *p; p++) if (*p == c) { allow = 1; break; }
+                if (!allow) continue;
+            }
+            return pb_con_bstr_from_chars(&c, 1);
+        }
+        if (timeout_ms >= 0) {
+            unsigned long now = (unsigned long)GetTickCount64();
+            if (now - start >= (unsigned long)timeout_ms) return pb_bstr_alloc("", 0);
+        }
+        Sleep(1);
+    }
+}
+
+int pb_con_instat(void) {
+    void* h = pb_con_input_handle();
+    if (!h) return _kbhit() ? 1 : 0;
+    unsigned long count = 0;
+    if (!GetNumberOfConsoleInputEvents(h, &count)) return 0;
+    for (unsigned long i = 0; i < count; i++) {
+        PB_INPUT_RECORD ir;
+        unsigned long got = 0;
+        if (!PeekConsoleInputA(h, &ir, 1, &got) || got != 1) return 0;
+        if (ir.EventType == PB_KEY_EVENT) {
+            PB_KEY_EVENT_RECORD* k = &ir.Event.KeyEvent;
+            if (!k->bKeyDown) continue;
+            if (!k->uChar.UnicodeChar && !k->wVirtualScanCode) continue;
+            return 1;
+        }
+        if (ir.EventType == PB_MOUSE_EVENT && pb_con_mouse_enabled) return 1;
+        /* PeekConsoleInputA always returns the first record; without removing
+           it we cannot look further.  One key/mouse record in the queue is
+           enough for the PB CON.INSTAT contract. */
+        break;
+    }
+    return 0;
+}
+
+void pb_con_waitstat(void) {
+    while (!pb_con_instat()) Sleep(1);
+}
+
+int pb_con_inshift(void) { return pb_con_shift_state; }
+
+void pb_con_input_flush(void) {
+    void* h = pb_con_input_handle();
+    if (h) FlushConsoleInputBuffer(h);
+}
+
+void pb_con_key_set(int n, const char* s) {
+    if (n < 1 || n > 15) return;
+    if (n > 12) n = n == 30 ? 11 : (n == 31 ? 12 : 12);
+    int idx = n - 1;
+    if (idx < 0 || idx >= 12) return;
+    free(pb_con_keys[idx]);
+    pb_con_keys[idx] = 0;
+    if (s && s[0]) {
+        size_t len = strlen(s);
+        pb_con_keys[idx] = (char*)malloc(len + 1);
+        if (pb_con_keys[idx]) memcpy(pb_con_keys[idx], s, len + 1);
+    }
+}
+
+char* pb_con_key_get(int n) {
+    if (n < 1 || n > 15) return pb_bstr_alloc("", 0);
+    if (n > 12) n = n == 30 ? 11 : (n == 31 ? 12 : 12);
+    int idx = n - 1;
+    if (idx < 0 || idx >= 12 || !pb_con_keys[idx]) return pb_bstr_alloc("", 0);
+    return pb_bstr_alloc(pb_con_keys[idx], (unsigned int)strlen(pb_con_keys[idx]));
+}
+
+/* ---- mouse ---- */
+void pb_con_mouse(int event, int button) {
+    pb_con_mouse_event_mask = event;
+    pb_con_mouse_button_mask = button;
+    pb_con_mouse_enabled = 0;
+}
+
+void pb_con_mouse_on(void) {
+    pb_con_mouse_enabled = 1;
+    void* h = pb_con_input_handle();
+    unsigned long mode = 0;
+    if (h && GetConsoleMode(h, &mode)) {
+        mode |= 0x0010; /* ENABLE_MOUSE_INPUT */
+        mode &= ~0x0040UL; /* disable QUICK_EDIT so mouse events reach us */
+        SetConsoleMode(h, mode);
+    }
+}
+
+void pb_con_mouse_off(void) { pb_con_mouse_enabled = 0; }
+int pb_con_mouse_buttons(void) { return (int)g_con_mouse_btn_state; }
+int pb_con_mouse_row(void) { return g_con_mouse_row_state; }
+int pb_con_mouse_col(void) { return g_con_mouse_col_state; }
+int pb_con_mouse_stat(void) { return g_con_mouse_event_state; }
+
+/* ---- standard streams ---- */
+int pb_con_in(void) {
+    void* h = pb_con_input_handle();
+    unsigned long mode = 0;
+    return (h && GetConsoleMode(h, &mode)) ? 1 : 0;
+}
+
+int pb_con_out(void) {
+    void* h = GetStdHandle((unsigned int)-11);
+    unsigned long mode = 0;
+    return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
+}
+
+int pb_con_stdeof(void) { return _eof(0) ? 1 : 0; }
+
+int pb_con_stdin_line_available(void) { return 0; }
+
+char* pb_con_stdin_line(void) {
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), stdin)) return pb_bstr_alloc("", 0);
+    size_t n = strlen(buf);
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
+    return pb_bstr_alloc(buf, (unsigned int)n);
+}
+
+void pb_con_stdout(const char* s, int newline) {
+    if (s) fputs(s, stdout);
+    if (newline) fputc('\n', stdout);
+    fflush(stdout);
+}
+
+void pb_con_stderr(const char* s, int newline) {
+    if (s) fputs(s, stderr);
+    if (newline) fputc('\n', stderr);
+    fflush(stderr);
+}
+
+long long pb_con_getstdin(void) { return (long long)(intptr_t)GetStdHandle((unsigned int)-10); }
+long long pb_con_getstdout(void) { return (long long)(intptr_t)GetStdHandle((unsigned int)-11); }
+long long pb_con_getstderr(void) { return (long long)(intptr_t)GetStdHandle((unsigned int)-12); }
+long long pb_con_getstdkbd(void) { return (long long)(intptr_t)pb_con_input_handle(); }
+long long pb_con_getstdvid(int page) {
+    if (page == 0) page = pb_con_active;
+    void* h = pb_con_page_handle(page);
+    return (long long)(intptr_t)h;
 }
 
 /* ENVIRON "VAR=value" (statement form): set / remove an environment variable.
@@ -13904,7 +14862,6 @@ typedef struct {
    AdjustWindowRectEx are declared later in the file (the batch 181 block);
    the typedef is moved up here so pb_window_new can use them, and the
    later typedef is removed (redefinition would be an error). */
-typedef struct { int left; int top; int right; int bottom; } pb_rect_t;
 __declspec(dllimport) int __stdcall AdjustWindowRectEx(pb_rect_t*, unsigned long, int, unsigned long);
 
 /* batch 239: the dialog-unit base.  Official PBWin converts DIALOG NEW and

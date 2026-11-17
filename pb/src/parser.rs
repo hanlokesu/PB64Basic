@@ -4944,32 +4944,50 @@ impl Parser {
                 Ok(Statement::Label(label))
             }
             Token::Question => {
-                // PB official: `? txt$ [, [style&], title$]` is the MSGBOX
-                // statement abbreviation (CHW msgbox_s.htm; PBWin compiles it
-                // to a real message box — batch 250 probe p4/p5).  Lower it to
-                // the same CallStmt the MSGBOX keyword produces so codegen's
-                // existing "MSGBOX" arm handles text/style/title.
+                // `?` is overloaded by target: PB/CC documents it as the
+                // CON.PRINT shorthand (Screen_Text_Commands.htm), while PB/Win
+                // documents it as the MSGBOX shorthand (msgbox_s.htm).  Keep
+                // both possible in the AST; codegen chooses on #CONSOLE.
                 self.advance(); // consume ?
                 let mut args = Vec::new();
+                let mut separators = Vec::new();
+                let mut trailing = None;
                 if !self.at_eol_or_eof() {
-                    args.push(self.parse_expression()?);
-                    while self.peek() == &Token::Comma {
-                        self.advance();
+                    loop {
                         // PB official optional-arg empty slot: `? "t", , "cap"`
                         if matches!(
                             self.peek(),
                             Token::Comma | Token::Eol | Token::Eof | Token::Colon
                         ) {
                             args.push(Expr::Omitted);
-                            continue;
+                        } else {
+                            args.push(self.parse_expression()?);
                         }
-                        args.push(self.parse_expression()?);
+                        let sep = match self.peek() {
+                            Token::Comma => Some(','),
+                            Token::Semicolon => Some(';'),
+                            _ => None,
+                        };
+                        if let Some(c) = sep {
+                            self.advance();
+                            separators.push(Some(c));
+                            if self.at_eol_or_eof() {
+                                trailing = Some(c);
+                                break;
+                            }
+                        } else {
+                            separators.push(None);
+                            break;
+                        }
                     }
                 }
                 self.consume_to_eol();
-                Ok(Statement::Call(CallStmt {
-                    name: "MSGBOX".to_string(),
+                Ok(Statement::Print(PrintStmt {
                     args,
+                    separators,
+                    at: None,
+                    trailing,
+                    from_question: true,
                     line,
                 }))
             }
@@ -5417,57 +5435,25 @@ impl Parser {
                     ));
                 }
 
-                // CON.CELL / CON.LOCATE — PB/CC console cursor pseudo-object.
-                // The legacy spellings are LOCATE row, col and CURSORX/CURSORY;
-                // the pseudo-object forms are kept here so PB/CC source compiles
-                // without a separate CONSOLE type.
-                if name_upper == "CON" && self.peek_at(1) == Some(&Token::Dot) {
-                    self.advance(); // consume CON
-                    self.expect(&Token::Dot)?;
-                    let member = self.peek_plain_upper();
-                    if member == "CELL" || member == "LOCATE" {
-                        self.advance(); // consume CELL / LOCATE
-                        if self.peek() == &Token::Eq {
-                            self.advance();
-                            let row = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let col = self.parse_expression()?;
-                            self.consume_to_eol();
-                            return Ok(Statement::Call(CallStmt {
-                                name: "CON_CELL_SET".to_string(),
-                                args: vec![row, col],
-                                line,
-                            }));
-                        }
-                        if self.peek() == &Token::To {
-                            self.advance();
-                            let row = self.parse_expression()?;
-                            self.expect(&Token::Comma)?;
-                            let col = self.parse_expression()?;
-                            self.consume_to_eol();
-                            return Ok(Statement::Call(CallStmt {
-                                name: "CON_CELL_GET_TO".to_string(),
-                                args: vec![row, col],
-                                line,
-                            }));
-                        }
-                        return Err(PbError::parser(
-                            format!(
-                                "CON.{} is a property; use CON.{} = row, col or CON.{} TO rowVar, colVar",
-                                member, member, member
-                            ),
-                            self.current_file(),
-                            line,
-                        ));
-                    }
-                    return Err(PbError::parser(
-                        format!(
-                            "CON.{} is not implemented; this fork supports CON.CELL and CON.LOCATE",
-                            member
-                        ),
-                        self.current_file(),
-                        line,
-                    ));
+                // CON / CONSOLE pseudo-object.  PB/CC documents CON as a
+                // shorthand for CONSOLE, and both spell a member chain such as
+                // CON.SCREEN.ATTR(row, col).  The parser turns the whole chain
+                // into one CON_CALL / CON_TO1 / CON_TO2 statement; codegen owns
+                // the Win32 semantics.
+                if (name_upper == "CON" || name_upper == "CONSOLE")
+                    && self.peek_at(1) == Some(&Token::Dot)
+                {
+                    self.advance(); // consume CON / CONSOLE
+                    self.advance(); // consume '.'
+                    let path = self.parse_con_path()?;
+                    return self.parse_con_object_statement(path, line);
+                }
+
+                // Legacy CONSOLE forms without the pseudo-object dot:
+                //   CONSOLE NAME s$ | GET {LOC|SCREEN|SIZE|VIEW|VIRTUAL} TO ...
+                //   CONSOLE SET {FOCUS|LOC|SCREEN|VIEW|VIRTUAL} ...
+                if name_upper == "CONSOLE" && self.peek_at(1) != Some(&Token::Dot) {
+                    return self.parse_console_legacy_statement(line);
                 }
 
                 // MENU NEW BAR TO hMenu | MENU NEW POPUP TO hPop
@@ -8110,6 +8096,200 @@ impl Parser {
                             line,
                         }));
                     }
+                }
+
+                // PAGE [active] [, visible] — PB/CC selects the active page
+                // (where PRINT writes) and optionally the page displayed in the
+                // console window.  The one-argument form makes both the same.
+                if name_upper == "PAGE" {
+                    self.advance();
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
+                    let active = self.parse_expression()?;
+                    let mut visible = active.clone();
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        visible = self.parse_expression()?;
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("PAGE_SET".to_string()), active, visible],
+                        line,
+                    }));
+                }
+
+                // PCOPY source, destination — copy the complete contents of one
+                // console page to another.
+                if name_upper == "PCOPY" {
+                    self.advance();
+                    let src = self.parse_expression()?;
+                    self.expect(&Token::Comma)?;
+                    let dst = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("PCOPY".to_string()), src, dst],
+                        line,
+                    }));
+                }
+
+                // SCROLL UP|DOWN|LEFT|RIGHT [, lines [, row1, col1 [, row2, col2]]]
+                if name_upper == "SCROLL" {
+                    self.advance();
+                    let dir = self.peek_plain_upper();
+                    if !matches!(dir.as_str(), "UP" | "DOWN" | "LEFT" | "RIGHT") {
+                        return Err(PbError::parser(
+                            "SCROLL: expected UP, DOWN, LEFT or RIGHT",
+                            self.current_file(),
+                            line,
+                        ));
+                    }
+                    self.advance();
+                    let mut args = vec![Expr::StringLit(format!("SCROLL.{}", dir))];
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                    }
+                    if !self.at_eol_or_eof() {
+                        args.push(self.parse_expression()?);
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("SCROLL".to_string())]
+                            .into_iter()
+                            .chain(args)
+                            .collect(),
+                        line,
+                    }));
+                }
+
+                // CURSOR [=] n | CURSOR ON|OFF [, n]
+                if name_upper == "CURSOR" {
+                    self.advance();
+                    let op = self.peek_plain_upper();
+                    if op == "OFF" {
+                        self.advance();
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CON_CALL".to_string(),
+                            args: vec![Expr::StringLit("CURSOR_OFF".to_string())],
+                            line,
+                        }));
+                    }
+                    if op == "ON" {
+                        self.advance();
+                        let val = if self.peek() == &Token::Comma || self.peek() == &Token::Eq {
+                            self.advance();
+                            Some(self.parse_expression()?)
+                        } else {
+                            None
+                        };
+                        self.consume_to_eol();
+                        let mut args = vec![Expr::StringLit("CURSOR_ON".to_string())];
+                        if let Some(v) = val {
+                            args.push(v);
+                        }
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CON_CALL".to_string(),
+                            args,
+                            line,
+                        }));
+                    }
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("CURSOR_SET".to_string()), value],
+                        line,
+                    }));
+                }
+
+                // STDOUT expr [;] / STDERR expr [;] — legacy spellings of
+                // CON.STDOUT / CON.STDERR.  A trailing semicolon suppresses the
+                // newline; a redirectable stream interprets CR/LF.
+                if name_upper == "STDOUT" || name_upper == "STDERR" {
+                    self.advance();
+                    let mut newline = 1i64;
+                    let value = if self.peek() == &Token::LParen {
+                        self.advance();
+                        let v = self.parse_expression()?;
+                        self.expect(&Token::RParen)?;
+                        v
+                    } else {
+                        self.parse_expression()?
+                    };
+                    if self.peek() == &Token::Semicolon {
+                        newline = 0;
+                        self.advance();
+                    }
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![
+                            Expr::StringLit(name_upper.clone()),
+                            value,
+                            Expr::IntegerLit(newline),
+                        ],
+                        line,
+                    }));
+                }
+
+                // STDIN LINE var$ — read one line from standard input.
+                if name_upper == "STDIN" {
+                    self.advance();
+                    if self.peek_plain_upper() == "LINE" {
+                        self.advance();
+                    }
+                    let target = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_TO1".to_string(),
+                        args: vec![Expr::StringLit("STDIN_LINE".to_string()), target],
+                        line,
+                    }));
+                }
+
+                // SCREEN rows, cols — PB/CC spelling for CON.SCREEN.
+                if name_upper == "SCREEN" {
+                    self.advance();
+                    if self.peek() == &Token::Eq {
+                        self.advance();
+                    }
+                    let rows = self.parse_expression()?;
+                    self.expect(&Token::Comma)?;
+                    let cols = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("SCREEN_SET".to_string()), rows, cols],
+                        line,
+                    }));
+                }
+
+                // PAGEACTIVE / PAGEVISIBLE TO var — legacy getters.
+                if name_upper == "PAGEACTIVE" || name_upper == "PAGEVISIBLE" {
+                    self.advance();
+                    let getter = if name_upper == "PAGEACTIVE" {
+                        "PAGE_ACTIVE_GET"
+                    } else {
+                        "PAGE_VISIBLE_GET"
+                    };
+                    let target = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_TO1".to_string(),
+                        args: vec![Expr::StringLit(getter.to_string()), target],
+                        line,
+                    }));
                 }
 
                 // COLOR fore& [, back& [, count&]] — console text attribute
@@ -15696,7 +15876,7 @@ impl Parser {
             }
             _ => {
                 // LPRINT [expr][SPC(n)][TAB(n)][,][;] — same arg grammar as PRINT
-                let (args, _trailing) = self.parse_print_args()?;
+                let (args, _seps, _trailing) = self.parse_print_args()?;
                 self.consume_to_eol();
                 Ok(Statement::Call(CallStmt {
                     name: "LPRINT".to_string(),
@@ -16399,48 +16579,913 @@ impl Parser {
             forced_trailing = position_trailing;
         }
 
-        let (args, mut trailing) = self.parse_print_args()?;
+        let (args, separators, mut trailing) = self.parse_print_args()?;
         if forced_trailing.is_some() {
             trailing = forced_trailing;
         }
         self.consume_to_eol();
         Ok(Statement::Print(PrintStmt {
             args,
+            separators,
             at,
             trailing,
+            from_question: false,
             line,
         }))
     }
 
-    /// PRINT / LPRINT argument list, plus the statement's trailing separator.
+    /// Map a CON/CONSOLE dotted member path to its getter name.  Only value
+    /// members appear here; every setter/action is parsed at statement level.
+    fn con_value_method(path: &str) -> Option<&'static str> {
+        Some(match path {
+            "CAPTION$" | "CAPTION" => "CAPTION_GET",
+            "CELL.ROW" | "LOCATE.ROW" => "CELL_ROW",
+            "CELL.COL" | "LOCATE.COL" => "CELL_COL",
+            "CURSOR" => "CURSOR_GET",
+            "HANDLE" => "HANDLE",
+            "IN" => "IN",
+            "OUT" => "OUT",
+            "STDEOF" => "STDEOF",
+            "INSHIFT" => "INSHIFT",
+            "INSTAT" => "INSTAT",
+            "INKEY$" | "INKEY" => "INKEY",
+            "WAITKEY$" | "WAITKEY" => "WAITKEY",
+            "KEY$" => "KEY_GET",
+            "PAGE.ACTIVE" => "PAGE_ACTIVE_GET",
+            "PAGE.VISIBLE" => "PAGE_VISIBLE_GET",
+            "SCREEN.ROW" => "SCREEN_ROWS",
+            "SCREEN.COL" => "SCREEN_COLS",
+            "SCREEN.ATTR" => "SCREEN_ATTR",
+            "SCREEN.CHAR" => "SCREEN_CHAR",
+            "VIRTUAL.ROW" => "VIRTUAL_ROWS",
+            "VIRTUAL.COL" => "VIRTUAL_COLS",
+            "VIEW.ROW" => "VIEW_ROWS",
+            "VIEW.COL" => "VIEW_COLS",
+            "SIZE.X" => "SIZE_X",
+            "SIZE.Y" => "SIZE_Y",
+            "LOC.X" => "LOC_X",
+            "LOC.Y" => "LOC_Y",
+            "MOUSE.BUTTONS" => "MOUSE_BUTTONS",
+            "MOUSE.ROW" => "MOUSE_ROW",
+            "MOUSE.COL" => "MOUSE_COL",
+            "MOUSE.STAT" => "MOUSE_STAT",
+            "GETSTDIN" => "GETSTDIN",
+            "GETSTDOUT" => "GETSTDOUT",
+            "GETSTDERR" => "GETSTDERR",
+            "GETSTDKBD" => "GETSTDKBD",
+            "GETSTDVID" => "GETSTDVID",
+            _ => return None,
+        })
+    }
+
+    /// One word in a CON/CONSOLE member chain.  PB spells some members with
+    /// reserved words (`CON.PRINT`, `CON.INPUT`, `CON.END`), so the lexer
+    /// token has to be mapped back to its source spelling here.
+    fn parse_con_word(&mut self) -> PbResult<String> {
+        let word = match self.peek() {
+            Token::Identifier(s) => s.clone(),
+            Token::On => "ON".to_string(),
+            Token::Print => "PRINT".to_string(),
+            Token::Input => "INPUT".to_string(),
+            Token::Output => "OUTPUT".to_string(),
+            Token::End => "END".to_string(),
+            _ => {
+                return Err(PbError::parser(
+                    "CON: expected a member name after '.'",
+                    self.current_file(),
+                    self.current_line(),
+                ))
+            }
+        };
+        self.advance();
+        Ok(word.to_uppercase())
+    }
+
+    fn parse_con_path(&mut self) -> PbResult<String> {
+        let mut parts = Vec::new();
+        loop {
+            parts.push(self.parse_con_word()?);
+            if self.peek() == &Token::Dot {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+        Ok(parts.join("."))
+    }
+
+    /// Parse an optional parenthesized argument list, or a bare comma-separated
+    /// expression list up to the end of the statement.
+    fn parse_con_args(&mut self, allow_empty: bool) -> PbResult<Vec<Expr>> {
+        let mut args = Vec::new();
+        if self.peek() == &Token::LParen {
+            self.advance();
+            if self.peek() != &Token::RParen {
+                args.push(self.parse_expression()?);
+                while self.peek() == &Token::Comma {
+                    self.advance();
+                    args.push(self.parse_expression()?);
+                }
+            }
+            self.expect(&Token::RParen)?;
+            return Ok(args);
+        }
+        if self.at_eol_or_eof() {
+            if allow_empty {
+                return Ok(args);
+            }
+            return Err(PbError::parser(
+                "CON: expected an argument",
+                self.current_file(),
+                self.current_line(),
+            ));
+        }
+        args.push(self.parse_expression()?);
+        while self.peek() == &Token::Comma {
+            self.advance();
+            args.push(self.parse_expression()?);
+        }
+        Ok(args)
+    }
+
+    fn parse_con_to_targets(&mut self) -> PbResult<Vec<Expr>> {
+        self.expect(&Token::To)?;
+        let mut targets = Vec::new();
+        targets.push(self.parse_expression()?);
+        while self.peek() == &Token::Comma {
+            self.advance();
+            targets.push(self.parse_expression()?);
+        }
+        self.consume_to_eol();
+        Ok(targets)
+    }
+
+    /// `CON.PRINT [ ( ] args [ ) ]` — the same print grammar as `PRINT`, but
+    /// the print engine writes to the active console page and does not
+    /// interpret control characters (CHW CON.PRINT).
+    fn parse_con_print_statement(&mut self, line: usize) -> PbResult<Statement> {
+        let mut args = Vec::new();
+        let mut separators = Vec::new();
+        let mut trailing: Option<char> = None;
+        if self.peek() == &Token::LParen {
+            self.advance();
+            while self.peek() != &Token::RParen && !self.at_eol_or_eof() {
+                args.push(self.parse_expression()?);
+                let sep = match self.peek() {
+                    Token::Semicolon => Some(';'),
+                    Token::Comma => Some(','),
+                    _ => None,
+                };
+                if let Some(c) = sep {
+                    self.advance();
+                    separators.push(Some(c));
+                } else {
+                    separators.push(None);
+                    break;
+                }
+            }
+            self.expect(&Token::RParen)?;
+            if self.peek() == &Token::Semicolon || self.peek() == &Token::Comma {
+                trailing = Some(if self.peek() == &Token::Semicolon {
+                    ';'
+                } else {
+                    ','
+                });
+                self.advance();
+            }
+        } else {
+            let (parsed_args, parsed_seps, parsed_trailing) = self.parse_print_args()?;
+            args = parsed_args;
+            separators = parsed_seps;
+            trailing = parsed_trailing;
+        }
+        self.consume_to_eol();
+        Ok(Statement::Print(PrintStmt {
+            args,
+            separators,
+            at: None,
+            trailing,
+            from_question: false,
+            line,
+        }))
+    }
+
+    /// `CON.INPUT` / `CON.LINE.INPUT`: prompt (a string literal or equate),
+    /// optional separator, then one or more variables.  CHW requires the
+    /// prompt to be a compile-time string; the existing INPUT parser already
+    /// enforces that by accepting only a string literal.
+    fn parse_con_input_statement(&mut self, line: usize, whole_line: bool) -> PbResult<Statement> {
+        let mut prompt = None;
+        let mut no_newline = false;
+        if self.peek() == &Token::Semicolon {
+            no_newline = true;
+            self.advance();
+        }
+        if matches!(self.peek(), Token::StringLiteral(_)) {
+            prompt = Some(self.parse_expression()?);
+            if self.peek() == &Token::Semicolon || self.peek() == &Token::Comma {
+                self.advance();
+            }
+        }
+        let mut vars = Vec::new();
+        vars.push(self.parse_expression()?);
+        while self.peek() == &Token::Comma {
+            self.advance();
+            vars.push(self.parse_expression()?);
+        }
+        self.consume_to_eol();
+        if whole_line {
+            Ok(Statement::LineInputConsole(LineInputConsoleStmt {
+                prompt,
+                var: vars.remove(0),
+                line,
+            }))
+        } else {
+            Ok(Statement::InputConsole(InputConsoleStmt {
+                prompt,
+                no_newline,
+                vars,
+                line,
+            }))
+        }
+    }
+
+    /// Shared parser for the two-value geometry members
+    /// (`CON.SCREEN`, `CON.VIRTUAL`, `CON.VIEW`, `CON.SIZE`, `CON.LOC`):
+    /// accept `= a, b`, `a, b`, or `TO x, y`.
+    fn con_pair_command(
+        &mut self,
+        set_method: &str,
+        get_method: &str,
+        line: usize,
+    ) -> PbResult<Statement> {
+        if self.peek() == &Token::Eq {
+            self.advance();
+            let first = self.parse_expression()?;
+            self.expect(&Token::Comma)?;
+            let second = self.parse_expression()?;
+            self.consume_to_eol();
+            return Ok(Statement::Call(CallStmt {
+                name: "CON_CALL".to_string(),
+                args: vec![Expr::StringLit(set_method.to_string()), first, second],
+                line,
+            }));
+        }
+        if self.peek() != &Token::To {
+            let args = self.parse_con_args(false)?;
+            self.consume_to_eol();
+            if args.len() != 2 {
+                return Err(PbError::parser(
+                    format!("CON.{} requires two values", get_method),
+                    self.current_file(),
+                    line,
+                ));
+            }
+            return Ok(Statement::Call(CallStmt {
+                name: "CON_CALL".to_string(),
+                args: vec![Expr::StringLit(set_method.to_string())]
+                    .into_iter()
+                    .chain(args)
+                    .collect(),
+                line,
+            }));
+        }
+        let targets = self.parse_con_to_targets()?;
+        if targets.len() != 2 {
+            return Err(PbError::parser(
+                format!("CON.{} TO requires two target variables", get_method),
+                self.current_file(),
+                line,
+            ));
+        }
+        Ok(Statement::Call(CallStmt {
+            name: "CON_TO2".to_string(),
+            args: vec![Expr::StringLit(get_method.to_string())]
+                .into_iter()
+                .chain(targets)
+                .collect(),
+            line,
+        }))
+    }
+
+    /// Parse `CON.member[.sub]` used as a statement.
+    // The match arms below return from the function directly; keeping the
+    // early returns makes the pseudo-object dispatch readable.
+    #[allow(clippy::needless_return)]
+    fn parse_con_object_statement(&mut self, path: String, line: usize) -> PbResult<Statement> {
+        let path = path.as_str();
+        match path {
+            "PRINT" => return self.parse_con_print_statement(line),
+            "CLS" => {
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CLS".to_string())],
+                    line,
+                }));
+            }
+            "COLOR" => {
+                let args = self.parse_con_args(true)?;
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("COLOR".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "CELL" | "LOCATE" => {
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let row = self.parse_expression()?;
+                    self.expect(&Token::Comma)?;
+                    let col = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("CELL_SET".to_string()), row, col],
+                        line,
+                    }));
+                }
+                if self.peek() == &Token::To {
+                    let targets = self.parse_con_to_targets()?;
+                    if targets.len() != 2 {
+                        return Err(PbError::parser(
+                            "CON.CELL TO requires two variables (row, col)",
+                            self.current_file(),
+                            line,
+                        ));
+                    }
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_TO2".to_string(),
+                        args: vec![Expr::StringLit("CELL".to_string())]
+                            .into_iter()
+                            .chain(targets)
+                            .collect(),
+                        line,
+                    }));
+                }
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() != 2 {
+                    return Err(PbError::parser(
+                        "CON.CELL requires two arguments (row, col)",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CELL_SET".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "CURSOR" => {
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("CURSOR_SET".to_string()), value],
+                        line,
+                    }));
+                }
+                if self.peek() == &Token::To {
+                    let targets = self.parse_con_to_targets()?;
+                    return self.con_to1("CURSOR_GET", targets, line);
+                }
+                let value = self.parse_expression()?;
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CURSOR_SET".to_string()), value],
+                    line,
+                }));
+            }
+            "CURSOR.ON" => {
+                let args = self.parse_con_args(true)?;
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CURSOR_ON".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "CURSOR.OFF" => {
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CURSOR_OFF".to_string())],
+                    line,
+                }));
+            }
+            "PAGE.ACTIVE" => {
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("PAGE_ACTIVE_SET".to_string()), value],
+                        line,
+                    }));
+                }
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1("PAGE_ACTIVE_GET", targets, line);
+            }
+            "PAGE.VISIBLE" => {
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("PAGE_VISIBLE_SET".to_string()), value],
+                        line,
+                    }));
+                }
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1("PAGE_VISIBLE_GET", targets, line);
+            }
+            "PCOPY" => {
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() != 2 {
+                    return Err(PbError::parser(
+                        "CON.PCOPY requires two arguments (source, destination)",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("PCOPY".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "SCROLL.UP" | "SCROLL.DOWN" | "SCROLL.LEFT" | "SCROLL.RIGHT" => {
+                let mut all = vec![Expr::StringLit(path.to_string())];
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                }
+                if !self.at_eol_or_eof() {
+                    all.extend(self.parse_con_args(false)?);
+                }
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("SCROLL".to_string())]
+                        .into_iter()
+                        .chain(all)
+                        .collect(),
+                    line,
+                }));
+            }
+            "SCREEN" => return self.con_pair_command("SCREEN_SET", "SCREEN", line),
+            "SCREEN.ROW" | "SCREEN.COL" | "SCREEN.ATTR" | "SCREEN.CHAR" => {
+                if path == "SCREEN.ROW" || path == "SCREEN.COL" {
+                    let targets = self.parse_con_to_targets()?;
+                    let getter = if path == "SCREEN.ROW" {
+                        "SCREEN_ROWS"
+                    } else {
+                        "SCREEN_COLS"
+                    };
+                    return self.con_to1(getter, targets, line);
+                }
+                let args = self.parse_con_args(false)?;
+                if self.peek() == &Token::To {
+                    let targets = self.parse_con_to_targets()?;
+                    let getter = if path == "SCREEN.ATTR" {
+                        "SCREEN_ATTR"
+                    } else {
+                        "SCREEN_CHAR"
+                    };
+                    return self.con_to1_with_args(getter, args, targets, line);
+                }
+                return Err(PbError::parser(
+                    "CON.SCREEN.ATTR / CON.SCREEN.CHAR need 'TO variable' in statement position",
+                    self.current_file(),
+                    line,
+                ));
+            }
+            "VIRTUAL" => return self.con_pair_command("VIRTUAL_SET", "VIRTUAL", line),
+            "VIRTUAL.ROW" | "VIRTUAL.COL" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = if path == "VIRTUAL.ROW" {
+                    "VIRTUAL_ROWS"
+                } else {
+                    "VIRTUAL_COLS"
+                };
+                return self.con_to1(getter, targets, line);
+            }
+            "VIEW" => return self.con_pair_command("VIEW_SET", "VIEW", line),
+            "VIEW.ROW" | "VIEW.COL" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = if path == "VIEW.ROW" {
+                    "VIEW_ROWS"
+                } else {
+                    "VIEW_COLS"
+                };
+                return self.con_to1(getter, targets, line);
+            }
+            "SIZE" => return self.con_pair_command("SIZE_SET", "SIZE", line),
+            "SIZE.X" | "SIZE.Y" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = if path == "SIZE.X" { "SIZE_X" } else { "SIZE_Y" };
+                return self.con_to1(getter, targets, line);
+            }
+            "LOC" => return self.con_pair_command("LOC_SET", "LOC", line),
+            "LOC.X" | "LOC.Y" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = if path == "LOC.X" { "LOC_X" } else { "LOC_Y" };
+                return self.con_to1(getter, targets, line);
+            }
+            "CAPTION$" | "CAPTION" => {
+                if self.peek() == &Token::Eq {
+                    self.advance();
+                    let value = self.parse_expression()?;
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("CAPTION_SET".to_string()), value],
+                        line,
+                    }));
+                }
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1("CAPTION_GET", targets, line);
+            }
+            "FOCUS" => {
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("FOCUS".to_string())],
+                    line,
+                }));
+            }
+            "NEW" | "END" => {
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit(path.to_string())],
+                    line,
+                }));
+            }
+            "HANDLE" | "IN" | "OUT" | "INSHIFT" | "INSTAT" | "STDEOF" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = match path {
+                    "HANDLE" => "HANDLE",
+                    "IN" => "IN",
+                    "OUT" => "OUT",
+                    "INSHIFT" => "INSHIFT",
+                    "INSTAT" => "INSTAT",
+                    _ => "STDEOF",
+                };
+                return self.con_to1(getter, targets, line);
+            }
+            "INKEY$" | "INKEY" => {
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1("INKEY", targets, line);
+            }
+            "INPUT" => return self.parse_con_input_statement(line, false),
+            "LINE.INPUT" => return self.parse_con_input_statement(line, true),
+            "INPUT.FLUSH" => {
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("INPUT_FLUSH".to_string())],
+                    line,
+                }));
+            }
+            "KEY" => {
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() < 2 {
+                    return Err(PbError::parser(
+                        "CON.KEY requires a function number and a string (or an empty string to clear)",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("KEY_SET".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "KEY$" => {
+                let args = self.parse_con_args(false)?;
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1_with_args("KEY_GET", args, targets, line);
+            }
+            "WAITKEY$" | "WAITKEY" => {
+                let args = self.parse_con_args(true)?;
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1_with_args("WAITKEY", args, targets, line);
+            }
+            "WAITSTAT" => {
+                let args = self.parse_con_args(true)?;
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("WAITSTAT".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "MOUSE" => {
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() != 2 {
+                    return Err(PbError::parser(
+                        "CON.MOUSE requires two arguments (event mask, button mask)",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("MOUSE".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
+            }
+            "MOUSE.ON" | "MOUSE.OFF" => {
+                self.consume_to_eol();
+                let method = if path.ends_with(".ON") {
+                    "MOUSE_ON"
+                } else {
+                    "MOUSE_OFF"
+                };
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit(method.to_string())],
+                    line,
+                }));
+            }
+            "MOUSE.BUTTONS" | "MOUSE.COL" | "MOUSE.ROW" | "MOUSE.STAT" => {
+                let targets = self.parse_con_to_targets()?;
+                let getter = match path {
+                    "MOUSE.BUTTONS" => "MOUSE_BUTTONS",
+                    "MOUSE.COL" => "MOUSE_COL",
+                    "MOUSE.ROW" => "MOUSE_ROW",
+                    _ => "MOUSE_STAT",
+                };
+                return self.con_to1(getter, targets, line);
+            }
+            "STDIN.LINE" => {
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1("STDIN_LINE", targets, line);
+            }
+            "STDOUT" | "STDERR" => {
+                // CON.STDOUT(expr [;]) / CON.STDERR(expr [;])
+                let mut newline = 1i64;
+                let mut args = self.parse_con_args(false)?;
+                if self.peek() == &Token::Semicolon {
+                    newline = 0;
+                    self.advance();
+                }
+                self.consume_to_eol();
+                if args.len() != 1 {
+                    return Err(PbError::parser(
+                        "CON.STDOUT / CON.STDERR require exactly one expression",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![
+                        Expr::StringLit(if path == "STDOUT" {
+                            "STDOUT".to_string()
+                        } else {
+                            "STDERR".to_string()
+                        }),
+                        args.remove(0),
+                        Expr::IntegerLit(newline),
+                    ],
+                    line,
+                }));
+            }
+            "GETSTDIN" | "GETSTDOUT" | "GETSTDERR" | "GETSTDKBD" | "GETSTDVID" => {
+                let args = self.parse_con_args(true)?;
+                let targets = self.parse_con_to_targets()?;
+                return self.con_to1_with_args(path, args, targets, line);
+            }
+            _ => {
+                return Err(PbError::parser(
+                    format!("CON.{} is not implemented", path),
+                    self.current_file(),
+                    line,
+                ));
+            }
+        }
+    }
+
+    fn con_to1(&mut self, getter: &str, targets: Vec<Expr>, line: usize) -> PbResult<Statement> {
+        if targets.len() != 1 {
+            return Err(PbError::parser(
+                "this CON property needs exactly one target variable",
+                self.current_file(),
+                line,
+            ));
+        }
+        Ok(Statement::Call(CallStmt {
+            name: "CON_TO1".to_string(),
+            args: vec![Expr::StringLit(getter.to_string()), targets[0].clone()],
+            line,
+        }))
+    }
+
+    fn con_to1_with_args(
+        &mut self,
+        getter: &str,
+        args: Vec<Expr>,
+        targets: Vec<Expr>,
+        line: usize,
+    ) -> PbResult<Statement> {
+        if targets.len() != 1 {
+            return Err(PbError::parser(
+                "this CON property needs exactly one target variable",
+                self.current_file(),
+                line,
+            ));
+        }
+        Ok(Statement::Call(CallStmt {
+            name: "CON_TO1".to_string(),
+            args: vec![Expr::StringLit(getter.to_string())]
+                .into_iter()
+                .chain(args)
+                .chain(std::iter::once(targets[0].clone()))
+                .collect(),
+            line,
+        }))
+    }
+
+    /// `CONSOLE NAME s$`, `CONSOLE GET ... TO ...`, `CONSOLE SET ...`.
+    fn parse_console_legacy_statement(&mut self, line: usize) -> PbResult<Statement> {
+        self.advance(); // CONSOLE
+        let op = self.peek_plain_upper();
+        self.advance(); // NAME / GET / SET
+        match op.as_str() {
+            "NAME" => {
+                let value = self.parse_expression()?;
+                self.consume_to_eol();
+                Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("CAPTION_SET".to_string()), value],
+                    line,
+                }))
+            }
+            "GET" => {
+                let member = self.peek_plain_upper();
+                self.advance();
+                let targets = self.parse_con_to_targets()?;
+                let getter = match member.as_str() {
+                    "SCREEN" | "SIZE" => {
+                        if targets.len() != 2 {
+                            return Err(PbError::parser(
+                                "CONSOLE GET SCREEN/SIZE requires two target variables",
+                                self.current_file(),
+                                line,
+                            ));
+                        }
+                        return Ok(Statement::Call(CallStmt {
+                            name: "CON_TO2".to_string(),
+                            args: vec![Expr::StringLit(member.clone())]
+                                .into_iter()
+                                .chain(targets)
+                                .collect(),
+                            line,
+                        }));
+                    }
+                    "LOC" => "LOC",
+                    "VIEW" => "VIEW",
+                    "VIRTUAL" => "VIRTUAL",
+                    _ => {
+                        return Err(PbError::parser(
+                            format!("CONSOLE GET {} is not supported", member),
+                            self.current_file(),
+                            line,
+                        ))
+                    }
+                };
+                if targets.len() != 2 {
+                    return Err(PbError::parser(
+                        "CONSOLE GET LOC/VIEW/VIRTUAL requires two target variables",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                Ok(Statement::Call(CallStmt {
+                    name: "CON_TO2".to_string(),
+                    args: vec![Expr::StringLit(getter.to_string())]
+                        .into_iter()
+                        .chain(targets)
+                        .collect(),
+                    line,
+                }))
+            }
+            "SET" => {
+                let member = self.peek_plain_upper();
+                if member == "FOCUS" {
+                    self.advance();
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit("FOCUS".to_string())],
+                        line,
+                    }));
+                }
+                self.advance();
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() != 2 {
+                    return Err(PbError::parser(
+                        "CONSOLE SET SCREEN/SIZE/LOC/VIEW/VIRTUAL requires two values",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                let method = match member.as_str() {
+                    "SCREEN" => "SCREEN_SET",
+                    "SIZE" => "SIZE_SET",
+                    "LOC" => "LOC_SET",
+                    "VIEW" => "VIEW_SET",
+                    "VIRTUAL" => "VIRTUAL_SET",
+                    _ => {
+                        return Err(PbError::parser(
+                            format!("CONSOLE SET {} is not supported", member),
+                            self.current_file(),
+                            line,
+                        ))
+                    }
+                };
+                Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit(method.to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }))
+            }
+            _ => Err(PbError::parser(
+                "CONSOLE: expected NAME, GET or SET",
+                self.current_file(),
+                line,
+            )),
+        }
+    }
+
     ///
     /// `PRINT a;` and `PRINT a,` suppress the newline so the next PRINT
-    /// continues on the same line.  A separator followed by another argument is
-    /// an inter-argument separator and does not set the flag - only one left at
-    /// the end of the statement does.
-    fn parse_print_args(&mut self) -> PbResult<(Vec<Expr>, Option<char>)> {
+    /// continues on the same line.  A comma between items advances the
+    /// caret to the next 14-column print zone, so the separator per argument
+    /// must reach codegen rather than only the trailing flag.
+    #[allow(clippy::type_complexity)]
+    fn parse_print_args(&mut self) -> PbResult<(Vec<Expr>, Vec<Option<char>>, Option<char>)> {
         let mut args = Vec::new();
+        let mut separators = Vec::new();
         let mut trailing: Option<char> = None;
         while !self.at_eol_or_eof() {
             args.push(self.parse_expression()?);
-            // PRINT uses ; or , both between arguments and at the end
-            match self.peek() {
-                Token::Semicolon => {
-                    trailing = Some(';');
-                    self.advance();
+            let sep = match self.peek() {
+                Token::Semicolon => Some(';'),
+                Token::Comma => Some(','),
+                _ => None,
+            };
+            if let Some(c) = sep {
+                self.advance();
+                separators.push(Some(c));
+                if self.at_eol_or_eof() {
+                    trailing = Some(c);
+                    break;
                 }
-                Token::Comma => {
-                    trailing = Some(',');
-                    self.advance();
-                }
-                _ => break,
-            }
-            // A separator followed by more input was an inter-argument one.
-            if !self.at_eol_or_eof() {
-                trailing = None;
+            } else {
+                separators.push(None);
+                break;
             }
         }
-        Ok((args, trailing))
+        Ok((args, separators, trailing))
     }
 
     /// PRINT # argument list, retaining the separator after each argument.
@@ -18067,6 +19112,34 @@ impl Parser {
                     // arguments in PB/CC, so the bare form must reach codegen.
                     || name.eq_ignore_ascii_case("CURSORX")
                     || name.eq_ignore_ascii_case("CURSORY")
+                    // PB/CC legacy console getters with no arguments.  Their
+                    // statement spellings are TO forms; these are the value
+                    // spellings usable on a right-hand side.
+                    || name.eq_ignore_ascii_case("CURSOR")
+                    || name.eq_ignore_ascii_case("INKEY$")
+                    || name.eq_ignore_ascii_case("INKEY")
+                    || name.eq_ignore_ascii_case("INSTAT")
+                    || name.eq_ignore_ascii_case("INSHIFT")
+                    || name.eq_ignore_ascii_case("PAGEACTIVE")
+                    || name.eq_ignore_ascii_case("PAGEVISIBLE")
+                    || name.eq_ignore_ascii_case("CONSNAME$")
+                    || name.eq_ignore_ascii_case("CONSNAME")
+                    || name.eq_ignore_ascii_case("CONSHNDL")
+                    || name.eq_ignore_ascii_case("CONSIN")
+                    || name.eq_ignore_ascii_case("CONSOUT")
+                    || name.eq_ignore_ascii_case("GETSTDIN")
+                    || name.eq_ignore_ascii_case("GETSTDOUT")
+                    || name.eq_ignore_ascii_case("GETSTDERR")
+                    || name.eq_ignore_ascii_case("GETSTDKBD")
+                    || name.eq_ignore_ascii_case("GETSTDVID")
+                    || name.eq_ignore_ascii_case("STDEOF")
+                    || name.eq_ignore_ascii_case("SCREENX")
+                    || name.eq_ignore_ascii_case("SCREENY")
+                    || name.eq_ignore_ascii_case("SCREENATTR")
+                    || name.eq_ignore_ascii_case("MOUSEBUTTONS")
+                    || name.eq_ignore_ascii_case("MOUSEX")
+                    || name.eq_ignore_ascii_case("MOUSEY")
+                    || name.eq_ignore_ascii_case("MOUSESTAT")
                     // The unsuffixed spelling is not a valid PB string
                     // function name; route it through the same bare-call path
                     // so codegen rejects it with "use VERSION$()" instead of
@@ -18118,39 +19191,44 @@ impl Parser {
                         };
                         return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
                     }
-                    // CON.CELL.ROW / CON.CELL.COL — PB/CC console pseudo-object
-                    // value members.  CON.LOCATE.ROW/COL are the documented
-                    // aliases.  The legacy spellings CURSORY/CURSORX are
-                    // handled as bare zero-argument functions below.
-                    if name.eq_ignore_ascii_case("CON") && self.peek() == &Token::Dot {
+                    // CON / CONSOLE value members.  A statement form is
+                    // intercepted in parse_statement before expression parsing;
+                    // here the documented getters (CON.CELL.ROW, CON.CURSOR,
+                    // CON.SCREEN.ATTR(row,col), CON.KEY$(n), ...) become one
+                    // CON_GET call whose first argument names the getter.
+                    if (name.eq_ignore_ascii_case("CON") || name.eq_ignore_ascii_case("CONSOLE"))
+                        && self.peek() == &Token::Dot
+                    {
                         self.advance(); // consume '.'
-                        let member = self.peek_plain_upper();
-                        if member != "CELL" && member != "LOCATE" {
-                            return Err(PbError::parser(
-                                format!("CON.{} is not implemented; use CON.CELL.ROW/COL", member),
-                                self.current_file(),
-                                self.current_line(),
-                            ));
-                        }
-                        self.advance(); // consume CELL / LOCATE
-                        self.expect(&Token::Dot)?;
-                        let sub = self.peek_plain_upper();
-                        let fn_name = match sub.as_str() {
-                            "ROW" => "CON_CELL_ROW",
-                            "COL" => "CON_CELL_COL",
-                            _ => {
+                        let path = self.parse_con_path()?;
+                        let getter = match Self::con_value_method(&path) {
+                            Some(g) => g,
+                            None => {
                                 return Err(PbError::parser(
                                     format!(
-                                        "CON.{}.{} is not a value member; use ROW or COL",
-                                        member, sub
+                                        "CON.{} is a statement form; use its documented TO/=/PRINT syntax",
+                                        path
                                     ),
                                     self.current_file(),
                                     self.current_line(),
                                 ))
                             }
                         };
-                        self.advance(); // consume ROW / COL
-                        return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
+                        let args = if self.peek() == &Token::LParen {
+                            self.advance();
+                            let parsed = if self.peek() == &Token::RParen {
+                                Vec::new()
+                            } else {
+                                self.parse_arg_list()?
+                            };
+                            self.expect(&Token::RParen)?;
+                            parsed
+                        } else {
+                            Vec::new()
+                        };
+                        let mut all = vec![Expr::StringLit(getter.to_string())];
+                        all.extend(args);
+                        return Ok(Expr::FunctionCall("CON_GET".to_string(), all));
                     }
                     Expr::Variable(name)
                 };

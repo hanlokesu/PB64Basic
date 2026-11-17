@@ -4,12 +4,19 @@
 #   1. Rust toolchain        (Rustlang.Rustup)
 #   2. LLVM / Clang          (LLVM.LLVM, ~500 MB)
 #   3. Windows SDK           (Microsoft.WindowsSDK.10.0.26100)
+#   4. PowerBASIC WinAPI includes (detect only; never copied or redistributed)
 # Then builds:
-#   4. pb_runtime_x64.obj / pb_runtime_x86.obj (from pbcompiler/runtime/pb_runtime.c)
-#   5. PB64Basic.exe        (release build via cargo)
+#   5. pb_runtime_x64.obj / pb_runtime_x86.obj (from pbcompiler/runtime/pb_runtime.c)
+#   6. PB64Basic.exe        (release build via cargo)
 #
 # Run from setup.bat (double-click), or:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1
+#   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -IncludeDir "C:\PBWin10\WINAPI"
+#   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -IncludeDir "C:\PBWin10"
+
+param(
+    [string]$IncludeDir = ""
+)
 
 $ErrorActionPreference = 'Continue'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -19,6 +26,128 @@ function Write-Step($msg)  { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)    { Write-Host "   [OK] $msg" -ForegroundColor Green }
 function Write-Warn($msg)  { Write-Host "   [!] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg)  { Write-Host "   [X] $msg" -ForegroundColor Red }
+
+# Locate a PowerBASIC WinAPI directory. PB64Basic never copies or
+# redistributes these headers; this only tells the user what is available.
+#
+# PowerBASIC has several product lines and install layouts:
+#   PB/DLL 6.x, PB/Win 7.x-10.x, PB/CC, and portable copies on any local drive.
+# Newer installers commonly use "Program Files (x86)\PBWin10"; older installers
+# often used C:\PBDLL61 / C:\PBWin70 / C:\PBWin90. The registry records the
+# active compiler path under HKCU\Software\PowerBASIC\PB/Win\<version>\Compiler.
+function Find-PowerBasicIncludes {
+    param([string]$Explicit)
+
+    $candidates = @()
+    if ($Explicit) {
+        $candidates += [PSCustomObject]@{ Dir = $Explicit; Explicit = $true; Source = '-IncludeDir' }
+    }
+
+    # Registry-recorded compiler paths (newest active installation first).
+    foreach ($regRoot in @(
+        'HKCU:\SOFTWARE\PowerBASIC',
+        'HKLM:\SOFTWARE\PowerBASIC',
+        'HKLM:\SOFTWARE\WOW6432Node\PowerBASIC'
+    )) {
+        if (-not (Test-Path -LiteralPath $regRoot)) { continue }
+        $keys = Get-ChildItem -LiteralPath $regRoot -Recurse -ErrorAction SilentlyContinue
+        foreach ($key in $keys) {
+            $props = Get-ItemProperty -LiteralPath $key.PSPath -ErrorAction SilentlyContinue
+            if (-not $props -or -not $props.Compiler) { continue }
+            $compiler = ([string]$props.Compiler).Trim('"')
+            if (-not (Test-Path -LiteralPath $compiler)) { continue }
+            $binDir = Split-Path -Parent $compiler
+            $installRoot = Split-Path -Parent $binDir
+            if ($binDir) {
+                $candidates += [PSCustomObject]@{ Dir = $binDir; Explicit = $false; Source = 'registry' }
+            }
+            if ($installRoot -and $installRoot -notmatch '^[A-Za-z]:\\$') {
+                $candidates += [PSCustomObject]@{ Dir = $installRoot; Explicit = $false; Source = 'registry' }
+            }
+        }
+    }
+
+    # Local fixed drives and their Program Files trees.
+    $driveRoots = @()
+    foreach ($drive in Get-PSDrive -PSProvider FileSystem) {
+        if ($drive.Root -notmatch '^[A-Za-z]:\\$') { continue }
+        if ($drive.DisplayRoot) { continue }
+        if (-not (Test-Path -LiteralPath $drive.Root)) { continue }
+        $driveRoots += $drive.Root.TrimEnd('\')
+    }
+
+    $programRoots = @()
+    foreach ($root in $driveRoots) {
+        foreach ($pf in @("$root\Program Files", "$root\Program Files (x86)")) {
+            if (Test-Path -LiteralPath $pf) { $programRoots += $pf }
+        }
+    }
+
+    # Known name patterns. The file check below is the real gate, so a version
+    # that is not listed here is still found by the directory scan.
+    $versionNames = @(
+        'PBWin10', 'PBWin9', 'PBWin8', 'PBWin7', 'PBWin6',
+        'PBDLL61', 'PBDLL60', 'PBWin90', 'PBWin80', 'PBWin70',
+        'PBCC60', 'PBCC50'
+    )
+
+    foreach ($pf in $programRoots) {
+        foreach ($name in $versionNames) {
+            $candidates += [PSCustomObject]@{ Dir = "$pf\$name"; Explicit = $false; Source = 'Program Files' }
+            $candidates += [PSCustomObject]@{ Dir = "$pf\PowerBASIC\$name"; Explicit = $false; Source = 'Program Files' }
+        }
+        $level1 = Get-ChildItem -LiteralPath $pf -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(PBWin|PBDLL|PBCC|PowerBASIC|Programming Languages)' }
+        foreach ($d1 in $level1) {
+            $candidates += [PSCustomObject]@{ Dir = $d1.FullName; Explicit = $false; Source = 'Program Files' }
+            $level2 = Get-ChildItem -LiteralPath $d1.FullName -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^(PBWin|PBDLL|PBCC|PowerBASIC)' }
+            foreach ($d2 in $level2) {
+                $candidates += [PSCustomObject]@{ Dir = $d2.FullName; Explicit = $false; Source = 'Program Files' }
+            }
+        }
+    }
+
+    foreach ($root in $driveRoots) {
+        foreach ($name in $versionNames) {
+            $candidates += [PSCustomObject]@{ Dir = "$root\$name"; Explicit = $false; Source = 'drive scan' }
+        }
+        $level1 = Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^(PBWin|PBDLL|PBCC|PowerBASIC)' }
+        foreach ($d1 in $level1) {
+            $candidates += [PSCustomObject]@{ Dir = $d1.FullName; Explicit = $false; Source = 'drive scan' }
+        }
+    }
+
+    # De-duplicate before probing. IncludeDir may point at either the install
+    # root (C:\PBWin10) or the header directory (C:\PBWin10\WINAPI).
+    $unique = @()
+    $seen = @{}
+    foreach ($c in $candidates) {
+        if (-not $c.Dir) { continue }
+        try { $full = [System.IO.Path]::GetFullPath($c.Dir) } catch { continue }
+        if ($seen.ContainsKey($full)) { continue }
+        $seen[$full] = $true
+        $unique += [PSCustomObject]@{ Dir = $full; Explicit = $c.Explicit; Source = $c.Source }
+    }
+
+    foreach ($candidate in $unique) {
+        if (-not (Test-Path -LiteralPath $candidate.Dir -PathType Container)) { continue }
+        foreach ($sub in @('', 'WINAPI', 'WinAPI', 'WINAPI\INC', 'WinAPI\INC', 'INC')) {
+            $dir = if ($sub) { $candidate.Dir.TrimEnd('\') + '\' + $sub } else { $candidate.Dir }
+            $file = [System.IO.Path]::Combine($dir, 'Win32Api.inc')
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                return [PSCustomObject]@{
+                    Dir      = $dir
+                    File     = $file
+                    Explicit = $candidate.Explicit
+                    Source   = $candidate.Source
+                }
+            }
+        }
+    }
+    return $null
+}
 
 $changed = $false
 
@@ -129,7 +258,26 @@ if (-not $sdkFound) {
     if (-not $sdkFound) { Write-Fail "SDK install failed. Install the Windows SDK manually from https://developer.microsoft.com/windows/downloads/windows-sdk/" }
 }
 
-# ---------- 4. Build runtime objects ----------
+# ---------- 4. PowerBASIC WinAPI includes ----------
+Write-Step "Checking for PowerBASIC WinAPI includes (optional)..."
+$pbInc = Find-PowerBasicIncludes -Explicit $IncludeDir
+if ($IncludeDir -and (-not $pbInc -or $pbInc.Source -ne '-IncludeDir')) {
+    Write-Warn "-IncludeDir does not contain Win32Api.inc: $IncludeDir (install root or WinAPI folder both accepted)"
+}
+if ($pbInc) {
+    Write-Ok "PowerBASIC WinAPI include directory found: $($pbInc.Dir)"
+    Write-Host "   PB64Basic does not redistribute these headers; use them only from your licensed PowerBASIC installation." -ForegroundColor Gray
+    if ($pbInc.Explicit) {
+        Write-Host "   For manual builds, pass: --include-dir `"$($pbInc.Dir)`"" -ForegroundColor Gray
+    }
+} else {
+    Write-Warn "Win32API.inc was not found."
+    Write-Warn "It is part of a licensed PowerBASIC installation and is not shipped or downloaded by PB64Basic."
+    Write-Warn "Examples that call the Windows API will not compile without it."
+    Write-Warn "If your licensed PBWin is in a non-default folder, re-run with -IncludeDir <path>."
+}
+
+# ---------- 5. Build runtime objects ----------
 $rtSrc = Join-Path $ScriptDir "pbcompiler\runtime\pb_runtime.c"
 if (Test-Path $rtSrc) {
     if (-not $clangExe -or -not (Test-Path $clangExe)) {
@@ -168,7 +316,7 @@ if (Test-Path $rtSrc) {
     Write-Fail "pb_runtime.c not found: $rtSrc"
 }
 
-# ---------- 5. Build the compiler ----------
+# ---------- 6. Build the compiler ----------
 Write-Step "Building pbcompiler (release)..."
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $cargoPath = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
@@ -178,11 +326,16 @@ cargo build --release -p pbcompiler
 if ($LASTEXITCODE -eq 0) { Write-Ok "pbcompiler built." }
 else { Write-Fail "PB64Basic build failed. Rust toolchain is required (step 1)." }
 
-# ---------- 6. Summary ----------
+# ---------- 7. Summary ----------
 Write-Step "Setup summary"
 $pb = Join-Path $ScriptDir "target\release\PB64Basic.exe"
 if (Test-Path $pb) {
     Write-Ok "Compiler ready: $pb"
+    if ($pbInc) {
+        Write-Host "   WinAPI includes: $($pbInc.Dir) (not redistributed)" -ForegroundColor Gray
+    } else {
+        Write-Host "   WinAPI includes: not found (Windows API examples will not compile)" -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "Try it (from this folder):" -ForegroundColor White
     Write-Host "   PB64Basic build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj" -ForegroundColor Gray

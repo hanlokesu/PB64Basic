@@ -652,6 +652,11 @@ pub enum CaseOp {
 #[derive(Debug, Clone)]
 pub struct PrintStmt {
     pub args: Vec<Expr>,
+    /// Separator that followed each argument in the source (`;` or `,`).
+    /// A comma advances the console caret to the next 14-column print zone
+    /// (CHW CON.PRINT / PRINT); a semicolon adds nothing.  The final element
+    /// is `None` when the statement ended without a separator.
+    pub separators: Vec<Option<char>>,
     /// `PRINT AT row, col, ...` (fork extension): when present, the cursor is
     /// positioned before the first argument is written.  Official PowerBASIC
     /// has no PRINT AT statement; the standard spelling is LOCATE + PRINT.
@@ -663,6 +668,10 @@ pub struct PrintStmt {
     /// means the statement prints its own newline.  A separator *between* two
     /// arguments is consumed by the parser and does not set this field.
     pub trailing: Option<char>,
+    /// The statement was written as PB/CC's `?` shorthand.  In a console
+    /// program `?` is `CON.PRINT` (CHW Screen_Text_Commands); in a GUI
+    /// program the same token is PB/Win's MSGBOX shorthand (CHW msgbox_s).
+    pub from_question: bool,
     pub line: usize,
 }
 

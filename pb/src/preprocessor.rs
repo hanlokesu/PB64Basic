@@ -623,11 +623,10 @@ impl Preprocessor {
 
             let upper_full = trimmed_full.to_uppercase();
 
-            // #CONSOLE OFF / #CONSOLE ON are legal PB directives.  The old
-            // console_off flag (batch 129) was removed in batch 250: `?`
-            // always lowers to MSGBOX regardless of console mode.  The
-            // directive now selects the PE subsystem (batch 310): ON records
-            // the console subsystem, OFF keeps the GUI subsystem.
+            // #CONSOLE OFF / #CONSOLE ON are legal PB directives.  Batch 376
+            // restores the target split documented by PB/CC: under #CONSOLE ON
+            // `?` is the CON.PRINT shorthand; under the GUI subsystem it stays
+            // the PB/Win MSGBOX abbreviation.
             if upper_full.starts_with("#CONSOLE OFF") {
                 self.console_mode = Some(false);
                 i += 1;
@@ -642,18 +641,18 @@ impl Preprocessor {
             //  console_off = true; that flag is gone, the directive itself is
             //  still handled normally below.)
 
-            // Batch 129 revisited (batch 250): `?` at line start is the PB
-            // official MSGBOX statement abbreviation (CHW msgbox_s.htm:
-            // `? txt$ [, [style&], title$]`).  PBWin compiles it to a real
-            // message box even without #CONSOLE OFF / #INCLUDE WIN32API
-            // (batch 250 probe p4/p5: PBWin exe stayed running on a message
-            // box).  The old console_off split (PRINT when console) is wrong
-            // for PBWin compatibility, so `?` always lowers to MSGBOX; the
-            // lexer/parser Question token path is a second safety net for
-            // statement positions the preprocessor does not rewrite.
+            // Batch 376: `?` follows the target.  PB/CC documents it as
+            // CON.PRINT (Screen_Text_Commands.htm); PB/Win documents it as
+            // MSGBOX (msgbox_s.htm).  The lexer/parser Question token remains
+            // the safety net for statement positions this pass does not see.
             let replaced: Option<String> = if trimmed_full.starts_with('?') {
                 let rest = trimmed_full.strip_prefix('?').unwrap().trim_start();
-                Some(format!("MSGBOX {}", rest))
+                let stmt = if self.console_mode == Some(true) {
+                    "CON.PRINT"
+                } else {
+                    "MSGBOX"
+                };
+                Some(format!("{} {}", stmt, rest))
             } else {
                 None
             };
@@ -1141,15 +1140,20 @@ impl Preprocessor {
             let mut emitted_text = expanded;
             // Second rewrite site (batch 129 legacy): `expand_macros` seeds
             // from the ORIGINAL line (`full`), so a `?`-leading line can come
-            // back out of it as `? ...` again.  Same rule as the first site:
-            // `?` -> MSGBOX unconditionally (batch 250, PBWin probe-verified).
+            // back out of it as `? ...` again.  Batch 376 applies the same
+            // target split as the first site.
             {
                 let t = emitted_text.trim_start();
                 if t.starts_with('?') {
                     let indent_len = emitted_text.len() - t.len();
                     let indent = &emitted_text[..indent_len];
                     let rest = t.strip_prefix('?').unwrap().trim_start();
-                    emitted_text = format!("{}{}{}", indent, "MSGBOX ", rest);
+                    let stmt = if self.console_mode == Some(true) {
+                        "CON.PRINT "
+                    } else {
+                        "MSGBOX "
+                    };
+                    emitted_text = format!("{}{}{}", indent, stmt, rest);
                 }
             }
             if let Some(p) = &prefix {

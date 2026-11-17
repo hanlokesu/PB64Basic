@@ -284,6 +284,7 @@ pub fn compile(
     compiler.dll_mode = opts.dll_mode;
     compiler.sll_mode = opts.sll_mode;
     compiler.pp_constants = pp_constants.clone();
+    compiler.console_mode = opts.console_mode == Some(true);
     compiler.compile_program(program)?;
     // Report statements that were silently dropped (no code generated)
     if !compiler.warnings.is_empty() {
@@ -1523,6 +1524,10 @@ struct Compiler {
     // unlike a scalar EXTERN which is loaded (e.g. bin2coff label_size).
     extern_ptr_vars: std::collections::HashSet<String>,
 
+    /// `#CONSOLE ON` / `#CONSOLE OFF` (or `--console`).  `?` is CON.PRINT in
+    /// a console program and MSGBOX in a GUI program (PB/CC vs PB/Win).
+    console_mode: bool,
+
     // Fatal codegen errors collected during layout (register_type runs in a
     // non-Result context); compile_program turns these into a PbError after
     // the layout pass. Used for bit-field Error 534.
@@ -1723,6 +1728,7 @@ impl Compiler {
             link_files: Vec::new(),
             extern_ptr_vars: std::collections::HashSet::new(),
             fatal_errors: Vec::new(),
+            console_mode: false,
         }
     }
 
@@ -2603,6 +2609,156 @@ impl Compiler {
             .declare_function("pb_print_spc", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("pb_print_tab", &IrType::Void, &[IrType::I32], false);
+        // Console output goes through the runtime so PRINT can target the
+        // active page and keep control characters literal (batch 376).
+        for (name, ret, params) in [
+            ("pb_print_str", IrType::Void, vec![IrType::Ptr]),
+            ("pb_print_i32", IrType::Void, vec![IrType::I32]),
+            ("pb_print_i64", IrType::Void, vec![IrType::I64]),
+            ("pb_print_f64", IrType::Void, vec![IrType::Double]),
+            ("pb_print_newline", IrType::Void, vec![]),
+            ("pb_print_comma", IrType::Void, vec![]),
+            ("pb_print_flush", IrType::Void, vec![]),
+        ] {
+            self.module.declare_function(name, &ret, &params, false);
+        }
+        // PB/CC CON / CONSOLE pseudo-object runtime (batch 376).
+        for (name, ret, params) in [
+            ("pb_con_caption_get", IrType::Ptr, vec![]),
+            ("pb_con_caption_set", IrType::Void, vec![IrType::Ptr]),
+            ("pb_con_cls", IrType::Void, vec![]),
+            (
+                "pb_con_color",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32, IrType::I32],
+            ),
+            ("pb_con_cursor_get", IrType::I32, vec![]),
+            ("pb_con_cursor_set", IrType::Void, vec![IrType::I32]),
+            ("pb_con_cursor_on", IrType::Void, vec![IrType::I32]),
+            ("pb_con_cursor_off", IrType::Void, vec![]),
+            ("pb_con_cell_row", IrType::I32, vec![]),
+            ("pb_con_cell_col", IrType::I32, vec![]),
+            (
+                "pb_con_cell_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            (
+                "pb_con_page_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_page_active_set", IrType::Void, vec![IrType::I32]),
+            ("pb_con_page_visible_set", IrType::Void, vec![IrType::I32]),
+            ("pb_con_page_active_get", IrType::I32, vec![]),
+            ("pb_con_page_visible_get", IrType::I32, vec![]),
+            ("pb_con_pcopy", IrType::Void, vec![IrType::I32, IrType::I32]),
+            (
+                "pb_con_scroll",
+                IrType::Void,
+                vec![
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                ],
+            ),
+            (
+                "pb_con_screen_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_screen_rows", IrType::I32, vec![]),
+            ("pb_con_screen_cols", IrType::I32, vec![]),
+            (
+                "pb_con_virtual_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_virtual_rows", IrType::I32, vec![]),
+            ("pb_con_virtual_cols", IrType::I32, vec![]),
+            (
+                "pb_con_view_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_view_rows", IrType::I32, vec![]),
+            ("pb_con_view_cols", IrType::I32, vec![]),
+            (
+                "pb_con_size_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_size_x", IrType::I32, vec![]),
+            ("pb_con_size_y", IrType::I32, vec![]),
+            (
+                "pb_con_loc_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_loc_x", IrType::I32, vec![]),
+            ("pb_con_loc_y", IrType::I32, vec![]),
+            (
+                "pb_con_screen_attr",
+                IrType::I32,
+                vec![IrType::I32, IrType::I32],
+            ),
+            (
+                "pb_con_screen_char",
+                IrType::I32,
+                vec![IrType::I32, IrType::I32],
+            ),
+            ("pb_con_handle", IrType::I64, vec![]),
+            ("pb_con_focus", IrType::Void, vec![]),
+            ("pb_con_new", IrType::Void, vec![]),
+            ("pb_con_end", IrType::Void, vec![]),
+            ("pb_con_in", IrType::I32, vec![]),
+            ("pb_con_out", IrType::I32, vec![]),
+            ("pb_con_stdeof", IrType::I32, vec![]),
+            ("pb_con_inshift", IrType::I32, vec![]),
+            ("pb_con_instat", IrType::I32, vec![]),
+            ("pb_con_inkey", IrType::Ptr, vec![]),
+            (
+                "pb_con_waitkey",
+                IrType::Ptr,
+                vec![IrType::Ptr, IrType::I32],
+            ),
+            ("pb_con_waitstat", IrType::Void, vec![]),
+            ("pb_con_input_flush", IrType::Void, vec![]),
+            (
+                "pb_con_key_set",
+                IrType::Void,
+                vec![IrType::I32, IrType::Ptr],
+            ),
+            ("pb_con_key_get", IrType::Ptr, vec![IrType::I32]),
+            ("pb_con_mouse", IrType::Void, vec![IrType::I32, IrType::I32]),
+            ("pb_con_mouse_on", IrType::Void, vec![]),
+            ("pb_con_mouse_off", IrType::Void, vec![]),
+            ("pb_con_mouse_buttons", IrType::I32, vec![]),
+            ("pb_con_mouse_row", IrType::I32, vec![]),
+            ("pb_con_mouse_col", IrType::I32, vec![]),
+            ("pb_con_mouse_stat", IrType::I32, vec![]),
+            ("pb_con_stdin_line", IrType::Ptr, vec![]),
+            (
+                "pb_con_stdout",
+                IrType::Void,
+                vec![IrType::Ptr, IrType::I32],
+            ),
+            (
+                "pb_con_stderr",
+                IrType::Void,
+                vec![IrType::Ptr, IrType::I32],
+            ),
+            ("pb_con_getstdin", IrType::I64, vec![]),
+            ("pb_con_getstdout", IrType::I64, vec![]),
+            ("pb_con_getstderr", IrType::I64, vec![]),
+            ("pb_con_getstdkbd", IrType::I64, vec![]),
+            ("pb_con_getstdvid", IrType::I64, vec![IrType::I32]),
+        ] {
+            self.module.declare_function(name, &ret, &params, false);
+        }
         self.module
             .declare_function("pb_environ_set", &IrType::Void, &[IrType::Ptr], false);
         self.module.declare_function(
@@ -10054,7 +10210,18 @@ impl Compiler {
             Statement::DoLoop(d) => self.compile_do_loop(fb, d),
             Statement::WhileWend(w) => self.compile_while_wend(fb, w),
             Statement::SelectCase(s) => self.compile_select_case(fb, s),
-            Statement::Print(p) => self.compile_print(fb, p),
+            Statement::Print(p) => {
+                if p.from_question && !self.console_mode {
+                    let call = CallStmt {
+                        name: "MSGBOX".to_string(),
+                        args: p.args.clone(),
+                        line: p.line,
+                    };
+                    self.compile_call_stmt(fb, &call)
+                } else {
+                    self.compile_print(fb, p)
+                }
+            }
             Statement::TxtPrint(p) => self.compile_txt_print(fb, p),
             Statement::Dim(d) => self.compile_dim(fb, d),
             Statement::FunctionReturn(fr) => self.compile_function_return(fb, fr),
@@ -12554,6 +12721,18 @@ impl Compiler {
 
         // System statement-builtins
         match name.as_str() {
+            "CON_CALL" => {
+                self.compile_con_call(fb, call)?;
+                return Ok(());
+            }
+            "CON_TO1" => {
+                self.compile_con_to1(fb, call)?;
+                return Ok(());
+            }
+            "CON_TO2" => {
+                self.compile_con_to2(fb, call)?;
+                return Ok(());
+            }
             "TXT_WINDOW" => {
                 // args: caption$, x&, y&, rows&, cols&, TO hWin&
                 let cap = self.compile_expr(fb, &call.args[0])?;
@@ -24822,6 +25001,318 @@ impl Compiler {
 
     // ========== PRINT ==========
 
+    fn con_method_name(call: &CallStmt) -> PbResult<String> {
+        match call.args.first() {
+            Some(Expr::StringLit(s)) => Ok(s.to_uppercase()),
+            _ => Err(PbError::parser(
+                "CON: internal call is missing its method name",
+                None,
+                call.line,
+            )),
+        }
+    }
+
+    fn con_i32_arg(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        index: usize,
+        default: i32,
+    ) -> PbResult<Val> {
+        if let Some(e) = args.get(index) {
+            let v = self.compile_expr(fb, e)?;
+            Ok(self.to_i32(fb, &v))
+        } else {
+            Ok(fb.const_i32(default))
+        }
+    }
+
+    fn con_str_arg(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        args: &[Expr],
+        index: usize,
+    ) -> PbResult<Val> {
+        match args.get(index) {
+            Some(e) => {
+                let v = self.compile_expr(fb, e)?;
+                Ok(self.convert_value(fb, &v, &IrType::Ptr, &PbType::String))
+            }
+            None => Ok(fb.const_null_ptr()),
+        }
+    }
+
+    /// Execute one CON/CONSOLE statement action.  The parser stores the method
+    /// name as args[0]; everything after it is the documented argument list.
+    fn compile_con_call(&mut self, fb: &mut FunctionBuilder, call: &CallStmt) -> PbResult<()> {
+        let method = Self::con_method_name(call)?;
+        let args = &call.args[1..];
+        match method.as_str() {
+            "CLS" => fb.call_void("pb_con_cls", &[]),
+            "COLOR" => {
+                let fore = self.con_i32_arg(fb, args, 0, 7)?;
+                let back = self.con_i32_arg(fb, args, 1, 0)?;
+                let count = self.con_i32_arg(fb, args, 2, 0)?;
+                fb.call_void("pb_con_color", &[fore, back, count]);
+            }
+            "CURSOR_SET" => {
+                let n = self.con_i32_arg(fb, args, 0, 25)?;
+                fb.call_void("pb_con_cursor_set", &[n]);
+            }
+            "CURSOR_ON" => {
+                let n = self.con_i32_arg(fb, args, 0, 0)?;
+                fb.call_void("pb_con_cursor_on", &[n]);
+            }
+            "CURSOR_OFF" => fb.call_void("pb_con_cursor_off", &[]),
+            "CELL_SET" => {
+                let r = self.con_i32_arg(fb, args, 0, 1)?;
+                let c = self.con_i32_arg(fb, args, 1, 1)?;
+                fb.call_void("pb_con_cell_set", &[r, c]);
+            }
+            "PAGE_SET" => {
+                let active = self.con_i32_arg(fb, args, 0, 1)?;
+                let visible = self.con_i32_arg(fb, args, 1, 0)?;
+                fb.call_void("pb_con_page_set", &[active, visible]);
+            }
+            "PAGE_ACTIVE_SET" => {
+                let n = self.con_i32_arg(fb, args, 0, 1)?;
+                fb.call_void("pb_con_page_active_set", &[n]);
+            }
+            "PAGE_VISIBLE_SET" => {
+                let n = self.con_i32_arg(fb, args, 0, 1)?;
+                fb.call_void("pb_con_page_visible_set", &[n]);
+            }
+            "PCOPY" => {
+                let src = self.con_i32_arg(fb, args, 0, 1)?;
+                let dst = self.con_i32_arg(fb, args, 1, 1)?;
+                fb.call_void("pb_con_pcopy", &[src, dst]);
+            }
+            "SCROLL" => {
+                // args[0] is the parser's "SCROLL.UP" etc. string.
+                let dir = match args.first() {
+                    Some(Expr::StringLit(s)) => s.to_uppercase(),
+                    _ => "SCROLL.UP".to_string(),
+                };
+                let dir_code = match dir.as_str() {
+                    "SCROLL.DOWN" => 2,
+                    "SCROLL.LEFT" => 3,
+                    "SCROLL.RIGHT" => 4,
+                    _ => 1,
+                };
+                let rest = if args.is_empty() { args } else { &args[1..] };
+                let lines = self.con_i32_arg(fb, rest, 0, 1)?;
+                let row1 = self.con_i32_arg(fb, rest, 1, 0)?;
+                let col1 = self.con_i32_arg(fb, rest, 2, 0)?;
+                let row2 = self.con_i32_arg(fb, rest, 3, 0)?;
+                let col2 = self.con_i32_arg(fb, rest, 4, 0)?;
+                let d = fb.const_i32(dir_code);
+                fb.call_void("pb_con_scroll", &[d, lines, row1, col1, row2, col2]);
+            }
+            "SCREEN_SET" => {
+                let rows = self.con_i32_arg(fb, args, 0, 25)?;
+                let cols = self.con_i32_arg(fb, args, 1, 80)?;
+                fb.call_void("pb_con_screen_set", &[rows, cols]);
+            }
+            "VIRTUAL_SET" => {
+                let rows = self.con_i32_arg(fb, args, 0, 25)?;
+                let cols = self.con_i32_arg(fb, args, 1, 80)?;
+                fb.call_void("pb_con_virtual_set", &[rows, cols]);
+            }
+            "VIEW_SET" => {
+                let rows = self.con_i32_arg(fb, args, 0, 1)?;
+                let cols = self.con_i32_arg(fb, args, 1, 1)?;
+                fb.call_void("pb_con_view_set", &[rows, cols]);
+            }
+            "SIZE_SET" => {
+                let w = self.con_i32_arg(fb, args, 0, 0)?;
+                let h = self.con_i32_arg(fb, args, 1, 0)?;
+                fb.call_void("pb_con_size_set", &[w, h]);
+            }
+            "LOC_SET" => {
+                let x = self.con_i32_arg(fb, args, 0, 0)?;
+                let y = self.con_i32_arg(fb, args, 1, 0)?;
+                fb.call_void("pb_con_loc_set", &[x, y]);
+            }
+            "CAPTION_SET" => {
+                let s = self.con_str_arg(fb, args, 0)?;
+                fb.call_void("pb_con_caption_set", &[s]);
+            }
+            "FOCUS" => fb.call_void("pb_con_focus", &[]),
+            "NEW" => fb.call_void("pb_con_new", &[]),
+            "END" => fb.call_void("pb_con_end", &[]),
+            "MOUSE" => {
+                let event = self.con_i32_arg(fb, args, 0, 0)?;
+                let button = self.con_i32_arg(fb, args, 1, 0)?;
+                fb.call_void("pb_con_mouse", &[event, button]);
+            }
+            "MOUSE_ON" => fb.call_void("pb_con_mouse_on", &[]),
+            "MOUSE_OFF" => fb.call_void("pb_con_mouse_off", &[]),
+            "INPUT_FLUSH" => fb.call_void("pb_con_input_flush", &[]),
+            "KEY_SET" => {
+                let n = self.con_i32_arg(fb, args, 0, 0)?;
+                let s = self.con_str_arg(fb, args, 1)?;
+                fb.call_void("pb_con_key_set", &[n, s]);
+            }
+            "WAITSTAT" => fb.call_void("pb_con_waitstat", &[]),
+            "STDOUT" | "STDERR" => {
+                let s = self.con_str_arg(fb, args, 0)?;
+                let nl = self.con_i32_arg(fb, args, 1, 1)?;
+                let f = if method == "STDOUT" {
+                    "pb_con_stdout"
+                } else {
+                    "pb_con_stderr"
+                };
+                fb.call_void(f, &[s, nl]);
+            }
+            other => {
+                return Err(PbError::parser(
+                    format!("CON.{} is not a supported statement action", other),
+                    None,
+                    call.line,
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn compile_con_to1(&mut self, fb: &mut FunctionBuilder, call: &CallStmt) -> PbResult<()> {
+        if call.args.len() < 2 {
+            return Err(PbError::parser(
+                "CON TO form is missing its target",
+                None,
+                call.line,
+            ));
+        }
+        let method = Self::con_method_name(call)?;
+        let getter_args = &call.args[1..call.args.len() - 1];
+        let value = self.compile_con_get(fb, &method, getter_args)?;
+        let target_expr = call.args.last().unwrap();
+        let (ptr, ty) = self.compile_lvalue_ptr(fb, target_expr)?;
+        let converted = self.convert_value(fb, &value, &ptr.ty, &ty);
+        fb.store(&converted, &ptr);
+        Ok(())
+    }
+
+    fn compile_con_to2(&mut self, fb: &mut FunctionBuilder, call: &CallStmt) -> PbResult<()> {
+        if call.args.len() < 3 {
+            return Err(PbError::parser(
+                "CON TO form is missing its two targets",
+                None,
+                call.line,
+            ));
+        }
+        let method = Self::con_method_name(call)?;
+        let getter_args = &call.args[1..call.args.len() - 2];
+        let first = match method.as_str() {
+            "CELL" => fb.call(&IrType::I32, "pb_con_cell_row", &[]),
+            "SCREEN" => fb.call(&IrType::I32, "pb_con_screen_rows", &[]),
+            "VIRTUAL" => fb.call(&IrType::I32, "pb_con_virtual_rows", &[]),
+            "VIEW" => fb.call(&IrType::I32, "pb_con_view_rows", &[]),
+            "SIZE" => fb.call(&IrType::I32, "pb_con_size_x", &[]),
+            "LOC" => fb.call(&IrType::I32, "pb_con_loc_x", &[]),
+            other => {
+                return Err(PbError::parser(
+                    format!("CON.{} does not return two values", other),
+                    None,
+                    call.line,
+                ))
+            }
+        };
+        let second = match method.as_str() {
+            "CELL" => fb.call(&IrType::I32, "pb_con_cell_col", &[]),
+            "SCREEN" => fb.call(&IrType::I32, "pb_con_screen_cols", &[]),
+            "VIRTUAL" => fb.call(&IrType::I32, "pb_con_virtual_cols", &[]),
+            "VIEW" => fb.call(&IrType::I32, "pb_con_view_cols", &[]),
+            "SIZE" => fb.call(&IrType::I32, "pb_con_size_y", &[]),
+            "LOC" => fb.call(&IrType::I32, "pb_con_loc_y", &[]),
+            _ => unreachable!(),
+        };
+        let _ = getter_args;
+        let t1 = &call.args[call.args.len() - 2];
+        let t2 = &call.args[call.args.len() - 1];
+        let (p1, ty1) = self.compile_lvalue_ptr(fb, t1)?;
+        let c1 = self.convert_value(fb, &first, &p1.ty, &ty1);
+        fb.store(&c1, &p1);
+        let (p2, ty2) = self.compile_lvalue_ptr(fb, t2)?;
+        let c2 = self.convert_value(fb, &second, &p2.ty, &ty2);
+        fb.store(&c2, &p2);
+        Ok(())
+    }
+
+    /// Evaluate one CON/CONSOLE getter.  `method` is the value-member name
+    /// stored by the parser; optional arguments follow it.
+    fn compile_con_get(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        method: &str,
+        args: &[Expr],
+    ) -> PbResult<Val> {
+        Ok(match method {
+            "CAPTION_GET" => fb.call(&IrType::Ptr, "pb_con_caption_get", &[]),
+            "CELL_ROW" => fb.call(&IrType::I32, "pb_con_cell_row", &[]),
+            "CELL_COL" => fb.call(&IrType::I32, "pb_con_cell_col", &[]),
+            "CURSOR_GET" => fb.call(&IrType::I32, "pb_con_cursor_get", &[]),
+            "HANDLE" => fb.call(&IrType::I64, "pb_con_handle", &[]),
+            "IN" => fb.call(&IrType::I32, "pb_con_in", &[]),
+            "OUT" => fb.call(&IrType::I32, "pb_con_out", &[]),
+            "STDEOF" => fb.call(&IrType::I32, "pb_con_stdeof", &[]),
+            "INSHIFT" => fb.call(&IrType::I32, "pb_con_inshift", &[]),
+            "INSTAT" => fb.call(&IrType::I32, "pb_con_instat", &[]),
+            "MOUSE_BUTTONS" => fb.call(&IrType::I32, "pb_con_mouse_buttons", &[]),
+            "MOUSE_ROW" => fb.call(&IrType::I32, "pb_con_mouse_row", &[]),
+            "MOUSE_COL" => fb.call(&IrType::I32, "pb_con_mouse_col", &[]),
+            "MOUSE_STAT" => fb.call(&IrType::I32, "pb_con_mouse_stat", &[]),
+            "PAGE_ACTIVE_GET" => fb.call(&IrType::I32, "pb_con_page_active_get", &[]),
+            "PAGE_VISIBLE_GET" => fb.call(&IrType::I32, "pb_con_page_visible_get", &[]),
+            "SCREEN_ROWS" => fb.call(&IrType::I32, "pb_con_screen_rows", &[]),
+            "SCREEN_COLS" => fb.call(&IrType::I32, "pb_con_screen_cols", &[]),
+            "VIRTUAL_ROWS" => fb.call(&IrType::I32, "pb_con_virtual_rows", &[]),
+            "VIRTUAL_COLS" => fb.call(&IrType::I32, "pb_con_virtual_cols", &[]),
+            "VIEW_ROWS" => fb.call(&IrType::I32, "pb_con_view_rows", &[]),
+            "VIEW_COLS" => fb.call(&IrType::I32, "pb_con_view_cols", &[]),
+            "SIZE_X" => fb.call(&IrType::I32, "pb_con_size_x", &[]),
+            "SIZE_Y" => fb.call(&IrType::I32, "pb_con_size_y", &[]),
+            "LOC_X" => fb.call(&IrType::I32, "pb_con_loc_x", &[]),
+            "LOC_Y" => fb.call(&IrType::I32, "pb_con_loc_y", &[]),
+            "GETSTDIN" => fb.call(&IrType::I64, "pb_con_getstdin", &[]),
+            "GETSTDOUT" => fb.call(&IrType::I64, "pb_con_getstdout", &[]),
+            "GETSTDERR" => fb.call(&IrType::I64, "pb_con_getstderr", &[]),
+            "GETSTDKBD" => fb.call(&IrType::I64, "pb_con_getstdkbd", &[]),
+            "GETSTDVID" => {
+                let page = self.con_i32_arg(fb, args, 0, 0)?;
+                fb.call(&IrType::I64, "pb_con_getstdvid", &[page])
+            }
+            "KEY_GET" => {
+                let n = self.con_i32_arg(fb, args, 0, 0)?;
+                fb.call(&IrType::Ptr, "pb_con_key_get", &[n])
+            }
+            "SCREEN_ATTR" => {
+                let r = self.con_i32_arg(fb, args, 0, 1)?;
+                let c = self.con_i32_arg(fb, args, 1, 1)?;
+                fb.call(&IrType::I32, "pb_con_screen_attr", &[r, c])
+            }
+            "SCREEN_CHAR" => {
+                let r = self.con_i32_arg(fb, args, 0, 1)?;
+                let c = self.con_i32_arg(fb, args, 1, 1)?;
+                fb.call(&IrType::I32, "pb_con_screen_char", &[r, c])
+            }
+            "STDIN_LINE" => fb.call(&IrType::Ptr, "pb_con_stdin_line", &[]),
+            "INKEY" => fb.call(&IrType::Ptr, "pb_con_inkey", &[]),
+            "WAITKEY" => {
+                let mask = self.con_str_arg(fb, args, 0)?;
+                let timeout = self.con_i32_arg(fb, args, 1, -1)?;
+                fb.call(&IrType::Ptr, "pb_con_waitkey", &[mask, timeout])
+            }
+            other => {
+                return Err(PbError::parser(
+                    format!("CON.{} is not a supported value member", other),
+                    None,
+                    self.current_line,
+                ))
+            }
+        })
+    }
+
     fn compile_print(&mut self, fb: &mut FunctionBuilder, print_stmt: &PrintStmt) -> PbResult<()> {
         // PRINT AT row, col (fork extension): position the console cursor
         // before emitting the expression list.  Official PB has no PRINT AT;
@@ -24833,7 +25324,8 @@ impl Compiler {
             let c = self.to_i32(fb, &c0);
             fb.call_void("pb_locate", &[r, c]);
         }
-        for arg in &print_stmt.args {
+        for (sep_index, arg) in print_stmt.args.iter().enumerate() {
+            let separator = print_stmt.separators.get(sep_index).cloned().flatten();
             // PB/CC PRINT items SPC(n) and TAB(n).  They are positional
             // items, not ordinary expressions, so handle them before the
             // generic string/number path.
@@ -24843,52 +25335,62 @@ impl Compiler {
                     let v = self.compile_expr(fb, &args[0])?;
                     let n32 = self.to_i32(fb, &v);
                     fb.call_void("pb_print_spc", &[n32]);
+                    if separator == Some(',') {
+                        fb.call_void("pb_print_comma", &[]);
+                    }
                     continue;
                 }
                 if n == "TAB" && args.len() == 1 {
                     let v = self.compile_expr(fb, &args[0])?;
                     let n32 = self.to_i32(fb, &v);
                     fb.call_void("pb_print_tab", &[n32]);
+                    if separator == Some(',') {
+                        fb.call_void("pb_print_comma", &[]);
+                    }
                     continue;
                 }
             }
+            // PB optional empty slot (`? "t", , "cap"`): in a console program
+            // the empty item prints nothing, exactly like PRINT with an omitted
+            // expression.
+            if matches!(arg, Expr::Omitted) {
+                if separator == Some(',') {
+                    fb.call_void("pb_print_comma", &[]);
+                }
+                continue;
+            }
             let val = self.compile_expr(fb, arg)?;
             if val.ty == IrType::Ptr {
-                let (str_name, _len) = self.module.add_string_constant("%s");
-                let str_ptr = Val::new(str_name, IrType::Ptr);
-                fb.call_variadic(&IrType::I32, "printf", &[str_ptr, val]);
+                // The runtime writes into the active console page; it keeps
+                // control characters literal (CHW CON.PRINT) and falls back to
+                // stdout when no console handle is present.
+                fb.call_void("pb_print_str", &[val]);
             } else if val.ty.is_int() {
                 // PB PRINT semantics: numeric fields carry a leading space for
-                // non-negative values (PRINT 42 prints " 42").  % lld / % d.
+                // non-negative values (PRINT 42 prints " 42").
                 if val.ty == IrType::I64 {
-                    let (str_name, _len) = self.module.add_string_constant("% lld");
-                    let str_ptr = Val::new(str_name, IrType::Ptr);
-                    fb.call_variadic(&IrType::I32, "printf", &[str_ptr, val]);
+                    fb.call_void("pb_print_i64", &[val]);
                 } else {
-                    let (str_name, _len) = self.module.add_string_constant("% d");
-                    let str_ptr = Val::new(str_name, IrType::Ptr);
-                    // Extend to i32 if needed
                     let val_i32 = self.to_i32(fb, &val);
-                    fb.call_variadic(&IrType::I32, "printf", &[str_ptr, val_i32]);
+                    fb.call_void("pb_print_i32", &[val_i32]);
                 }
             } else if val.ty.is_float() {
-                let (str_name, _len) = self.module.add_string_constant("% .6g");
-                let str_ptr = Val::new(str_name, IrType::Ptr);
-                // Promote to f64 if needed
                 let val_f64 = self.to_f64(fb, &val);
-                fb.call_variadic(&IrType::I32, "printf", &[str_ptr, val_f64]);
+                fb.call_void("pb_print_f64", &[val_f64]);
+            }
+            if separator == Some(',') {
+                // PB PRINT comma advances to the next 14-column print zone.
+                fb.call_void("pb_print_comma", &[]);
             }
         }
         // A trailing `;` (or `,`) suppresses the newline, so the next PRINT
         // continues on the same line - see PrintStmt::trailing.
         if print_stmt.trailing.is_none() {
-            let (nl_name, _) = self.module.add_string_constant("\n");
-            let nl_ptr = Val::new(nl_name, IrType::Ptr);
-            fb.call_variadic(&IrType::I32, "printf", &[nl_ptr]);
+            fb.call_void("pb_print_newline", &[]);
         }
         // Flush so console output is visible immediately (and survives
-        // abnormal termination / redirection, not just process exit)
-        fb.call_void("fflush", &[Val::new("null", IrType::Ptr)]);
+        // abnormal termination / redirection, not just process exit).
+        fb.call_void("pb_print_flush", &[]);
         Ok(())
     }
 
@@ -28294,6 +28796,85 @@ impl Compiler {
             // CURSORY/CURSORX all read the same CONOUT$ cursor, 1-based.
             "CON_CELL_ROW" | "CURSORY" => Some(Ok(fb.call(&IrType::I32, "pb_cursory", &[]))),
             "CON_CELL_COL" | "CURSORX" => Some(Ok(fb.call(&IrType::I32, "pb_cursorx", &[]))),
+            "CON_GET" => {
+                if let Some(Expr::StringLit(method)) = args.first() {
+                    let m = method.to_uppercase();
+                    Some(self.compile_con_get(fb, &m, &args[1..]))
+                } else {
+                    Some(Err(PbError::parser(
+                        "CON_GET is missing its method name",
+                        None,
+                        self.current_line,
+                    )))
+                }
+            }
+            // Legacy bare console getters (PB/CC Screen_Text_Commands).
+            "CURSOR" => Some(Ok(fb.call(&IrType::I32, "pb_con_cursor_get", &[]))),
+            "CONSNAME$" | "CONSNAME" => Some(Ok(fb.call(&IrType::Ptr, "pb_con_caption_get", &[]))),
+            "INKEY$" | "INKEY" => Some(Ok(fb.call(&IrType::Ptr, "pb_con_inkey", &[]))),
+            "INSTAT" => Some(Ok(fb.call(&IrType::I32, "pb_con_instat", &[]))),
+            "INSHIFT" => Some(Ok(fb.call(&IrType::I32, "pb_con_inshift", &[]))),
+            "PAGEACTIVE" => Some(Ok(fb.call(&IrType::I32, "pb_con_page_active_get", &[]))),
+            "PAGEVISIBLE" => Some(Ok(fb.call(&IrType::I32, "pb_con_page_visible_get", &[]))),
+            "CONSHNDL" => Some(Ok(fb.call(&IrType::I64, "pb_con_handle", &[]))),
+            "CONSIN" => Some(Ok(fb.call(&IrType::I32, "pb_con_in", &[]))),
+            "CONSOUT" => Some(Ok(fb.call(&IrType::I32, "pb_con_out", &[]))),
+            "STDEOF" => Some(Ok(fb.call(&IrType::I32, "pb_con_stdeof", &[]))),
+            "SCREENX" => Some(Ok(fb.call(&IrType::I32, "pb_con_loc_x", &[]))),
+            "SCREENY" => Some(Ok(fb.call(&IrType::I32, "pb_con_loc_y", &[]))),
+            "MOUSEBUTTONS" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_buttons", &[]))),
+            "MOUSEX" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_col", &[]))),
+            "MOUSEY" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_row", &[]))),
+            "MOUSESTAT" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_stat", &[]))),
+            "GETSTDIN" => Some(Ok(fb.call(&IrType::I64, "pb_con_getstdin", &[]))),
+            "GETSTDOUT" => Some(Ok(fb.call(&IrType::I64, "pb_con_getstdout", &[]))),
+            "GETSTDERR" => Some(Ok(fb.call(&IrType::I64, "pb_con_getstderr", &[]))),
+            "GETSTDKBD" => Some(Ok(fb.call(&IrType::I64, "pb_con_getstdkbd", &[]))),
+            "GETSTDVID" => Some(self.compile_con_get(fb, "GETSTDVID", args)),
+            "KEY$" => Some(self.compile_con_get(fb, "KEY_GET", args)),
+            "WAITKEY$" | "WAITKEY" => Some(self.compile_con_get(fb, "WAITKEY", args)),
+            "SCREEN" => {
+                let r = if let Some(a) = args.first() {
+                    let v = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.to_i32(fb, &v)
+                } else {
+                    fb.const_i32(0)
+                };
+                let c = if let Some(a) = args.get(1) {
+                    let v = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.to_i32(fb, &v)
+                } else {
+                    fb.const_i32(0)
+                };
+                Some(Ok(fb.call(&IrType::I32, "pb_con_screen_char", &[r, c])))
+            }
+            "SCREENATTR" => {
+                let r = if let Some(a) = args.first() {
+                    let v = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.to_i32(fb, &v)
+                } else {
+                    fb.const_i32(0)
+                };
+                let c = if let Some(a) = args.get(1) {
+                    let v = match self.compile_expr(fb, a) {
+                        Ok(v) => v,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    self.to_i32(fb, &v)
+                } else {
+                    fb.const_i32(0)
+                };
+                Some(Ok(fb.call(&IrType::I32, "pb_con_screen_attr", &[r, c])))
+            }
             "TXT_INKEY$" | "TXT_INKEY" => Some(Ok(fb.call(&IrType::Ptr, "pb_txt_inkey", &[]))),
             "TXT_WAITKEY$" | "TXT_WAITKEY" => {
                 Some(Ok(fb.call(&IrType::Ptr, "pb_txt_waitkey", &[])))

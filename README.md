@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 375 (v0.2.164). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 376 (v0.2.165). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 376 (v0.2.165) - the PB/CC console pseudo-object family is implemented end to end: `CON` / `CONSOLE` dotted statements and getters for print, clear, colour, cells, cursor, pages, scroll, screen/virtual/view/size/location, caption, focus, handles, input, keys, mouse and standard streams; `?` lowers to `CON.PRINT` under `#CONSOLE ON` and to `MSGBOX` otherwise; bare `SCREENATTR` and `CONSNAME$` are accepted. `setup.bat` / `setup.ps1` now ship the new JK-IDE and PBxB64 locators; `setup.bat` finds `D:\JK-IDE` and writes non-empty `Pbxb64Exe` / `Pbxb64Cwd`.
 > batch 375 (v0.2.164) - explicit CDECL/STDCALL/SDECL/BDECL on FUNCTION and SUB survive parser and AST; i686 emits x86_stdcallcc for STDCALL/SDECL/BDECL; SLL and DLL default to stdcall when the descriptor is omitted; x64 keeps one convention. Batch 374 adds the PB/CC console screen family (LOCATE, CON.CELL, CURSORX/CURSORY, CLS, COLOR Count, TAB/SPC) and the fork-only PRINT AT.
 > batch 373 (v0.2.163) - parser accepts `Name ()` zero-argument calls with a space before the empty group; codegen resolves bare zero-argument FUNCTION references, including forward references.
 > batch 372 (v0.2.162) - THREAD OBJECT examples now return their FAILURES count as the process exit code; both targets still print FAILURES: 0 and exit 0.
@@ -1042,6 +1043,51 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.165 (2026-11-17)
+
+Batch 376. The PB/CC text-console model is available through the `CON` and
+`CONSOLE` pseudo-objects, and the Windows setup scripts now locate JK-IDE and
+PBxB64 on any local drive instead of failing on hard-coded paths.
+
+- **Implemented - `CON` / `CONSOLE` pseudo-object family.** Statement position
+  accepts `CON.PRINT`, `CON.CLS`, `CON.COLOR`, `CON.CELL` / `CON.LOCATE`,
+  `CON.CURSOR` and `.ON` / `.OFF`, `CON.PAGE.ACTIVE` / `.VISIBLE`, `CON.PCOPY`,
+  `CON.SCROLL.UP|DOWN|LEFT|RIGHT`, `CON.SCREEN`, `CON.VIRTUAL`, `CON.VIEW`,
+  `CON.SIZE`, `CON.LOC`, `CON.CAPTION$`, `CON.FOCUS`, `CON.NEW` / `END`,
+  `CON.KEY`, `CON.MOUSE` and `.ON` / `.OFF`, `CON.INPUT.FLUSH`,
+  `CON.STDOUT` / `STDERR` and `CON.STDIN.LINE`. The getter forms use the
+  documented `TO variable` spelling, including `CON.CELL.ROW/COL`,
+  `CON.SCREEN.ROW/COL/ATTR/CHAR`, `CON.MOUSE.BUTTONS/COL/ROW/STAT`,
+  `CON.HANDLE`, `CON.IN/OUT`, `CON.STDEOF` and `CON.GETSTD*`.
+- **Implemented - legacy `CONSOLE` statements.** `CONSOLE NAME`,
+  `CONSOLE GET {LOC|SCREEN|SIZE|VIEW|VIRTUAL} TO`, `CONSOLE SET
+  {FOCUS|LOC|SCREEN|SIZE|VIEW|VIRTUAL}` and the bare `PAGE`, `PCOPY`,
+  `SCROLL`, `SCREEN`, `PAGEACTIVE`, `PAGEVISIBLE`, `CURSOR`, `CURSORX`,
+  `CURSORY`, `SCREENX`, `SCREENY`, `SCREENATTR`, `CONSNAME$`, `CONSHNDL`,
+  `INKEY$`, `INSTAT`, `INSHIFT`, `STDOUT`, `STDERR`, `STDIN LINE`,
+  `GETSTDIN/OUT/ERR/KBD/VID` spellings all reach the same runtime.
+- **Fixed - `?` follows the target.** Under `#CONSOLE ON` the question mark is
+  `CON.PRINT`, as documented for PB/CC; under the GUI subsystem it remains the
+  PB/Win `MSGBOX` abbreviation. The preprocessor previously rewrote it to
+  `MSGBOX` unconditionally, which produced a modal dialog in console probes.
+- **Fixed - bare `SCREENATTR` and `CONSNAME$`.** `SCREENATTR(row, col)` was
+  implemented in codegen but missing from the parser's bare-builtin list;
+  `CONSNAME$` reached codegen without its string sigil. Both now resolve.
+- **Fixed - setup locators.** `setup.bat` and `setup.ps1` no longer test only
+  `%ProgramFiles(x86)%\JK-IDE` and `C:\PBWin10\JK-IDE`. The new
+  `jkide/find_jkide.ps1` collects every `JK-IDE` directory that contains
+  `jk-ide.exe` across local fixed drives, ranks the cached choice first and
+  lets the user pick by number. `jkide/find_pbxb64.ps1` searches the repository
+  tree and common install roots; `setup.bat` now writes the resolved absolute
+  `Pbxb64Exe` and its directory as `Pbxb64Cwd` instead of leaving both values
+  empty. `setup.ps1` carries the matching include-directory and WinAPI
+  detection updates from the same working tree.
+- **Verified.** `examples/batch376_test.bas` exercises the statement and getter
+  families and exits 0 on x86_64 and i686. `find_jkide.ps1` returns five
+  candidates with `D:\JK-IDE` first; `find_pbxb64.ps1 -RepoRoot` returns the
+  installed `PBXB64.exe` path. A broad 108-line syntax probe compiles and runs
+  with exit 0.
+
 ### v0.2.164 (2026-11-17)
 
 Batches 374-375. The PB/CC console screen family gains its first real

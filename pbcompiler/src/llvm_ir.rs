@@ -1157,12 +1157,6 @@ impl FunctionBuilder {
         Val::new(r, ret_ty.clone())
     }
 
-    /// Call a variadic function (like printf, snprintf).
-    /// `fixed_param_types` are the types before `...` in the signature.
-    pub fn call_variadic(&mut self, ret_ty: &IrType, name: &str, args: &[Val]) -> Val {
-        self.call_variadic_with_sig(ret_ty, name, args, &[IrType::Ptr])
-    }
-
     /// Call a variadic function with explicit fixed parameter types.
     pub fn call_variadic_with_sig(
         &mut self,
