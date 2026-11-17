@@ -14352,13 +14352,23 @@ impl Parser {
                     return Ok(Statement::Noop(name_clone.clone(), line));
                 }
 
-                if self.peek_at(1) == Some(&Token::LParen) && self.lparen_is_adjacent(name) {
+                // PBWin also accepts a zero-argument call written with a space
+                // before the empty parentheses (`FreeConsole ()`).  A space
+                // normally means the LParen starts a parenthesized first
+                // argument (`Sub (expr), arg2`), but `()` cannot start an
+                // expression, so treat it as a zero-argument call (batch 373).
+                let empty_parens_with_space = self.peek_at(1) == Some(&Token::LParen)
+                    && self.peek_at(2) == Some(&Token::RParen);
+                if self.peek_at(1) == Some(&Token::LParen)
+                    && (self.lparen_is_adjacent(name) || empty_parens_with_space)
+                {
                     // Could be: arr(idx) = expr  (array assignment)
                     // Or:       Sub(args)        (sub call)
                     // Or:       arr(idx).member = expr (UDT array member)
                     // A space before the LParen (`Sub (expr), arg2`) is NOT a
                     // parenthesized call: the LParen starts a parenthesized
                     // first argument, which the no-paren call path below handles.
+                    // The exception is an empty `()` group, handled above.
                     // Parse just the primary expression (no comparison operators)
                     let primary = self.parse_primary()?;
 

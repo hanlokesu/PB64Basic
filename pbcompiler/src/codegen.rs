@@ -26263,6 +26263,24 @@ impl Compiler {
                 if let Some(member_expr) = self.implicit_this_member(&name) {
                     return self.compile_expr(fb, &member_expr);
                 }
+                // PBWin allows a zero-argument FUNCTION to be referenced in an
+                // expression without parentheses (`n = GetConsoleWindow`).
+                // Every FUNCTION is registered before any body is compiled, so
+                // a forward reference (`n = LaterFn`) resolves too (batch 373).
+                // A variable of the same name still wins: PB keeps variables and
+                // procedures in one namespace, and an in-scope symbol is a
+                // variable, not a call.
+                if self.symbols.lookup(&name).is_none() {
+                    if let Some(info) = self.functions.get(&name).cloned() {
+                        if info.params.is_empty() && info.ret_type != IrType::Void {
+                            return if info.is_stdcall {
+                                Ok(fb.call_stdcall(&info.ret_type, &info.ir_name, &[]))
+                            } else {
+                                Ok(fb.call(&info.ret_type, &info.ir_name, &[]))
+                            };
+                        }
+                    }
+                }
                 let ptr_name = self.ensure_variable_ptr(fb, &name, orig_name)?;
                 let info = self.symbols.lookup(&name).unwrap();
                 // EXTERN data symbol (`... AS type PTR`): the global itself is
