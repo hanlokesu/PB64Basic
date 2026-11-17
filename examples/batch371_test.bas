@@ -81,5 +81,5 @@ FUNCTION PBMAIN () AS LONG
 
     PRINT "result             ="; v
     PRINT "=== FAILURES:"; g_fails; "==="
-    FUNCTION = 0
+    FUNCTION = g_fails
 END FUNCTION

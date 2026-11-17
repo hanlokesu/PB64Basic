@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (948 rows, deduplicated). **0** official keywords are not implemented yet; **31** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 371 (v0.2.161). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 372 (v0.2.162). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 372 (v0.2.162) - THREAD OBJECT examples now return their FAILURES count as the process exit code; both targets still print FAILURES: 0 and exit 0.
 > batch 371 (v0.2.161) - THREAD OBJECT member semantics match CHW: CLOSE, JOIN, LAUNCH, PRIORITY SET and STACKSIZE SET return no value, direct THREAD METHOD calls are rejected in statement and expression position, and `AS MyType POINTER` plus `BYVAL VARPTR(...)` now read fields through the pointer; batch371_test passes on x86_64 and i686.
 > batch 370 (v0.2.160) - THREADED array DIM bounds are evaluated at run time, so `DIM tA(1 TO n)` publishes the real per-thread shape, and `UBOUND` is -1 before that thread dimensions the array; batch370_test passes on x86_64 and i686.
 > batch 368 (v0.2.159) - the 12-member TXT pseudo-object and the 18-member IPowerThread model are implemented, zero-length PBR entries are accepted, and the 32-bit WNDPROC ABI is fixed; batch368_test and batch369_test pass on x86_64 and i686.
@@ -1038,6 +1039,21 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.162 (2026-11-17)
+
+Batch 372. Test-harness hardening: the two THREAD OBJECT example programs now
+return their assertion-failure count as the process exit code, so automated
+gates fail on a real assertion failure instead of only on a crash.
+
+- **Changed - `examples/batch369_test.bas` and `examples/batch371_test.bas`.**
+  `FUNCTION = 0` is replaced with `FUNCTION = g_fails`. Both programs still
+  print `=== FAILURES: 0===` and exit 0 when every assertion passes.
+- **Verified.** x86_64 and i686 builds of both examples print `FAILURES: 0`
+  and exit 0. A controlled probe returning 5 exits with code 5, confirming that
+  the PBMAIN return value reaches the process exit status.
+- **No compiler, runtime, coverage or documentation-count changes.** This batch
+  only makes the existing regression examples honest to the gate.
+
 ### v0.2.161 (2026-11-17)
 
 Batch 371. Aligns THREAD OBJECT / IPowerThread member semantics with CHW and

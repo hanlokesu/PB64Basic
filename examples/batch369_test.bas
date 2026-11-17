@@ -113,5 +113,5 @@ FUNCTION PBMAIN () AS LONG
     PRINT "id                 ="; id1
     PRINT "timecreate         ="; tc
     PRINT "=== FAILURES:"; g_fails; "==="
-    FUNCTION = 0
+    FUNCTION = g_fails
 END FUNCTION
