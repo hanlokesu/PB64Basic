@@ -8098,19 +8098,25 @@ impl Parser {
                     }
                 }
 
-                // PAGE [active] [, visible] — PB/CC selects the active page
-                // (where PRINT writes) and optionally the page displayed in the
-                // console window.  The one-argument form makes both the same.
+                // PAGE [active] [, visible] — PB/CC legacy forms:
+                //   PAGE n       selects the active page only (visible unchanged)
+                //   PAGE , m     selects the visible page only (active unchanged)
+                //   PAGE n, m    selects both
+                // CON.PAGE.ACTIVE/VISIBLE are separate methods.
                 if name_upper == "PAGE" {
                     self.advance();
+                    let (active, mut visible);
                     if self.peek() == &Token::Comma {
                         self.advance();
-                    }
-                    let active = self.parse_expression()?;
-                    let mut visible = active.clone();
-                    if self.peek() == &Token::Comma {
-                        self.advance();
+                        active = Expr::IntegerLit(0);
                         visible = self.parse_expression()?;
+                    } else {
+                        active = self.parse_expression()?;
+                        visible = Expr::IntegerLit(0);
+                        if self.peek() == &Token::Comma {
+                            self.advance();
+                            visible = self.parse_expression()?;
+                        }
                     }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {

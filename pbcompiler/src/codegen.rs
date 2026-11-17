@@ -2580,6 +2580,42 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_con_input_field_str",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_con_input_field_wstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_con_input_field_i64",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_con_input_field_dbl",
+            &IrType::Double,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_con_input_field_fixed",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_con_input_field_fixed_w",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
             "pb_input_file_int",
             &IrType::Void,
             &[IrType::I32, IrType::Ptr],
@@ -6518,6 +6554,12 @@ impl Compiler {
             .declare_function("pb_chr_to_utf8", &IrType::Ptr, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_utf8_to_chr", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_desktop_get_size",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module.declare_function(
             "pb_desktop_get_client",
             &IrType::Void,
@@ -22710,10 +22752,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let (wp, _) = self.compile_lvalue_ptr(fb, &call.args[0])?;
                     let (hp, _) = self.compile_lvalue_ptr(fb, &call.args[1])?;
-                    let w = fb.call(&IrType::I32, "GetSystemMetrics", &[fb.const_i32(0)]);
-                    let h = fb.call(&IrType::I32, "GetSystemMetrics", &[fb.const_i32(1)]);
-                    fb.store(&w, &wp);
-                    fb.store(&h, &hp);
+                    fb.call_void("pb_desktop_get_size", &[wp, hp]);
                 }
                 return Ok(());
             }
@@ -25955,23 +25994,67 @@ impl Compiler {
         };
         let has_prompt = fb.const_i32(if inp.prompt.is_some() { 1 } else { 0 });
         let no_newline = fb.const_i32(if inp.no_newline { 1 } else { 0 });
-        let result = fb.call(
+        // One keyboard line feeds the whole VariableList.  The line is parsed
+        // on commas by the runtime helpers below; assigning every variable
+        // from the same captured line matches CHW CON.INPUT semantics.
+        let line = fb.call(
             &IrType::Ptr,
             "pb_input_console",
             &[prompt_val, has_prompt, no_newline],
         );
-        // assign to first variable (string only for now)
-        if let Some(var_expr) = inp.vars.first() {
+        for (index, var_expr) in inp.vars.iter().enumerate() {
             let (ptr, pb_type) = self.compile_lvalue_ptr(fb, var_expr)?;
+            let idx = fb.const_i32(index as i32);
             match pb_type {
                 PbType::FixedString(n) => {
-                    // Inline buffer: truncate + NUL, then release the BSTR.
                     let n64 = fb.const_i64(n as i64);
-                    fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
+                    fb.call_void("pb_con_input_field_fixed", &[line.clone(), idx, ptr, n64]);
                 }
-                _ => fb.store(&result, &ptr),
+                PbType::FixedWString(n) => {
+                    let n64 = fb.const_i64(n as i64);
+                    fb.call_void("pb_con_input_field_fixed_w", &[line.clone(), idx, ptr, n64]);
+                }
+                PbType::WString => {
+                    let v = fb.call(
+                        &IrType::Ptr,
+                        "pb_con_input_field_wstr",
+                        &[line.clone(), idx],
+                    );
+                    fb.store(&v, &ptr);
+                }
+                PbType::String => {
+                    let v = fb.call(&IrType::Ptr, "pb_con_input_field_str", &[line.clone(), idx]);
+                    fb.store(&v, &ptr);
+                }
+                PbType::Single | PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX => {
+                    let raw = fb.call(
+                        &IrType::Double,
+                        "pb_con_input_field_dbl",
+                        &[line.clone(), idx],
+                    );
+                    let v = self.convert_value(fb, &raw, &IrType::Ptr, &pb_type);
+                    fb.store(&v, &ptr);
+                }
+                PbType::Long
+                | PbType::Integer
+                | PbType::Dword
+                | PbType::Word
+                | PbType::Byte
+                | PbType::Quad => {
+                    let raw = fb.call(&IrType::I64, "pb_con_input_field_i64", &[line.clone(), idx]);
+                    let v = self.convert_value(fb, &raw, &IrType::Ptr, &pb_type);
+                    fb.store(&v, &ptr);
+                }
+                _ => {
+                    return Err(PbError::generic(
+                        "CON.INPUT target must be a numeric or string variable".to_string(),
+                    ));
+                }
             }
         }
+        // Every field helper copies out what it needs; the captured line is
+        // no longer referenced and must not leak on each CON.INPUT call.
+        fb.call_void("pb_bstr_free", std::slice::from_ref(&line));
         Ok(())
     }
 
@@ -25996,6 +26079,9 @@ impl Compiler {
             PbType::FixedString(n) => {
                 let n64 = fb.const_i64(n as i64);
                 fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
+                // The fixed-length target copies the text; the temporary
+                // keyboard line must be released explicitly.
+                fb.call_void("pb_bstr_free", std::slice::from_ref(&result));
             }
             _ => fb.store(&result, &ptr),
         }
@@ -28820,8 +28906,10 @@ impl Compiler {
             "CONSIN" => Some(Ok(fb.call(&IrType::I32, "pb_con_in", &[]))),
             "CONSOUT" => Some(Ok(fb.call(&IrType::I32, "pb_con_out", &[]))),
             "STDEOF" => Some(Ok(fb.call(&IrType::I32, "pb_con_stdeof", &[]))),
-            "SCREENX" => Some(Ok(fb.call(&IrType::I32, "pb_con_loc_x", &[]))),
-            "SCREENY" => Some(Ok(fb.call(&IrType::I32, "pb_con_loc_y", &[]))),
+            // CHW CON.VIRTUAL legacy aliases: SCREENX = columns, SCREENY =
+            // rows of the virtual screen buffer.  They are not CON.LOC.
+            "SCREENX" => Some(Ok(fb.call(&IrType::I32, "pb_con_virtual_cols", &[]))),
+            "SCREENY" => Some(Ok(fb.call(&IrType::I32, "pb_con_virtual_rows", &[]))),
             "MOUSEBUTTONS" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_buttons", &[]))),
             "MOUSEX" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_col", &[]))),
             "MOUSEY" => Some(Ok(fb.call(&IrType::I32, "pb_con_mouse_row", &[]))),

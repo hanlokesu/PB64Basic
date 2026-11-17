@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 376 (v0.2.165). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 377 (v0.2.166). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 377 (v0.2.166) - the PB/CC console family was re-checked against the CHW reference. `CON.PRINT` / `CON.STDOUT` write character-by-character on the active page with the current attribute and scroll at the bottom; `PAGE` separates active and visible pages; `CON.CURSOR.OFF/ON` preserves the visible cursor size; `CON.SCREEN` / `CON.VIRTUAL` failures set Error 5 and successful size operations clear it; `CON.INPUT` / `CON.LINE.INPUT` always use the console keyboard and release their temporary BSTRs; stdio redirection is reported by `CON.IN` / `CON.OUT`; and `DESKTOP GET SIZE` now calls the runtime `pb_desktop_get_size` so i686 programs no longer hit `0xC0000005` at process exit. `examples/batch377_test.bas` passes on x86_64 and i686; real mouse events and exact ConPTY pixel geometry remain environment boundaries, not claimed as fully aligned.
 > batch 376 (v0.2.165) - the PB/CC console pseudo-object family is implemented end to end: `CON` / `CONSOLE` dotted statements and getters for print, clear, colour, cells, cursor, pages, scroll, screen/virtual/view/size/location, caption, focus, handles, input, keys, mouse and standard streams; `?` lowers to `CON.PRINT` under `#CONSOLE ON` and to `MSGBOX` otherwise; bare `SCREENATTR` and `CONSNAME$` are accepted. `setup.bat` / `setup.ps1` now ship the new JK-IDE and PBxB64 locators; `setup.bat` finds `D:\JK-IDE` and writes non-empty `Pbxb64Exe` / `Pbxb64Cwd`.
 > batch 375 (v0.2.164) - explicit CDECL/STDCALL/SDECL/BDECL on FUNCTION and SUB survive parser and AST; i686 emits x86_stdcallcc for STDCALL/SDECL/BDECL; SLL and DLL default to stdcall when the descriptor is omitted; x64 keeps one convention. Batch 374 adds the PB/CC console screen family (LOCATE, CON.CELL, CURSORX/CURSORY, CLS, COLOR Count, TAB/SPC) and the fork-only PRINT AT.
 > batch 373 (v0.2.163) - parser accepts `Name ()` zero-argument calls with a space before the empty group; codegen resolves bare zero-argument FUNCTION references, including forward references.
@@ -1043,6 +1044,49 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.166 (2026-11-17)
+
+Batch 377. Re-audits the PB/CC text-console surface against the CHW reference
+and fixes the state, routing and 32-bit exit issues exposed by the batch 377
+probes.
+
+- **Fixed - `CON.PRINT` / `CON.STDOUT`.** `CON.PRINT` writes each character
+  through the active page, applies the current `CON.COLOR` attribute per cell
+  with `WriteConsoleOutputAttribute`, and scrolls the active page when the
+  cursor reaches the bottom. `CON.STDOUT` interprets embedded CR, LF and BS
+  on the active page when stdout is not redirected; redirected stdout still
+  uses the process stream. `CON.STDERR` remains the standard error device.
+- **Fixed - page, cursor and scrolling state.** `PAGE n` updates only the
+  active page; `PAGE , n` updates only the visible page; `PAGE n, m` updates
+  both. `CON.CELL`, `CON.LOCATE`, `CURSORX`, `CURSORY` and `CON.CURSOR` use
+  the active page. `CON.CURSOR.OFF` remembers the visible cursor size and
+  `CON.CURSOR.ON` restores it. `CON.PCOPY` ignores an illegal page number
+  instead of partially copying. `CON.SCROLL.UP`, `.DOWN`, `.LEFT` and `.RIGHT`
+  leave the correct edge blank and move the retained text in the documented
+  direction.
+- **Fixed - geometry and error state.** `CON.SCREEN` fails with Error 5
+  when the requested size cannot be applied; `CON.VIRTUAL` fails with Error 5
+  when either dimension is below the current `CON.SCREEN`; successful
+  `CON.SCREEN`, `CON.VIRTUAL`, `CON.VIEW`, `CON.NEW` and `CON.END` clear the
+  previous error. `CON.SIZE` and `CON.LOC` use a three-step window-rectangle
+  fallback (`GetWindowRect`, `GetClientRect`, font cell times `srWindow`).
+- **Fixed - keyboard, mouse filters and redirection.** `CON.INPUT` and
+  `CON.LINE.INPUT` always read the console keyboard, release their temporary
+  BSTRs, and do not consume redirected stdin; `CON.INPUT` emits the documented
+  `" ? "` suffix when no prompt is supplied. Mouse position, button and state
+  getters update only after the event and button masks accept the event.
+  `CON.MOUSE.OFF` clears the `ENABLE_MOUSE_INPUT` mode bit. `CON.IN` and
+  `CON.OUT` report redirection through `GetConsoleMode`; `CON.STDIN.LINE` and
+  `CON.STDEOF` operate on redirected stdin and set EOF at end of file.
+- **Fixed - legacy `DESKTOP GET SIZE` on i686.** The direct `GetSystemMetrics`
+  call in generated code caused `0xC0000005` at process exit when a program
+  contained `DESKTOP GET SIZE`. It now calls the runtime
+  `pb_desktop_get_size`; `batch377_test` includes the statement and exits 0
+  on x86_64 and i686.
+- **Changed - console regression.** New `examples/batch377_test.bas` covers
+  active/visible page separation, cursor save/restore, screen/virtual error
+  clearing, scroll directions, colour attributes, stdio routing, legacy
+  aliases and the desktop getters.
 ### v0.2.165 (2026-11-17)
 
 Batch 376. The PB/CC text-console model is available through the `CON` and
