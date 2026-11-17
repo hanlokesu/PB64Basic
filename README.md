@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 377 (v0.2.166). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 379 (v0.2.167). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 379 (v0.2.167) - file-I/O evidence and console probes; WIDE SEEK byte offsets, ANSI 0x1A EOF, LINE INPUT # arrays, fixed WSTRING arrays, dynamic ARRAY REDIM, LPRINT separators, and RemarksData width fixed; CON.VIEW remains host-limited.
 > batch 377 (v0.2.166) - the PB/CC console family was re-checked against the CHW reference. `CON.PRINT` / `CON.STDOUT` write character-by-character on the active page with the current attribute and scroll at the bottom; `PAGE` separates active and visible pages; `CON.CURSOR.OFF/ON` preserves the visible cursor size; `CON.SCREEN` / `CON.VIRTUAL` failures set Error 5 and successful size operations clear it; `CON.INPUT` / `CON.LINE.INPUT` always use the console keyboard and release their temporary BSTRs; stdio redirection is reported by `CON.IN` / `CON.OUT`; and `DESKTOP GET SIZE` now calls the runtime `pb_desktop_get_size` so i686 programs no longer hit `0xC0000005` at process exit. `examples/batch377_test.bas` passes on x86_64 and i686; real mouse events and exact ConPTY pixel geometry remain environment boundaries, not claimed as fully aligned.
 > batch 376 (v0.2.165) - the PB/CC console pseudo-object family is implemented end to end: `CON` / `CONSOLE` dotted statements and getters for print, clear, colour, cells, cursor, pages, scroll, screen/virtual/view/size/location, caption, focus, handles, input, keys, mouse and standard streams; `?` lowers to `CON.PRINT` under `#CONSOLE ON` and to `MSGBOX` otherwise; bare `SCREENATTR` and `CONSNAME$` are accepted. `setup.bat` / `setup.ps1` now ship the new JK-IDE and PBxB64 locators; `setup.bat` finds `D:\JK-IDE` and writes non-empty `Pbxb64Exe` / `Pbxb64Cwd`.
 > batch 375 (v0.2.164) - explicit CDECL/STDCALL/SDECL/BDECL on FUNCTION and SUB survive parser and AST; i686 emits x86_stdcallcc for STDCALL/SDECL/BDECL; SLL and DLL default to stdcall when the descriptor is omitted; x64 keeps one convention. Batch 374 adds the PB/CC console screen family (LOCATE, CON.CELL, CURSORX/CURSORY, CLS, COLOR Count, TAB/SPC) and the fork-only PRINT AT.
@@ -1044,6 +1045,53 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.167 (2026-11-18)
+
+Batch 379. Closes the file-I/O and console evidence gaps recorded after batch
+377, fixes the defects those probes exposed, and keeps every known environment
+boundary explicit.
+
+- **Fixed - `LPRINT` separators.** `LPRINT` now honours `;`, a trailing `;`,
+  `,` (14-column zones) and a trailing `,` without an implicit CRLF. The
+  previous parser discarded the separator tuple and always emitted CRLF.
+- **Added - dynamic `ARRAY REDIM INCR/DECR`.** Arrays named in
+  `ARRAY REDIM INCR/DECR` are backed by a runtime descriptor that grows or
+  shrinks with `realloc`, preserves existing elements, clears newly exposed
+  slots, and updates `LBOUND`/`UBOUND` from the live count. This is a fork
+  extension; the CHW reference contains no `ARRAY REDIM` statement.
+- **Fixed - `RemarksData` pointer width.** `RemarksData` returns a full
+  `const char *` on x64 instead of truncating it through `int`; the runtime
+  also exports the uppercase `HISCORE` / `REMARKSDATA` spellings that PB
+  identifier normalisation actually links. `HiScore` remains a placeholder
+  returning 1; no VARICHEK table is claimed.
+- **Fixed - sequential WIDE `SEEK`.** `SEEK` on sequential and binary files
+  remains a byte offset when `CHR = WIDE`; `batch379_wide_seek` reads the
+  expected UTF-16LE records on x86_64 and i686.
+- **Fixed - ANSI `0x1A` EOF.** `LINE INPUT #`, `INPUT #`, `EOF` and
+  `FILESCAN` now stop at the DOS EOF marker instead of returning it as data.
+- **Added - `LINE INPUT #` array form.** `LINE INPUT #n, a() [RECORDS rcds]
+  [TO count]` reads up to `min(RECORDS, elements)`, reports the actual count,
+  and supports dynamic `STRING` / `WSTRING` arrays. Fixed-length string
+  arrays report an explicit error. The documented syntax has no comma after
+  `a()`; a comma causes the optional clauses to be ignored.
+- **Verified - fixed `WSTRING` arrays and TYPE fields.** `LINE INPUT #` pads
+  to the declared width and `LEN` returns the declared length, matching the
+  CHW fixed-length-string rule.
+- **Console evidence.** `batch378_*` probes cover page bounds, four scroll
+  directions, exact `CLS` / `LOCATE` / `PCOPY` / `CONSOLE` assertions, real
+  keyboard and mouse input, redirection, and `CON.NEW` / `CON.END`.
+  `CON.VIEW` remains host-limited on this Git CMD/ConPTY setup
+  (`SetConsoleWindowInfo` succeeds but the buffer is resized); it is not
+  claimed as passing. `CON.INPUT` reads `CONIN$` and does not consume
+  redirected stdin.
+- **Harness.** `run_examples.py` now classifies `CON.INPUT` as interactive and
+  force-runs the file-only `batch379_*` probes; `batch357_test` uses four
+  independent counters instead of a non-atomic cross-thread increment.
+
+The published package contains the compiler, both runtime objects, the
+`setup.bat` / `setup.ps1` locators, the JK-IDE addon files, and the batch 378 /
+379 probe sources and logs under `docs/`.
+
 ### v0.2.166 (2026-11-17)
 
 Batch 377. Re-audits the PB/CC text-console surface against the CHW reference
