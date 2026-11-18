@@ -70,18 +70,25 @@ function Set-IniValue([string]$Path, [string]$Section, [string]$Key, [string]$Va
     if (-not (Test-Path -LiteralPath $Path)) { throw "missing ini file: $Path" }
     $text = [IO.File]::ReadAllText($Path)
     $nl = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
-    $pattern = "(?m)^[ \t]*" + [regex]::Escape($Key) + "[ \t]*=.*$"
+    $pattern = "(?m)^[ \t]*" + [regex]::Escape($Key) + "[ \t]*=[^\r\n]*"
     $line = "$Key=$Value"
     $rx = [regex]::new($pattern)
     if ($rx.IsMatch($text)) {
         $text = $rx.Replace($text, $line, 1)
     } else {
-        $sectionPattern = "(?m)^[ \t]*\[" + [regex]::Escape($Section) + "\][ \t]*$"
+        # The lookahead keeps the section's CR/LF out of the match.  A direct
+        # `[ \t]*$` fails on CRLF files because `$` sits before `\n` but after
+        # `\r`, which `[ \t]*` does not consume (v0.2.175 setup bug).
+        $sectionPattern = "(?m)^[ \t]*\[" + [regex]::Escape($Section) + "\][ \t]*(?=\r?$)"
         $srx = [regex]::new($sectionPattern)
         $m = $srx.Match($text)
         if (-not $m.Success) { throw "section [$Section] not found in $Path" }
         $idx = $m.Index + $m.Length
         $text = $text.Substring(0, $idx) + $nl + $line + $text.Substring($idx)
+    }
+    if ($nl -eq "`r`n") {
+        # Keep one line-ending convention even if the source file was mixed.
+        $text = [regex]::Replace($text, "(?<!\r)\n", "`r`n")
     }
     [IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }

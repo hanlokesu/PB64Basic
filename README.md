@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 389 (v0.2.176). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 390 (v0.2.177). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 390 (v0.2.177) - fixed the JK-IDE help installer on CRLF configuration files: `Set-IniValue` now finds a section header without swallowing the carriage return, so `Pb64HelpFile` is written and `setup.bat` no longer stops with `section [Compilers] not found`; the installer also normalises mixed line endings.
 > batch 389 (v0.2.176) - signed INTEGER semantics fixed for TYPE fields and i686 locals, and the 952-page language reference was rebuilt with official Purpose/Syntax/Parameters/Remarks text, complete examples, four pseudo-object pages and the refreshed CHM.
 > batch 388 (v0.2.175) - the JK-IDE add-on now exposes PB64Basic (64bit) and PB64Basic (32bit) as separate Compilers menu entries. Both entries call the same PB64Basic.exe; the 64-bit entry selects the x86_64 target and runtime, the 32-bit entry selects the i686 target and runtime, and the 32-bit output is named <source>_x86.exe. The 32-bit compile and run paths are live-verified with command IDs 55028 and 55029, and the menu keeps the PBWin 10, PBXB64, Compile (default), Open PB Help, PB64BASIC.CHM and JKIDE.INI entries in their documented order.
 > batch 387 (v0.2.174) - target-aware pointer width in TYPE layout and array element sizing on i686.
@@ -1054,6 +1055,18 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.177 (2026-11-19)
+
+- **JK-IDE help installer CRLF fix**: `jkide\install_help.ps1` failed on a
+  CRLF `JKIDE.ini` because its section-header regex used `[ \t]*$`; in .NET
+  multiline mode `$` sits after the `\r`, so `[Compilers]` was reported as
+  missing and `Pb64HelpFile` was never written. The regex now uses a
+  `(?=\r?$)` lookahead, key replacements stop before the carriage return, and
+  the edited file keeps one consistent line-ending convention.
+- **No compiler or keyword changes**: the coverage matrix and all binary
+  outputs are unchanged; this release only repairs the installer shipped in
+  the package.
+
 ### v0.2.176 (2026-11-19)
 
 - **Signed `INTEGER` TYPE fields fixed**: a field declared `AS INTEGER` is
