@@ -12,15 +12,17 @@
 
 ' ============ Compiler menu helpers - HAN 2026-10-27 ============
 %JKCOMP_PBWIN10 = %IDC_Userbase + 11
-%JKCOMP_PB64    = %IDC_Userbase + 12
+%JKCOMP_PB64    = %IDC_Userbase + 12   ' compile - PB64Basic 64-bit (x86_64)
 %JKCOMP_PBXB64  = %IDC_Userbase + 13
 %JKCOMP_JKINI   = %IDC_Userbase + 14   ' open JKIDE.ini for editing (HAN 2026-10-28)
 %JKCOMP_RUN_PBWIN10 = %IDC_Userbase + 15   ' compile (sync) then run - PBWin 10 (HAN 2026-11-01)
-%JKCOMP_RUN_PB64    = %IDC_Userbase + 16   ' compile then run - PB64Basic
+%JKCOMP_RUN_PB64    = %IDC_Userbase + 16   ' compile then run - PB64Basic 64-bit
 %JKCOMP_RUN_PBXB64  = %IDC_Userbase + 17   ' compile then run - PBXB64
 %JKCOMP_RUN_DEFAULT = %IDC_Userbase + 18   ' compile (sync, default compiler) then run
 %JKCOMP_PBHELP  = %IDC_Userbase + 19   ' open the original PBWin 10 help (PBWin.chm) via hh.exe (HAN 2026-11-03)
 %JKCOMP_PB64CHM = %IDC_Userbase + 27   ' open PB64Basic.chm via hh.exe (HAN 2026-11-19)
+%JKCOMP_PB64X86 = %IDC_Userbase + 28   ' compile - PB64Basic 32-bit (i686)
+%JKCOMP_RUN_PB64X86 = %IDC_Userbase + 29   ' compile then run - PB64Basic 32-bit
 %JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
 %JKIDE_Close    = 102                  ' WM_COPYDATA dwData: close file in JK-IDE (VCS protocol, HAN 2026-11-06)
 %JKIDE_Save     = 103                  ' WM_COPYDATA dwData: save active file in JK-IDE (VCS protocol, HAN 2026-11-01)
@@ -378,7 +380,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       FUNCTION = -2   ' asynchronous native pipeline - result not knowable here
       EXIT FUNCTION
     CASE %JKCOMP_PB64
-      compname = "PB64Basic"
+      compname = "PB64Basic (64bit)"
       exe = JK_IniValue$("Compilers", "Pb64Exe")
       wd  = JK_IniValue$("Compilers", "Pb64Cwd")
       runtime = JK_IniValue$("Compilers", "Pb64Runtime")
@@ -390,6 +392,19 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       IF LEN(runtime) = 0 THEN runtime = "pb_runtime_x64.obj"
       prepath = "set PATH=C:\Program Files\LLVM\bin;%PATH%" + $CRLF   ' clang must be findable by the LLVM backend
       args = "build " + CHR$(34) + f + CHR$(34) + " --exe --target x86_64-pc-windows-msvc --runtime-lib " + runtime
+    CASE %JKCOMP_PB64X86
+      compname = "PB64Basic (32bit)"
+      exe = JK_IniValue$("Compilers", "Pb64Exe")
+      wd  = JK_IniValue$("Compilers", "Pb64Cwd")
+      runtime = JK_IniValue$("Compilers", "Pb64RuntimeX86")
+      IF LEN(exe) = 0 THEN
+        JK_SendOutput "Compilers: key Pb64Exe missing in " + JK_IniFile$() + ". Edit JKIDE.ini (or run setup.bat again), then restart JK-IDE.", &HFF
+        FUNCTION = 0
+        EXIT FUNCTION
+      END IF
+      IF LEN(runtime) = 0 THEN runtime = "pb_runtime_x86.obj"
+      prepath = "set PATH=C:\Program Files\LLVM\bin;%PATH%" + $CRLF   ' clang must be findable by the LLVM backend
+      args = "build " + CHR$(34) + f + CHR$(34) + " --exe --target i686-pc-windows-msvc --runtime-lib " + runtime + " -o " + CHR$(34) + LEFT$(f, LEN(f) - 4) + "_x86.obj" + CHR$(34)
     CASE %JKCOMP_PBXB64
       compname = "PBXB64"
       exe = JK_IniValue$("Compilers", "Pbxb64Exe")
@@ -483,7 +498,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       IF ln = 0 THEN ITERATE DO   ' summary line w/o a real source location - skip it
       cnt_err = cnt_err + 1
       IF ln > 0 THEN last_ln = ln
-      IF which = %JKCOMP_PB64 THEN
+      IF which = %JKCOMP_PB64 OR which = %JKCOMP_PB64X86 THEN
         ' PB64 shape: "Error: <cat>: ... at line <ln>:<col>: <msg>" - build the
         ' PBWin10-shaped main line with the fork's REAL error category + text
         ' (each compiler has its own error codes/messages - keep them real and
@@ -558,7 +573,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   LOOP
 
   ' ---- fake the JK-IDE error jump for external compilers ----
-  IF (which = %JKCOMP_PB64 OR which = %JKCOMP_PBXB64) AND cnt_err > 0 AND last_ln > 0 THEN
+  IF (which = %JKCOMP_PB64 OR which = %JKCOMP_PB64X86 OR which = %JKCOMP_PBXB64) AND cnt_err > 0 AND last_ln > 0 THEN
     JK_MarkError last_ln, errMain
   END IF
 
@@ -573,7 +588,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
 END FUNCTION
 
 ' ============ Compile & Run entries (HAN 2026-11-01) ============
-' The four new "- Run" menu items compile the ACTIVE file synchronously
+' The five new "- Run" menu items compile the ACTIVE file synchronously
 ' (so the result is known), and only when the compile succeeded do they
 ' start the produced executable.  PBWin's SHELL statement waits for the
 ' child to terminate, so the program is launched via "cmd /c start"
@@ -783,7 +798,26 @@ FUNCTION JK_CompileAndRun(BYVAL which AS LONG) AS LONG
         JK_RunCompiledExe exePath
       ELSE
         JK_DeleteStaleExe exePath, stem
-        JK_SendOutput "PB64Basic compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
+        JK_SendOutput "PB64Basic (64bit) compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
+      END IF
+    CASE %JKCOMP_RUN_PB64X86
+      exePath = LEFT$(f, LEN(f) - 4) + "_x86.exe"
+      stem = f
+      DO WHILE INSTR(stem, "\") > 0
+        stem = MID$(stem, INSTR(stem, "\") + 1)
+      LOOP
+      IF INSTR(stem, ".") > 0 THEN stem = LEFT$(stem, INSTR(stem, ".") - 1)
+      stem = stem + "_x86"
+      IF JK_DeleteStaleExe(exePath, stem) = 0 THEN
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      rc = JK_RunCompiler(%JKCOMP_PB64X86)
+      IF rc = 0 THEN
+        JK_RunCompiledExe exePath
+      ELSE
+        JK_DeleteStaleExe exePath, stem
+        JK_SendOutput "PB64Basic (32bit) compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
       END IF
     CASE %JKCOMP_RUN_PBXB64
       exePath = LEFT$(f, LEN(f) - 4) + ".exe"

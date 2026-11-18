@@ -2,7 +2,7 @@
 
 PB64Basic Enhanced ships with a ready-made JK-IDE addon that adds a
 **Compilers** menu to the JK-IDE menu bar. From that menu you can compile
-the active file with **PBWin 10**, **PB64Basic** or **PBXB64** without
+the active file with **PBWin 10**, **PB64Basic (64bit)**, **PB64Basic (32bit)** or **PBXB64** without
 leaving the IDE.
 
 ## What is in this folder
@@ -13,7 +13,7 @@ leaving the IDE.
 | `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
 | `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
 | `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
-| `userdll.dll` | pre-built addon (PBWin 10 compiled, 113664 bytes) |
+| `userdll.dll` | pre-built addon (PBWin 10 compiled, 114688 bytes) |
 | `JKIDE.ini` | configuration template - all compiler paths live here |
 | `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` in the IDE's own `JK-IDE.ini` |
 
@@ -40,7 +40,8 @@ Then one of two things happens:
 The `Compilers` menu appears between `Options` and `Tools`. Its items:
 
 * **PBWin 10** - PowerBASIC for Windows 10 (`/IC:\PBWin10\WINAPI /L /Q`)
-* **PB64Basic** - this project's 64-bit compiler
+* **PB64Basic (64bit)** - this project's x86_64 compiler
+* **PB64Basic (32bit)** - this project's i686 compiler (same `PB64Basic.exe`, target `i686-pc-windows-msvc`, runtime `pb_runtime_x86.obj`). The 32-bit output is named `<source>_x86.exe` so it does not overwrite the 64-bit `<source>.exe`.
 * **PBXB64** - PowerBASIC 64-bit fork (optional, detected if installed)
 * **Compile (default)** - JK-IDE's own default compile action
 
@@ -95,7 +96,7 @@ The menu reports compile errors the way JK-IDE itself does:
 * **PBWin 10** runs JK-IDE's own compile command (the same as F9): the error
   line is highlighted in the editor, marked with a red dot in the gutter,
   annotated with a tooltip, and the caret jumps to it.
-* **PB64Basic / PBXB64** are external compilers the IDE does not know, so the
+* **PB64Basic (64bit) / PB64Basic (32bit) / PBXB64** are external compilers the IDE does not know, so the
   addon fakes the native behaviour: the compile log is streamed to the
   Output Window (lines containing "Error " turn red automatically) and the
   editor jumps to the first error line with a red marker.
@@ -125,7 +126,7 @@ Notes about the package:
 | key | meaning |
 |---|---|
 | `PbwinExe` / `PbwinCwd` / `PbwinInc` | PBWin executable, its working dir, its WINAPI include dir (no trailing space; `/I` path must be space-free) |
-| `Pb64Exe` / `Pb64Cwd` / `Pb64Runtime` | PB64Basic executable, working dir, runtime object name |
+| `Pb64Exe` / `Pb64Cwd` / `Pb64Runtime` / `Pb64RuntimeX86` | PB64Basic executable (shared by both targets), working dir, 64-bit runtime object, 32-bit runtime object |
 | `Pbxb64Exe` / `Pbxb64Cwd` | PBXB64 executable and working dir |
 
 Leave a key empty if that compiler is not installed - the menu then shows a

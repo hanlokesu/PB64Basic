@@ -7,15 +7,15 @@
 
 ![demo](assets/pb64basic-demo.gif)
 
-An enhanced 64-bit PowerBASIC compiler, derived from https://github.com/benstopics/powerbasilisk .
+An enhanced PowerBASIC compiler for 64-bit and 32-bit Windows targets, derived from https://github.com/benstopics/powerbasilisk .
 
-PB64Basic is an open-source compiler that translates PowerBASIC source code (.bas) into LLVM IR and then into native 64-bit Windows executables. The toolchain is written in Rust and has zero external crate dependencies.
+PB64Basic is an open-source compiler that translates PowerBASIC source code (.bas) into LLVM IR and then into native 64-bit and 32-bit Windows executables. The toolchain is written in Rust and has zero external crate dependencies.
 
 This repository is an enhanced branch that fixes an upstream bug and adds several frequently-used PowerBASIC statements/functions that were previously silently dropped during code generation.
 
 ## JK-IDE Integration and PB64Basic Help
 
-JK-IDE can compile a source file with either this compiler (**PB64Basic**) or the separate **PBXB64.exe** compiler. Both toolchains are registered through the JK-IDE add-on, so you can select the compiler from the JK-IDE menu without leaving the editor.
+JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. Both toolchains are registered through the JK-IDE add-on, so you can select the compiler from the JK-IDE menu without leaving the editor.
 
 This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (952 topics plus an index); when JK-IDE integration is selected, `setup.bat` installs it as `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **PB64BASIC.CHM** menu. The original PBWin 10 help is preserved once as `PB.chm.pbwin-bak` / `PB.chw.pbwin-bak` and republished as `PBWin.chm`/`PBWin.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. If you prefer to browse, open the fork help from **PB64BASIC.CHM**, the original help from **Open PB Help**, or either file by double-clicking it, and use its contents, index, and full-text search.
 
@@ -44,7 +44,7 @@ The seven commands are grouped by purpose:
 - **Rename...** — rename the file on disk and update the editor tab title to match.
 - **Close Tab** — close the active document.
 
-These commands keep the everyday file operations — copying, opening, renaming, and closing — a single right-click away, entirely inside the editor, so you spend less time switching between JK-IDE and Explorer. As described above, any source can still be compiled from the JK-IDE menu with either **PB64Basic** or the separate **PBXB64.exe** PowerBASIC compiler.
+These commands keep the everyday file operations — copying, opening, renaming, and closing — a single right-click away, entirely inside the editor, so you spend less time switching between JK-IDE and Explorer. As described above, any source can still be compiled from the JK-IDE menu with either **PB64Basic (64bit)** / **PB64Basic (32bit)** or the separate **PBXB64.exe** PowerBASIC compiler.
 
 ---
 

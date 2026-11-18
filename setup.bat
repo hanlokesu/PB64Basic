@@ -12,7 +12,7 @@ echo   1. Rust toolchain       (if missing)
 echo   2. LLVM / Clang         (if missing, ~500 MB download)
 echo   3. Windows SDK          (if missing)
 echo   4. Checks for PowerBASIC WinAPI includes (optional)
-echo   5. Builds pb_runtime_x64.obj and PB64Basic.exe
+echo   5. Builds pb_runtime_x64.obj / pb_runtime_x86.obj and PB64Basic.exe
 echo.
 echo Optional: pass a PowerBASIC install root or WinAPI folder as the first argument,
 echo for example: setup.bat "C:\PBWin10" or setup.bat "C:\PBWin10\WINAPI"
@@ -239,6 +239,7 @@ if not exist "%~dp0jkide\PB64Basic.chm" if not defined PBWIN_BIN echo [WARN] PBW
     echo Pb64Exe=%PB64%
     echo Pb64Cwd=%PB64DIR%
     echo Pb64Runtime=pb_runtime_x64.obj
+    echo Pb64RuntimeX86=pb_runtime_x86.obj
     echo Pbxb64Exe=%PBXB64%
     if defined PBXB64 echo Pbxb64Cwd=%PBXB64DIR%
     if not defined PBXB64 echo Pbxb64Cwd=
