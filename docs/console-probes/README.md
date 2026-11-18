@@ -21,6 +21,9 @@ in `pbsrc_b378`.
 | `batch378_handle.bas` | `CON.HANDLE` is non-zero only in a real console host. | `batch378_handle.txt` |
 | `batch378_newend.bas` | `CON.END` releases a console; `CON.NEW` allocates a new one; `CON.END` again returns handle 0 with `ERR=0`. | `batch378_newend_x64.txt`, `batch378_newend_x86.txt` |
 | `batch378_stdin.bas` | With redirected stdin/stdout: `CON.IN=0`, `CON.OUT=0`, `CON.STDIN.LINE` returns both lines, `CON.STDEOF=1`. | `batch378_stdin_x64.txt`, `batch378_stdin_x86.txt` |
+| `batch384_stdin_edge.bas` | `CON.STDIN.LINE` accepts a 5000-byte line without truncation, preserves the next line, reports `CON.STDEOF=0` while another line remains and 1 after the final line; `0x1A` (Ctrl-Z) is treated as EOF. | `batch384_stdin_edge_x64.txt`, `batch384_stdin_edge_x86.txt` |
+| `batch384_props.bas` | Real-console assertions for `CON.PAGE.ACTIVE/VISIBLE` 0/9 (`ERR=5`, value preserved), `CON.SIZE=0,0` (`ERR=5`), same-value `CON.SIZE`/`CON.LOC` (`ERR=0`), `CON.FOCUS` (`ERR=0`), `CON.GETSTDVID(0)` non-zero and `CON.GETSTDVID(9)` zero with `ERR=5`. | `batch384_props_x64.txt`, `batch384_props_x86.txt` |
+| `batch384_stdin_console.bas` | Manual, source-only probe for one `CON.STDIN.LINE` from a real console keyboard; it has no automation result yet. | none |
 | `batch378_exact.bas` | `CLS` and `CON.CLS` blank the active page; `LOCATE`/`CON.LOCATE` set `CURSORX/Y` exactly; `PCOPY`/`CON.PCOPY` copy page content; `CON.SIZE`/`CON.LOC` agree with `CONSOLE GET`, and same-value `CONSOLE SET SIZE/LOC` round-trips. | `batch378_exact_x64.txt`, `batch378_exact_x86.txt` |
 | `batch378_view.bas` | Diagnostic only: records `CON.SCREEN`, `CON.VIRTUAL`, `CON.VIEW`, and `CONSOLE SET VIEW` on this host. It does not assert success because the host does not move the viewport. | `batch378_view.txt` |
 | `batch378_input.bas` | Real keyboard: `CON.INPUT` parses `123,alpha`, `CON.LINE.INPUT` keeps `hello world`, `CON.WAITSTAT` wakes on a key, `CON.MOUSE.ON` + `CON.WAITSTAT` + `CON.WAITKEY$` return a 4-byte mouse key with event 4 / button 1, and `CON.MOUSE.ROW/COL` report the click cell. | `batch378_input_x64.txt`, `batch378_input_x86.txt` |
@@ -42,6 +45,17 @@ in `pbsrc_b378`.
 - `batch378_stdin`: x64 and i686 both `in= 0  out= 0`, `line1=[alpha ]`,
   `line2=[beta ]`, `eof= 1`. The trailing space is part of the piped line
   (`echo alpha` produced it); the probe deliberately preserves input bytes.
+- `batch384_stdin_edge`: with `batch384_long_input.txt` (5000 `X` plus `tail`),
+  x64 and i686 both report `len1= 5000`, `eof1= 0`, `len2= 4`, `eof2= 1`,
+  `failures= 0`. With `batch384_ctrlz_input.txt` (`A`, `0x1A`, `B`), both report
+  `len1= 1`, `eof1= 1`, `len2= 0`, `eof2= 1`, `failures= 0`. The long case
+  would have been cut at 4095 bytes by the previous fixed-buffer implementation.
+- `batch384_props`: in a real Git CMD console, x64 and i686 both report
+  `page9 err= 5 page= 1`, `pagev0 err= 5 visible= 1`, `pagev9 err= 5`,
+  `size0 err= 5 read= 960,480`, `size_same err= 0`, `loc_same err= 0`,
+  `stdvid0` non-zero with `err= 0`, `stdvid9= 0 err= 5`, `focus err= 0`, and
+  `failures= 0`. A host without a console returns `ERR=5` by design for these
+  window-dependent calls; that path is not covered by this real-console log.
 - `batch378_exact`: `batch378 exact, failures= 0` for both x64 and i686 in a real
   Git CMD console. The probe deliberately leaves `CON.VIEW` to
   `batch378_view.bas`, because this host accepts the setter but does not move the
@@ -123,7 +137,7 @@ value first.
 Build one target at a time; a later build overwrites the same `.exe` name.
 
 ```bat
-set PB=C:\path\to\pbsrc_rel164\target\release\PB64Basic.exe
+set PB=C:\path\to\pbsrc_b378\target\release\PB64Basic.exe
 set WT=C:\path\to\pbsrc_b378
 
 "%PB%" build "%WT%\examples\batch378_scroll4.bas" --exe --console ^
@@ -145,13 +159,26 @@ probe calls `CON.END` first so it starts from a known no-console state; calling
 (echo alpha& echo beta)| batch378_stdin.exe
 ```
 
+`batch384_stdin_edge.bas` is run with the matching input file on stdin:
+
+```bat
+batch384_stdin_edge.exe < batch384_long_input.txt
+batch384_stdin_edge.exe < batch384_ctrlz_input.txt
+```
+
+`batch384_props.bas` needs a real console window and writes
+`batch384_props.txt`; run it from `cmd.exe`, not from the Agent ConPTY shell.
+
 ## Not covered here
 
 `CON.INPUT` without the optional prompt, `CON.INPUT` with a leading `;`, the
-`no_newline` flag, `CON.STDIN.LINE` on a real console with Ctrl-Z, and a second
-mouse button/double-click matrix still need dedicated probes. `CON.INPUT`,
-`CON.LINE.INPUT`, `CON.WAITSTAT`, and a real left-button click are now covered by
-`batch378_input.bas` and `batch378_input_redirect.bas`.
+`no_newline` flag, `CON.STDIN.LINE` from a real console keyboard, Ctrl-Z typed
+at a real console, and a second mouse button/double-click matrix still need
+dedicated probes. `CON.INPUT`, `CON.LINE.INPUT`, `CON.WAITSTAT`, and a real
+left-button click are covered by `batch378_input.bas` and
+`batch378_input_redirect.bas`; `CON.STDIN.LINE` long-line and redirected
+Ctrl-Z behavior is covered by `batch384_stdin_edge.bas`; `CON.FOCUS` and the
+setter error paths are covered by `batch384_props.bas`.
 
 ## Related batch 379 file probes
 

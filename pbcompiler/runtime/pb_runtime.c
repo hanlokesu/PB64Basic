@@ -4888,6 +4888,7 @@ void pb_console_set_title(const char* s);
 char* pb_console_get_title(void);
 __declspec(dllimport) void __stdcall Sleep(unsigned long dwMilliseconds);
 static void pb_con_input_reset(void);
+static void pb_con_stdin_reset(void);
 void pb_print_spc(int n);
 
 static void* pb_con_page_handle(int page) {
@@ -5242,9 +5243,15 @@ void pb_con_virtual_set(int rows, int cols) {
    not a CON.SCREEN-style resize. */
 void pb_con_view_set(int rows, int cols) {
     void* h = pb_con_visible_handle();
-    if (!h) return;
+    if (!h) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
     PB_CONSOLE_SCREEN_BUFFER_INFO info;
-    if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    if (!GetConsoleScreenBufferInfo(h, &info)) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
     int win_h = info.srWindow.Bottom - info.srWindow.Top + 1;
     int win_w = info.srWindow.Right - info.srWindow.Left + 1;
     if (win_h < 1) win_h = 1;
@@ -5336,8 +5343,15 @@ int pb_con_size_y(void) {
 
 void pb_con_size_set(int w, int h) {
     pb_rect_t r = pb_con_window_rect();
-    if (w < 1 || h < 1) return;
-    SetWindowPos(GetConsoleWindow(), 0, r.left, r.top, w, h, 0x0004);
+    if (w < 1 || h < 1) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    if (!SetWindowPos(GetConsoleWindow(), 0, r.left, r.top, w, h, 0x0004)) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    pb_err_var = pb_err = 0;
 }
 
 int pb_con_loc_x(void) { return pb_con_window_rect().left; }
@@ -5345,7 +5359,11 @@ int pb_con_loc_y(void) { return pb_con_window_rect().top; }
 
 void pb_con_loc_set(int x, int y) {
     pb_rect_t r = pb_con_window_rect();
-    SetWindowPos(GetConsoleWindow(), 0, x, y, r.right - r.left, r.bottom - r.top, 0x0004);
+    if (!SetWindowPos(GetConsoleWindow(), 0, x, y, r.right - r.left, r.bottom - r.top, 0x0004)) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
+    pb_err_var = pb_err = 0;
 }
 
 /* ---- cells ---- */
@@ -5393,9 +5411,16 @@ char* pb_con_caption_get(void) { return pb_console_get_title(); }
 
 void pb_con_focus(void) {
     void* w = GetConsoleWindow();
-    if (!w) return;
+    if (!w) {
+        pb_err_var = pb_err = 5;
+        return;
+    }
     ShowWindow(w, 9 /* SW_RESTORE */);
-    SetForegroundWindow(w);
+    if (!SetForegroundWindow(w)) {
+        pb_err_var = pb_err = 5;
+    } else {
+        pb_err_var = pb_err = 0;
+    }
 }
 
 long long pb_con_handle(void) { return (long long)(intptr_t)GetConsoleWindow(); }
@@ -5411,6 +5436,7 @@ void pb_con_new(void) {
     }
     pb_console_reset_handle();
     pb_con_input_reset();
+    pb_con_stdin_reset();
     pb_con_pages_ready = 0;
     for (int i = 0; i < PB_CON_PAGES; i++) pb_con_pages[i] = 0;
     pb_con_page_ensure();
@@ -5421,6 +5447,7 @@ void pb_con_end(void) {
     FreeConsole();
     pb_console_reset_handle();
     pb_con_input_reset();
+    pb_con_stdin_reset();
     pb_con_pages_ready = 0;
     for (int i = 0; i < PB_CON_PAGES; i++) pb_con_pages[i] = 0;
     pb_con_active = 1;
@@ -5769,16 +5796,91 @@ int pb_con_out(void) {
     return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
 }
 
-int pb_con_stdeof(void) { return _eof(0) ? 1 : 0; }
+static int pb_con_stdin_eof = 0;
+static int pb_con_stdin_pushback = -1;
 
-int pb_con_stdin_line_available(void) { return 0; }
+static void pb_con_stdin_reset(void) {
+    /* CON.NEW / CON.END replace the console and the standard handles; the
+       EOF flag and the one-byte lookahead belong to the old stdin stream and
+       must not leak into the new one. */
+    pb_con_stdin_eof = 0;
+    pb_con_stdin_pushback = -1;
+    clearerr(stdin);
+}
+
+int pb_con_stdeof(void) {
+    /* DOS-style Ctrl-Z (0x1A) and a real end-of-file are both end-of-input
+       for redirected stdin.  _eof(0) is useless here: the CRT may fill its
+       buffer with the whole file, leaving the OS file pointer at EOF while
+       unread buffered lines remain.  Track the condition ourselves. */
+    return pb_con_stdin_eof ? 1 : 0;
+}
+
+static int pb_con_stdin_getc(void) {
+    if (pb_con_stdin_pushback >= 0) {
+        int ch = pb_con_stdin_pushback;
+        pb_con_stdin_pushback = -1;
+        return ch;
+    }
+    return fgetc(stdin);
+}
+
+static int pb_con_stdin_is_console(void) {
+    void* h = GetStdHandle((unsigned int)-10);
+    unsigned long mode = 0;
+    return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
+}
 
 char* pb_con_stdin_line(void) {
-    char buf[4096];
-    if (!fgets(buf, sizeof(buf), stdin)) return pb_bstr_alloc("", 0);
-    size_t n = strlen(buf);
-    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = '\0';
-    return pb_bstr_alloc(buf, (unsigned int)n);
+    /* CON.STDIN.LINE must not truncate long redirected lines.  The old fixed
+       char[4096] silently cut everything after byte 4095.  Read incrementally,
+       strip CR/LF, and treat 0x1A as EOF (CHW DOS EOF marker). */
+    size_t cap = 256;
+    size_t len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) {
+        pb_err_var = pb_err = 7;
+        return pb_bstr_alloc("", 0);
+    }
+    int ch;
+    while ((ch = pb_con_stdin_getc()) != EOF) {
+        if (ch == 0x1A) {
+            pb_con_stdin_eof = 1;
+            break;
+        }
+        if (ch == '\n') break;
+        if (ch == '\r') continue;
+        if (len + 1 >= cap) {
+            size_t ncap = cap * 2;
+            char* nb = (char*)realloc(buf, ncap);
+            if (!nb) {
+                free(buf);
+                pb_err_var = pb_err = 7;
+                return pb_bstr_alloc("", 0);
+            }
+            buf = nb;
+            cap = ncap;
+        }
+        buf[len++] = (char)ch;
+    }
+    if (ch == EOF) pb_con_stdin_eof = 1;
+    if (ch == '\n' && !pb_con_stdin_is_console()) {
+        /* Peek one byte so EOF after the final complete line is visible
+           immediately, without losing the first byte of the next line.
+           Do not peek on a real console: that would block waiting for the
+           next keystroke after a completed line. */
+        int peek = pb_con_stdin_getc();
+        if (peek == EOF) {
+            pb_con_stdin_eof = 1;
+        } else if (peek == 0x1A) {
+            pb_con_stdin_eof = 1;
+        } else {
+            pb_con_stdin_pushback = peek;
+        }
+    }
+    char* out = pb_bstr_alloc(buf, (unsigned int)len);
+    free(buf);
+    return out;
 }
 
 /* CON.STDOUT interprets embedded LF without moving to column zero; only CR
@@ -5856,7 +5958,16 @@ long long pb_con_getstderr(void) { return (long long)(intptr_t)GetStdHandle((uns
 long long pb_con_getstdkbd(void) { return (long long)(intptr_t)pb_con_input_handle(); }
 long long pb_con_getstdvid(int page) {
     if (page == 0) page = pb_con_active;
+    if (page < 1 || page > PB_CON_PAGES) {
+        pb_err_var = pb_err = 5;
+        return 0;
+    }
     void* h = pb_con_page_handle(page);
+    if (!h) {
+        pb_err_var = pb_err = 5;
+        return 0;
+    }
+    pb_err_var = pb_err = 0;
     return (long long)(intptr_t)h;
 }
 

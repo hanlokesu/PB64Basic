@@ -12729,13 +12729,15 @@ impl Compiler {
                 // array, or CONTROL ADD LISTBOX/COMBOBOX items$() fills read
                 // 32-bit-truncated pointers and crash (batch 248/249/249_test/
                 // 245 headless, C0000005 - batch 307).
-                let arr_pb_type = match &dim.pb_type {
-                    PbType::Variant if !dim.explicit_type => prev.pb_type.clone(),
-                    PbType::Long if !dim.explicit_type => match &prev.pb_type {
-                        PbType::String | PbType::FixedString(_) => prev.pb_type.clone(),
-                        _ => dim.pb_type.clone(),
-                    },
-                    other => other.clone(),
+                // A bare DIM does not invent a new element type: it keeps the
+                // type already declared for this array.  The old match only
+                // preserved STRING/FixedString and turned an Integer array into
+                // a Long array, so `GLOBAL g() AS INTEGER` + `DIM g(1 TO 3)`
+                // stopped wrapping at 16 bits (batch348_test, batch 384).
+                let arr_pb_type = if dim.explicit_type || name_has_type_suffix(&dim.name) {
+                    dim.pb_type.clone()
+                } else {
+                    prev.pb_type.clone()
                 };
                 let elem_ir = Self::array_elem_ir(&arr_pb_type);
                 let mut dims = Vec::new();
@@ -12867,15 +12869,13 @@ impl Compiler {
             // items$() fills read garbage.  With STRING inherited the array is
             // [N x Ptr] and store/load follow elem_ir_type automatically.
             let declared = self.symbols.lookup(&name).map(|i| i.pb_type.clone());
-            let arr_pb_type = match &dim.pb_type {
-                PbType::Variant if !dim.explicit_type => declared.clone().unwrap_or(PbType::Long),
-                PbType::Long if !dim.explicit_type => match &declared {
-                    Some(PbType::String) | Some(PbType::FixedString(_)) => {
-                        declared.clone().unwrap()
-                    }
-                    _ => PbType::Long,
-                },
-                other => other.clone(),
+            // Same rule as the global branch above: a bare DIM inherits every
+            // declared element type, not only STRING.  Falling back to Long for
+            // an Integer declaration silently widened the array.
+            let arr_pb_type = if dim.explicit_type || name_has_type_suffix(&dim.name) {
+                dim.pb_type.clone()
+            } else {
+                declared.clone().unwrap_or_else(|| dim.pb_type.clone())
             };
             let elem_ir = Self::array_elem_ir(&arr_pb_type);
             let mut dims = Vec::new();

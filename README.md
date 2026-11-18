@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 383 (v0.2.170). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 384 (v0.2.171). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 384 (v0.2.171) - CON.STDIN.LINE dynamic buffer, Ctrl-Z EOF and CON.STDEOF state; console setter and GETSTDVID error-code closure; reproducible batch384 probes.
 > batch 383 (v0.2.170) - lazy reachable-body codegen for large WINAPI header sets. EXE builds compile only bodies reachable from PBMAIN, external DECLARE and import libraries are emitted on first reference, and indirect reachability covers ON CALL, CODEPTR, THREAD CREATE, DIALOG SHOW MODAL, CONTROL CALL, OOP methods/properties, EVENTS, FOR EACH, interface dispatch and THREAD OBJECT. Global array shapes are resolved before any body is compiled. Erol's ConsTest builds in 3.2 s with WINAPI_III_107 and all 453 examples compile.
 > batch 381 (v0.2.169) - JK-IDE help installer hardening. setup.bat keeps PbHelpFile on PB.chm until the four-file copy succeeds, skips the installer when bundled help is absent, and uses the full Windows PowerShell path; install_help.ps1 documents .chw as a companion copy; README-jkide and batch381 package smoke updated. Runtime F1/menu clicks not automated.
 > batch 380 (v0.2.168) - the complete PB64Basic help set is bundled in jkide and installed into JK-IDE; F1 and Open PB Help resolve to the bundled help; the original PBWin help is backed up once as *.pbwin-bak; compiler code is unchanged.
@@ -1048,6 +1049,18 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.171 (2026-11-18)
+
+**Console stdin and setter error-code closure (batch 384).**
+
+- `CON.STDIN.LINE` now reads redirected stdin into a growing buffer instead of a fixed 4096-byte array, so long lines are not truncated. `0x1A` is treated as DOS EOF; `CON.STDEOF` tracks EOF itself instead of `_eof(0)`, which could report EOF after the first line when the CRT had buffered the rest of the file. A one-byte pushback preserves the first byte of the next line.
+- A one-byte peek is used only when stdin is redirected. A real console is not peeked, so a completed line does not block waiting for the next keystroke.
+- `CON.FOCUS`, `CON.SIZE`, `CON.LOC`, `CON.VIEW` and `CON.GETSTDVID` now set `ERR=5` for an absent window/handle, invalid page, non-positive size, or a failed Win32 call; successful calls clear `ERR=0`.
+- Fixed a lazy-codegen regression found by `batch348_test`: a bare `DIM` of an already declared array now inherits every declared element type (including `INTEGER`), instead of widening it to `LONG`. The global and local array branches share the same rule, so `GLOBAL g() AS INTEGER` + `DIM g(1 TO 3)` keeps 16-bit wrap semantics. Both x86_64 and i686 builds pass the regression.
+- `CON.NEW` and `CON.END` now clear the tracked stdin EOF state, the one-byte lookahead, and the CRT error flag, so a new console does not inherit end-of-file from the previous stdin stream.
+- New reproducible probes: `batch384_stdin_edge.bas` (5000-byte line, next line, Ctrl-Z), `batch384_props.bas` (real-console page/size/loc/focus/stdvid assertions), and `batch384_test.bas` (page bounds and invalid video page). Sources and logs are archived in `docs/console-probes/`.
+- `CON.VIEW` remains a documented host limitation: this host accepts `SetConsoleWindowInfo` but keeps the buffer/viewport clamped to 1,1.
+
 ### v0.2.170 (2026-11-18)
 
 **Lazy reachable-body codegen for large WINAPI header sets (batch 383).**

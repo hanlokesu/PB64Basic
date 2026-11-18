@@ -1,0 +1,3 @@
+len1= 1  head=[A] tail=[A] eof1= 1 
+len2= 0  line2=[] eof2= 1 
+failures= 0 

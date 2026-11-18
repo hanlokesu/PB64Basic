@@ -1,0 +1,12 @@
+page9 err= 5  page= 1  old= 1 
+pagev0 err= 5  visible= 1 
+pagev9 err= 5  visible= 1 
+size= 960 , 480 
+size0 err= 5  read= 960 , 480 
+size_same err= 0  read= 960 , 480 
+loc= 0 , 0 
+loc_same err= 0 
+stdvid0= 104  err= 0 
+stdvid9= 0  err= 5 
+focus err= 0 
+failures= 0 
