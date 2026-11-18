@@ -27551,6 +27551,12 @@ impl Compiler {
                 let ptr = Val::new(ptr_name, IrType::Ptr);
                 let ir_type = info.ir_type.clone();
                 let val = fb.load(&ir_type, &ptr);
+                // A 16-bit INTEGER variable is signed.  On i686 the load above
+                // produced an i16 that downstream code zero-extended, so -12345
+                // printed as 53191; sign-extend it to the i32 expression width.
+                if matches!(info.pb_type, PbType::Integer) && ir_type == IrType::I16 {
+                    return Ok(fb.sext(&val, &IrType::I32));
+                }
                 // For string variables, null-guard: replace null with empty string
                 if ir_type == IrType::Ptr && Self::is_string_name(orig_name) {
                     let is_null = fb.icmp("eq", &val, &Val::new("null".to_string(), IrType::Ptr));
@@ -28296,7 +28302,14 @@ impl Compiler {
                     return Ok(fb.zext(&narrow, &IrType::I32));
                 }
                 let field_ir = Self::ir_type_for(&field_pb);
-                Ok(fb.load(&field_ir, &field_ptr))
+                let loaded = fb.load(&field_ir, &field_ptr);
+                // A TYPE field declared AS INTEGER is a signed 16-bit value.
+                // Without an explicit sign extension the i16 is zero-extended
+                // by the next i32 operation, so -32000 prints as 33536.
+                if matches!(field_pb, PbType::Integer) && field_ir == IrType::I16 {
+                    return Ok(fb.sext(&loaded, &IrType::I32));
+                }
+                Ok(loaded)
             }
             Expr::Negate(inner) => {
                 let val = self.compile_expr(fb, inner)?;

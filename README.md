@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 388 (v0.2.175). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 389 (v0.2.176). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 389 (v0.2.176) - signed INTEGER semantics fixed for TYPE fields and i686 locals, and the 952-page language reference was rebuilt with official Purpose/Syntax/Parameters/Remarks text, complete examples, four pseudo-object pages and the refreshed CHM.
 > batch 388 (v0.2.175) - the JK-IDE add-on now exposes PB64Basic (64bit) and PB64Basic (32bit) as separate Compilers menu entries. Both entries call the same PB64Basic.exe; the 64-bit entry selects the x86_64 target and runtime, the 32-bit entry selects the i686 target and runtime, and the 32-bit output is named <source>_x86.exe. The 32-bit compile and run paths are live-verified with command IDs 55028 and 55029, and the menu keeps the PBWin 10, PBXB64, Compile (default), Open PB Help, PB64BASIC.CHM and JKIDE.INI entries in their documented order.
 > batch 387 (v0.2.174) - target-aware pointer width in TYPE layout and array element sizing on i686.
 > batch 386 (v0.2.173) - dynamic LSET/RSET honours ABS and USING, string modification no longer frees non-BSTR old pointers, and string-array operations use the target pointer width; batch386_test passes on x86_64 and i686.
@@ -1053,6 +1054,27 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.176 (2026-11-19)
+
+- **Signed `INTEGER` TYPE fields fixed**: a field declared `AS INTEGER` is
+  now sign-extended from 16 bits to the 32-bit expression width. Before the
+  fix `-32000` read back as `33536` on x86_64. `examples/batch389_test.bas`
+  verifies the minimum, maximum and a negative local value.
+- **Signed `INTEGER` locals fixed on i686**: a negative 16-bit local was
+  zero-extended by the i686 load path (`-12345` printed as `53191`). The
+  value is now sign-extended on both targets; `batch389_test` reports
+  `FAILURES: 0` on x86_64 and i686.
+- **Language reference rebuilt**: all 952 coverage pages and four pseudo-object
+  pages now carry the official Purpose/Syntax/Parameters/Remarks material
+  where the PowerBASIC CHW supplies it, plus complete examples and F1 metadata.
+  `GET`, `INTEGER` and `DOUBLE` examples were replaced with working
+  demonstrations of the documented behaviour.
+- **Help delivery**: the rebuilt `PB64Basic.chm` (957 topics, 956 example
+  builds, 110 object members, context IDs 1001-1956) is installed in
+  `jkide\PB64Basic.chm` and `jkide\PB64Basic.chw`.
+
+No new official keywords were added; the coverage matrix counts are unchanged.
+
 ### v0.2.175 (2026-11-19)
 
 - **JK-IDE Compilers menu now exposes both targets**: the add-on lists
