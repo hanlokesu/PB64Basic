@@ -7967,15 +7967,16 @@ void pb_array_insert_num(char* base, int elem_size, long long total, long long i
     memcpy(base + (index - 1) * elem_size, &value, (size_t)elem_size);
 }
 
-void pb_array_insert_str(char* base, long long total, long long index,
+void pb_array_insert_str(char* base, int elem_size, long long total, long long index,
                          long long count, char* bstr) {
     if (index < 1) index = 1;
     if (index > total) return;
     if (count <= 0) count = total - index + 1;
     long long shift = count;
     if (index - 1 + shift > total) shift = total - index + 1;
-    memmove(base + index * 8, base + (index - 1) * 8, (size_t)((shift - 1) * 8));
-    memcpy(base + (index - 1) * 8, &bstr, 8);
+    memmove(base + index * elem_size, base + (index - 1) * elem_size,
+            (size_t)((shift - 1) * elem_size));
+    memcpy(base + (index - 1) * elem_size, &bstr, (size_t)elem_size);
 }
 
 /* ARRAY DELETE arr(index) [FOR count] [, fill] — remove element(s), shift up;
@@ -7992,8 +7993,8 @@ void pb_array_delete(char* base, int elem_size, long long total, long long index
                 (size_t)((total - from - 1) * elem_size));
         if (is_string) {
             char** sp = (char**)(base + (total - 1) * elem_size);
-            if (*sp) { SysFreeString(*sp); *sp = NULL; }
-            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)strlen(fill_str));
+            *sp = NULL;   /* element may be a codegen constant: do not free */
+            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)pb_str_len(fill_str));
         } else {
             memcpy(base + (total - 1) * elem_size, &fill_num, (size_t)elem_size);
         }
@@ -8002,8 +8003,8 @@ void pb_array_delete(char* base, int elem_size, long long total, long long index
                 (size_t)((count - 1) * elem_size));
         if (is_string) {
             char** sp = (char**)(base + (from + count - 1) * elem_size);
-            if (*sp) { SysFreeString(*sp); *sp = NULL; }
-            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)strlen(fill_str));
+            *sp = NULL;   /* element may be a codegen constant: do not free */
+            if (fill_str) *sp = pb_bstr_alloc(fill_str, (unsigned int)pb_str_len(fill_str));
         } else {
             memcpy(base + (from + count - 1) * elem_size, &fill_num, (size_t)elem_size);
         }
@@ -8035,7 +8036,6 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
             char buf[24];
             _i64toa_s(i, buf, 24, 10);
             char** sp = (char**)p;
-            if (*sp) SysFreeString(*sp);
             *sp = (char*)SysAllocStringByteLen(buf, (unsigned int)strlen(buf));
         }
     }
@@ -8600,13 +8600,15 @@ void pb_lset(char** dest, const char* src, int len) {
     char* buf = (char*)malloc((size_t)width + 1);
     int src_len = src ? (int)pb_str_len(src) : 0;
     int i;
+    if (!buf) return;
     for (i = 0; i < width; i++) {
         buf[i] = (i < src_len) ? src[i] : 32;
     }
     buf[width] = (char)0;
     *dest = pb_bstr_alloc(buf, (unsigned int)width);
     free(buf);
-    if (old) SysFreeString(old);
+    /* old may be a codegen string constant or a malloc buffer from
+       pb_str_assign_copy; SysFreeString on either corrupts the heap. */
 }
 
 /* CSET (BSTR target): center src in the target's current length, pad spaces */
@@ -8654,10 +8656,10 @@ void pb_cset_buf(char* dest, const char* src, int len) {
 
 /* RSET (BSTR target): right-justify src into a fixed-length PB string, pad spaces */
 void pb_rset(char** dest, const char* src, int len) {
-    char* old = *dest;
     char* buf = (char*)malloc((size_t)len + 1);
     int src_len = src ? (int)pb_str_len(src) : 0;
     int pad = (src_len < len) ? (len - src_len) : 0;
+    if (!buf) return;
     int i;
     for (i = 0; i < len; i++) {
         buf[i] = (i < pad) ? 32 : ((i - pad) < src_len ? src[i - pad] : 32);
@@ -8665,7 +8667,7 @@ void pb_rset(char** dest, const char* src, int len) {
     buf[len] = (char)0;
     *dest = pb_bstr_alloc(buf, (unsigned int)len);
     free(buf);
-    if (old) SysFreeString(old);
+    /* old may be a codegen constant; never SysFreeString it. */
 }
 
 /* R2 RSET on a dynamic BSTR target (CHW RSET_statement.htm example:
@@ -8691,7 +8693,7 @@ void pb_rset_dynamic(char** dest, const char* src, const char* pad) {
     buf[width] = (char)0;
     *dest = pb_bstr_alloc(buf, (unsigned)width);
     free(buf);
-    if (old) SysFreeString(old);
+    /* old may be a codegen constant or a malloc buffer; never free it. */
 }
 
 /* ERASE: zero-out a static array (non-string) or NULL-out string elements */
@@ -8814,7 +8816,7 @@ void pb_cset_abs_dynamic(char** dest, const char* src) {
     buf[width] = (char)0;
     *dest = pb_bstr_alloc(buf, (unsigned)width);
     free(buf);
-    if (old) SysFreeString(old);
+    /* old may be a codegen constant or a malloc buffer; never free it. */
 }
 
 /* CSET USING (dynamic BSTR target): center src in the current width. */
@@ -8838,9 +8840,75 @@ void pb_cset_using_dynamic(char** dest, const char* src, const char* pad) {
     buf[width] = (char)0;
     *dest = pb_bstr_alloc(buf, (unsigned)width);
     free(buf);
-    if (old) SysFreeString(old);
+    /* old may be a codegen constant or a malloc buffer; never free it. */
 }
 
+/* LSET ABS (dynamic BSTR target): "the space of the string variable" is its
+   current LEN; bytes outside the left-justified src keep their old content. */
+void pb_lset_abs_dynamic(char** dest, const char* src) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)pb_str_len(old) : 0;
+    const char* s = src ? src : "";
+    int src_len = src ? (int)pb_str_len(src) : 0;
+    int take, i;
+    char* buf;
+    if (width < 0) width = 0;
+    take = src_len < width ? src_len : width;
+    buf = (char*)malloc((size_t)width + 1);
+    if (!buf) return;
+    if (width > 0) {
+        if (old) memcpy(buf, old, (size_t)width); else memset(buf, 32, (size_t)width);
+    }
+    for (i = 0; i < take; i++) buf[i] = s[i];
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+}
+
+/* LSET USING (dynamic BSTR target): left-justify src, pad with first char of pad. */
+void pb_lset_using_dynamic(char** dest, const char* src, const char* pad) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)pb_str_len(old) : 0;
+    const char* s = src ? src : "";
+    int src_len = src ? (int)pb_str_len(src) : 0;
+    int take = src_len < width ? src_len : width;
+    char padc = (pad && pad[0]) ? pad[0] : ' ';
+    char* buf;
+    int i;
+    if (width < 0) width = 0;
+    buf = (char*)malloc((size_t)width + 1);
+    if (!buf) return;
+    for (i = 0; i < width; i++) buf[i] = (i < take) ? s[i] : padc;
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+}
+
+/* RSET ABS (dynamic BSTR target): right-justify src, leave padding bytes
+   unchanged from their previous content. */
+void pb_rset_abs_dynamic(char** dest, const char* src) {
+    if (!dest) return;
+    char* old = *dest;
+    int width = old ? (int)pb_str_len(old) : 0;
+    const char* s = src ? src : "";
+    int src_len = src ? (int)pb_str_len(src) : 0;
+    int take, pad, i;
+    char* buf;
+    if (width < 0) width = 0;
+    take = src_len < width ? src_len : width;
+    pad = width - take;
+    buf = (char*)malloc((size_t)width + 1);
+    if (!buf) return;
+    if (width > 0) {
+        if (old) memcpy(buf, old, (size_t)width); else memset(buf, 32, (size_t)width);
+    }
+    for (i = 0; i < take; i++) buf[pad + i] = s[i];
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned)width);
+    free(buf);
+}
 /* RESET: close all open files */
 /* RESET: close all open files */
 void pb_reset(void) {

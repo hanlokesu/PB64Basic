@@ -2925,6 +2925,24 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
             false,
         );
+        self.module.declare_function(
+            "pb_lset_abs_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_lset_using_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_rset_abs_dynamic",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("_mkdir", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -6779,6 +6797,7 @@ impl Compiler {
             &IrType::Void,
             &[
                 IrType::Ptr,
+                IrType::I32,
                 IrType::I64,
                 IrType::I64,
                 IrType::I64,
@@ -14450,13 +14469,7 @@ impl Compiler {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let op = match &call.args[1] {
                             Expr::IntegerLit(v) => *v as i32,
                             _ => 0,
@@ -16180,13 +16193,7 @@ impl Compiler {
                     let arr_name = normalize_name(vname);
                     if let Some(arr_info) = self.symbols.lookup_array(&arr_name).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let is_string = if arr_info.elem_ir_type == IrType::Ptr {
                             1
                         } else {
@@ -16358,13 +16365,7 @@ impl Compiler {
                     if let (Some(si), Some(di)) = (s_info, d_info) {
                         let sbase = self.array_base(fb, &si);
                         let dbase = self.array_base(fb, &di);
-                        let elem_size = match &si.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&si.elem_ir_type);
                         let st = self.array_total(fb, &si);
                         let dt = self.array_total(fb, &di);
                         let sle = fb.icmp("slt", &st, &dt);
@@ -16413,13 +16414,7 @@ impl Compiler {
                                 if let Some(si) = self.symbols.lookup_array(&sname).cloned() {
                                     let tbase = self.array_base(fb, &ti);
                                     let sbase = self.array_base(fb, &si);
-                                    let elem_size = match &ti.elem_ir_type {
-                                        IrType::I8 | IrType::I1 => 1,
-                                        IrType::I16 => 2,
-                                        IrType::I32 | IrType::Float => 4,
-                                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                                        _ => 4,
-                                    };
+                                    let elem_size = self.array_elem_size_arch(&ti.elem_ir_type);
                                     let tt = self.array_total(fb, &ti);
                                     let st = self.array_total(fb, &si);
                                     let sle = fb.icmp("slt", &tt, &st);
@@ -22536,13 +22531,7 @@ impl Compiler {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let is_string = if arr_info.elem_ir_type == IrType::Ptr {
                             1
                         } else {
@@ -22758,14 +22747,26 @@ impl Compiler {
                             fb.call_void(fnn, &[ptr, value, len_const]);
                         }
                     } else {
-                        // Dynamic BSTR target (CHW RSET_statement.htm example:
-                        // a$ = SPACE$(20): RSET a$ = "Right-align" -> width is
-                        // LEN(a$)=20, not a hard-coded 256). For RSET, route
-                        // to pb_rset_dynamic which reads the current BSTR
-                        // length and honors USING pad. LSET dynamic is left
-                        // on the existing pb_lset (out of R2 scope).
-                        if is_l {
-                            fb.call_void("pb_lset", &[ptr, value, len_const]);
+                        // Dynamic BSTR target: width is the current LEN(target),
+                        // not a hard-coded 256.  ABS and USING are distinct
+                        // semantics (PBWin10 probe b386_lset_out.txt):
+                        //   LSET ABS -> overwrite from the left, keep old padding
+                        //   RSET ABS -> overwrite from the right, keep old padding
+                        //   USING    -> fill the remainder with pad[0]
+                        if is_abs {
+                            let fnn = if is_l {
+                                "pb_lset_abs_dynamic"
+                            } else {
+                                "pb_rset_abs_dynamic"
+                            };
+                            fb.call_void(fnn, &[ptr, value]);
+                        } else if is_l {
+                            match pad_val {
+                                Some(pad) => {
+                                    fb.call_void("pb_lset_using_dynamic", &[ptr, value, pad])
+                                }
+                                None => fb.call_void("pb_lset", &[ptr, value, len_const]),
+                            }
                         } else {
                             let pad_arg = match &pad_val {
                                 Some(p) => p.clone(),
@@ -23003,13 +23004,7 @@ impl Compiler {
                         let name = normalize_name(an);
                         if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                             let base = self.array_base(fb, &arr_info);
-                            let elem_size = match &arr_info.elem_ir_type {
-                                IrType::I8 | IrType::I1 => 1,
-                                IrType::I16 => 2,
-                                IrType::I32 | IrType::Float => 4,
-                                IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                                _ => 4,
-                            };
+                            let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                             let total = self.array_total(fb, &arr_info);
                             let total32 = self.to_i32(fb, &total);
                             fb.call_void(
@@ -23441,13 +23436,7 @@ impl Compiler {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let idx = if let Some(ix) = indices.first() {
                             self.compile_expr(fb, ix)?
                         } else {
@@ -23467,7 +23456,10 @@ impl Compiler {
                         if arr_info.elem_ir_type == IrType::Ptr {
                             let val = self.compile_expr(fb, &call.args[2])?;
                             let total = self.array_total(fb, &arr_info);
-                            fb.call_void("pb_array_insert_str", &[base, total, idx64, count, val]);
+                            fb.call_void(
+                                "pb_array_insert_str",
+                                &[base, fb.const_i32(elem_size), total, idx64, count, val],
+                            );
                         } else {
                             let val = self.compile_expr(fb, &call.args[2])?;
                             let v64 = self.to_i64(fb, &val);
@@ -23487,13 +23479,7 @@ impl Compiler {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let is_string = if arr_info.elem_ir_type == IrType::Ptr {
                             1
                         } else {
@@ -23700,13 +23686,7 @@ impl Compiler {
                     let an = normalize_name(arr_name);
                     if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                         let base = self.array_base(fb, &arr_info);
-                        let elem_size = match &arr_info.elem_ir_type {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                         let is_string = if arr_info.elem_ir_type == IrType::Ptr {
                             1
                         } else {
@@ -23768,13 +23748,7 @@ impl Compiler {
                         let name = normalize_name(an);
                         if let Some(arr_info) = self.symbols.lookup_array(&name).cloned() {
                             let base = self.array_base(fb, &arr_info);
-                            let elem_size = match &arr_info.elem_ir_type {
-                                IrType::I8 | IrType::I1 => 1,
-                                IrType::I16 => 2,
-                                IrType::I32 | IrType::Float => 4,
-                                IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                                _ => 4,
-                            };
+                            let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                             let total = self.array_total(fb, &arr_info);
                             let total32 = self.to_i32(fb, &total);
                             fb.call_void(
@@ -26226,6 +26200,27 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    /// Pointer width for the selected target: 4 on i686, 8 on x86_64.
+    fn pointer_width(&self) -> i32 {
+        if self.module.is_32bit() {
+            4
+        } else {
+            8
+        }
+    }
+
+    /// Element size in bytes, using the target pointer width for Ptr elements.
+    fn array_elem_size_arch(&self, ir: &IrType) -> i32 {
+        match ir {
+            IrType::I8 | IrType::I1 => 1,
+            IrType::I16 => 2,
+            IrType::I32 | IrType::Float => 4,
+            IrType::I64 | IrType::Double => 8,
+            IrType::Ptr => self.pointer_width(),
+            _ => 4,
+        }
     }
 
     /// Element size in bytes for a MAT array element type.
@@ -32824,13 +32819,7 @@ impl Compiler {
             let an = normalize_name(arr_name);
             if let Some(arr_info) = self.symbols.lookup_array(&an).cloned() {
                 let base = self.array_base(fb, &arr_info);
-                let elem_size = match &arr_info.elem_ir_type {
-                    IrType::I8 | IrType::I1 => 1,
-                    IrType::I16 => 2,
-                    IrType::I32 | IrType::Float => 4,
-                    IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                    _ => 4,
-                };
+                let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
                 let is_string = if arr_info.elem_ir_type == IrType::Ptr {
                     1
                 } else {

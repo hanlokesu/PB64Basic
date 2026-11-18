@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 385 (v0.2.172). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 386 (v0.2.173). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 386 (v0.2.173) - dynamic LSET/RSET honours ABS and USING, string modification no longer frees non-BSTR old pointers, and string-array operations use the target pointer width; batch386_test passes on x86_64 and i686.
 > batch 385 (v0.2.172) - embedded-NUL string semantics aligned with PBWin10 across the string builtins, fixed-string TYPE fields, ASC with an explicit position, dynamic LSET/CSET, REPLACE/REPLACE ANY and SPLIT; COMM SET DTR/RTS/BREAK now drives EscapeCommFunction; the runtime builds clean under -Wall -Wextra on x86_64 and i686; batch385_test passes on both targets.
 > batch 384 (v0.2.171) - CON.STDIN.LINE dynamic buffer, Ctrl-Z EOF and CON.STDEOF state; console setter and GETSTDVID error-code closure; reproducible batch384 probes.
 > batch 383 (v0.2.170) - lazy reachable-body codegen for large WINAPI header sets. EXE builds compile only bodies reachable from PBMAIN, external DECLARE and import libraries are emitted on first reference, and indirect reachability covers ON CALL, CODEPTR, THREAD CREATE, DIALOG SHOW MODAL, CONTROL CALL, OOP methods/properties, EVENTS, FOR EACH, interface dispatch and THREAD OBJECT. Global array shapes are resolved before any body is compiled. Erol's ConsTest builds in 3.2 s with WINAPI_III_107 and all 453 examples compile.
@@ -1050,6 +1051,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.173 (2026-11-18)
+
+- Dynamic `LSET`/`RSET` now honor `ABS` and `USING`: `LSET ABS` preserves the existing tail bytes, `RSET ABS` fills the leading bytes, and `USING` uses the requested pad character. The runtime derives the field width from the destination's current BSTR length instead of a 256-byte sentinel.
+- Dynamic string modification no longer calls `SysFreeString` on the previous value. The previous pointer can be a codegen string constant or a malloc-backed copy, not a BSTR; freeing it corrupted the heap (`STATUS_HEAP_CORRUPTION`) for `LSET`/`RSET`/`CSET ABS`/`CSET USING`. The same rule now applies to string-array `ARRAY DELETE` and `ARRAY ARRAYIX` elements.
+- String-array element sizing is now target-aware: `ARRAY INSERT`, `ARRAY DELETE`, `ARRAY ARRAYIX`, `ARRAY UNIQUE` and `ARRAY SHUFFLE` use the target pointer width (4 bytes on i686, 8 on x86_64). Passing 8 bytes on i686 corrupted adjacent elements and crashed `batch386_test`; the regression now passes on both targets.
+- `ARRAY DELETE` fill strings use `pb_str_len` rather than `strlen`, so embedded NUL bytes are preserved.
+- `examples/batch386_test.bas` locks the PBWin10 oracle for dynamic `LSET`/`RSET` `ABS`/`USING` and string-array delete/insert/arrayix on x86_64 and i686.
+- Regression: 459/459 examples compile; 307 headless examples compile, 304 run, 0 failures; negative probes and x64/i686 link smoke report 0 defects.
+
 ### v0.2.172 (2026-11-18)
 
 - Embedded-NUL string semantics now match PBWin10 across `LEFT$`, `RIGHT$`, `MID$`, `INSTR`, `LTRIM$`, `RTRIM$`, `TALLY`, `VERIFY`, `REMOVE$`, `REPLACE` and `REPLACE ANY`: these operate on the BSTR byte length instead of `strlen`/`strstr`, so bytes after a `CHR$(0)` are no longer truncated or skipped.
