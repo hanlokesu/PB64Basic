@@ -240,11 +240,17 @@ if not exist "%~dp0jkide\PB64Basic.chm" if not defined PBWIN_BIN echo [WARN] PBW
     echo Pbxb64Exe=%PBXB64%
     if defined PBXB64 echo Pbxb64Cwd=%PBXB64DIR%
     if not defined PBXB64 echo Pbxb64Cwd=
-    if exist "%~dp0jkide\PB64Basic.chm" (echo PbHelpFile=%JKIDE_DIR%\PB64Basic.chm) else (echo PbHelpFile=%JKIDE_DIR%\PB.chm)
+    rem PB.chm is the safe native target. install_help upgrades this to
+    rem PB64Basic.chm only after a successful copy; if a locked file blocks
+    rem the copy, this stays a usable fallback instead of pointing at a file
+    rem that was never created.
+    echo PbHelpFile=%JKIDE_DIR%\PB.chm
 )
 echo [OK] wrote JKIDE.ini
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\install_help.ps1" -JkIdeDir "%JKIDE_DIR%" -SourceDir "%~dp0jkide"
-if errorlevel 1 echo [WARN] PB64Basic help installation failed
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\enable_userdll.ps1" -JkIdeDir "%JKIDE_DIR%"
+if exist "%~dp0jkide\PB64Basic.chm" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\install_help.ps1" -JkIdeDir "%JKIDE_DIR%" -SourceDir "%~dp0jkide"
+    if errorlevel 1 echo [WARN] PB64Basic help installation failed; PbHelpFile remains PB.chm
+)
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\enable_userdll.ps1" -JkIdeDir "%JKIDE_DIR%"
 echo [OK] JK-IDE integration installed. Restart JK-IDE to see the Compilers menu.
 :skip_jk

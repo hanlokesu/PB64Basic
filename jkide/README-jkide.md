@@ -13,7 +13,7 @@ leaving the IDE.
 | `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
 | `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
 | `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
-| `userdll.dll` | pre-built addon (PBWin 10 compiled, 73216 bytes) |
+| `userdll.dll` | pre-built addon (PBWin 10 compiled, 113664 bytes) |
 | `JKIDE.ini` | configuration template - all compiler paths live here |
 | `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` in the IDE's own `JK-IDE.ini` |
 
@@ -58,6 +58,30 @@ the author's package, or manually):
 * Close JK-IDE before re-running `Setup.bat` (the running IDE locks
   `userdll.dll` and the copy would fail), then start it again. The menu and
   all fixes from the new version are then active.
+
+### Help integration
+
+`Setup.bat` also deploys the bundled `PB64Basic.chm` / `PB64Basic.chw` help
+set when `jkide\PB64Basic.chm` is present in the package:
+
+* `PB.chm` is the native F1 target (`JK-IDE.ini` key `PBWinHelpPath`).
+* `PB64Basic.chm` is the addon target (`JKIDE.ini` key `PbHelpFile`, command
+  `Open PB Help` = 55019 / `0xd6eb`). `0x76d` is the native F1 command and is a
+  different entry point.
+* `PB.chw` / `PB64Basic.chw` are companion copies. The current JK-IDE binaries
+  do not contain a `.chw` string; the `.chw` files are kept for tools that
+  expect the classic companion name, but they are not claimed as a native
+  index container.
+* `jkide\install_help.ps1` performs a lock preflight on all four target names
+  before copying. If JK-IDE is running, setup aborts without copying or
+  rewriting the ini files. The original PBWin files are backed up once as
+  `*.pbwin-bak`.
+* If the installer fails, `setup.bat` leaves `PbHelpFile` at the safe
+  `PB.chm` value instead of pointing at a file that was never copied.
+
+F1 exact-topic mapping, the addon `Open PB Help` command and the
+Contents/Index/Search entries still need a manual check in a running IDE;
+the packaging tests do not claim those runtime behaviors.
 
 ### Compile-error reporting
 

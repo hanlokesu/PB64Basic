@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 380 (v0.2.168). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 381 (v0.2.169). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 381 (v0.2.169) - JK-IDE help installer hardening. setup.bat keeps PbHelpFile on PB.chm until the four-file copy succeeds, skips the installer when bundled help is absent, and uses the full Windows PowerShell path; install_help.ps1 documents .chw as a companion copy; README-jkide and batch381 package smoke updated. Runtime F1/menu clicks not automated.
 > batch 380 (v0.2.168) - the complete PB64Basic help set is bundled in jkide and installed into JK-IDE; F1 and Open PB Help resolve to the bundled help; the original PBWin help is backed up once as *.pbwin-bak; compiler code is unchanged.
 > batch 379 (v0.2.167) - file-I/O evidence and console probes; WIDE SEEK byte offsets, ANSI 0x1A EOF, LINE INPUT # arrays, fixed WSTRING arrays, dynamic ARRAY REDIM, LPRINT separators, and RemarksData width fixed; CON.VIEW remains host-limited.
 > batch 377 (v0.2.166) - the PB/CC console family was re-checked against the CHW reference. `CON.PRINT` / `CON.STDOUT` write character-by-character on the active page with the current attribute and scroll at the bottom; `PAGE` separates active and visible pages; `CON.CURSOR.OFF/ON` preserves the visible cursor size; `CON.SCREEN` / `CON.VIRTUAL` failures set Error 5 and successful size operations clear it; `CON.INPUT` / `CON.LINE.INPUT` always use the console keyboard and release their temporary BSTRs; stdio redirection is reported by `CON.IN` / `CON.OUT`; and `DESKTOP GET SIZE` now calls the runtime `pb_desktop_get_size` so i686 programs no longer hit `0xC0000005` at process exit. `examples/batch377_test.bas` passes on x86_64 and i686; real mouse events and exact ConPTY pixel geometry remain environment boundaries, not claimed as fully aligned.
@@ -1046,6 +1047,18 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.169 (2026-11-18)
+
+**JK-IDE help integration hardening (batch 381).**
+
+- `setup.bat` now writes `PbHelpFile=...\PB.chm` before invoking the help installer, so a locked JK-IDE cannot leave `JKIDE.ini` pointing at a `PB64Basic.chm` that was never copied. The installer upgrades the key to `PB64Basic.chm` only after all four help files are copied.
+- The bundled-help guard skips the installer when `jkide\PB64Basic.chm` is absent; the fallback path copies the stock `PBWin.chm` / `PBWin.chw` and keeps `PbHelpFile` at `PB.chm`.
+- PowerShell calls use the absolute `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` path, so setup still installs the addon and help when PATH lacks PowerShell.
+- `jkide/install_help.ps1` now documents that `.chw` is a companion copy, not a native index container; the lock preflight and one-time `*.pbwin-bak` backups are unchanged.
+- `jkide/README-jkide.md` updated for the current 113,664-byte `userdll.dll` and the two help entry points.
+- `examples/batch381_test.bas` checks that the packaged `jkide/PB64Basic.chm` and `.chw` files are present.
+- Runtime F1 exact-topic and addon menu clicks remain manual checks; this release does not claim them as automated evidence.
+
 ### v0.2.168 (2026-11-18)
 
 Batch 380. Bundles the complete PB64Basic help set in the JK-IDE installer and the release package, and makes both help entry points resolve to that set.

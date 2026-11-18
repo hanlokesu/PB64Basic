@@ -42,7 +42,10 @@ Backup-Once (Join-Path $JkIdeDir 'PB.chm') (Join-Path $JkIdeDir 'PB.chm.pbwin-ba
 Backup-Once (Join-Path $JkIdeDir 'PB.chw') (Join-Path $JkIdeDir 'PB.chw.pbwin-bak')
 
 # PB.chm / PB.chw are the names JK-IDE expects.  PB64Basic.chm / .chw are kept
-# beside them so a user can open the reference by its real name.
+# beside them so a user can open the reference by its real name.  The bundled
+# .chw is a companion copy of the .chm, not a native index container: JK-IDE's
+# current binaries do not read the .chw extension.  It is copied only so tools
+# that expect the classic companion name find a valid CHM-format file.
 Copy-Item -LiteralPath $srcChm -Destination (Join-Path $JkIdeDir 'PB.chm') -Force
 Copy-Item -LiteralPath $srcChw -Destination (Join-Path $JkIdeDir 'PB.chw') -Force
 Copy-Item -LiteralPath $srcChm -Destination (Join-Path $JkIdeDir 'PB64Basic.chm') -Force
@@ -72,6 +75,6 @@ Set-IniValue (Join-Path $JkIdeDir 'JKIDE.ini') 'Compilers' 'PbHelpFile' (Join-Pa
 Set-IniValue (Join-Path $JkIdeDir 'JK-IDE.ini') 'Compiler options' 'PBWinHelpPath' (Join-Path $JkIdeDir 'PB.chm')
 
 Write-Host "[OK] installed PB64Basic help in $JkIdeDir"
-Write-Host "     PB.chm / PB.chw             = native F1 target"
-Write-Host "     PB64Basic.chm / .chw        = explicit reference"
+Write-Host "     PB.chm / PB.chw             = native F1 target; .chw is a companion copy"
+Write-Host "     PB64Basic.chm / .chw        = explicit reference; .chw is a companion copy"
 Write-Host "     original PBWin help backup  = *.pbwin-bak"
