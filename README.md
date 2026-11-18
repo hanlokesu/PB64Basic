@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 384 (v0.2.171). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 385 (v0.2.172). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 385 (v0.2.172) - embedded-NUL string semantics aligned with PBWin10 across the string builtins, fixed-string TYPE fields, ASC with an explicit position, dynamic LSET/CSET, REPLACE/REPLACE ANY and SPLIT; COMM SET DTR/RTS/BREAK now drives EscapeCommFunction; the runtime builds clean under -Wall -Wextra on x86_64 and i686; batch385_test passes on both targets.
 > batch 384 (v0.2.171) - CON.STDIN.LINE dynamic buffer, Ctrl-Z EOF and CON.STDEOF state; console setter and GETSTDVID error-code closure; reproducible batch384 probes.
 > batch 383 (v0.2.170) - lazy reachable-body codegen for large WINAPI header sets. EXE builds compile only bodies reachable from PBMAIN, external DECLARE and import libraries are emitted on first reference, and indirect reachability covers ON CALL, CODEPTR, THREAD CREATE, DIALOG SHOW MODAL, CONTROL CALL, OOP methods/properties, EVENTS, FOR EACH, interface dispatch and THREAD OBJECT. Global array shapes are resolved before any body is compiled. Erol's ConsTest builds in 3.2 s with WINAPI_III_107 and all 453 examples compile.
 > batch 381 (v0.2.169) - JK-IDE help installer hardening. setup.bat keeps PbHelpFile on PB.chm until the four-file copy succeeds, skips the installer when bundled help is absent, and uses the full Windows PowerShell path; install_help.ps1 documents .chw as a companion copy; README-jkide and batch381 package smoke updated. Runtime F1/menu clicks not automated.
@@ -1049,6 +1050,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.172 (2026-11-18)
+
+- Embedded-NUL string semantics now match PBWin10 across `LEFT$`, `RIGHT$`, `MID$`, `INSTR`, `LTRIM$`, `RTRIM$`, `TALLY`, `VERIFY`, `REMOVE$`, `REPLACE` and `REPLACE ANY`: these operate on the BSTR byte length instead of `strlen`/`strstr`, so bytes after a `CHR$(0)` are no longer truncated or skipped.
+- `ASC(fixed-string, position)` reads the raw fixed-length buffer with its declared width. Fixed `STRING * n` `TYPE` members and `LSET`/`CSET` assignments preserve embedded NUL bytes and pad the tail with spaces, matching PBWin10.
+- Dynamic `LSET`/`CSET` use the destination string's current length as the field width, and `SPLIT` counts all bytes of the source BSTR. `examples/batch385_test.bas` locks the PBWin10 oracle values on x86_64 and i686.
+- `COMM SET DTR/RTS/BREAK` now calls `EscapeCommFunction` with the computed command code instead of discarding it; a failed call sets Error 57, the same code used for the other `COMM SET` failures.
+- The runtime compiles clean under `-Wall -Wextra` for both x86_64 and i686: unused locals and parameters are annotated or removed, and the thread procedure cast matches the Win32 start-routine type.
+- Regression: 458/458 examples compile; 306 headless examples compile, 303 run, 0 failures; 33 negative probes report 0 bad; x64/i686 link smoke reports 0 failures.
+
 ### v0.2.171 (2026-11-18)
 
 **Console stdin and setter error-code closure (batch 384).**

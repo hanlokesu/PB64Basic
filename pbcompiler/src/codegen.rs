@@ -2386,6 +2386,13 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr, IrType::I64],
             false,
         );
+        // ANSI INSTR over BSTR byte lengths (embedded NUL safe).
+        self.module.declare_function(
+            "pb_bstr_instr",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::Ptr, IrType::I64],
+            false,
+        );
         self.module
             .declare_function("pb_str_cstr_len", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -6837,6 +6844,14 @@ impl Compiler {
             "pb_asc_get",
             &IrType::I64,
             &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        // Fixed-length STRING fields are inline buffers; ASC needs the
+        // declared capacity instead of a BSTR prefix.
+        self.module.declare_function(
+            "pb_asc_get_buf",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I64, IrType::I64],
             false,
         );
         self.module.declare_function(
@@ -11580,11 +11595,11 @@ impl Compiler {
                                                                                           // never store a pointer into the buffer.
                 if let PbType::FixedString(n) = &field_pb {
                     let src = self.compile_expr(fb, &assign.value)?;
-                    let size = fb.const_i32((*n as i32) - 1);
-                    fb.call_void("strncpy", &[field_ptr.clone(), src, size]);
-                    let term_idx = fb.const_i32((*n as i32) - 1);
-                    let term_ptr = fb.gep_byte(&field_ptr, &term_idx);
-                    fb.store(&Val::new("0".to_string(), IrType::I8), &term_ptr);
+                    let size = fb.const_i32(*n as i32);
+                    // Copy by BSTR byte length and pad with spaces: strncpy
+                    // stops at an embedded NUL and zero-fills the rest, which
+                    // does not match PBWin fixed-string assignment.
+                    fb.call_void("pb_type_set_str", &[field_ptr, src, size]);
                 } else if let PbType::FixedWString(n) = &field_pb {
                     let src = value;
                     let wsrc = if self.expr_is_wstring(&assign.value) {
@@ -32772,6 +32787,23 @@ impl Compiler {
         // ASC(s$ [, pos]) — pos 1-based, negative counts from the end; null /
         // 0 / out-of-range returns -1 (CHW + PBWin10).  pb_asc_get handles all.
         // WSTRING: UTF-16 code-unit value (0..65535, batch 281).
+        // Fixed-length STRING fields are inline buffers.  compile_expr()
+        // converts them to a BSTR via strlen(), which truncates at an embedded
+        // NUL, so ASC must take the raw lvalue pointer and the declared size.
+        if let Some(PbType::FixedString(n)) = self.expr_pb_type(&args[0]) {
+            let (ptr, _) = self.compile_lvalue_ptr(fb, &args[0])?;
+            let pos = if args.len() > 1 {
+                let p = self.compile_expr(fb, &args[1])?;
+                self.to_i64(fb, &p)
+            } else {
+                fb.const_i64(1)
+            };
+            return Ok(fb.call(
+                &IrType::I64,
+                "pb_asc_get_buf",
+                &[ptr, fb.const_i64(n as i64), pos],
+            ));
+        }
         let s = self.compile_expr(fb, &args[0])?;
         let pos = if args.len() > 1 {
             let p = self.compile_expr(fb, &args[1])?;
@@ -33370,45 +33402,24 @@ impl Compiler {
             };
             return Ok(fb.call(&IrType::I64, "pb_wide_instr", &[m, n, start]));
         }
-        let (base, search_start, needle) = if args.len() >= 3 {
+        // Byte string: use the BSTR byte length, not strstr/strlen, so an
+        // embedded NUL in either operand stays part of the search text.
+        let (haystack, needle, start_i64) = if args.len() >= 3 {
             let start = self.compile_expr(fb, &args[0])?;
-            let start_i32 = self.to_i32(fb, &start);
-            let one = fb.const_i32(1);
-            let offset = fb.sub(&start_i32, &one); // 1-based to 0-based
+            let start_i64 = self.to_i64(fb, &start);
             let h = self.compile_expr(fb, &args[1])?;
             let n = self.compile_expr(fb, &args[2])?;
-            let h_offset = fb.gep_byte(&h, &offset);
-            (h.clone(), h_offset, n)
+            (h, n, start_i64)
         } else {
             let h = self.compile_expr(fb, &args[0])?;
             let n = self.compile_expr(fb, &args[1])?;
-            (h.clone(), h, n)
+            (h, n, fb.const_i64(1))
         };
-
-        let result_ptr = fb.alloca(&IrType::I32);
-        let zero_i32 = fb.const_i32(0);
-        fb.store(&zero_i32, &result_ptr);
-
-        let found = fb.call(&IrType::Ptr, "strstr", &[search_start, needle]);
-        let null_ptr = fb.const_null_ptr();
-        let is_null = fb.icmp("eq", &found, &null_ptr);
-
-        let then_label = fb.next_label("instr.found");
-        let merge_label = fb.next_label("instr.merge");
-
-        fb.condbr(&is_null, &merge_label, &then_label);
-
-        fb.label(&then_label);
-        let found_int = fb.ptrtoint(&found);
-        let base_int = fb.ptrtoint(&base);
-        let diff = fb.sub(&found_int, &base_int);
-        let one_i32 = fb.const_i32(1);
-        let pos = fb.add(&diff, &one_i32); // 1-based relative to original string
-        fb.store(&pos, &result_ptr);
-        fb.br(&merge_label);
-
-        fb.label(&merge_label);
-        Ok(fb.load(&IrType::I32, &result_ptr))
+        Ok(fb.call(
+            &IrType::I64,
+            "pb_bstr_instr",
+            &[haystack, needle, start_i64],
+        ))
     }
 
     fn builtin_ucase(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

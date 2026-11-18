@@ -580,8 +580,8 @@ char* pb_bstr_from_bytes(const void* data, unsigned int len) {
    still returns empty.  This effective-count rule reproduces both cases. */
 char* pb_bstr_left(const char* src, long long n) {
     static const char empty[] = "";
-    if (!src) src = empty;
-    long long len = (long long)strlen(src);
+    if (!src) return pb_bstr_alloc(empty, 0);
+    long long len = (long long)pb_str_len(src);
     if (n < 0) {
         n = len + n;              /* LEN(s) - ABS(n) */
         if (n < 0) n = len;       /* overshoot: whole string */
@@ -595,8 +595,8 @@ char* pb_bstr_left(const char* src, long long n) {
    count rule as LEFT$; the selected bytes start at LEN(s)-n. */
 char* pb_bstr_right(const char* src, long long n) {
     static const char empty[] = "";
-    if (!src) src = empty;
-    long long len = (long long)strlen(src);
+    if (!src) return pb_bstr_alloc(empty, 0);
+    long long len = (long long)pb_str_len(src);
     if (n < 0) {
         n = len + n;
         if (n < 0) n = len;
@@ -606,6 +606,42 @@ char* pb_bstr_right(const char* src, long long n) {
     return pb_bstr_alloc(src + (len - n), (unsigned int)n);
 }
 
+/* INSTR over ANSI (byte) BSTR payloads, NUL-safe.  start is 1-based;
+   start <= -1 searches right-to-left and still returns an absolute position.
+   Returns 0 when not found.  Empty needle returns start, matching the
+   existing strstr-based path and the wide implementation. */
+long long pb_bstr_instr(const char* main_s, const char* match_s, long long start) {
+    if (!main_s || !match_s) return 0;
+    long long mlen = (long long)pb_str_len(main_s);
+    long long nlen = (long long)pb_str_len(match_s);
+    if (mlen == 0 || start == 0) return 0;
+    if (nlen == 0) {
+        if (start > 0) return start;
+        if (start < 0) return mlen + start + 1;
+        return 0;
+    }
+    long long from;
+    int reverse = 0;
+    if (start < 0) {
+        reverse = 1;
+        from = mlen + start;
+    } else {
+        from = start - 1;
+    }
+    if (from < 0) from = 0;
+    if (reverse) {
+        for (long long i = from; i >= 0; i--) {
+            if (i + nlen > mlen) continue;
+            if (memcmp(main_s + i, match_s, (size_t)nlen) == 0) return i + 1;
+        }
+        return 0;
+    }
+    for (long long i = from; i + nlen <= mlen; i++) {
+        if (memcmp(main_s + i, match_s, (size_t)nlen) == 0) return i + 1;
+    }
+    return 0;
+}
+
 /* LTRIM$ (CHW LTRIM_function.htm).  has_any=0 and a NULL/empty match: remove
    leading spaces (the one-argument form).  has_any=1: match is a list of single
    characters; remove leading characters that occur anywhere in the list.
@@ -613,32 +649,27 @@ char* pb_bstr_right(const char* src, long long n) {
    of that exact substring.  Matching is case sensitive. */
 char* pb_ltrim(const char* src, int has_any, const char* match) {
     static const char empty[] = "";
-    if (!src) src = empty;
-    const char* p = src;
-    if (!match || !*match) {
-        while (*p == ' ') p++;
+    if (!src) return pb_bstr_alloc(empty, 0);
+    long long n = (long long)pb_str_len(src);
+    long long i = 0;
+    long long mlen = match ? (long long)pb_str_len(match) : 0;
+    if (mlen == 0) {
+        while (i < n && src[i] == ' ') i++;
     } else if (has_any) {
-        size_t mlen = strlen(match);
-        while (*p) {
+        while (i < n) {
             int found = 0;
-            for (size_t k = 0; k < mlen; k++) {
-                if (match[k] == *p) { found = 1; break; }
+            for (long long k = 0; k < mlen; k++) {
+                if (match[k] == src[i]) { found = 1; break; }
             }
             if (!found) break;
-            p++;
+            i++;
         }
     } else {
-        size_t mlen = strlen(match);
-        for (;;) {
-            int starts = 1;
-            for (size_t k = 0; k < mlen; k++) {
-                if (p[k] != match[k]) { starts = 0; break; }
-            }
-            if (!starts) break;
-            p += mlen;
+        while (i + mlen <= n && memcmp(src + i, match, (size_t)mlen) == 0) {
+            i += mlen;
         }
     }
-    return pb_bstr_alloc(p, (unsigned int)strlen(p));
+    return pb_bstr_alloc(src + i, (unsigned int)(n - i));
 }
 
 /* RTRIM$ (CHW RTRIM_function.htm): mirror of LTRIM$ from the right.  `end` is
@@ -647,30 +678,23 @@ char* pb_ltrim(const char* src, int has_any, const char* match) {
    Case sensitive. */
 char* pb_rtrim(const char* src, int has_any, const char* match) {
     static const char empty[] = "";
-    if (!src) src = empty;
-    size_t end = strlen(src);
-    if (!match || !*match) {
+    if (!src) return pb_bstr_alloc(empty, 0);
+    long long end = (long long)pb_str_len(src);
+    long long mlen = match ? (long long)pb_str_len(match) : 0;
+    if (mlen == 0) {
         while (end > 0 && src[end - 1] == ' ') end--;
     } else if (has_any) {
-        size_t mlen = strlen(match);
         while (end > 0) {
             char c = src[end - 1];
             int found = 0;
-            for (size_t k = 0; k < mlen; k++) {
+            for (long long k = 0; k < mlen; k++) {
                 if (match[k] == c) { found = 1; break; }
             }
             if (!found) break;
             end--;
         }
     } else {
-        size_t mlen = strlen(match);
-        for (;;) {
-            if (end < mlen) break;
-            int ends = 1;
-            for (size_t k = 0; k < mlen; k++) {
-                if (src[end - mlen + k] != match[k]) { ends = 0; break; }
-            }
-            if (!ends) break;
+        while (end >= mlen && memcmp(src + end - mlen, match, (size_t)mlen) == 0) {
             end -= mlen;
         }
     }
@@ -1701,13 +1725,19 @@ char* pb_radix_fmt(long long v, long long base, long long digits,
     return pb_bstr_alloc(buf, (unsigned int)i);
 }
 long long pb_verify(char* s, char* m, long long start) {
-    long long sl = (long long)strlen(s);
+    long long sl = s ? (long long)pb_str_len(s) : 0;
+    long long ml = m ? (long long)pb_str_len(m) : 0;
     long long i;
     /* CHW VERIFY_function.htm: a start position outside the string on either
      * side (including start=0) returns zero. */
     if (start < 1 || start > sl) return 0;
     for (i = start; i <= sl; i++) {
-        if (!strchr(m, s[i - 1])) return i;
+        char c = s[i - 1];
+        int found = 0;
+        for (long long k = 0; k < ml; k++) {
+            if (m[k] == c) { found = 1; break; }
+        }
+        if (!found) return i;
     }
     return 0;
 }
@@ -1750,11 +1780,15 @@ long long pb_disksize(char* path) {
    REPEAT$, FRAC, ISFOLDER, EXP2/EXP10/LOG2/LOG10. String args are payload pointers;
    string results are BSTRs (pb_bstr_alloc), matching the existing builtin pattern. */
 long long pb_tally(char* s, char* m) {
-    size_t n = strlen(m);
+    size_t sn = s ? (size_t)pb_str_len(s) : 0;
+    size_t n = m ? (size_t)pb_str_len(m) : 0;
     if (n == 0) return 0;
     long long c = 0;
-    char* p = s;
-    while ((p = strstr(p, m)) != NULL) { c++; p += n; }
+    size_t i = 0;
+    while (i + n <= sn) {
+        if (memcmp(s + i, m, n) == 0) { c++; i += n; }
+        else i++;
+    }
     return c;
 }
 /* TALLY ANY: count each byte of s that is a member of the single-character
@@ -2370,6 +2404,14 @@ static char* bstr_from_buf(char* buf) {
     return bstr;
 }
 
+/* Same as bstr_from_buf, but for buffers that may contain embedded NUL bytes:
+   the caller knows the byte length, so do not re-measure it with strlen. */
+static char* bstr_from_buf_len(char* buf, unsigned int len) {
+    char* bstr = pb_bstr_alloc(buf, len);
+    free(buf);
+    return bstr;
+}
+
 char* pb_format_digits(double val, int digits);   /* forward decl */
 
 /* ============================================================
@@ -2565,7 +2607,7 @@ static int fmt_scan_mask(const char* m, fmt_mask_t* fm, int um) {
 }
 
 /* Append a slot char: digit, '0' zero-fill, '#/F' fill, '#' omit. */
-static void fmt_slot_char(char kind, const fmt_mask_t* fm, int has_digit,
+static __attribute__((unused)) void fmt_slot_char(char kind, const fmt_mask_t* fm, int has_digit,
                           char d, char* out, int* oi, int cap) {
     if (has_digit) {
         if (*oi < cap - 1) out[(*oi)++] = d;
@@ -2698,6 +2740,7 @@ static int fmt_frac_slots(const fmt_mask_t* fm, const char* frac_digits,
     int n = fm->frac_slots;
     int flen = (int)strlen(frac_digits);
     int fi = 0;
+    (void)cap;  /* only the first frac_slots entries are written */
     for (int e = 0; e < n; e++) {
         if (fi < flen) {
             slots[e] = frac_digits[fi++];
@@ -2754,13 +2797,14 @@ static char* fmt_apply(const fmt_mask_t* fm, double val, int um) {
         char islots[FMT_MAX_SLOTS];
         char idig[2] = { mdig[0], 0 };
         int ovf = fmt_int_slots(fm, idig, islots, (int)sizeof(islots));
+        (void)ovf;  /* scientific mantissa has one integer digit */
         int ilen = fm->int_slots;
         /* fraction slots: mantissa digits mdig[1..] */
         char fslots[FMT_MAX_SLOTS];
         int flen = 0;
         {
             int mj = 1;
-            int e = 0, idx = 0, seen_dot = 0;
+            int e = 0, seen_dot = 0;
             for (int t = 0; t < fm->n; t++) {
                 char k = fm->tok[t];
                 if (k == 'D') { seen_dot = 1; continue; }
@@ -2901,7 +2945,6 @@ static char* fmt_apply(const fmt_mask_t* fm, double val, int um) {
      * empty #-region slots render with the first fill char. With a single fill
      * spec the field stays full width (fill slots render). */
     int fcnt = fm->fill_specs * 2;             /* total 'F' integer slots */
-    int hash_w = ilen - fcnt;                  /* true #/0 integer slots */
     int fill_fold = um && fm->has_fill && fm->fill_specs >= 2;
     int int_start = 0;
     if (fill_fold) {
@@ -3403,38 +3446,44 @@ void pb_parse_array(const char* str, const char* delim, int mode,
 void pb_replace(char** target, const char* old_str, const char* new_str) {
     if (target == NULL || *target == NULL || old_str == NULL || new_str == NULL) return;
 
-    int old_len = (int)strlen(old_str);
-    int new_len = (int)strlen(new_str);
-    if (old_len == 0) return;
+    int old_len = (int)pb_str_len(old_str);
+    int new_len = (int)pb_str_len(new_str);
+    if (old_len <= 0) return;
 
-    /* Count occurrences */
+    /* Count occurrences over the whole BSTR byte payload, not strlen. */
     int count = 0;
-    const char* p = *target;
-    while ((p = strstr(p, old_str)) != NULL) {
-        count++;
-        p += old_len;
+    int orig_len = (int)pb_str_len(*target);
+    const char* src0 = *target;
+    int pos = 0;
+    while (pos + old_len <= orig_len) {
+        if (memcmp(src0 + pos, old_str, (size_t)old_len) == 0) {
+            count++;
+            pos += old_len;
+        } else {
+            pos++;
+        }
     }
     if (count == 0) return;
 
     /* Build result */
-    int orig_len = (int)strlen(*target);
     int result_len = orig_len + count * (new_len - old_len);
-    char* result = (char*)malloc(result_len + 1);
+    char* result = (char*)malloc((size_t)result_len + 1);
+    if (!result) return;
     char* dst = result;
-    const char* src = *target;
-
-    while (*src) {
-        if (strncmp(src, old_str, old_len) == 0) {
-            memcpy(dst, new_str, new_len);
+    int i = 0;
+    while (i < orig_len) {
+        if (i + old_len <= orig_len
+            && memcmp(src0 + i, old_str, (size_t)old_len) == 0) {
+            if (new_len) memcpy(dst, new_str, (size_t)new_len);
             dst += new_len;
-            src += old_len;
+            i += old_len;
         } else {
-            *dst++ = *src++;
+            *dst++ = src0[i++];
         }
     }
-    *dst = '\0';
+    result[result_len] = 0;
 
-    *target = bstr_from_buf(result);
+    *target = bstr_from_buf_len(result, (unsigned int)result_len);
 }
 
 /* REPLACE ANY "oldset" WITH "newset" IN main$ (CHW REPLACE_statement.htm).
@@ -3443,11 +3492,11 @@ void pb_replace(char** target, const char* old_str, const char* new_str) {
  * same length (one-to-one correspondence). */
 void pb_replace_any(char** target, const char* old_set, const char* new_set) {
     if (target == NULL || *target == NULL || old_set == NULL || new_set == NULL) return;
-    int old_len = (int)strlen(old_set);
-    int new_len = (int)strlen(new_set);
+    int old_len = (int)pb_str_len(old_set);
+    int new_len = (int)pb_str_len(new_set);
     if (old_len == 0 || new_len == 0) return;
     int map_len = old_len < new_len ? old_len : new_len;
-    size_t orig_len = strlen(*target);
+    size_t orig_len = (size_t)pb_str_len(*target);
     char* result = (char*)malloc(orig_len + 1);
     if (!result) return;
     for (size_t i = 0; i < orig_len; i++) {
@@ -3459,7 +3508,7 @@ void pb_replace_any(char** target, const char* old_set, const char* new_set) {
         result[i] = (slot >= 0) ? new_set[slot] : c;
     }
     result[orig_len] = 0;
-    *target = bstr_from_buf(result);
+    *target = bstr_from_buf_len(result, (unsigned int)orig_len);
 }
 
 /* ============================================================
@@ -7441,9 +7490,8 @@ void pb_mid_assign_dynamic(char** slot, long long start, long long third,
    bounded by the requested count and the available characters. */
 char* pb_mid_func(const char* s, long long start, long long third,
                   long long is_range) {
-    static const char empty[] = "";
-    if (!s) s = empty;
-    long long L = (long long)strlen(s);
+    if (!s) return pb_bstr_alloc("", 0);
+    long long L = (long long)pb_str_len(s);
     long long idx, n;
     if (!pb_mid_resolve(L, start, third, is_range, L, &idx, &n)) {
         return pb_bstr_alloc("", 0);
@@ -7659,8 +7707,12 @@ void pb_beep(void) {
    AND Part2 starts mid-word), back the cut off to the preceding space, leaving
    that space as the leading space of Part2 (the caller may LTRIM$ it). */
 void pb_split(const char* src, int n, char** out1, char** out2, int word) {
-    if (!src) src = "";
-    size_t len = strlen(src);
+    if (!src) {
+        *out1 = pb_bstr_alloc("", 0);
+        *out2 = pb_bstr_alloc("", 0);
+        return;
+    }
+    size_t len = (size_t)pb_str_len(src);
     if (n < 0) n = 0;
     if ((size_t)n > len) n = (int)len;
     if (word) {
@@ -8536,29 +8588,39 @@ const char* REMARKSDATA(int x) {
 /* EZLIB functions are now nooped in the compiler (should_noop_function).
  * No runtime stubs needed. */
 
-/* LSET (BSTR target): left-justify src into a fixed-length PB string, pad spaces */
+/* LSET (BSTR target): left-justify src into the target's current length,
+   pad spaces.  A dynamic PB string's width is its current LEN; the codegen
+   passes 256 as a legacy sentinel, so derive the real width here. */
 void pb_lset(char** dest, const char* src, int len) {
+    (void)len;
+    if (!dest) return;
     char* old = *dest;
-    char* buf = (char*)malloc((size_t)len + 1);
-    int src_len = src ? (int)strlen(src) : 0;
+    int width = old ? (int)pb_str_len(old) : 0;
+    if (width < 0) width = 0;
+    char* buf = (char*)malloc((size_t)width + 1);
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int i;
-    for (i = 0; i < len; i++) {
+    for (i = 0; i < width; i++) {
         buf[i] = (i < src_len) ? src[i] : 32;
     }
-    buf[len] = (char)0;
-    *dest = pb_bstr_alloc(buf, (unsigned int)len);
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned int)width);
     free(buf);
     if (old) SysFreeString(old);
 }
 
-/* CSET (BSTR target): center src in a fixed-length PB string, pad spaces */
+/* CSET (BSTR target): center src in the target's current length, pad spaces */
 void pb_cset(char** dest, const char* src, int len) {
+    (void)len;
+    if (!dest) return;
     char* old = *dest;
-    char* buf = (char*)malloc((size_t)len + 1);
-    int src_len = src ? (int)strlen(src) : 0;
-    int pad_l = (src_len < len) ? (len - src_len) / 2 : 0;
+    int width = old ? (int)pb_str_len(old) : 0;
+    if (width < 0) width = 0;
+    char* buf = (char*)malloc((size_t)width + 1);
+    int src_len = src ? (int)pb_str_len(src) : 0;
+    int pad_l = (src_len < width) ? (width - src_len) / 2 : 0;
     int i;
-    for (i = 0; i < len; i++) {
+    for (i = 0; i < width; i++) {
         if (i < pad_l) {
             buf[i] = 32;
         } else if (i - pad_l < src_len) {
@@ -8567,15 +8629,15 @@ void pb_cset(char** dest, const char* src, int len) {
             buf[i] = 32;
         }
     }
-    buf[len] = (char)0;
-    *dest = pb_bstr_alloc(buf, (unsigned int)len);
+    buf[width] = (char)0;
+    *dest = pb_bstr_alloc(buf, (unsigned int)width);
     free(buf);
     /* NB: do NOT SysFreeString the previous *dest (may be a codegen constant) */
 }
 
 /* CSET (buffer target, e.g. STRING * N): center src, pad spaces */
 void pb_cset_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int pad_l = (src_len < len) ? (len - src_len) / 2 : 0;
     int i;
     for (i = 0; i < len; i++) {
@@ -8594,7 +8656,7 @@ void pb_cset_buf(char* dest, const char* src, int len) {
 void pb_rset(char** dest, const char* src, int len) {
     char* old = *dest;
     char* buf = (char*)malloc((size_t)len + 1);
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int pad = (src_len < len) ? (len - src_len) : 0;
     int i;
     for (i = 0; i < len; i++) {
@@ -8615,10 +8677,10 @@ void pb_rset(char** dest, const char* src, int len) {
 void pb_rset_dynamic(char** dest, const char* src, const char* pad) {
     if (!dest) return;
     char* old = *dest;
-    int width = old ? (int)strlen(old) : 0;
+    int width = old ? (int)pb_str_len(old) : 0;
     if (width < 0) width = 0;
     const char* s = src ? src : "";
-    int src_len = (int)strlen(s);
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < width ? src_len : width;
     char padc = (pad && pad[0]) ? pad[0] : ' ';
     char* buf = (char*)malloc((size_t)width + 1);
@@ -8645,7 +8707,7 @@ void pb_erase_array(char* base, int elem_size, int count, int is_string) {
 
 /* LSET (buffer target, e.g. STRING * N fixed-length var): left-justify src, pad spaces */
 void pb_lset_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int i;
     for (i = 0; i < len; i++) {
         dest[i] = (i < src_len) ? src[i] : 32;
@@ -8655,7 +8717,7 @@ void pb_lset_buf(char* dest, const char* src, int len) {
 
 /* RSET (buffer target): right-justify src, pad spaces */
 void pb_rset_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int pad = (src_len < len) ? (len - src_len) : 0;
     int i;
     for (i = 0; i < len; i++) {
@@ -8667,7 +8729,7 @@ void pb_rset_buf(char* dest, const char* src, int len) {
 /* LSET ABS (buffer target): left-justify src, leave padding positions
    unchanged from their original content (CHW LSET_statement.htm). */
 void pb_lset_abs_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < len ? src_len : len;
     if (take > 0) memmove(dest, src, (size_t)take);
     dest[len] = (char)0;
@@ -8676,7 +8738,7 @@ void pb_lset_abs_buf(char* dest, const char* src, int len) {
 /* RSET ABS (buffer target): right-justify src, leave padding positions
    unchanged from their original content. */
 void pb_rset_abs_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < len ? src_len : len;
     int pad = len - take;
     if (take > 0) memmove(dest + pad, src, (size_t)take);
@@ -8686,7 +8748,7 @@ void pb_rset_abs_buf(char* dest, const char* src, int len) {
 /* LSET USING (buffer target): left-justify src, pad with first char of pad. */
 void pb_lset_using_buf(char* dest, const char* src, int len, const char* pad) {
     char padc = (pad && pad[0]) ? pad[0] : ' ';
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int i;
     for (i = 0; i < len; i++) {
         dest[i] = (i < src_len) ? src[i] : padc;
@@ -8697,7 +8759,7 @@ void pb_lset_using_buf(char* dest, const char* src, int len, const char* pad) {
 /* RSET USING (buffer target): right-justify src, pad with first char of pad. */
 void pb_rset_using_buf(char* dest, const char* src, int len, const char* pad) {
     char padc = (pad && pad[0]) ? pad[0] : ' ';
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int p = (src_len < len) ? (len - src_len) : 0;
     int i;
     for (i = 0; i < len; i++) {
@@ -8711,7 +8773,7 @@ void pb_rset_using_buf(char* dest, const char* src, int len, const char* pad) {
    padding positions unchanged from their original content, rather than
    replacing them with spaces"). */
 void pb_cset_abs_buf(char* dest, const char* src, int len) {
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < len ? src_len : len;
     int pad_l = (len - take) / 2;
     if (take > 0) memmove(dest + pad_l, src, (size_t)take);
@@ -8722,7 +8784,7 @@ void pb_cset_abs_buf(char* dest, const char* src, int len) {
    character of pad (space when pad is empty/absent). */
 void pb_cset_using_buf(char* dest, const char* src, int len, const char* pad) {
     char padc = (pad && pad[0]) ? pad[0] : ' ';
-    int src_len = src ? (int)strlen(src) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < len ? src_len : len;
     int pad_l = (len - take) / 2;
     int i;
@@ -8737,8 +8799,8 @@ void pb_cset_using_buf(char* dest, const char* src, int len, const char* pad) {
 void pb_cset_abs_dynamic(char** dest, const char* src) {
     if (!dest) return;
     char* old = *dest;
-    int width = old ? (int)strlen(old) : 0;
-    int src_len = src ? (int)strlen(src) : 0;
+    int width = old ? (int)pb_str_len(old) : 0;
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < width ? src_len : width;
     int pad_l = (width - take) / 2;
     char* buf;
@@ -8759,9 +8821,9 @@ void pb_cset_abs_dynamic(char** dest, const char* src) {
 void pb_cset_using_dynamic(char** dest, const char* src, const char* pad) {
     if (!dest) return;
     char* old = *dest;
-    int width = old ? (int)strlen(old) : 0;
+    int width = old ? (int)pb_str_len(old) : 0;
     const char* s = src ? src : "";
-    int src_len = (int)strlen(s);
+    int src_len = src ? (int)pb_str_len(src) : 0;
     int take = src_len < width ? src_len : width;
     int pad_l = (width - take) / 2;
     char padc = (pad && pad[0]) ? pad[0] : ' ';
@@ -9346,6 +9408,16 @@ const char* pb_minmax_str(const char* a, const char* b, long long is_max) {
     return pick_a ? a : b;
 }
 
+/* ASC over an explicit byte length.  Fixed-length STRING fields are inline
+   buffers with no BSTR length prefix, so the caller must pass the declared
+   capacity; a BSTR caller passes its prefix length. */
+long long pb_asc_get_buf(const char* s, long long len, long long pos) {
+    if (!s || len <= 0) return -1;
+    if (pos < 0) pos = len + 1 + pos;
+    if (pos < 1 || pos > len) return -1;
+    return (long long)(unsigned char)s[pos - 1];
+}
+
 /* ASC(s$ [, pos]) — character code at 1-based pos; negative pos counts from
    the end; null string / pos 0 / out-of-range returns -1 (CHW + PBWin10). */
 long long pb_asc_get(char* s, long long pos) {
@@ -9358,10 +9430,7 @@ long long pb_asc_get(char* s, long long pos) {
 #else
     long long len = (long long)strlen(s);
 #endif
-    if (len == 0) return -1;
-    if (pos < 0) pos = len + 1 + pos;
-    if (pos < 1 || pos > len) return -1;
-    return (long long)(unsigned char)s[pos - 1];
+    return pb_asc_get_buf(s, len, pos);
 }
 
 /* ===== WSTRING (UTF-16 BSTR) helpers - batch 281 =====
@@ -10427,6 +10496,12 @@ int pb_comm_set(int channel, const char* option, int on) {
         }
         if (!SetCommState(pb_comm_h[channel], &dcb)) { pb_err_var = pb_err = 57; return -1; }
     }
+    if (strcmp(opt, "DTR") == 0 || strcmp(opt, "RTS") == 0 || strcmp(opt, "BREAK") == 0) {
+        if (!EscapeCommFunction(pb_comm_h[channel], fn)) {
+            pb_err_var = pb_err = 57;
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -10675,6 +10750,7 @@ int pb_thread_object_launch(void* self, void* entry, void* param,
     pb_thread_object* t;
     unsigned long flags = 0;
     int i;
+    (void)stack_size;  /* STACKSIZE SET stores the effective value on the object */
     if (self == NULL || entry == NULL) { pb_err_var = pb_err = 5; return -1; }
     t = pb_thread_object_ensure(self);
     if (t == NULL) { pb_err_var = pb_err = 7; return -1; }
@@ -10686,7 +10762,7 @@ int pb_thread_object_launch(void* self, void* entry, void* param,
     t->entry = entry;
     if (t->suspended > 0) flags |= 0x00000004UL; /* CREATE_SUSPENDED */
     t->h = CreateThread(NULL, (unsigned long)t->stack_size,
-                        (void* (__stdcall*)(void*))pb_thread_object_boot,
+                        (unsigned long (__stdcall*)(void*))pb_thread_object_boot,
                         t, flags, &t->tid);
     if (t->h == NULL) { pb_err_var = pb_err = 7; return -1; }
     t->launched = 1;
@@ -11378,9 +11454,6 @@ long pb_variant_vt(const void* v) {
    that QUAD/CURRENCY can exceed DOUBLE precision). */
 double pb_variant_num(const void* v) {
     unsigned short vt;
-    double d;
-    long long i;
-    unsigned long long u;
     if (!v) return 0.0;
     vt = (unsigned short)(((const unsigned char*)v)[0] | (((const unsigned char*)v)[1] << 8));
     switch (vt) {
@@ -11437,7 +11510,7 @@ static unsigned int pb_bstr_len(const char* s) {
     return (unsigned int)((unsigned char)s[0] | ((unsigned char)s[1] << 8) |
                           ((unsigned char)s[2] << 16) | ((unsigned char)s[3] << 24));
 }
-static void pb_bstr_cpy(char* dst, size_t cap, const char* s) {
+static __attribute__((unused)) void pb_bstr_cpy(char* dst, size_t cap, const char* s) {
     /* copy payload of BSTR s into dst (capped, NUL-terminated) */
     if (!dst) return;
     if (!s) { dst[0] = '\0'; return; }
@@ -11700,18 +11773,18 @@ void pb_type_set(void* dest, const void* src, unsigned int size) {
 
 void pb_type_set_str(void* dest, const char* src, unsigned int size) {
     if (!dest || size == 0) return;
-    unsigned int n = src ? (unsigned int)strlen(src) : 0;
+    unsigned int n = src ? (unsigned int)pb_str_len(src) : 0;
     if (n > size) n = size;
     if (n) memcpy(dest, src, n);
-    if (n < size) memset((char*)dest + n, 0, size - n);
+    if (n < size) memset((char*)dest + n, ' ', size - n);
 }
 
 /* TYPE SET with USING: bytes after the source are filled with the first
-   character of the USING string; a NULL/empty pad falls back to binary zeros. */
+   character of the USING string; a NULL/empty pad falls back to spaces. */
 void pb_type_set_str_pad(void* dest, const char* src, unsigned int size, const char* pad_str) {
     if (!dest || size == 0) return;
-    unsigned char pad = (pad_str && pad_str[0]) ? (unsigned char)pad_str[0] : 0;
-    unsigned int n = src ? (unsigned int)strlen(src) : 0;
+    unsigned char pad = (pad_str && pad_str[0]) ? (unsigned char)pad_str[0] : ' ';
+    unsigned int n = src ? (unsigned int)pb_str_len(src) : 0;
     if (n > size) n = size;
     if (n) memcpy(dest, src, n);
     if (n < size) memset((char*)dest + n, pad, size - n);
@@ -12139,6 +12212,7 @@ static unsigned char* gr_read_bits(void* dc, void* bmp, int w, int h, void* bi) 
     return buf;
 }
 static void gr_write_bits(void* dc, void* bmp, int w, int h, void* bi, unsigned char* buf) {
+    (void)w;  /* SetDIBits derives the width from the BITMAPINFO header */
     SetDIBits(dc, bmp, 0, (unsigned int)h, buf, bi, 0);
 }
 
@@ -12747,6 +12821,7 @@ int pb_graphic_polyline(long* pts, int npts, int color) {
     return ok ? 1 : 0;
 }
 int pb_graphic_paint(int x, int y, int fillcolor, int border, int fillstyle) {
+    (void)fillstyle;  /* solid GDI brush is the current implementation */
     if (!g_gr_dc) return 0;
     void* br = CreateSolidBrush((unsigned long)(unsigned int)fillcolor);
     void* oldb = SelectObject(g_gr_dc, br);
@@ -12836,6 +12911,7 @@ static void* g_xp_dc = 0;
 
 int pb_xprint_attach(char* printer, char* job) {
     (void)job;
+    (void)printer;  /* XPRINT currently renders to the screen DC */
     if (g_xp_dc) { DeleteDC(g_xp_dc); g_xp_dc = 0; }
     void* dc = 0;
     /* Always use screen DC for now � printer DC requires winspool and may not exist in CI */
@@ -13160,12 +13236,14 @@ int pb_xprint_copy(int dx, int dy, int w, int h, int sx, int sy) {
 }
 /* === Batch 73: XPRINT POLYGON / POLYLINE === */
 int pb_xprint_polygon(int* pts, int count, unsigned long col) {
+    (void)col;  /* xp_ensure_pen selects the current pen */
     if (!g_xp_dc || count < 3 || !pts) return 0;
     xp_ensure_pen();
     SelectObject(g_xp_dc, GetStockObject(5)); /* NULL_BRUSH */
     return Polygon(g_xp_dc, (const long*)pts, count);
 }
 int pb_xprint_polyline(int* pts, int count, unsigned long col) {
+    (void)col;  /* xp_ensure_pen selects the current pen */
     if (!g_xp_dc || count < 2 || !pts) return 0;
     xp_ensure_pen();
     return Polyline(g_xp_dc, (const void*)pts, count);
@@ -13317,7 +13395,6 @@ int pb_xprint_render(void) {
 }
 
 /* XPRINT split: track split region */
-static int g_xp_split_x = 0, g_xp_split_y = 0, g_xp_split_w = 0, g_xp_split_h = 0;
 int pb_xprint_split(char* src, int len, char** p1, char** p2) {
     if (!src || !p1 || !p2) return 0;
     int total = 0;
@@ -13335,6 +13412,7 @@ int pb_xprint_stretch(int dx, int dy, int dw, int dh, int sx, int sy, int sw, in
 static void* g_xp_imagelist = NULL;
 int pb_xprint_imagelist(int op, int arg1, int arg2) {
     /* op: 0=attach, 1=detach */
+    (void)arg2;
     if (op == 0) {
         g_xp_imagelist = (void*)(long long)arg1;
     } else if (op == 1) {
@@ -13902,6 +13980,7 @@ int pb_display_font(char** out_font) {
 }
 int pb_display_browse(const char* title, const char* initialdir, char** out) {
     if (!out) return 0;
+    (void)initialdir;  /* BROWSEINFO has no plain initial-directory field */
     char display_name[MAX_PATH] = {0};
     char path[MAX_PATH] = {0};
     BROWSEINFOA bi = {0};
@@ -14526,7 +14605,10 @@ int pb_raise_event(int mname, int arg) {
     }
     return called;
 }
-void pb_event_source_set(void* obj, int source_id) { /* noop */ }
+void pb_event_source_set(void* obj, int source_id) { /* noop */
+    (void)obj;
+    (void)source_id;
+}
 /* LET with OBJECTS � object reference assignment (simplified: pointer copy) */
 void pb_let_object(void** dst, void* src) { if (dst) *dst = src; }
 /* LET with VARIANTS � variant assignment (simplified: store as pointer+tag) */
@@ -14685,10 +14767,10 @@ int pb_menu_set_state(long long h, int bycmd, long pos, long state) {
     if (state & 1) en = 0x0001;      /* MF_GRAYED */
     else if (state & 2) en = 0x0002; /* MF_DISABLED */
     else en = 0x0000;                /* MF_ENABLED */
-    ok = ok && EnableMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | en) != (unsigned int)-1;
-    if (state & 8) ok = ok && CheckMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0008) != (unsigned int)-1;
-    else if (state & 0x10) ok = ok && CheckMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0000) != (unsigned int)-1;
-    if (state & 0x80) ok = ok && EnableMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0080) != (unsigned int)-1; /* MF_HILITE */
+    ok = ok && (unsigned int)EnableMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | en) != (unsigned int)-1;
+    if (state & 8) ok = ok && (unsigned int)CheckMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0008) != (unsigned int)-1;
+    else if (state & 0x10) ok = ok && (unsigned int)CheckMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0000) != (unsigned int)-1;
+    if (state & 0x80) ok = ok && (unsigned int)EnableMenuItem((void*)(intptr_t)h, (unsigned int)(bycmd ? pos : pos - 1), base | 0x0080) != (unsigned int)-1; /* MF_HILITE */
     return ok ? 1 : 0;
 }
 int pb_menu_get_text(long long h, int bycmd, long pos, char** dest) {
@@ -14901,6 +14983,8 @@ int pb_imagelist_set_overlay(long long h, int image, int overlay) {
 
 /* FONT NEW / FONT END � GDI logical font objects (batch 47) */
 int pb_font_new(const char* name, float points, int style, int charset, int pitch, int escapement) {
+    (void)pitch;       /* pitch/family is left at the GDI default */
+    (void)escapement;  /* rotation is left at zero */
     void* hdc = GetDC(NULL);
     int height = 0;
     if (hdc) {
@@ -15633,7 +15717,7 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
         wc.hCursor = LoadCursorA(0, (const char*)32512);
         wc.hbrBackground = (void*)5;
         wc.lpszClassName = "PBWIN_CLASS";
-        unsigned long rc = RegisterClassExA(&wc);
+        (void)RegisterClassExA(&wc);
         registered = 1;
     }
     /* batch 239: DIALOG NEW dimensions are dialog units (DLU) - resolved
@@ -15708,7 +15792,7 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
         wc.hCursor = LoadCursorA(0, (const char*)32512);
         wc.hbrBackground = (void*)16;   /* COLOR_BTNFACE + 1 (3D dialog grey) */
         wc.lpszClassName = "PBWIN_DLG_CLASS";
-        unsigned long rc = RegisterClassExA(&wc);
+        (void)RegisterClassExA(&wc);
         dlg_registered = 1;
     }
     int dluX = 6, dluY = 13;
