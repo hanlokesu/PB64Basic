@@ -73,6 +73,9 @@ local ztext as asciiz * 260
     CASE %JKCOMP_PBHELP
       JK_OpenPbHelp
 
+    CASE %JKCOMP_PB64CHM
+      JK_OpenPb64Help
+
     CASE %JKCTX_COPYPATH
       JK_ClipSetText JK_ActiveFile$
 

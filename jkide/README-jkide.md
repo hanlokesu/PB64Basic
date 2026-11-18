@@ -65,23 +65,28 @@ the author's package, or manually):
 set when `jkide\PB64Basic.chm` is present in the package:
 
 * `PB.chm` is the native F1 target (`JK-IDE.ini` key `PBWinHelpPath`).
-* `PB64Basic.chm` is the addon target (`JKIDE.ini` key `PbHelpFile`, command
-  `Open PB Help` = 55019 / `0xd6eb`). `0x76d` is the native F1 command and is a
-  different entry point.
-* `PB.chw` / `PB64Basic.chw` are companion copies. The current JK-IDE binaries
-  do not contain a `.chw` string; the `.chw` files are kept for tools that
-  expect the classic companion name, but they are not claimed as a native
-  index container.
-* `jkide\install_help.ps1` performs a lock preflight on all four target names
+* `PBWin.chm` is the original PBWin 10 help, opened by the addon
+  `Open PB Help` entry (`JKIDE.ini` key `PbHelpFile`, command 55019 / `0xd6eb`).
+  `0x76d` is the native F1 command and is a different entry point.
+* `PB64Basic.chm` is the fork help, opened by the addon `PB64BASIC.CHM` entry
+  (`JKIDE.ini` key `Pb64HelpFile`, command 55027).
+* `PB.chw` / `PBWin.chw` / `PB64Basic.chw` are companion copies. The current
+  JK-IDE binaries do not contain a `.chw` string; the `.chw` files are kept for
+  tools that expect the classic companion name, but they are not claimed as a
+  native index container.
+* `jkide\install_help.ps1` performs a lock preflight on all target names
   before copying. If JK-IDE is running, setup aborts without copying or
   rewriting the ini files. The original PBWin files are backed up once as
-  `*.pbwin-bak`.
-* If the installer fails, `setup.bat` leaves `PbHelpFile` at the safe
-  `PB.chm` value instead of pointing at a file that was never copied.
+  `*.pbwin-bak` and republished as `PBWin.chm` / `PBWin.chw`.
+* If the installer fails, `setup.bat` leaves `PbHelpFile` at a native help
+  value (`PBWin.chm` when present, otherwise `PB.chm`) instead of pointing at a
+  file that was never copied.
 
-F1 exact-topic mapping, the addon `Open PB Help` command and the
-Contents/Index/Search entries still need a manual check in a running IDE;
-the packaging tests do not claim those runtime behaviors.
+The two addon help entries were verified in a test copy: `Open PB Help`
+(command 55019) opens `PBWin.chm`, and `PB64BASIC.CHM` (command 55027) opens
+`PB64Basic.chm`. F1 exact-topic mapping and the Contents/Index/Search entries
+still need a manual check in a running IDE; the packaging tests do not claim
+those runtime behaviors.
 
 ### Compile-error reporting
 
