@@ -6,11 +6,11 @@ passes were not reproducible. Each probe below is a standalone `.bas` whose resu
 is written next to it and archived here.
 
 Compiler: the `batch378_lprint`, `batch378_redim` and `batch378_remarks` probes
-require the modified `pbsrc_b378/target/release/PB64Basic.exe`; their
-parser/codegen changes are not in the released `v0.2.166` compiler
-(`pbsrc_rel164/target/release/PB64Basic.exe`) and that binary cannot build them.
-The other probes were run with the `pbsrc_b378` build as well; runtime objects are
-rebuilt from `pbcompiler/runtime/pb_runtime.c` in `pbsrc_b378`.
+were written against the modified `pbsrc_b378/target/release/PB64Basic.exe`.
+Their parser/codegen changes were not in `v0.2.166`; they are included in
+`v0.2.169` and later releases. The other probes were run with the `pbsrc_b378`
+build as well; runtime objects are rebuilt from `pbcompiler/runtime/pb_runtime.c`
+in `pbsrc_b378`.
 
 ## Files
 
@@ -93,13 +93,30 @@ Measured matrix, not inferred from the statement names:
 The first version of `batch378_scroll4.bas` asserted the opposite expectation and
 reported 11 failures. The corrected probe reports 0 failures on both targets.
 
-## Probe pitfall: variable file number
+## Probe pitfall: variable file number (not a compiler defect)
 
-`batch378_stdin.bas` originally used a `LOCAL f AS LONG` and
-`OPEN "file" FOR OUTPUT AS #f`. The emitted IR showed the `pb_open_ex` result was
-not stored back into `f`; `f` stayed `0`, so `PRINT #f` wrote nowhere and no file
-appeared. `AS #1` worked. Use a literal file number in these probes until the
-variable-file-number code path is investigated and fixed.
+`batch378_stdin.bas` originally used `LOCAL f AS LONG` followed by
+`OPEN "file" FOR OUTPUT AS #f`. The emitted IR does not store the `pb_open_ex`
+result back into `f`, but that is not a code-generation bug: CHW defines
+`filenum&` as an input expression (a unique integer in 1..32767, normally from
+`FREEFILE`), and `OPEN` never writes a file number back into the variable. An
+uninitialized `LOCAL f AS LONG` is `0`, which is outside the valid range; the
+runtime rejects it with Error 52, so `PRINT #f` has no file to write to.
+
+Assign the number before the OPEN:
+
+```powerbasic
+LOCAL f AS LONG
+f = FREEFILE          ' or f = 1
+OPEN "file" FOR OUTPUT AS #f
+PRINT #f, "text"
+CLOSE #f
+```
+
+`examples/batch382_open_var.bas` locks this path: `FREEFILE` returns a valid
+number, the same variable is reused for OUTPUT and INPUT, and the read-back
+matches. Literal `AS #1` remains fine; the variable form just needs a valid
+value first.
 
 ## How to run
 

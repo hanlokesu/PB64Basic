@@ -101,6 +101,10 @@ pub struct Parser {
     /// integer, so it must parse to PbType::Long, never to a UserDefined type
     /// that codegen would emit as an undefined LLVM type.
     defined_enums: std::collections::HashSet<String>,
+    /// Diagnostic: the SUB/FUNCTION whose body is currently being parsed.
+    /// Used only to attribute a misplaced `%CONSTANT` to its enclosing routine
+    /// when an official header leaves a SUB unclosed.
+    current_routine: Option<(String, usize)>,
 }
 
 impl Parser {
@@ -118,6 +122,7 @@ impl Parser {
             defined_types: std::collections::HashSet::new(),
             percent_consts: std::collections::HashMap::new(),
             defined_enums: std::collections::HashSet::new(),
+            current_routine: None,
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -168,6 +173,27 @@ impl Parser {
                 // them (`xx.Resume()`, `xx.Close()`).
                 Token::Close => "CLOSE",
                 Token::Resume => "RESUME",
+                // batch 383: José Roca's Windows API headers use reserved
+                // words as UNION/TYPE member names (`Next`, `Function`).
+                // They are legal field names in PB10 headers and must not
+                // make the member parser give up.
+                Token::Next => "NEXT",
+                Token::Function => "FUNCTION",
+                // `mod` is a legal parameter name in the official
+                // FreeLibraryWhenCallbackReturns declaration.
+                Token::Mod => "MOD",
+                // Windows headers use `to` / `error` as parameter names
+                // (WinSock2's sendto/recvfrom family and several Win32
+                // callback declarations). PB10 accepts reserved words in
+                // parameter and member-name positions.
+                Token::To => "TO",
+                Token::Error => "ERROR",
+                // Official GUI wrappers use these keywords as member names:
+                // `pRegExp.Global`, `pWHttp.Open`, and Psapi's
+                // `PSAPI_WORKING_SET_*` bit-field member `Shared`.
+                Token::Global => "GLOBAL",
+                Token::Open => "OPEN",
+                Token::Shared => "SHARED",
                 _ => return None,
             }
             .to_string(),
@@ -177,7 +203,11 @@ impl Parser {
     /// Map a bare keyword used as an unnamed parameter type (e.g. the
     /// `OPTIONAL BYVAL DWORD` tail of ShellMessageBox) to its PbType.
     fn keyword_to_type(spelling: &str) -> PbType {
-        match spelling {
+        Self::keyword_to_type_opt(spelling).unwrap_or(PbType::Long)
+    }
+
+    fn keyword_to_type_opt(spelling: &str) -> Option<PbType> {
+        Some(match spelling {
             "DWORD" => PbType::Dword,
             "LONG" => PbType::Long,
             "INTEGER" => PbType::Integer,
@@ -188,8 +218,13 @@ impl Parser {
             "CUR" => PbType::Cur,
             "CUX" => PbType::CurX,
             "STRING" => PbType::String,
-            _ => PbType::Long,
-        }
+            "BYTE" => PbType::Byte,
+            "WORD" => PbType::Word,
+            "ASCIIZ" | "ASCIZ" => PbType::String,
+            "WSTRING" => PbType::WString,
+            "ANY" => PbType::Variant,
+            _ => return None,
+        })
     }
 
     /// Consume a member/field name: an identifier, or a reserved word that PB
@@ -251,7 +286,7 @@ impl Parser {
                 Token::Comma => "\",\" expected".to_string(),
                 Token::Semicolon => "\";\" expected".to_string(),
                 Token::LParen => "\"(\" expected".to_string(),
-                Token::RParen => "\")\" expected".to_string(),
+                Token::RParen => format!("\")\" expected, got {:?}", self.peek()),
                 Token::Eq => "\"=\" expected".to_string(),
                 Token::Minus => "\"-\" expected".to_string(),
                 Token::Star => "\"*\" expected".to_string(),
@@ -928,6 +963,17 @@ impl Parser {
                 Ok(None)
             }
             Token::IntegerLiteral(n) => {
+                // Classic BASIC line-number label: `2DECLARE FUNCTION ...`
+                // (literal spelling in José Roca's WinSpool.inc).  Consume
+                // only the number and let the top-level dispatcher parse the
+                // declaration on the same line.
+                if !matches!(
+                    self.peek_at(1),
+                    Some(Token::Eol | Token::Eof | Token::Colon)
+                ) {
+                    self.advance();
+                    return Ok(None);
+                }
                 eprintln!(
                     "Error: Parse error at line {}: unexpected number at top level: {}",
                     line, n
@@ -2387,7 +2433,9 @@ impl Parser {
         }
 
         self.consume_to_eol();
+        let saved_routine = self.current_routine.replace((name.clone(), line));
         let body = self.parse_body(&[BodyEnd::EndSub, BodyEnd::EndMethod])?;
+        self.current_routine = saved_routine;
 
         Ok(SubDecl {
             name,
@@ -2471,7 +2519,9 @@ impl Parser {
 
         self.consume_to_eol();
         self.current_function_name = Some(name.to_uppercase());
+        let saved_routine = self.current_routine.replace((name.clone(), line));
         let body = self.parse_body(&[BodyEnd::EndFastProc, BodyEnd::EndFunction])?;
+        self.current_routine = saved_routine;
         self.current_function_name = None;
 
         Ok(FunctionDecl {
@@ -2548,7 +2598,9 @@ impl Parser {
 
         self.consume_to_eol();
         self.current_function_name = Some(name.to_uppercase());
+        let saved_routine = self.current_routine.replace((name.clone(), line));
         let body = self.parse_body(&[BodyEnd::EndFunction])?;
+        self.current_routine = saved_routine;
         self.current_function_name = None;
 
         Ok(FunctionDecl {
@@ -2612,7 +2664,23 @@ impl Parser {
             // IS the type; the param gets an empty name.
             let mut unnamed = false;
             let name = if let Token::Identifier(_) = self.peek() {
-                self.consume_identifier()?
+                let n = self.consume_identifier()?;
+                // A bare type keyword used as the whole parameter
+                // (`BYVAL BYTE PTR`, `BYVAL DWORD`): PBWin allows the name to
+                // be omitted.  If the identifier is a type name and the next
+                // token closes the parameter or starts a PTR suffix, treat it
+                // as the type, not as a parameter name.
+                let next_is_suffix = matches!(
+                    self.peek(),
+                    Token::Identifier(s)
+                        if s.eq_ignore_ascii_case("PTR") || s.eq_ignore_ascii_case("POINTER")
+                );
+                if Self::keyword_to_type_opt(&n).is_some()
+                    && (next_is_suffix || matches!(self.peek(), Token::Comma | Token::RParen))
+                {
+                    unnamed = true;
+                }
+                n
             } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
                 self.advance();
                 unnamed = true;
@@ -2636,7 +2704,17 @@ impl Parser {
                 self.advance();
                 self.parse_type()?
             } else if unnamed {
-                Self::keyword_to_type(&name)
+                // The bare type keyword itself was consumed as the parameter
+                // name (`BYVAL BYTE PTR`): finish the pointer suffix here,
+                // because there is no `AS` clause for parse_type() to do it.
+                let mut t = Self::keyword_to_type(&name);
+                if let Token::Identifier(s) = self.peek() {
+                    if s.eq_ignore_ascii_case("PTR") || s.eq_ignore_ascii_case("POINTER") {
+                        self.advance();
+                        t = PbType::Pointer(Box::new(t));
+                    }
+                }
+                t
             } else {
                 type_from_suffix(&name)
             };
@@ -2713,6 +2791,11 @@ impl Parser {
                     "CDECL" => Some(CallConv::CDecl),
                     "STDCALL" | "SDECL" => Some(CallConv::StdCall),
                     "BDECL" => Some(CallConv::BDecl),
+                    // batch 383: `IMPORT "DLL"` is a library-import
+                    // descriptor used by José Roca's WIN32API headers,
+                    // not a calling convention. Leave it for the lib
+                    // parser below instead of rejecting it.
+                    "IMPORT" => None,
                     // An identifier in the calling-convention slot that is not a
                     // recognized convention is a real error (e.g. the misspelled
                     // "cdelc"). Reject it clearly instead of breaking out and
@@ -2743,11 +2826,30 @@ impl Parser {
             }
         }
 
-        // Optional LIB "dll.dll"
+        // Optional LIB "dll.dll" or IMPORT "dll.dll".  PB10's IMPORT form is
+        // the one used throughout José Roca's WIN32API.INC headers:
+        //   DECLARE FUNCTION Foo IMPORT "USER32.DLL" ALIAS "Foo" (...)
+        // Both forms describe the same external library binding.
         let lib = if self.peek() == &Token::Lib {
             self.advance();
             match self.peek().clone() {
                 Token::StringLiteral(s) => {
+                    self.advance();
+                    Some(s)
+                }
+                _ => None,
+            }
+        } else if matches!(self.peek(), Token::Identifier(s) if s.eq_ignore_ascii_case("IMPORT")) {
+            self.advance();
+            match self.peek().clone() {
+                Token::StringLiteral(s) => {
+                    self.advance();
+                    Some(s)
+                }
+                // A few headers use a preprocessor/macro name (for example
+                // `IMPORT $ATL_DLLNAME`). Keep the name so later linking can
+                // diagnose an unresolved import instead of silently dropping it.
+                Token::Identifier(s) => {
                     self.advance();
                     Some(s)
                 }
@@ -4249,6 +4351,18 @@ impl Parser {
         self.skip_eol();
         let line = self.current_line();
 
+        // Classic BASIC line-number label.  José Roca's WinSpool.inc has a
+        // literal `2DECLARE FUNCTION ...` in one conditional branch; PBWin
+        // treats the leading number as a label and parses the declaration.
+        // A number can never start a valid statement on its own, so consume
+        // it and parse the statement that follows.
+        if matches!(self.peek(), Token::IntegerLiteral(_))
+            && matches!(self.peek_at(1), Some(Token::Declare))
+        {
+            self.advance();
+            return self.parse_statement();
+        }
+
         match self.peek().clone() {
             Token::At => {
                 // `@ptr = expr` / `@ptr.member = expr` — dereference assignment
@@ -4903,7 +5017,7 @@ impl Parser {
             Token::PercentConstant(_) => {
                 // %CONSTANT = value inside a sub
                 self.consume_to_eol();
-                eprintln!("Error: %CONSTANT: defining a constant inside a SUB is not supported on line {}", line);
+                eprintln!("Error: %CONSTANT: defining a constant inside a SUB is not supported on line {} (inside {:?})", line, self.current_routine);
                 self.error_count += 1;
                 Ok(Statement::Noop("%CONSTANT".to_string(), line))
             }
@@ -8350,9 +8464,21 @@ impl Parser {
                 // argument here.
                 if name_upper == "LOCATE" {
                     self.advance(); // consume LOCATE
-                    let row = self.parse_expression()?;
+                                    // Both arguments are optional (CHW `LOCATE [row], [col]`).
+                                    // `LOCATE ,1` is common in José Roca's headers; an omitted
+                                    // slot is passed to codegen as Omitted so the runtime can
+                                    // keep the current cursor coordinate for that axis.
+                    let row = if self.peek() == &Token::Comma {
+                        Expr::Omitted
+                    } else {
+                        self.parse_expression()?
+                    };
                     self.expect(&Token::Comma)?;
-                    let col = self.parse_expression()?;
+                    let col = if matches!(self.peek(), Token::Eol | Token::Eof | Token::Colon) {
+                        Expr::Omitted
+                    } else {
+                        self.parse_expression()?
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "LOCATE".to_string(),
@@ -14623,15 +14749,26 @@ impl Parser {
                     // the receiver's TYPE and lowers it to `<Class>_<Method>`. A
                     // plain call can never collide with this, because a PB
                     // identifier cannot begin with a dot.
-                    if let Expr::MethodCall {
-                        base,
-                        name: mname,
-                        args: margs,
-                    } = primary
-                    {
-                        let mut call_args = Vec::with_capacity(margs.len() + 1);
-                        call_args.push(*base);
-                        call_args.extend(margs);
+                    //
+                    // `o.M` without parentheses is the same statement form with
+                    // zero extra arguments.  José Roca's headers use it for
+                    // `pUnk.AddRef`; before batch 383 it fell through to the
+                    // generic "unrecognised statement" recovery.
+                    let method_stmt = match primary {
+                        Expr::MethodCall {
+                            base,
+                            name: mname,
+                            args: margs,
+                        } => {
+                            let mut call_args = Vec::with_capacity(margs.len() + 1);
+                            call_args.push(*base);
+                            call_args.extend(margs);
+                            Some((mname, call_args))
+                        }
+                        Expr::TypeMember(base, mname) => Some((mname, vec![*base])),
+                        _ => None,
+                    };
+                    if let Some((mname, call_args)) = method_stmt {
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: format!(".{}", mname),
@@ -19020,6 +19157,14 @@ impl Parser {
                 Ok(Expr::FunctionCall(format!("CHOOSE{}", mode), args))
             }
             Token::Identifier(name) => {
+                // CHW NOTHING: the null object/pointer literal.  José Roca's
+                // headers pass it to CoCreateInstance and assign it to object
+                // variables; lowering it to integer zero keeps both paths
+                // type-compatible without an undeclared-variable diagnostic.
+                if name.eq_ignore_ascii_case("NOTHING") {
+                    self.advance();
+                    return Ok(Expr::IntegerLit(0));
+                }
                 // DEF fn inline expansion: name(params) -> subst body
                 let def_key = name.to_uppercase();
                 if self.def_funcs.contains_key(&def_key) && self.peek_at(1) == Some(&Token::LParen)
@@ -19033,6 +19178,15 @@ impl Parser {
                     };
                     self.expect(&Token::RParen)?;
                     let (params, body) = self.def_funcs.get(&def_key).unwrap().clone();
+                    // A parameterless MACRO used as a function alias
+                    // (`MACRO SendMessage = SendMessageA`) must forward the
+                    // call arguments; otherwise the alias expands to a bare
+                    // variable and codegen reports Error 516 on the target.
+                    if params.is_empty() {
+                        if let Expr::Variable(target) = &body {
+                            return Ok(Expr::FunctionCall(target.clone(), args));
+                        }
+                    }
                     return Ok(subst_def_params(&body, &params, &args));
                 }
                 self.advance();
@@ -19270,6 +19424,13 @@ impl Parser {
                 // can therefore lower `obj.M(a)` to `<Class>_<Method>(obj, a)`.
                 while self.peek() == &Token::Dot {
                     self.advance();
+                    // PBWin's `obj.@field` dereferences the pointer-valued
+                    // member (`si.@lpTitle` in AfxWin.inc).  The `@` belongs to
+                    // the member access, not to the receiver.
+                    let deref_member = self.peek() == &Token::At;
+                    if deref_member {
+                        self.advance();
+                    }
                     // Member name may be a reserved word used as a TYPE member
                     // (batch 278, official MyDLL.bas: BYREF / DWORD members).
                     let member = if let Token::Identifier(w) = self.peek() {
@@ -19286,7 +19447,7 @@ impl Parser {
                             self.current_line(),
                         ));
                     };
-                    if self.peek() == &Token::LParen {
+                    let access = if self.peek() == &Token::LParen {
                         self.advance();
                         let args = if self.peek() == &Token::RParen {
                             Vec::new()
@@ -19294,14 +19455,19 @@ impl Parser {
                             self.parse_arg_list()?
                         };
                         self.expect(&Token::RParen)?;
-                        expr = Expr::MethodCall {
+                        Expr::MethodCall {
                             base: Box::new(expr),
                             name: member,
                             args,
-                        };
+                        }
                     } else {
-                        expr = Expr::TypeMember(Box::new(expr), member);
-                    }
+                        Expr::TypeMember(Box::new(expr), member)
+                    };
+                    expr = if deref_member {
+                        Expr::Deref(Box::new(access))
+                    } else {
+                        access
+                    };
                 }
                 Ok(expr)
             }

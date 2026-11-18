@@ -16,6 +16,7 @@
  *           in their own COMDAT sections are discarded from the EXE.)
  */
 
+#define _CRT_SECURE_NO_WARNINGS 1
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,7 +56,6 @@ __declspec(dllimport) unsigned long __stdcall SizeofResource(void* hModule, void
 __declspec(dllimport) void* __stdcall LoadResource(void* hModule, void* hResInfo);
 __declspec(dllimport) void* __stdcall LockResource(void* hResData);
 __declspec(dllimport) int __stdcall LoadStringA(void* hInstance, unsigned int uID, char* lpBuffer, int cchBufferMax);
-#define RT_RCDATA MAKEINTRESOURCE(10)
 #define MAKEINTRESOURCEA(i) ((const char*)((unsigned long long)(i)))
 #define RT_RCDATA MAKEINTRESOURCEA(10)
 
@@ -533,7 +533,7 @@ static long __stdcall pb_crash_handler(void* exception_pointers) {
     if ((code & 0xF0000000) != 0xC0000000) return 0;
     unsigned long long addr = er ? er[2] : 0;
     char b[192];
-    int n = sprintf(b, "CRASH code=%08X addr=%llX\n", code, addr);
+    int n = sprintf(b, "CRASH code=%08X addr=%llX\n", (unsigned int)code, addr);
     _write(2, b, n);
     return 0; /* EXCEPTION_CONTINUE_SEARCH */
 }
@@ -4689,14 +4689,17 @@ void pb_cls(void) {
     SetConsoleCursorPosition(h, home);
 }
 
-/* LOCATE row, col (PB/CC legacy syntax; both values 1-based).  Values
-   outside the buffer are clamped rather than rejected, matching the
-   forgiving console behaviour of PowerBASIC. */
+/* LOCATE [row], [col] (PB/CC legacy syntax; both values 1-based).  An
+   omitted argument arrives as -1 and keeps the current coordinate for that
+   axis.  Explicit values outside the buffer are clamped rather than rejected,
+   matching the forgiving console behaviour of PowerBASIC. */
 void pb_locate(int row, int col) {
     void* h = pb_console_output_handle();
     if (!h) return;
     PB_CONSOLE_SCREEN_BUFFER_INFO info;
     if (!GetConsoleScreenBufferInfo(h, &info)) return;
+    if (row < 0) row = (int)info.dwCursorPosition.Y + 1;
+    if (col < 0) col = (int)info.dwCursorPosition.X + 1;
     if (row < 1) row = 1;
     if (col < 1) col = 1;
     if (row > (int)info.dwSize.Y) row = (int)info.dwSize.Y;
@@ -7880,7 +7883,7 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
 #define CF_BITMAP 2
 #define CF_OEMTEXT 7
 #define CF_UNICODETEXT 13
-#define GMEM_MOVEABLE 0x0042
+/* GMEM_MOVEABLE is defined once near the GLOBALMEM helpers (0x0002u). */
 
 /* CCUR / CCUX — round to fixed decimals (currency semantics, PBWin10). */
 double pb_ccur(double x) { return round(x * 10000.0) / 10000.0; }
@@ -11240,7 +11243,7 @@ const void* pb_variant_wstr(const void* v) {
     if (need <= 0) return NULL;
     w = (wchar_t*)malloc((size_t)need * sizeof(wchar_t));
     if (!w) return NULL;
-    got = MultiByteToWideChar(0 /* CP_ACP */, 0, s, nb, w, need);
+    got = MultiByteToWideChar(0 /* CP_ACP */, 0, s, nb, (short*)w, need);
     if (got <= 0) { free(w); return NULL; }
     out = (char*)pb_bstr_alloc((const char*)w, (unsigned int)got * 2);
     free(w);
@@ -11411,7 +11414,8 @@ void pb_lprint_dbl(double d) {
         pb_lpt_write(" ", 1);
     }
 }
-/* LPRINT statement terminator: CRLF unless trailing semicolon (simplified: always CRLF) */
+/* LPRINT statement terminator: the CALLER emits this only when the statement
+   has no trailing comma/semicolon, matching PRINT/LPRINT separator semantics. */
 void pb_lprint_crlf(void) {
     pb_lpt_write("\r\n", 2);
     pb_lpt_col = 0;
@@ -13805,18 +13809,11 @@ int pb_display_browse(const char* title, const char* initialdir, char** out) {
     *out = SysAllocStringByteLen("", 0); /* user cancelled */
     return 0;
 }
-/* === Batch 79: OOP foundation (CLASS/METHOD/OBJECT/INSTANCE) + ARRAY REDIM === */
-/* OOP simplified model: objects are opaque pointers (void*), methods are regular functions
-   with a hidden 'this' pointer as first arg. CLASS/END CLASS is a namespace block. */
-static void* g_oop_last_instance = 0;
-void* pb_class_create(const char* classname) {
-    /* allocate a minimal object stub (16 bytes: vtable ptr + refcount + classname hash) */
-    void* obj = calloc(1, 16);
-    g_oop_last_instance = obj;
-    return obj;
-}
-void pb_class_destroy(void* obj) { if (obj) free(obj); }
-int pb_method_call(void* obj, const char* methodname) { return 1; } /* noop dispatch stub */
+/* === Batch 79: ARRAY REDIM backing store ===
+   The old OOP stubs (pb_class_create/pb_class_destroy/pb_method_call and the
+   unreferenced pb_instance_create) were removed: codegen declares none of them
+   and the current object model dispatches through the batch222 event/OBJRESULT
+   path instead. */
 
 /* Heap-backed array descriptor for the fork's ARRAY REDIM INCR/DECR extension.
    Existing element access loads `data` through this descriptor, so a realloc
@@ -13925,11 +13922,9 @@ int pb_array_redim_decr(void* arr_ptr, int elem_size, int old_count, int decreme
     int n = old_count - decrement;
     return n < 0 ? 0 : n;
 }
-/* === Batch 80: OOP remaining 9 items (INTERFACE/EVENTS/RAISEEVENT/INSTANCE/OBJECT/LET) === */
-/* INSTANCE var AS ClassName � create an object instance (simplified: allocate stub) */
-void* pb_instance_create(const char* classname) {
-    return pb_class_create(classname);
-}
+/* === Batch 80: EVENTS / RAISEEVENT event model ===
+   The old INSTANCE stub was removed with pb_class_create; current INSTANCE handling
+   goes through the batch222 object/event path. */
 /* EVENTS / RAISEEVENT / EVENT SOURCE � simplified noop event model */
 static int g_event_enabled = 1;
 void pb_events_enable(int enable) { g_event_enabled = enable; }
@@ -14241,10 +14236,10 @@ static void pb_com_coerce_result(PB_VARIANT* v, int rtype, void* slot) {
             char* src = NULL;
             int slen = 0;
             if (v->vt == 8 && v->v.pVal) {
-                int n = WideCharToMultiByte(0, 0, (wchar_t*)v->v.pVal, -1, NULL, 0, NULL, NULL);
+                int n = WideCharToMultiByte(0, 0, (const short*)v->v.pVal, -1, NULL, 0, NULL, NULL);
                 if (n > 0) {
                     src = (char*)malloc((size_t)n);
-                    WideCharToMultiByte(0, 0, (wchar_t*)v->v.pVal, -1, src, n, NULL, NULL);
+                    WideCharToMultiByte(0, 0, (const short*)v->v.pVal, -1, src, n, NULL, NULL);
                     slen = n - 1;
                 }
             }

@@ -430,7 +430,7 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 381 (v0.2.169). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 383 (v0.2.170). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
 > batch 381 (v0.2.169) - JK-IDE help installer hardening. setup.bat keeps PbHelpFile on PB.chm until the four-file copy succeeds, skips the installer when bundled help is absent, and uses the full Windows PowerShell path; install_help.ps1 documents .chw as a companion copy; README-jkide and batch381 package smoke updated. Runtime F1/menu clicks not automated.
 > batch 380 (v0.2.168) - the complete PB64Basic help set is bundled in jkide and installed into JK-IDE; F1 and Open PB Help resolve to the bundled help; the original PBWin help is backed up once as *.pbwin-bak; compiler code is unchanged.
 > batch 379 (v0.2.167) - file-I/O evidence and console probes; WIDE SEEK byte offsets, ANSI 0x1A EOF, LINE INPUT # arrays, fixed WSTRING arrays, dynamic ARRAY REDIM, LPRINT separators, and RemarksData width fixed; CON.VIEW remains host-limited.
@@ -1047,6 +1047,19 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.170 (2026-11-18)
+
+**Lazy reachable-body codegen for large WINAPI header sets (batch 383).**
+
+- **Fixed - `#INCLUDE "WIN32API.INC"` compilation.** EXE builds now compile only procedure bodies reachable from `PBMAIN`. A queue starts at `PBMAIN`, follows calls discovered while compiling each body, and leaves the hundreds of unused GUI/COM wrappers in Jose Roca's `WINAPI_III_107` set untouched. DLL/SLL builds keep the eager all-body path.
+- **Fixed - deferred external declarations.** `DECLARE` now records its signature instead of writing IR immediately. The first reference emits the `declare` and adds the matching import library only then, which removes unused `.lib` warnings and invalid parameter types from header-only INTERFACE declarations.
+- **Fixed - global array shapes before lazy codegen.** Every `GLOBAL arr()` plus a later `DIM arr(...)` inside a SUB is resolved in a pre-pass before any body is compiled. Without this, lazy codegen started at `PBMAIN`, saw `Names(1)` before `SetupDims` had run its `DIM Names(1 TO 3)`, emitted both a bogus `declare i32 @NAMES(ptr)` and a duplicate `@NAMES` global, and clang rejected `l10_session.bas` with `redefinition of global '@NAMES'`.
+- **Fixed - indirect reachability.** The lazy closure now covers `ON ... CALL`, `CODEPTR`, `THREAD CREATE`, `DIALOG SHOW MODAL`, `CONTROL ... CALL`, OOP method calls and PROPERTY GET/SET, `EVENTS FROM` handler tables, `FOR EACH` `COUNT`/`ITEM`, interface virtual dispatch across every implementer, and `THREAD OBJECT` thread-method entry points.
+- **Fixed - preprocessor macro lookup.** Multi-line macro dispatch uses an O(1) first-identifier lookup instead of scanning every collected macro for every source line; line-start macro scanning also accepts names ending in `$`. The `_` continuation rule now requires whitespace before the underscore, so identifiers such as `bearermode_` no longer swallow the following `END FUNCTION`.
+- **Fixed - numeric line labels.** A leading integer is consumed as a numeric label prefix only for `2DECLARE` compatibility; statements such as `100 RESUME NEXT` again emit `Statement::Label` and resolve their branch targets.
+- **Verified - Erol's sample.** `ConsTest.bas` with `#INCLUDE "WIN32API.INC"` from `WINAPI_III_107`, built for i686-pc-windows-msvc with `pb_runtime_x86.obj`: 67,249 preprocessed lines, 483,937 tokens, 38,692 top-level items, IR reduced from 8,433 to 3,627 lines, release build 3.2 s end to end, EXE linked and printed `Press any key to exit...`.
+- **Verified - regression.** `run_examples.py --compile-all` reports 453 selected / 453 compiled / 0 failed with the v0.2.170 release compiler and runtime object. `cargo fmt --all`, `cargo check -p pbcompiler` and the existing example set report no new warnings.
+
 ### v0.2.169 (2026-11-18)
 
 **JK-IDE help integration hardening (batch 381).**

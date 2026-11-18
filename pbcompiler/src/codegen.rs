@@ -435,8 +435,9 @@ fn compile_with_clang(
 }
 
 /// Compile a split module containing large functions.
-/// Tries multiple strategies since these functions crash clang's default ISel.
-/// If all strategies fail, generates stubs for uncompilable functions.
+/// Tries multiple strategies since these functions can crash clang's default ISel.
+/// If all strategies fail, returns the last clang diagnostic and fails the build
+/// rather than substituting empty stub functions.
 fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResult<()> {
     let target_flag = format!("--target={}", target);
     let ll_str = ll_path.to_string_lossy();
@@ -501,123 +502,31 @@ fn compile_split_module(ll_path: &Path, obj_path: &Path, target: &str) -> PbResu
         ])
         .output();
 
-    if let Ok(output) = &result {
-        if output.status.success() {
-            return Ok(());
-        }
-    }
+    let last_error = match result {
+        Ok(output) if output.status.success() => return Ok(()),
+        Ok(output) => format!("-O0:\n{}", String::from_utf8_lossy(&output.stderr).trim()),
+        Err(e) => format!("-O0: could not run clang: {}", e),
+    };
 
-    // Strategy 4: Generate stub module for all functions
-    // BIGLOOP and similar functions crash clang at ALL optimization levels.
-    // Emit stub functions that return default values so linking can proceed.
+    // Strategy 4 used to generate default-returning stubs for every function
+    // in the split module.  That made the link succeed while the resulting EXE
+    // silently called empty bodies (BIGLOOP and similar very large functions
+    // crash clang at every optimization level).  A compiler must not emit a
+    // functionally incomplete binary: report the last clang diagnostic and
+    // fail the build instead.
     eprintln!("[PB64Basic] All compilation strategies failed for split module.");
-    eprintln!("[PB64Basic] Generating stub functions for uncompilable functions...");
-    generate_stub_module(ll_path, obj_path, target)
-}
-
-/// Generate a stub .ll module where each function just returns a default value.
-/// This allows linking to succeed even when clang can't compile the full function.
-fn generate_stub_module(original_ll: &Path, obj_path: &Path, target: &str) -> PbResult<()> {
-    let content = std::fs::read_to_string(original_ll)
-        .map_err(|e| PbError::io(format!("Failed to read split .ll: {}", e)))?;
-
-    let mut stub = String::new();
-    use std::fmt::Write;
-
-    // Copy module header
-    for line in content.lines() {
-        if line.starts_with("; Generated") || line.starts_with("target ") || line.is_empty() {
-            writeln!(stub, "{}", line).unwrap();
-        } else {
-            break;
-        }
+    if last_error.trim().is_empty() {
+        return Err(PbError::io(
+            "clang failed to compile the split module at -O1, -O0 fast-isel and plain -O0; \
+             stub fallback is disabled so the build fails instead of producing an incomplete EXE"
+                .to_string(),
+        ));
     }
-
-    // Copy type definitions
-    for line in content.lines() {
-        if line.starts_with('%') && line.contains(" = type ") {
-            writeln!(stub, "{}", line).unwrap();
-        }
-    }
-
-    // Copy declare statements
-    for line in content.lines() {
-        if line.starts_with("declare ") {
-            writeln!(stub, "{}", line).unwrap();
-        }
-    }
-
-    // Copy external global declarations
-    for line in content.lines() {
-        if line.starts_with('@') && line.contains(" = external global ") {
-            writeln!(stub, "{}", line).unwrap();
-        }
-    }
-
-    writeln!(stub).unwrap();
-
-    // For each define, emit a stub that returns default
-    for line in content.lines() {
-        if line.starts_with("define ") {
-            // Extract return type and generate stub
-            let rest = line.strip_prefix("define ").unwrap();
-            let rest = rest.strip_prefix("dllexport ").unwrap_or(rest);
-            // rest is "TYPE @NAME(PARAMS) {"
-            let ret_type = rest.split_whitespace().next().unwrap_or("void");
-
-            // Extract function name
-            let name = if let Some(at_pos) = rest.find('@') {
-                let after_at = &rest[at_pos + 1..];
-                if let Some(paren_pos) = after_at.find('(') {
-                    &after_at[..paren_pos]
-                } else {
-                    after_at
-                }
-            } else {
-                "unknown"
-            };
-
-            eprintln!(
-                "[PB64Basic] Stubbing function: {} (returns {})",
-                name, ret_type
-            );
-
-            // Emit stub: strip param names for the define
-            let export = if line.contains("dllexport") {
-                "dllexport "
-            } else {
-                ""
-            };
-
-            // Get the parameter part
-            if let (Some(open), Some(close)) = (line.rfind('('), line.rfind(')')) {
-                let params = &line[open..=close];
-                writeln!(stub, "define {}{} @{}{} {{", export, ret_type, name, params).unwrap();
-            } else {
-                writeln!(stub, "define {}{} @{}() {{", export, ret_type, name).unwrap();
-            }
-            writeln!(stub, "entry:").unwrap();
-            match ret_type {
-                "void" => writeln!(stub, "  ret void").unwrap(),
-                "i32" => writeln!(stub, "  ret i32 0").unwrap(),
-                "i16" => writeln!(stub, "  ret i16 0").unwrap(),
-                "i64" => writeln!(stub, "  ret i64 0").unwrap(),
-                "double" => writeln!(stub, "  ret double 0.0").unwrap(),
-                "float" => writeln!(stub, "  ret float 0.0").unwrap(),
-                "ptr" => writeln!(stub, "  ret ptr null").unwrap(),
-                _ => writeln!(stub, "  ret {} zeroinitializer", ret_type).unwrap(),
-            }
-            writeln!(stub, "}}").unwrap();
-            writeln!(stub).unwrap();
-        }
-    }
-
-    // Write and compile the stub module
-    let stub_ll = original_ll.with_extension("stub.ll");
-    std::fs::write(&stub_ll, &stub)
-        .map_err(|e| PbError::io(format!("Failed to write stub .ll: {}", e)))?;
-
-    compile_with_clang(&stub_ll, obj_path, "-O0", target)
+    Err(PbError::io(format!(
+        "clang failed to compile the split module at -O1, -O0 fast-isel and plain -O0; \
+         stub fallback is disabled so the build fails instead of producing an incomplete EXE:\n{}",
+        last_error.trim()
+    )))
 }
 
 /// Locate `legacy_stdio_definitions.lib` for the target architecture.
@@ -1478,6 +1387,25 @@ struct Compiler {
 
     // Unimplemented-statement warnings collected during codegen (name / line)
     warnings: Vec<String>,
+    // Reachability queue for EXE builds: only PBMAIN and procedures it can
+    // reach get their bodies compiled. Header sets such as Jose Roca's
+    // WINAPI_III_107 define hundreds of unused GUI/COM wrappers; compiling
+    // those bodies used to fail the whole build on features the console
+    // sample never touches.
+    pending_bodies: Vec<String>,
+    queued_bodies: HashSet<String>,
+    compiled_bodies: HashSet<String>,
+    // Procedure names that actually have a FunctionDecl/SubDecl body in the
+    // current program.  Synthesized symbols (interface property accessors,
+    // THREAD OBJECT bridges) are registered in `functions`/`subs` but have no
+    // body item; queueing those only produced "no body declaration" warnings.
+    body_names: HashSet<String>,
+    // EXTERNAL declarations actually referenced by reachable code.  Header
+    // sets carry thousands of DECLAREs; emitting every one produced invalid
+    // IR types (e.g. an INTERFACE name used as a parameter) and bloated the
+    // module, even when the console sample never called them.
+    used_externals: HashSet<String>,
+    external_decls: HashMap<String, ExternalDecl>,
     #[allow(dead_code)]
     xprint_dc: Option<String>,
 
@@ -1586,6 +1514,19 @@ struct ParamInfo {
     ir_type: IrType,
     is_byval: bool,
     is_optional: bool,
+}
+
+/// Deferred DECLARE signature.  Header sets contain thousands of DECAREs;
+/// emitting each one up front bloated the module and, worse, turned unused
+/// INTERFACE parameters into invalid IR types.  The declaration is emitted
+/// only when reachable code references the symbol.
+#[derive(Clone)]
+struct ExternalDecl {
+    ret_type: IrType,
+    params: Vec<IrType>,
+    is_stdcall: bool,
+    is_stubbed: bool,
+    import_lib: Option<String>,
 }
 
 struct LoopInfo {
@@ -1716,6 +1657,12 @@ impl Compiler {
             pp_constants: HashMap::new(),
             enum_constants: HashMap::new(),
             warnings: Vec::new(),
+            pending_bodies: Vec::new(),
+            queued_bodies: HashSet::new(),
+            compiled_bodies: HashSet::new(),
+            body_names: HashSet::new(),
+            used_externals: HashSet::new(),
+            external_decls: HashMap::new(),
             xprint_dc: None,
             event_sources: std::collections::HashMap::new(),
             event_method_ids: std::collections::HashMap::new(),
@@ -5953,10 +5900,6 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
             false,
         );
-        self.module
-            .declare_function("pb_class_create", &IrType::Ptr, &[IrType::Ptr], false);
-        self.module
-            .declare_function("pb_class_destroy", &IrType::Void, &[IrType::Ptr], false);
         // batch271/284: NEWCOM/GETCOM/ANYCOM COM instantiation + OBJRESULT
         self.module.declare_function(
             "pb_com_new",
@@ -6058,12 +6001,6 @@ impl Compiler {
                 IrType::I32, // result type code
                 IrType::I32, // wflags (1 METHOD / 2 PROPERTYGET)
             ],
-            false,
-        );
-        self.module.declare_function(
-            "pb_method_call",
-            &IrType::I32,
-            &[IrType::Ptr, IrType::Ptr],
             false,
         );
         // OOP event bus (batch 222): per-class handler table + subscribe bus
@@ -7738,6 +7675,44 @@ impl Compiler {
                 self.register_type(td);
             }
         }
+        // PBWin's compiler-built-in.inc always defines `Point` (x/y AS LONG).
+        // José Roca's WINAPI_III_107 headers rely on that built-in and use
+        // `POINT` without declaring it; without this layout the GUI wrappers
+        // fail codegen with "Unknown TYPE: POINT" (batch 383).
+        if !self.type_layouts.contains_key("POINT") {
+            self.module
+                .define_struct_type("POINT", &[IrType::I32, IrType::I32]);
+            let mut field_map = HashMap::new();
+            field_map.insert("X".to_string(), 0usize);
+            field_map.insert("Y".to_string(), 1usize);
+            self.type_layouts.insert(
+                "POINT".to_string(),
+                TypeLayout {
+                    ir_name: "POINT".to_string(),
+                    fields: vec![
+                        FieldInfo {
+                            name: "X".to_string(),
+                            pb_type: PbType::Long,
+                            ir_type: IrType::I32,
+                            dims: Vec::new(),
+                            gep_idx: 0,
+                            bit: None,
+                        },
+                        FieldInfo {
+                            name: "Y".to_string(),
+                            pb_type: PbType::Long,
+                            ir_type: IrType::I32,
+                            dims: Vec::new(),
+                            gep_idx: 1,
+                            bit: None,
+                        },
+                    ],
+                    field_map,
+                    is_union: false,
+                    size: 8,
+                },
+            );
+        }
         // Bit-field layout errors (Error 534) collected during register_type.
         if !self.fatal_errors.is_empty() {
             return Err(PbError::generic(self.fatal_errors.join("\n")));
@@ -7803,21 +7778,40 @@ impl Compiler {
             }
         }
 
-        // In session mode, also scan function/sub bodies for pending global DIMs
-        // and GLOBAL scalar declarations inside SUBs (e.g., GLOBAL ForceSync in SetupDims)
-        if self.session_mode {
-            for item in &program.items {
-                match item {
-                    TopLevel::FunctionDecl(fd) => self.scan_body_for_global_dims(&fd.body),
-                    TopLevel::SubDecl(sd) => self.scan_body_for_global_dims(&sd.body),
-                    _ => {}
-                }
+        // Resolve pending global array shapes and SUB-local GLOBAL scalars before
+        // any body is compiled.  Lazy codegen starts at PBMAIN, so a `DIM Names(1
+        // TO 3)` inside SetupDims would otherwise be seen only after PBMAIN has
+        // already resolved `Names(1)` as a function call, producing both a
+        // `declare i32 @NAMES(ptr)` and a duplicate `@NAMES` global.  Eager builds
+        // compiled SetupDims first and never hit this ordering.  Session mode
+        // needs the same scan to build the PBSESSIONDATA field list.
+        for item in &program.items {
+            match item {
+                TopLevel::FunctionDecl(fd) => self.scan_body_for_global_dims(&fd.body),
+                TopLevel::SubDecl(sd) => self.scan_body_for_global_dims(&sd.body),
+                _ => {}
             }
         }
 
         // In session mode, emit the struct type and global instance
         if self.session_mode {
             self.emit_session_struct();
+        }
+
+        // Record which procedures have a real body item.  Synthesized
+        // interface accessors and THREAD OBJECT bridges are registered in the
+        // procedure maps but have no declaration to compile.
+        self.body_names.clear();
+        for item in &program.items {
+            match item {
+                TopLevel::FunctionDecl(fd) => {
+                    self.body_names.insert(normalize_name(&fd.name));
+                }
+                TopLevel::SubDecl(sd) => {
+                    self.body_names.insert(normalize_name(&sd.name));
+                }
+                _ => {}
+            }
         }
 
         // Bake the compile-time shape of every THREADED array into the global
@@ -7828,53 +7822,105 @@ impl Compiler {
         // bridges now that every CLASS layout and every THREAD METHOD is known.
         self.synthesize_thread_object_methods(program)?;
 
-        // Second pass: compile function/sub bodies
+        // Second pass: compile function/sub bodies.
+        //
+        // EXE builds compile only bodies reachable from PBMAIN.  A header set
+        // such as Jose Roca's WINAPI_III_107 defines 1,200 files full of GUI
+        // and COM wrappers; compiling every unused wrapper made a console
+        // sample fail on features it never calls.  Calls encountered while
+        // compiling a reachable body queue the callee, so the closure grows
+        // until no new procedure is referenced.  DLL/SLL builds and programs
+        // without PBMAIN keep the old eager all-bodies behaviour.
         let mut codegen_errors = 0usize;
         let mut first_codegen_err: Option<PbError> = None;
-        for item in &program.items {
-            match item {
-                TopLevel::FunctionDecl(fd) => {
-                    if let Err(e) = self.compile_function(fd) {
-                        eprintln!("Codegen warning: FUNCTION {} → {}", fd.name, e);
-                        codegen_errors += 1;
-                        if first_codegen_err.is_none() {
-                            first_codegen_err = Some(e);
+        let lazy_bodies = !self.dll_mode
+            && !self.sll_mode
+            && (self.functions.contains_key("PBMAIN") || self.subs.contains_key("PBMAIN"));
+        if lazy_bodies {
+            self.queue_body("PBMAIN");
+            while let Some(name) = self.pending_bodies.pop() {
+                if !self.compiled_bodies.insert(name.clone()) {
+                    continue;
+                }
+                let mut found = false;
+                for item in &program.items {
+                    match item {
+                        TopLevel::FunctionDecl(fd) if normalize_name(&fd.name) == name => {
+                            found = true;
+                            if let Err(e) = self.compile_function(fd) {
+                                eprintln!("Codegen error: FUNCTION {} -> {}", fd.name, e);
+                                return Err(e);
+                            }
+                            break;
                         }
-                        // Emit stub declaration so call sites don't fail
-                        let name = normalize_name(&fd.name);
-                        if let Some(fi) = self.functions.get(&name) {
-                            let ir_name = fi.ir_name.clone();
-                            let ret_type = fi.ret_type.clone();
-                            let param_types: Vec<IrType> =
-                                fi.params.iter().map(|p| p.ir_type.clone()).collect();
-                            self.module
-                                .declare_function(&ir_name, &ret_type, &param_types, false);
+                        TopLevel::SubDecl(sd) if normalize_name(&sd.name) == name => {
+                            found = true;
+                            if let Err(e) = self.compile_sub(sd) {
+                                eprintln!("Codegen error: SUB {} -> {}", sd.name, e);
+                                return Err(e);
+                            }
+                            break;
                         }
+                        _ => {}
                     }
                 }
-                TopLevel::SubDecl(sd) => {
-                    if let Err(e) = self.compile_sub(sd) {
-                        eprintln!("Codegen warning: SUB {} → {}", sd.name, e);
-                        codegen_errors += 1;
-                        if first_codegen_err.is_none() {
-                            first_codegen_err = Some(e);
-                        }
-                        // Emit stub declaration so call sites don't fail
-                        let name = normalize_name(&sd.name);
-                        if let Some(fi) = self.subs.get(&name) {
-                            let ir_name = fi.ir_name.clone();
-                            let param_types: Vec<IrType> =
-                                fi.params.iter().map(|p| p.ir_type.clone()).collect();
-                            self.module.declare_function(
-                                &ir_name,
-                                &IrType::Void,
-                                &param_types,
-                                false,
-                            );
+                if !found {
+                    eprintln!(
+                        "Codegen warning: queued procedure `{}` has no body declaration",
+                        name
+                    );
+                }
+            }
+        } else {
+            for item in &program.items {
+                match item {
+                    TopLevel::FunctionDecl(fd) => {
+                        if let Err(e) = self.compile_function(fd) {
+                            eprintln!("Codegen warning: FUNCTION {} → {}", fd.name, e);
+                            codegen_errors += 1;
+                            if first_codegen_err.is_none() {
+                                first_codegen_err = Some(e);
+                            }
+                            // Emit stub declaration so call sites don't fail
+                            let name = normalize_name(&fd.name);
+                            if let Some(fi) = self.functions.get(&name) {
+                                let ir_name = fi.ir_name.clone();
+                                let ret_type = fi.ret_type.clone();
+                                let param_types: Vec<IrType> =
+                                    fi.params.iter().map(|p| p.ir_type.clone()).collect();
+                                self.module.declare_function(
+                                    &ir_name,
+                                    &ret_type,
+                                    &param_types,
+                                    false,
+                                );
+                            }
                         }
                     }
+                    TopLevel::SubDecl(sd) => {
+                        if let Err(e) = self.compile_sub(sd) {
+                            eprintln!("Codegen warning: SUB {} → {}", sd.name, e);
+                            codegen_errors += 1;
+                            if first_codegen_err.is_none() {
+                                first_codegen_err = Some(e);
+                            }
+                            // Emit stub declaration so call sites don't fail
+                            let name = normalize_name(&sd.name);
+                            if let Some(fi) = self.subs.get(&name) {
+                                let ir_name = fi.ir_name.clone();
+                                let param_types: Vec<IrType> =
+                                    fi.params.iter().map(|p| p.ir_type.clone()).collect();
+                                self.module.declare_function(
+                                    &ir_name,
+                                    &IrType::Void,
+                                    &param_types,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         if codegen_errors > 0 {
@@ -8062,7 +8108,10 @@ impl Compiler {
         // their define and never get a conflicting declare (clang rejects
         // `declare` + `define` of the same function, batch 260).
         for fi in self.functions.values() {
-            if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
+            if fi.is_external
+                && !self.defined_ir.contains(&fi.ir_name)
+                && self.used_externals.contains(&fi.ir_name)
+            {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
                 if fi.is_stdcall {
                     self.module
@@ -8074,7 +8123,10 @@ impl Compiler {
             }
         }
         for fi in self.subs.values() {
-            if fi.is_external && !self.defined_ir.contains(&fi.ir_name) {
+            if fi.is_external
+                && !self.defined_ir.contains(&fi.ir_name)
+                && self.used_externals.contains(&fi.ir_name)
+            {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
                 if fi.is_stdcall {
                     self.module
@@ -8572,6 +8624,10 @@ impl Compiler {
                     td.name, method
                 )));
             }
+            // The synthesized LAUNCH bridge references this method by name;
+            // in lazy mode it must be part of the reachable closure even when
+            // source never calls it directly (PB starts it automatically).
+            self.queue_body(&entry);
             todo.push(ThreadClass {
                 class,
                 entry,
@@ -9120,32 +9176,33 @@ impl Compiler {
         let is_stdcall = !is_stubbed && self.declare_is_stdcall(ds.call_conv);
         // User DLL import (batch 276): record the .lib so the link step can
         // resolve the dllimport symbols.  System DLLs are already covered by
-        // `-lkernel32`/`-luser32`/... in link_exe/link_dll.
-        if ds.lib.is_some() && !is_stubbed && !Self::is_win32_stdcall_dll(&lib_name) {
-            let raw = ds.lib.as_deref().unwrap_or("").trim();
-            let stem = raw
-                .strip_suffix(".dll")
-                .or_else(|| raw.strip_suffix(".DLL"))
-                .unwrap_or(raw);
-            let lib_spec = format!("{}.lib", stem);
-            if !self.dll_import_libs.contains(&lib_spec) {
-                self.dll_import_libs.push(lib_spec);
-            }
-        }
+        // `-lkernel32`/`-luser32`/... in link_exe/link_dll.  The library is
+        // only added to the link line when reachable code references the
+        // DECLARE, so unused header wrappers never pull a missing .lib.
+        let import_lib =
+            if ds.lib.is_some() && !is_stubbed && !Self::is_win32_stdcall_dll(&lib_name) {
+                let raw = ds.lib.as_deref().unwrap_or("").trim();
+                let stem = raw
+                    .strip_suffix(".dll")
+                    .or_else(|| raw.strip_suffix(".DLL"))
+                    .unwrap_or(raw);
+                Some(format!("{}.lib", stem))
+            } else {
+                None
+            };
 
         if ds.is_function {
             let ret_type = Self::ir_type_for(&ds.return_type);
-            if is_stubbed {
-                // Stubbed DLLs: declare as regular external (resolved by pb_runtime.obj)
-                self.module
-                    .declare_function(&ir_name, &ret_type, &ir_param_types, false);
-            } else if is_stdcall {
-                self.module
-                    .declare_dllimport(&ir_name, &ret_type, &ir_param_types);
-            } else {
-                self.module
-                    .declare_dllimport_cdecl(&ir_name, &ret_type, &ir_param_types);
-            }
+            self.external_decls.insert(
+                ir_name.clone(),
+                ExternalDecl {
+                    ret_type: ret_type.clone(),
+                    params: ir_param_types.clone(),
+                    is_stdcall: is_stdcall && !is_stubbed,
+                    is_stubbed,
+                    import_lib: import_lib.clone(),
+                },
+            );
             self.functions.insert(
                 name,
                 FuncInfo {
@@ -9158,16 +9215,16 @@ impl Compiler {
                 },
             );
         } else {
-            if is_stubbed {
-                self.module
-                    .declare_function(&ir_name, &IrType::Void, &ir_param_types, false);
-            } else if is_stdcall {
-                self.module
-                    .declare_dllimport(&ir_name, &IrType::Void, &ir_param_types);
-            } else {
-                self.module
-                    .declare_dllimport_cdecl(&ir_name, &IrType::Void, &ir_param_types);
-            }
+            self.external_decls.insert(
+                ir_name.clone(),
+                ExternalDecl {
+                    ret_type: IrType::Void,
+                    params: ir_param_types.clone(),
+                    is_stdcall: is_stdcall && !is_stubbed,
+                    is_stubbed,
+                    import_lib: import_lib.clone(),
+                },
+            );
             self.subs.insert(
                 name,
                 FuncInfo {
@@ -9582,6 +9639,59 @@ impl Compiler {
     /// EZLIB/EZGUI functions are part of the old Win32 UI → the Electron frontend handles all UI now.
     fn should_noop_function(name: &str) -> bool {
         name.starts_with("EZLIB_") || name.starts_with("EZGUI_")
+    }
+
+    /// Add a user procedure body to the reachability queue used by EXE builds.
+    /// Header sets define hundreds of wrappers the program never calls; only
+    /// bodies reachable from PBMAIN (directly or through another queued body)
+    /// need codegen.  Normalised names are uppercase and suffix-stripped.
+    fn queue_body(&mut self, name: &str) {
+        if self.dll_mode || self.sll_mode {
+            return;
+        }
+        if !self.body_names.contains(name) {
+            return;
+        }
+        if self.queued_bodies.insert(name.to_string()) {
+            self.pending_bodies.push(name.to_string());
+        }
+    }
+
+    /// Record a reference from reachable code.  Local procedures are queued
+    /// for body compilation; external DECLAREs are emitted on first use.
+    fn note_reference(&mut self, name: &str, info: &FuncInfo) {
+        if info.is_external {
+            self.emit_external_decl(&info.ir_name);
+        } else {
+            self.queue_body(name);
+        }
+    }
+
+    /// Emit one deferred DECLARE exactly once.  The module also tracks a
+    /// `declared` set, so a later eager emission cannot duplicate this line.
+    fn emit_external_decl(&mut self, ir_name: &str) {
+        if self.used_externals.contains(ir_name) {
+            return;
+        }
+        self.used_externals.insert(ir_name.to_string());
+        let Some(decl) = self.external_decls.get(ir_name).cloned() else {
+            return;
+        };
+        if let Some(lib) = &decl.import_lib {
+            if !self.dll_import_libs.contains(lib) {
+                self.dll_import_libs.push(lib.clone());
+            }
+        }
+        if decl.is_stubbed {
+            self.module
+                .declare_function(ir_name, &decl.ret_type, &decl.params, false);
+        } else if decl.is_stdcall {
+            self.module
+                .declare_dllimport(ir_name, &decl.ret_type, &decl.params);
+        } else {
+            self.module
+                .declare_dllimport_cdecl(ir_name, &decl.ret_type, &decl.params);
+        }
     }
 
     fn compile_function(&mut self, fd: &FunctionDecl) -> PbResult<()> {
@@ -11044,6 +11154,7 @@ impl Compiler {
                         .cloned()
                         .or_else(|| self.functions.get(&set_name).cloned());
                     if let Some(set_info) = set_info {
+                        self.note_reference(&set_name, &set_info);
                         let mut all_args = args.clone();
                         all_args.push(assign.value.clone());
                         let _ = self.compile_interface_dispatch(
@@ -11062,6 +11173,7 @@ impl Compiler {
                     .cloned()
                     .or_else(|| self.functions.get(&set_name).cloned());
                 if let Some(set_info) = set_info {
+                    self.note_reference(&set_name, &set_info);
                     let mut call_args = Vec::with_capacity(args.len() + 2);
                     if self.receiver_is_interface(base) {
                         call_args.push(Expr::ByvalOverride(Box::new((*base).clone())));
@@ -13396,11 +13508,22 @@ impl Compiler {
             }
 
             "LOCATE" => {
-                // PB/CC legacy syntax: LOCATE row, col (both 1-based).
-                let r0 = self.compile_expr(fb, &call.args[0])?;
-                let r = self.to_i32(fb, &r0);
-                let c0 = self.compile_expr(fb, &call.args[1])?;
-                let c = self.to_i32(fb, &c0);
+                // PB/CC legacy syntax: LOCATE [row], [col] (both 1-based).
+                // An omitted slot becomes -1; pb_locate keeps the current
+                // cursor coordinate for that axis instead of clamping to the
+                // first cell (`LOCATE ,1` is used by José Roca's headers).
+                let r = if matches!(call.args.first(), Some(Expr::Omitted)) {
+                    fb.const_i32(-1)
+                } else {
+                    let r0 = self.compile_expr(fb, &call.args[0])?;
+                    self.to_i32(fb, &r0)
+                };
+                let c = if matches!(call.args.get(1), Some(Expr::Omitted)) {
+                    fb.const_i32(-1)
+                } else {
+                    let c0 = self.compile_expr(fb, &call.args[1])?;
+                    self.to_i32(fb, &c0)
+                };
                 fb.call_void("pb_locate", &[r, c]);
                 return Ok(());
             }
@@ -14462,6 +14585,7 @@ impl Compiler {
                                 .collect();
                             fns.sort_by(|a, b| a.0.cmp(&b.0));
                             for (fn_name, info) in &fns {
+                                self.note_reference(fn_name, info);
                                 // a usable event handler takes this + at most one
                                 // argument; anything wider cannot be called through
                                 // the (void*, i32) bus signature
@@ -15896,7 +16020,7 @@ impl Compiler {
                 }
                 return Ok(());
             }
-            "POKE" => {
+            "POKE" | "POKE$" => {
                 // The match key is normalized (strips $), so distinguish the
                 // string forms on the raw spelling first.
                 // POKE$ [STRINGZ,] addr, s$  / POKE$$ [WSTRINGZ,] addr, s$
@@ -20709,8 +20833,13 @@ impl Compiler {
                     };
                     if let Expr::Variable(name) = &call.args[1] {
                         let upper = name.to_uppercase();
-                        let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+                        let fi = self
+                            .functions
+                            .get(&upper)
+                            .cloned()
+                            .or_else(|| self.subs.get(&upper).cloned());
                         if let Some(fi) = fi {
+                            self.note_reference(&upper, &fi);
                             let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
                             fb.call_void("pb_register_dialog_cb", &[fn_ptr]);
                             // batch 243: pass the dialog handle so the modal loop can
@@ -21919,8 +22048,13 @@ impl Compiler {
                     let hctrl = self.compile_expr(fb, &call.args[0])?;
                     if let Expr::Variable(name) = &call.args[1] {
                         let upper = name.to_uppercase();
-                        let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+                        let fi = self
+                            .functions
+                            .get(&upper)
+                            .cloned()
+                            .or_else(|| self.subs.get(&upper).cloned());
                         if let Some(fi) = fi {
+                            self.note_reference(&upper, &fi);
                             let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
                             fb.call_void("pb_register_callback_hwnd", &[hctrl, fn_ptr]);
                         } else {
@@ -23964,6 +24098,7 @@ impl Compiler {
                         ));
                         return Ok(());
                     }
+                    self.queue_body(&func_name);
                     let fp = Val::new(format!("@{}", ir_name), IrType::Ptr);
                     // CHW: the thread function's single BYVAL LONG/DWORD argument
                     // is the parameter inside FuncName(param).  A no-argument
@@ -24103,25 +24238,6 @@ impl Compiler {
                     let p = self.to_i32(fb, &v1);
                     fb.call_void("pb_thread_set_priority", &[id, p]);
                 }
-                return Ok(());
-            }
-            "LPRINT" => {
-                // LPRINT expr[,|;]... — send each value to the attached device
-                for arg in &call.args {
-                    let val = self.compile_expr(fb, arg)?;
-                    if val.ty == IrType::Ptr {
-                        fb.call_void("pb_lprint_bstr", std::slice::from_ref(&val));
-                    } else if val.ty == IrType::I64 {
-                        fb.call_void("pb_lprint_i64", std::slice::from_ref(&val));
-                    } else if val.ty.is_int() {
-                        let v = self.to_i32(fb, &val);
-                        fb.call_void("pb_lprint_int", std::slice::from_ref(&v));
-                    } else if val.ty.is_float() {
-                        let v = self.to_f64(fb, &val);
-                        fb.call_void("pb_lprint_dbl", std::slice::from_ref(&v));
-                    }
-                }
-                fb.call_void("pb_lprint_crlf", &[]);
                 return Ok(());
             }
             "LPRINT ATTACH" => {
@@ -24397,6 +24513,7 @@ impl Compiler {
                                 .cloned()
                                 .or_else(|| self.subs.get(&qualified).cloned());
                             if let Some(info) = info {
+                                self.note_reference(&qualified, &info);
                                 let rest: Vec<Expr> = call.args.iter().skip(1).cloned().collect();
                                 let _ = self.compile_interface_dispatch(
                                     fb, &iface, method, "", receiver, &rest, &info,
@@ -24421,6 +24538,7 @@ impl Compiler {
                             .cloned()
                             .or_else(|| self.subs.get(&qualified).cloned());
                         if let Some(info) = info {
+                            self.note_reference(&qualified, &info);
                             // Interface-typed receiver → BYVAL (see the
                             // expression-form method call, batch 264).
                             let mut m_args: Vec<Expr> = Vec::with_capacity(call.args.len());
@@ -24469,6 +24587,7 @@ impl Compiler {
         }
 
         if let Some(info) = self.functions.get(&name).cloned() {
+            self.note_reference(&name, &info);
             let args = self.compile_call_args(fb, &call.args, &info)?;
             if info.is_stdcall {
                 fb.call_stdcall(&info.ret_type, &info.ir_name, &args);
@@ -24478,6 +24597,7 @@ impl Compiler {
             return Ok(());
         }
         if let Some(info) = self.subs.get(&name).cloned() {
+            self.note_reference(&name, &info);
             let args = self.compile_call_args(fb, &call.args, &info)?;
             if info.is_stdcall {
                 fb.call_void_stdcall(&info.ir_name, &args);
@@ -24898,7 +25018,10 @@ impl Compiler {
             .cloned()
             .or_else(|| self.subs.get(&item_name).cloned())
         {
-            Some(inf) => inf,
+            Some(inf) => {
+                self.note_reference(&item_name, &inf);
+                inf
+            }
             None => {
                 return Err(PbError::runtime(format!(
                     "FOR EACH IN: collection has no `ITEM` member (`{}` not found)",
@@ -26947,6 +27070,7 @@ impl Compiler {
             fb.label(&then_b);
             let cname = normalize_name(&t.name);
             if let Some(info) = self.functions.get(&cname).cloned() {
+                self.note_reference(&cname, &info);
                 let args = self.compile_call_args(fb, &t.args, &info)?;
                 let ret = if info.is_stdcall {
                     fb.call_stdcall(&info.ret_type, &info.ir_name, &args)
@@ -26961,6 +27085,7 @@ impl Compiler {
                     }
                 }
             } else if let Some(info) = self.subs.get(&cname).cloned() {
+                self.note_reference(&cname, &info);
                 let args = self.compile_call_args(fb, &t.args, &info)?;
                 if info.is_stdcall {
                     fb.call_void_stdcall(&info.ir_name, &args);
@@ -27160,6 +27285,19 @@ impl Compiler {
         call_exprs.push(Expr::ByvalOverride(Box::new(receiver.clone())));
         call_exprs.extend(args.iter().cloned());
         let compiled = self.compile_call_args(fb, &call_exprs, want)?;
+
+        // Lazy reachability: the virtual dispatch references every
+        // implementer's <Class>_<Method>, not just the first one.  Queue all
+        // of them before emitting the phi, otherwise clang reports
+        // `use of undefined value '@OTHERCLASS_METHOD'`.
+        for c in &impls {
+            let fname = format!("{}_{}{}", c, normalize_name(method), suffix);
+            if let Some(info) = self.functions.get(&fname).cloned() {
+                self.note_reference(&fname, &info);
+            } else if let Some(info) = self.subs.get(&fname).cloned() {
+                self.note_reference(&fname, &info);
+            }
+        }
 
         let mn = format!("{}{}", normalize_name(method), suffix);
         if impls.len() == 1 {
@@ -27364,6 +27502,7 @@ impl Compiler {
                 if self.symbols.lookup(&name).is_none() {
                     if let Some(info) = self.functions.get(&name).cloned() {
                         if info.params.is_empty() && info.ret_type != IrType::Void {
+                            self.note_reference(&name, &info);
                             return if info.is_stdcall {
                                 Ok(fb.call_stdcall(&info.ret_type, &info.ir_name, &[]))
                             } else {
@@ -27672,6 +27811,7 @@ impl Compiler {
                 } else if let Some(result) = self.compile_builtin(fb, &name, args) {
                     result
                 } else if let Some(info) = self.functions.get(&name).cloned() {
+                    self.note_reference(&name, &info);
                     let compiled_args = self.compile_call_args(fb, args, &info)?;
                     if info.is_stdcall {
                         Ok(fb.call_stdcall(&info.ret_type, &info.ir_name, &compiled_args))
@@ -27977,6 +28117,7 @@ impl Compiler {
                             ))
                         })?;
                     let suffix = if is_get { "_GET" } else { "" };
+                    self.note_reference(&qualified, &want);
                     if want.ret_type == IrType::Void {
                         return Err(PbError::parser(
                             format!(
@@ -28020,6 +28161,7 @@ impl Compiler {
                     .cloned()
                     .or_else(|| self.subs.get(&qualified).cloned())
                 {
+                    self.note_reference(&qualified, &info);
                     if info.ret_type == IrType::Void {
                         return Err(PbError::parser(
                             format!(
@@ -30347,6 +30489,7 @@ impl Compiler {
                     }
                     // CODEPTR(ProcName) — address of a local Sub / Function /
                     // FastProc (CHW: CODEPTR of a METHOD/PROPERTY is illegal).
+                    self.queue_body(&up);
                     if let Some(info) = self.functions.get(&up) {
                         let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
                         return Some(Ok(fb.ptrtoint64(&gv)));
@@ -30409,8 +30552,13 @@ impl Compiler {
         // which parses as a FunctionCall, not a Variable.
         if let Expr::FunctionCall(name, _) = arg {
             let upper = name.to_uppercase();
-            let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+            let fi = self
+                .functions
+                .get(&upper)
+                .cloned()
+                .or_else(|| self.subs.get(&upper).cloned());
             if let Some(fi) = fi {
+                self.note_reference(&upper, &fi);
                 return Ok(Val::new(format!("@{}", fi.ir_name), IrType::Ptr));
             }
             eprintln!(

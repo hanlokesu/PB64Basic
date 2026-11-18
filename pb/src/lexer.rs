@@ -278,6 +278,40 @@ impl Lexer {
                             self.advance(); // consume 'O'
                             let tok = self.read_octal_literal(start_line, start_col)?;
                             tokens.push(tok);
+                        } else if next.is_ascii_digit() {
+                            // José Roca headers spell a zero flag as `&0???`
+                            // (ShObjIdl.inc TSF_NORMAL / TSF_FAIL_EXIST).  The
+                            // value is zero regardless of the base; consume the
+                            // trailing `?` placeholders so the expression parser
+                            // does not see a stray Ampersand.
+                            let saved = self.pos;
+                            let mut digits = String::new();
+                            while let Some(c) = self.peek() {
+                                if c.is_ascii_digit() {
+                                    digits.push(c);
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
+                            }
+                            if self.peek() == Some('?') {
+                                while self.peek() == Some('?') {
+                                    self.advance();
+                                }
+                                let value = digits.parse::<i64>().unwrap_or(0);
+                                tokens.push(self.make_located(
+                                    Token::IntegerLiteral(value),
+                                    start_line,
+                                    start_col,
+                                ));
+                            } else {
+                                self.pos = saved;
+                                tokens.push(self.make_located(
+                                    Token::Ampersand,
+                                    start_line,
+                                    start_col,
+                                ));
+                            }
                         } else {
                             tokens.push(self.make_located(Token::Ampersand, start_line, start_col));
                         }
@@ -325,6 +359,16 @@ impl Lexer {
                 }
                 '<' => {
                     self.advance();
+                    // José Roca's headers spell the two-character operators
+                    // with a space (`< =`, `> =`). PB treats them as a single
+                    // comparison operator; accept horizontal whitespace here
+                    // without swallowing a line break.
+                    let saved_pos = self.pos;
+                    let saved_line = self.line;
+                    let saved_col = self.col;
+                    while matches!(self.peek(), Some(' ') | Some('\t')) {
+                        self.advance();
+                    }
                     if self.peek() == Some('>') {
                         self.advance();
                         tokens.push(self.make_located(Token::Neq, start_line, start_col));
@@ -332,15 +376,27 @@ impl Lexer {
                         self.advance();
                         tokens.push(self.make_located(Token::Lte, start_line, start_col));
                     } else {
+                        self.pos = saved_pos;
+                        self.line = saved_line;
+                        self.col = saved_col;
                         tokens.push(self.make_located(Token::Lt, start_line, start_col));
                     }
                 }
                 '>' => {
                     self.advance();
+                    let saved_pos = self.pos;
+                    let saved_line = self.line;
+                    let saved_col = self.col;
+                    while matches!(self.peek(), Some(' ') | Some('\t')) {
+                        self.advance();
+                    }
                     if self.peek() == Some('=') {
                         self.advance();
                         tokens.push(self.make_located(Token::Gte, start_line, start_col));
                     } else {
+                        self.pos = saved_pos;
+                        self.line = saved_line;
+                        self.col = saved_col;
                         tokens.push(self.make_located(Token::Gt, start_line, start_col));
                     }
                 }

@@ -229,6 +229,10 @@ pub struct Preprocessor {
     /// the include graph with its own cycle set so the emit pass can inline
     /// the same files again (with the now-complete macro table).
     collect_included: HashSet<PathBuf>,
+    /// Canonicalised include paths, keyed by the path as written.  Official
+    /// header sets pull hundreds of files through the same include guards in
+    /// both passes; each canonicalize() is a filesystem open on Windows.
+    canonical_paths: HashMap<PathBuf, PathBuf>,
     /// True while running the first (macro-collection) pass over the source.
     /// Regular lines are skipped; only MACRO definitions, %/$ constants,
     /// #IF stacks and #INCLUDE expansion run, so the macro table is complete
@@ -324,6 +328,7 @@ impl Preprocessor {
             string_constants: HashMap::new(),
             included: HashSet::new(),
             collect_included: HashSet::new(),
+            canonical_paths: HashMap::new(),
             collect_only: false,
             defined_this_pass: HashSet::from([
                 "%WIN32_WINNT".to_string(),
@@ -436,8 +441,16 @@ impl Preprocessor {
 
     /// Process a source file, returning all resolved lines (with includes inlined).
     pub fn process_file(&mut self, path: &Path) -> PbResult<Vec<SourceLine>> {
-        let canonical = std::fs::canonicalize(path)
-            .map_err(|e| PbError::io(format!("Cannot resolve path {}: {}", path.display(), e)))?;
+        let canonical = match self.canonical_paths.get(path) {
+            Some(c) => c.clone(),
+            None => {
+                let c = std::fs::canonicalize(path).map_err(|e| {
+                    PbError::io(format!("Cannot resolve path {}: {}", path.display(), e))
+                })?;
+                self.canonical_paths.insert(path.to_path_buf(), c.clone());
+                c
+            }
+        };
 
         let included_set = if self.collect_only {
             &mut self.collect_included
@@ -474,6 +487,22 @@ impl Preprocessor {
             let line_num = i + 1;
             let raw = raw_lines[i];
             let trimmed = raw.trim();
+
+            // Collection pass only needs directives, %/$ equates and MACRO
+            // definitions.  Official headers are ~67k lines of DECLAREs/TYPEs;
+            // running trim + uppercase + every directive test on each of them
+            // twice was the remaining preprocessing cost after the macro
+            // lookup fix.  Skip ordinary code lines here without touching the
+            // string.  #IF/#ELSE/#ENDIF still work because they start with '#'.
+            if self.collect_only {
+                let first = trimmed.as_bytes().first().copied();
+                let is_macro =
+                    trimmed.len() >= 5 && trimmed.as_bytes()[..5].eq_ignore_ascii_case(b"MACRO");
+                if !matches!(first, Some(b'#' | b'%' | b'$')) && !is_macro {
+                    i += 1;
+                    continue;
+                }
+            }
 
             // Check if we're inside an inactive #IF block
             let active = if_stack.iter().all(|&b| b);
@@ -584,8 +613,14 @@ impl Preprocessor {
                 if !trimmed_code.ends_with('_') || trimmed_code.len() <= 1 {
                     break;
                 }
-                // Remove the trailing underscore from the code (not the comment)
+                // PBWin only treats `_` as a continuation when it is preceded
+                // by whitespace (`expr _`).  An identifier may legally end in
+                // `_` (`FUNCTION = bearermode_` in Mcx.inc), and gluing the
+                // next physical line onto it silently swallows `END FUNCTION`.
                 let before_underscore = &trimmed_code[..trimmed_code.len() - 1];
+                if !(before_underscore.ends_with(' ') || before_underscore.ends_with('\t')) {
+                    break;
+                }
                 full_line = before_underscore.to_string();
                 i += 1;
                 if i < raw_lines.len() {
@@ -1356,9 +1391,19 @@ impl Preprocessor {
         // they are expression-position macros whose statements must be hoisted
         // before the reference (see expand_macro_function_calls below).
         let trimmed_upper = trimmed.to_uppercase();
-        for (name, def) in &self.macros.clone() {
-            if def.body.len() > 1 && def.kind == MacroKind::Regular {
-                if let Some(rest) = trimmed_upper.strip_prefix(&name.to_uppercase()) {
+        // O(1) first-identifier lookup instead of walking every collected
+        // macro for every source line.  WINAPI_III_107 defines thousands of
+        // macros; the old `for (name, def) in &self.macros.clone()` made
+        // preprocessing O(lines * macros) and was the 92 s bottleneck on
+        // 67k-line ConsTest.bas.
+        let first_end = trimmed_upper
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '$'))
+            .unwrap_or(trimmed_upper.len());
+        if first_end > 0 {
+            let key = &trimmed_upper[..first_end];
+            if let Some(def) = self.macros.get(key).cloned() {
+                if def.body.len() > 1 && def.kind == MacroKind::Regular {
+                    let rest = &trimmed_upper[first_end..];
                     let ok = rest.is_empty()
                         || rest.starts_with('(')
                         || rest
@@ -1367,8 +1412,8 @@ impl Preprocessor {
                             .map(|c| c.is_whitespace())
                             .unwrap_or(false);
                     if ok {
-                        let args = extract_paren_args(trimmed, name.len());
-                        let expanded = self.expand_multiline_macro(def, &args);
+                        let args = extract_paren_args(trimmed, first_end);
+                        let expanded = self.expand_multiline_macro(&def, &args);
                         return self.expand_macro_function_calls(&expanded);
                     }
                 }
@@ -1673,7 +1718,26 @@ impl Preprocessor {
                         if let Some(close_rel) = find_matching_paren(&result[j..]) {
                             let close = j + close_rel;
                             let args = split_args(&result[j + 1..close]);
-                            out.push_str(&substitute_params(&body, &def.params, &args));
+                            // A parameterless alias macro used as a function
+                            // (`MACRO SendMessage = SendMessageA`) must keep the
+                            // call arguments: PBWin forwards them to the target
+                            // name.  Dropping them here turned every wrapper
+                            // body into `FUNCTION = SendMessageA`, which codegen
+                            // then reported as an undeclared variable.
+                            let substituted = substitute_params(&body, &def.params, &args);
+                            if def.params.is_empty()
+                                && body
+                                    .trim()
+                                    .chars()
+                                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+                            {
+                                out.push_str(&substituted);
+                                out.push('(');
+                                out.push_str(&result[j + 1..close]);
+                                out.push(')');
+                            } else {
+                                out.push_str(&substituted);
+                            }
                             i = close + 1;
                             changed = true;
                             continue;

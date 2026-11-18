@@ -482,15 +482,29 @@ fn compile_file(
             .join("\n");
         std::fs::write(&f, text).ok();
     }
+    // Diagnostic companion for the dump above: keep the originating file and
+    // line number with each preprocessed entry.  The combined stream uses
+    // one-based line numbers, so errors can be mapped back to the exact
+    // include that produced the offending spelling.
+    if let Ok(f) = std::env::var("PB64DUMP_PP_MAP") {
+        let text = source_lines
+            .iter()
+            .map(|s| format!("{}\t{}\t{}", s.file.display(), s.line_num, s.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&f, text).ok();
+    }
 
     // Reassemble into single source string for lexing
     // Build line map: combined_line (1-based) -> original file line
     let mut combined = String::new();
     let mut line_map: Vec<usize> = Vec::new(); // index 0 = combined line 1
+    let mut line_files: Vec<std::path::PathBuf> = Vec::new();
     for sl in &source_lines {
         combined.push_str(&sl.text);
         combined.push('\n');
         line_map.push(sl.line_num);
+        line_files.push(sl.file.clone());
     }
 
     // Phase 2: Lex
@@ -500,6 +514,7 @@ fn compile_file(
     // Remap token line numbers from preprocessed line to original file line
     for tok in &mut tokens {
         if tok.line > 0 && tok.line <= line_map.len() {
+            tok.file = Some(line_files[tok.line - 1].display().to_string());
             tok.line = line_map[tok.line - 1];
         }
     }
