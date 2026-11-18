@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 386 (v0.2.173). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 387 (v0.2.174). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 387 (v0.2.174) - target-aware pointer width in TYPE layout and array element sizing on i686.
 > batch 386 (v0.2.173) - dynamic LSET/RSET honours ABS and USING, string modification no longer frees non-BSTR old pointers, and string-array operations use the target pointer width; batch386_test passes on x86_64 and i686.
 > batch 385 (v0.2.172) - embedded-NUL string semantics aligned with PBWin10 across the string builtins, fixed-string TYPE fields, ASC with an explicit position, dynamic LSET/CSET, REPLACE/REPLACE ANY and SPLIT; COMM SET DTR/RTS/BREAK now drives EscapeCommFunction; the runtime builds clean under -Wall -Wextra on x86_64 and i686; batch385_test passes on both targets.
 > batch 384 (v0.2.171) - CON.STDIN.LINE dynamic buffer, Ctrl-Z EOF and CON.STDEOF state; console setter and GETSTDVID error-code closure; reproducible batch384 probes.
@@ -1051,6 +1052,23 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.174 (2026-11-18)
+
+- **i686 pointer width in TYPE layout**: `IrType::Ptr` is now sized with the
+  selected target's pointer width instead of a hard-coded 8 bytes. `SIZEOF`
+  for a `TYPE` with a `DWORD PTR` field followed by a `LONG` field now reports
+  8 on i686 (matching PBWin10) and 12 on x86_64; previously i686 reported 12.
+  Field padding and TYPE layout offsets use the same 4/8-byte width.
+- **Array element width on i686**: the remaining static `array_elem_size()`
+  call sites now use `array_elem_size_arch()`: the dynamic array descriptor,
+  `DIM`/`REDIM`, `ARRAY SORT` tag arrays, `BIT` containers and `ARRAYATTR`.
+  Dynamic `STRING` arrays therefore keep their elements aligned on i686.
+- **Regression**: `examples/batch387_test.bas` checks pointer-field
+  `SIZEOF`, the `SIZEOF` invariant, dynamic `REDIM PRESERVE`, and
+  `ARRAY DELETE`; both x86_64 and i686 report `FAILURES: 0`.
+
+No new official keywords were added; the coverage matrix counts are unchanged.
+
 ### v0.2.173 (2026-11-18)
 
 - Dynamic `LSET`/`RSET` now honor `ABS` and `USING`: `LSET ABS` preserves the existing tail bytes, `RSET ABS` fills the leading bytes, and `USING` uses the requested pad character. The runtime derives the field width from the destination's current BSTR length instead of a 256-byte sentinel.

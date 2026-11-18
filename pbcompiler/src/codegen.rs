@@ -1706,16 +1706,22 @@ impl Compiler {
         }
     }
 
-    /// Byte size of an IR type (for TYPE SET memcpy sizing).
-    fn ir_size_bytes(ir: &IrType) -> u32 {
+    /// Byte size of an IR type for a given pointer width.
+    fn ir_size_bytes_arch(ir: &IrType, ptr_width: u32) -> u32 {
         match ir {
             IrType::I1 | IrType::I8 => 1,
             IrType::I16 => 2,
             IrType::I32 | IrType::Float => 4,
-            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-            IrType::Array(n, elem) => (*n as u32) * Self::ir_size_bytes(elem),
+            IrType::I64 | IrType::Double => 8,
+            IrType::Ptr => ptr_width,
+            IrType::Array(n, elem) => (*n as u32) * Self::ir_size_bytes_arch(elem, ptr_width),
             _ => 4,
         }
+    }
+
+    /// Byte size of an IR type using the selected target's pointer width.
+    fn ir_size_bytes(&self, ir: &IrType) -> u32 {
+        Self::ir_size_bytes_arch(ir, self.pointer_width() as u32)
     }
 
     /// Storage size in bytes of a scalar PowerBASIC type (CHW LEN/SIZEOF).
@@ -1772,6 +1778,7 @@ impl Compiler {
         struct_align: u32,
         is_fill: bool,
         is_fixed_str: bool,
+        ptr_width: u32,
     ) -> u32 {
         let a = struct_align.max(1);
         let rem = cur_offset % a;
@@ -1786,7 +1793,7 @@ impl Compiler {
         if gap == 0 {
             return 0;
         }
-        let field_size = Self::ir_size_bytes(field_ir);
+        let field_size = Self::ir_size_bytes_arch(field_ir, ptr_width);
         if field_size <= gap {
             0 // rule 1: fits entirely into the gap
         } else {
@@ -8199,7 +8206,7 @@ impl Compiler {
                     if let Some(sub) = self.type_layouts.get(nested_name) {
                         for m in &sub.fields {
                             let ir_type = m.ir_type.clone();
-                            let sz = Self::ir_size_bytes(&ir_type);
+                            let sz = self.ir_size_bytes(&ir_type);
                             if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
                                 largest = Some((ir_type.clone(), sz));
                             }
@@ -8223,7 +8230,7 @@ impl Compiler {
                 } else {
                     elem_ir
                 };
-                let sz = Self::ir_size_bytes(&ir_type);
+                let sz = self.ir_size_bytes(&ir_type);
                 if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
                     largest = Some((ir_type.clone(), sz));
                 }
@@ -8239,7 +8246,7 @@ impl Compiler {
                     let width = *width;
                     let signed = *signed;
                     if base.is_some() {
-                        let total = Self::ir_size_bytes(&ir_type) * 8;
+                        let total = self.ir_size_bytes(&ir_type) * 8;
                         ubit_state = Some((total, width));
                         Some((0, width, signed))
                     } else {
@@ -8303,12 +8310,20 @@ impl Compiler {
         // Insert alignment padding before a real field so it lands on its
         // effective boundary (CHW TYPE BYTE/WORD/DWORD/QWORD). Padding is an
         // [N x i8] slot inside the packed struct.
+        let ptr_width = if self.module.is_32bit() { 4 } else { 8 };
         let emit_pad = |ir_types: &mut Vec<IrType>,
                         idx: &mut usize,
                         cur_offset: &mut u32,
                         field_ir: &IrType,
                         fixed_str: bool| {
-            let pad = Self::field_padding(*cur_offset, field_ir, struct_align, is_fill, fixed_str);
+            let pad = Self::field_padding(
+                *cur_offset,
+                field_ir,
+                struct_align,
+                is_fill,
+                fixed_str,
+                ptr_width,
+            );
             if pad > 0 {
                 ir_types.push(IrType::Array(pad as usize, Box::new(IrType::I8)));
                 *idx += 1;
@@ -8337,7 +8352,7 @@ impl Compiler {
                 bit: None,
             });
             idx = 1;
-            cur_offset = Self::ir_size_bytes(&IrType::I64);
+            cur_offset = self.ir_size_bytes(&IrType::I64);
         }
         for field in td.fields.iter() {
             // Bit-field member (BIT/SBIT): pack into a shared container slot.
@@ -8380,7 +8395,7 @@ impl Compiler {
                         gep_idx: slot,
                         bit: Some((0, width, signed)),
                     });
-                    cur_offset += Self::ir_size_bytes(&container_ir);
+                    cur_offset += self.ir_size_bytes(&container_ir);
                     idx += 1;
                     bit_state = Some((slot, container_bits, width, container_pb, container_ir));
                 } else {
@@ -8446,7 +8461,7 @@ impl Compiler {
                             gep_idx: idx,
                             bit: None,
                         });
-                        cur_offset += Self::ir_size_bytes(&IrType::I32);
+                        cur_offset += self.ir_size_bytes(&IrType::I32);
                         idx += 1;
                         continue;
                     }
@@ -8457,7 +8472,7 @@ impl Compiler {
                     let largest = sub
                         .fields
                         .iter()
-                        .max_by_key(|f| Self::ir_size_bytes(&f.ir_type));
+                        .max_by_key(|f| self.ir_size_bytes(&f.ir_type));
                     let ir_type = largest.map(|f| f.ir_type.clone()).unwrap_or(IrType::I8);
                     emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, false);
                     ir_types.push(ir_type.clone());
@@ -8473,7 +8488,7 @@ impl Compiler {
                             bit: m.bit,
                         });
                     }
-                    cur_offset += Self::ir_size_bytes(&ir_type);
+                    cur_offset += self.ir_size_bytes(&ir_type);
                     idx += 1;
                 } else {
                     // Embedded TYPE: flatten its (already expanded) members in
@@ -8498,7 +8513,7 @@ impl Compiler {
                             gep_idx: idx,
                             bit: m.bit,
                         });
-                        cur_offset += Self::ir_size_bytes(&m.ir_type);
+                        cur_offset += self.ir_size_bytes(&m.ir_type);
                         idx += 1;
                     }
                 }
@@ -8525,7 +8540,7 @@ impl Compiler {
                     gep_idx: idx,
                     bit: None,
                 });
-                cur_offset += Self::ir_size_bytes(&fields.last().unwrap().ir_type);
+                cur_offset += self.ir_size_bytes(&fields.last().unwrap().ir_type);
                 idx += 1;
             }
         }
@@ -8650,7 +8665,7 @@ impl Compiler {
                     td.name
                 )));
             };
-            let field_size = Self::ir_size_bytes(&layout.fields[field_idx].ir_type);
+            let field_size = self.ir_size_bytes(&layout.fields[field_idx].ir_type);
             let entry = format!("{}_{}", class, normalize_name(method));
             if !self.functions.contains_key(&entry) {
                 return Err(PbError::generic(format!(
@@ -9600,7 +9615,7 @@ impl Compiler {
             dims.push((lower, count as i64));
             total *= count;
         }
-        let elem_size = Self::array_elem_size(&elem_ir) as i64;
+        let elem_size = self.array_elem_size_arch(&elem_ir) as i64;
         let slot = Val::new(prev.ptr_name.clone(), IrType::Ptr);
         let old = fb.load(&IrType::Ptr, &slot);
         // batch 366: allocate a per-thread descriptor that records THIS DIM's
@@ -12434,7 +12449,7 @@ impl Compiler {
                 .unwrap_or_else(|| (PbType::Long, Vec::new(), 0usize));
             let elem_ir = Self::array_elem_ir(&pb_type);
             let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
-            let elem_size = Self::array_elem_size(&elem_ir);
+            let elem_size = self.array_elem_size_arch(&elem_ir);
             let slot = fb.alloca(&IrType::Ptr);
             let desc = fb.call(
                 &IrType::Ptr,
@@ -12641,7 +12656,7 @@ impl Compiler {
                     dims.push((lower, count as i64));
                     total *= count;
                 }
-                let elem_size = Self::array_elem_size(&prev.elem_ir_type);
+                let elem_size = self.array_elem_size_arch(&prev.elem_ir_type);
                 let desc = fb.load(&IrType::Ptr, &Val::new(prev.ptr_name.clone(), IrType::Ptr));
                 let preserve = if dim.is_redim && dim.preserve { 1 } else { 0 };
                 fb.call_void(
@@ -12863,7 +12878,7 @@ impl Compiler {
                             &Val::new(total.to_string(), IrType::I32),
                         );
                         let elem_size =
-                            Val::new(Self::array_elem_size(&elem_ir).to_string(), IrType::I32);
+                            Val::new(self.array_elem_size_arch(&elem_ir).to_string(), IrType::I32);
                         let count =
                             Val::new((prev.total_elements - total).to_string(), IrType::I32);
                         let is_string = Val::new(
@@ -14793,7 +14808,7 @@ impl Compiler {
                     let a1 = self.compile_expr(fb, &call.args[1])?;
                     let delta = self.to_i64(fb, &a1);
                     let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
-                    let elem_size = Self::array_elem_size(&info.elem_ir_type);
+                    let elem_size = self.array_elem_size_arch(&info.elem_ir_type);
                     fb.call_void(
                         "pb_dynamic_array_grow",
                         &[desc, delta, fb.const_i32(elem_size), fb.const_i32(1)],
@@ -14818,7 +14833,7 @@ impl Compiler {
                     let a1 = self.compile_expr(fb, &call.args[1])?;
                     let delta = self.to_i64(fb, &a1);
                     let desc = fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
-                    let elem_size = Self::array_elem_size(&info.elem_ir_type);
+                    let elem_size = self.array_elem_size_arch(&info.elem_ir_type);
                     fb.call_void(
                         "pb_dynamic_array_grow",
                         &[desc, delta, fb.const_i32(elem_size), fb.const_i32(0)],
@@ -15975,13 +15990,7 @@ impl Compiler {
                 if let Some((ptr, ir_ty, pb_ty)) = self.lvalue_ptr(fb, &call.args[0]) {
                     let bitv = self.compile_expr(fb, &call.args[1])?;
                     let bi = self.to_i64(fb, &bitv);
-                    let elem_size = match &ir_ty {
-                        IrType::I8 | IrType::I1 => 1,
-                        IrType::I16 => 2,
-                        IrType::I32 | IrType::Float => 4,
-                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                        _ => 4,
-                    };
+                    let elem_size = self.array_elem_size_arch(&ir_ty) as i64;
                     let elem_bits = elem_size * 8;
                     let word_off = fb.sdiv(&bi, &fb.const_i64(elem_bits));
                     let bit_in = fb.srem(&bi, &fb.const_i64(elem_bits));
@@ -22489,7 +22498,7 @@ impl Compiler {
                             layout
                                 .fields
                                 .iter()
-                                .map(|f| Self::ir_size_bytes(&f.ir_type))
+                                .map(|f| self.ir_size_bytes(&f.ir_type))
                                 .sum::<u32>() as i32
                         } else {
                             0
@@ -22603,13 +22612,7 @@ impl Compiler {
                                 let tname = normalize_name(tn);
                                 if let Some(ti) = self.symbols.lookup_array(&tname).cloned() {
                                     let tp = Val::new(ti.ptr_name.clone(), IrType::Ptr);
-                                    let tes = match &ti.elem_ir_type {
-                                        IrType::I8 | IrType::I1 => 1,
-                                        IrType::I16 => 2,
-                                        IrType::I32 | IrType::Float => 4,
-                                        IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                                        _ => 4,
-                                    };
+                                    let tes = self.array_elem_size_arch(&ti.elem_ir_type);
                                     (tp, tes)
                                 } else {
                                     (fb.const_null_ptr(), 0)
@@ -25975,7 +25978,7 @@ impl Compiler {
             }
         };
         let dst_base = self.array_base(fb, &dst);
-        let es = Self::array_elem_size(&dst.elem_ir_type);
+        let es = self.array_elem_size_arch(&dst.elem_ir_type);
         let es_i32 = fb.const_i32(es);
         let is_float = fb.const_i32(
             if matches!(dst.elem_ir_type, IrType::Float | IrType::Double) {
@@ -26219,17 +26222,6 @@ impl Compiler {
             IrType::I32 | IrType::Float => 4,
             IrType::I64 | IrType::Double => 8,
             IrType::Ptr => self.pointer_width(),
-            _ => 4,
-        }
-    }
-
-    /// Element size in bytes for a MAT array element type.
-    fn array_elem_size(ir: &IrType) -> i32 {
-        match ir {
-            IrType::I8 | IrType::I1 => 1,
-            IrType::I16 => 2,
-            IrType::I32 | IrType::Float => 4,
-            IrType::I64 | IrType::Double | IrType::Ptr => 8,
             _ => 4,
         }
     }
@@ -28276,7 +28268,7 @@ impl Compiler {
                 // Bit-field: load the whole container, shift and mask.
                 if let Some((bit_off, width, signed)) = self.member_bit_info(expr) {
                     let container_ir = Self::ir_type_for(&field_pb);
-                    let total = Self::ir_size_bytes(&container_ir) * 8;
+                    let total = self.ir_size_bytes(&container_ir) * 8;
                     let raw = fb.load(&container_ir, &field_ptr);
                     let shifted = fb.lshr(&raw, &fb.const_int(&container_ir, bit_off as i64));
                     if signed {
@@ -30363,13 +30355,7 @@ impl Compiler {
                 match (self.lvalue_ptr(fb, &args[0]), bit) {
                     (Some((ptr, ir_ty, _)), Ok(bb)) => {
                         let bi = self.to_i64(fb, &bb);
-                        let elem_size = match &ir_ty {
-                            IrType::I8 | IrType::I1 => 1,
-                            IrType::I16 => 2,
-                            IrType::I32 | IrType::Float => 4,
-                            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-                            _ => 4,
-                        };
+                        let elem_size = self.array_elem_size_arch(&ir_ty) as i64;
                         let elem_bits = elem_size * 8;
                         let word_off = fb.sdiv(&bi, &fb.const_i64(elem_bits));
                         let bit_in = fb.srem(&bi, &fb.const_i64(elem_bits));
@@ -30688,14 +30674,8 @@ impl Compiler {
     }
 
     /// Element byte size for ARRAYATTR AttrNum=5.
-    fn elem_size_of(t: &IrType) -> i64 {
-        match t {
-            IrType::I8 | IrType::I1 => 1,
-            IrType::I16 => 2,
-            IrType::I32 | IrType::Float => 4,
-            IrType::I64 | IrType::Double | IrType::Ptr => 8,
-            _ => 4,
-        }
+    fn elem_size_of(&self, t: &IrType) -> i64 {
+        self.array_elem_size_arch(t) as i64
     }
 
     /// LBOUND / UBOUND: y = LBOUND(arr() [, dim&]) - lower (LBOUND) or upper
@@ -30803,7 +30783,7 @@ impl Compiler {
             // (arr, 0) returns 0.
             if cd == 0 && !upper {
                 let total_bytes =
-                    (info.total_elements as u32) * Self::ir_size_bytes(&info.elem_ir_type);
+                    (info.total_elements as u32) * self.ir_size_bytes(&info.elem_ir_type);
                 return Ok(fb.const_i64(total_bytes as i64));
             }
             if dim < 1 || dim > info.dims.len() {
@@ -30834,8 +30814,7 @@ impl Compiler {
         // holds the total array byte size; every other invalid dimension
         // returns 0. UBOUND always returns 0 here.
         if !upper {
-            let total_bytes =
-                (info.total_elements as u32) * Self::ir_size_bytes(&info.elem_ir_type);
+            let total_bytes = (info.total_elements as u32) * self.ir_size_bytes(&info.elem_ir_type);
             let is_zero = fb.icmp("eq", &dim64, &fb.const_i64(0));
             let fallback = fb.select(
                 &is_zero,
@@ -30913,7 +30892,7 @@ impl Compiler {
                 2 => fb.const_i64(0),
                 3 => fb.call(&IrType::I64, "pb_threaded_meta_ndims", &[meta]),
                 4 => fb.call(&IrType::I64, "pb_threaded_meta_total", &[meta]),
-                5 => fb.const_i64(Self::elem_size_of(&info.elem_ir_type)),
+                5 => fb.const_i64(self.elem_size_of(&info.elem_ir_type)),
                 _ => fb.const_i64(0),
             };
             return Ok(v);
@@ -30924,7 +30903,7 @@ impl Compiler {
             2 => 0, // not a pointer array
             3 => info.dims.len() as i64,
             4 => info.total_elements as i64,
-            5 => Self::elem_size_of(&info.elem_ir_type),
+            5 => self.elem_size_of(&info.elem_ir_type),
             _ => 0,
         };
         Ok(fb.const_i64(v))
