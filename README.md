@@ -13,11 +13,11 @@ PB64Basic is an open-source compiler that translates PowerBASIC source code (.ba
 
 This repository is an enhanced branch that fixes an upstream bug and adds several frequently-used PowerBASIC statements/functions that were previously silently dropped during code generation.
 
-## JK-IDE Integration and PowerBASIC Help
+## JK-IDE Integration and PB64Basic Help
 
 JK-IDE can compile a source file with either this compiler (**PB64Basic**) or the separate **PBXB64.exe** compiler. Both toolchains are registered through the JK-IDE add-on, so you can select the compiler from the JK-IDE menu without leaving the editor.
 
-This branch also integrates PowerBASIC Help. Put the mouse pointer over any word or keyword in your source and press **F1** to open the help topic for that word directly (context-sensitive help). If you prefer to browse, you can open the PowerBASIC compiled help file (**PB.chm**) on its own — from the add-on's **Open PB Help** menu or by double-clicking the file — and use its contents, index, and full-text search to look up any keyword. The matching index file (**PB.chw**) is loaded automatically when it sits next to the `.chm` file.
+This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (952 topics plus an index); when JK-IDE integration is selected, `setup.bat` installs it as both `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. The original PBWin help is preserved once as `PB.chm.pbwin-bak` and `PB.chw.pbwin-bak`. If you prefer to browse, open the compiled help file from **Open PB Help** or by double-clicking it, and use its contents, index, and full-text search.
 
 ### Right-click context menu (editor tabs and editor area)
 
@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 379 (v0.2.167). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 380 (v0.2.168). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 380 (v0.2.168) - the complete PB64Basic help set is bundled in jkide and installed into JK-IDE; F1 and Open PB Help resolve to the bundled help; the original PBWin help is backed up once as *.pbwin-bak; compiler code is unchanged.
 > batch 379 (v0.2.167) - file-I/O evidence and console probes; WIDE SEEK byte offsets, ANSI 0x1A EOF, LINE INPUT # arrays, fixed WSTRING arrays, dynamic ARRAY REDIM, LPRINT separators, and RemarksData width fixed; CON.VIEW remains host-limited.
 > batch 377 (v0.2.166) - the PB/CC console family was re-checked against the CHW reference. `CON.PRINT` / `CON.STDOUT` write character-by-character on the active page with the current attribute and scroll at the bottom; `PAGE` separates active and visible pages; `CON.CURSOR.OFF/ON` preserves the visible cursor size; `CON.SCREEN` / `CON.VIRTUAL` failures set Error 5 and successful size operations clear it; `CON.INPUT` / `CON.LINE.INPUT` always use the console keyboard and release their temporary BSTRs; stdio redirection is reported by `CON.IN` / `CON.OUT`; and `DESKTOP GET SIZE` now calls the runtime `pb_desktop_get_size` so i686 programs no longer hit `0xC0000005` at process exit. `examples/batch377_test.bas` passes on x86_64 and i686; real mouse events and exact ConPTY pixel geometry remain environment boundaries, not claimed as fully aligned.
 > batch 376 (v0.2.165) - the PB/CC console pseudo-object family is implemented end to end: `CON` / `CONSOLE` dotted statements and getters for print, clear, colour, cells, cursor, pages, scroll, screen/virtual/view/size/location, caption, focus, handles, input, keys, mouse and standard streams; `?` lowers to `CON.PRINT` under `#CONSOLE ON` and to `MSGBOX` otherwise; bare `SCREENATTR` and `CONSNAME$` are accepted. `setup.bat` / `setup.ps1` now ship the new JK-IDE and PBxB64 locators; `setup.bat` finds `D:\JK-IDE` and writes non-empty `Pbxb64Exe` / `Pbxb64Cwd`.
@@ -1045,6 +1046,15 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.168 (2026-11-18)
+
+Batch 380. Bundles the complete PB64Basic help set in the JK-IDE installer and the release package, and makes both help entry points resolve to that set.
+
+- **Added - full help bundle.** jkide/PB64Basic.chm and jkide/PB64Basic.chw carry the 953-page help build (952 topics plus the index), 1,086,401 bytes each, SHA256 8FB1B7EFBE6EE79759E61D94B4684033852809A1F6EE5E17EF3DF69654893EAB.
+- **Added - JK-IDE help installation.** jkide/install_help.ps1 validates the bundled files, backs up the original PBWin help once as *.pbwin-bak, copies the help to PB.chm / PB.chw and PB64Basic.chm / PB64Basic.chw, and updates PbHelpFile and PBWinHelpPath. setup.bat prefers the bundled help when it is present and falls back to the previous PBWin copy otherwise.
+- **Verified - F1 and explicit help.** In a copied JK-IDE installation, the Help > PB Help (F1) command opened "PB64Basic Help - Full Edition" from the bundled CHM; the original PBWin help remained available in the backup files.
+- **Scope.** No compiler code, runtime object or parser behavior changed in this batch. The help bundle is content-complete for the 952-topic catalog and ships with the repository's existing examples and setup scripts.
+
 ### v0.2.167 (2026-11-18)
 
 Batch 379. Closes the file-I/O and console evidence gaps recorded after batch

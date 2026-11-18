@@ -218,12 +218,14 @@ set "PBWIN_CWD=%PBWIN_BIN:~0,-1%"
 for %%F in ("%PBWIN_CWD%") do set "PBWIN_ROOT=%%~dpF"
 set "PBWIN_INC=%PBWIN_ROOT%WINAPI"
 :pbwin_paths_done
-if defined PBWIN_BIN (
+if exist "%~dp0jkide\PB64Basic.chm" (
+  echo [OK] bundled PB64Basic help found - install_help.ps1 will deploy it
+) else if defined PBWIN_BIN (
   if exist "%PBWIN_BIN%PBWin.chm" copy /Y "%PBWIN_BIN%PBWin.chm" "%JKIDE_DIR%\PB.chm" >nul
   if exist "%PBWIN_BIN%PBWin.chw" copy /Y "%PBWIN_BIN%PBWin.chw" "%JKIDE_DIR%\PB.chw" >nul
   echo [OK] PB.chm and PB.chw copied to %JKIDE_DIR%
 )
-if not defined PBWIN_BIN echo [WARN] PBWin not found - skipped copying PB.chm/PB.chw
+if not exist "%~dp0jkide\PB64Basic.chm" if not defined PBWIN_BIN echo [WARN] PBWin not found - skipped copying PB.chm/PB.chw
 > "%JKIDE_DIR%\JKIDE.ini" (
     echo [Compilers]
     echo ; JK-IDE Compilers menu configuration.
@@ -238,9 +240,11 @@ if not defined PBWIN_BIN echo [WARN] PBWin not found - skipped copying PB.chm/PB
     echo Pbxb64Exe=%PBXB64%
     if defined PBXB64 echo Pbxb64Cwd=%PBXB64DIR%
     if not defined PBXB64 echo Pbxb64Cwd=
-    echo PbHelpFile=%JKIDE_DIR%\PB.chm
+    if exist "%~dp0jkide\PB64Basic.chm" (echo PbHelpFile=%JKIDE_DIR%\PB64Basic.chm) else (echo PbHelpFile=%JKIDE_DIR%\PB.chm)
 )
 echo [OK] wrote JKIDE.ini
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\install_help.ps1" -JkIdeDir "%JKIDE_DIR%" -SourceDir "%~dp0jkide"
+if errorlevel 1 echo [WARN] PB64Basic help installation failed
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\enable_userdll.ps1" -JkIdeDir "%JKIDE_DIR%"
 echo [OK] JK-IDE integration installed. Restart JK-IDE to see the Compilers menu.
 :skip_jk
