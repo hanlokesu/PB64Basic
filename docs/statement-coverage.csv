@@ -1,4 +1,4 @@
-# Last updated from batch 387 (v0.2.174) - 2026-11-18,,,,
+# Last updated from batch 388 (v0.2.175) - 2026-11-19,,,,
 "# Status key: Implemented=this project emits real code. Established=mature in the OFFICIAL PB docs (NOT ""implemented by upstream""). Not implemented=official keyword this fork does not implement yet. FORK EXTENSION=implemented here but not an official PB keyword.",,,
 #ALIGN,STATEMENT,PB/Win only,Implemented
 #BLOAT,STATEMENT,PB/Win only,Implemented

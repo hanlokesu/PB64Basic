@@ -15,7 +15,7 @@ This repository is an enhanced branch that fixes an upstream bug and adds severa
 
 ## JK-IDE Integration and PB64Basic Help
 
-JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. Both toolchains are registered through the JK-IDE add-on, so you can select the compiler from the JK-IDE menu without leaving the editor.
+JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. The **Compilers** menu lists `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and `Compile (default)`, followed by `Open PB Help`, `PB64BASIC.CHM` and `JKIDE.INI`. Both PB64Basic entries drive the same `PB64Basic.exe`: the 64-bit entry builds `<source>.exe` with the x86_64 runtime, while the 32-bit entry builds `<source>_x86.exe` with the i686 runtime, so one target never overwrites the other.
 
 This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (952 topics plus an index); when JK-IDE integration is selected, `setup.bat` installs it as `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **PB64BASIC.CHM** menu. The original PBWin 10 help is preserved once as `PB.chm.pbwin-bak` / `PB.chw.pbwin-bak` and republished as `PBWin.chm`/`PBWin.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. If you prefer to browse, open the fork help from **PB64BASIC.CHM**, the original help from **Open PB Help**, or either file by double-clicking it, and use its contents, index, and full-text search.
 
@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 387 (v0.2.174). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 388 (v0.2.175). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 388 (v0.2.175) - the JK-IDE add-on now exposes PB64Basic (64bit) and PB64Basic (32bit) as separate Compilers menu entries. Both entries call the same PB64Basic.exe; the 64-bit entry selects the x86_64 target and runtime, the 32-bit entry selects the i686 target and runtime, and the 32-bit output is named <source>_x86.exe. The 32-bit compile and run paths are live-verified with command IDs 55028 and 55029, and the menu keeps the PBWin 10, PBXB64, Compile (default), Open PB Help, PB64BASIC.CHM and JKIDE.INI entries in their documented order.
 > batch 387 (v0.2.174) - target-aware pointer width in TYPE layout and array element sizing on i686.
 > batch 386 (v0.2.173) - dynamic LSET/RSET honours ABS and USING, string modification no longer frees non-BSTR old pointers, and string-array operations use the target pointer width; batch386_test passes on x86_64 and i686.
 > batch 385 (v0.2.172) - embedded-NUL string semantics aligned with PBWin10 across the string builtins, fixed-string TYPE fields, ASC with an explicit position, dynamic LSET/CSET, REPLACE/REPLACE ANY and SPLIT; COMM SET DTR/RTS/BREAK now drives EscapeCommFunction; the runtime builds clean under -Wall -Wextra on x86_64 and i686; batch385_test passes on both targets.
@@ -1052,6 +1053,30 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.175 (2026-11-19)
+
+- **JK-IDE Compilers menu now exposes both targets**: the add-on lists
+  `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and
+  `Compile (default)`, followed by the help separator and `Open PB Help`,
+  `PB64BASIC.CHM` and `JKIDE.INI`.
+- **One compiler, two targets**: both PB64Basic entries use the same
+  `PB64Basic.exe`; the 64-bit entry calls `x86_64-pc-windows-msvc` with
+  `pb_runtime_x64.obj`, and the 32-bit entry calls `i686-pc-windows-msvc`
+  with `pb_runtime_x86.obj`. The 32-bit output is written as
+  `<source>_x86.exe` so it cannot overwrite the 64-bit `<source>.exe`.
+- **Command IDs and live verification**: compile/run command IDs are
+  `55012`/`55016` for the 64-bit entry and `55028`/`55029` for the 32-bit
+  entry. Live menu probes produced a 172,032-byte PE `0x8664` executable
+  for 64-bit and a 160,256-byte PE `0x014C` executable for 32-bit; the
+  run probe wrote `run_marker.txt` from a 32-bit build.
+- **Help routing unchanged**: `Open PB Help` uses command `55019` and
+  `PbHelpFile`; `PB64BASIC.CHM` uses command `55027` and `Pb64HelpFile`;
+  `JKIDE.INI` remains command `55014`.
+- **Regression**: `examples/batch388_test.bas` checks target-aware pointer
+  width and TYPE layout on both x86_64 and i686; both report `FAILURES: 0`.
+
+No new official keywords were added; the coverage matrix counts are unchanged.
+
 ### v0.2.174 (2026-11-18)
 
 - **i686 pointer width in TYPE layout**: `IrType::Ptr` is now sized with the
