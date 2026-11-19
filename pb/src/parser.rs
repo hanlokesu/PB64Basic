@@ -12613,18 +12613,30 @@ impl Parser {
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
                     // Optional style, exstyle: after h, either comma (style) or To
-                    let style = if matches!(self.peek(), Token::Comma) {
+                    //
+                    // PBWin accepts the optional separator comma in
+                    // `..., style [,] TO hDlg` (discussion #4, 2026-11-20).
+                    // A comma immediately followed by TO must not be treated
+                    // as an empty style/exstyle slot; otherwise TO is parsed
+                    // as an expression and the build fails with
+                    // "Unexpected token in expression: To".
+                    let style =
+                        if self.peek() == &Token::Comma && self.peek_at(1) != Some(&Token::To) {
+                            self.advance();
+                            self.parse_expression()?
+                        } else {
+                            Expr::IntegerLit(0)
+                        };
+                    let exstyle =
+                        if self.peek() == &Token::Comma && self.peek_at(1) != Some(&Token::To) {
+                            self.advance();
+                            self.parse_expression()?
+                        } else {
+                            Expr::IntegerLit(0)
+                        };
+                    if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
                         self.advance();
-                        self.parse_expression()?
-                    } else {
-                        Expr::IntegerLit(0)
-                    };
-                    let exstyle = if matches!(self.peek(), Token::Comma) {
-                        self.advance();
-                        self.parse_expression()?
-                    } else {
-                        Expr::IntegerLit(0)
-                    };
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -12658,6 +12670,15 @@ impl Parser {
                     self.advance();
                     self.advance(); // MODAL (now guaranteed by the guard)
                     let hd = self.parse_expression()?;
+                    // PBWin accepts the optional separator comma before the
+                    // callback/result: `DIALOG SHOW MODAL hDlg [,] CALL proc`
+                    // and `... [,] TO result` (discussion #4, 2026-11-20).
+                    // Without this the comma form silently lost the callback.
+                    if self.peek() == &Token::Comma
+                        && matches!(self.peek_at(1), Some(Token::Call) | Some(Token::To))
+                    {
+                        self.advance();
+                    }
                     // DIALOG SHOW MODAL hDlg CALL proc   (fork callback form)
                     if self.peek() == &Token::Call {
                         self.advance();

@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 394 (v0.2.182). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 395 (v0.2.183). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 395 (v0.2.183) - DDT optional separator commas: `DIALOG NEW` accepts `..., style, TO hDlg`; `DIALOG SHOW MODAL` accepts `hDlg, CALL proc` and `hDlg, TO result`. PBWin10 compiles all four comma/no-comma variants; the previous parser rejected the comma before `TO` and silently dropped the modal callback when a comma preceded `CALL`. `batch395_test.bas` passes on x86_64 and i686, and `batch395_modal_probe.bas` covers both modal forms at compile time.
 > batch 394 (v0.2.182) - Android-only runtime patch: native blocking `MSGBOX` through a JNI `AlertDialog` with Win32 `ID*` return codes, `BEEP` through the system notification sound, `PLAY SOUND` through `AudioTrack`, and deterministic input/MSGBOX test hooks. The 20-demo APK suite is published separately as `android-demos-v0.2.181` (20/20 package/ABI/zipalign/signature checks and 20/20 device probes). Windows behavior is unchanged; `batch394_test.bas` covers the Windows `BEEP`/`PLAY SOUND` link path and passes on x86_64 and i686. ARM64 APKs remain build/static-verified only; GUI/COM/GDI/menu/printer/serial surfaces and `TCP NOTIFY` dispatch remain outside the Android runtime.
 > batch 393 (v0.2.181) - Android runtime compatibility closure: native console input for `WAITKEY$`/`INKEY$`, console-page routing for `CON.STDERR`, file and directory wrappers with backslash/drive-path normalization, a cooperative thread suspend/resume layer, Winsock-compatible TCP/UDP loopback, a process-local clipboard/global-memory layer, real `DATE$`/`TIME$`/`TIMER`, `FRE`, process/thread priorities, and one file-number namespace shared by files and sockets (TCP `ACCEPT` now allocates through `pb_freefile()`). `batch393_test.bas` passes on x86_64 and i686. The PB/CC-specific console subset is 381 rows: 379 Implemented and 2 Established (`INTERFACE / END INTERFACE (DIRECT)` and `INTERFACE/END INTERFACE (IDBIND)`), with 0 Not implemented; there is no PB/CC compiler on this host, so those rows are verified by source/CHW review and by the Windows console regressions, not by a PB/CC differential run. Android boundaries remain explicit: GUI/COM/GDI/menus/printers/serial ports, `TCP NOTIFY` message dispatch, native modal `MSGBOX`, and audio output are not implemented, and the ARM64 APK was link-verified but not run on ARM64 hardware.
 > batch 392 (v0.2.180) - ported the still-applicable WinAPI structure-layout work from the old `pbsrc` tree onto `pbsrc_b378`: `WSTRINGZ * %MAX_PATH` inline fixed wide strings, `QUAD`/`QWORD` and `NATIVE` alignment, parenthesized/bitwise constant expressions, `SIZEOF(TYPENAME)` and `FixedWString` sizing, and the fork-only `%PB64_TARGET_64` marker. `batch392_test.bas` passes on x86_64 and i686. The old `setup.ps1` was already byte-identical to b378, and the old `setup.bat` / JK-IDE locator changes were superseded by later b378 commits, so they were not reverted.
@@ -1064,6 +1065,19 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.183 (2026-11-20)
+
+- **DDT separator commas**: `DIALOG NEW` now accepts the optional comma
+  between the style/exstyle list and `TO`, matching PBWin10. The documented
+  form `DIALOG NEW ..., style, TO hDlg` previously stopped with
+  `Unexpected token in expression: To` (GitHub Discussion #4).
+- **Modal callback**: `DIALOG SHOW MODAL hDlg, CALL proc` and
+  `DIALOG SHOW MODAL hDlg, TO result` now consume the optional comma before
+  `CALL`/`TO`. The `CALL` form used to compile but silently drop the callback.
+- **Regression**: `batch395_test.bas` creates a dialog with the comma-before-
+  `TO` form and returns its failure count on x86_64 and i686;
+  `batch395_modal_probe.bas` covers both modal comma forms at compile time.
+
 ### v0.2.182 (2026-11-20)
 
 - **Android native message boxes**: `MessageBoxA` now calls the JNI bridge
