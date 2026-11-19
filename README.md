@@ -435,8 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 392 (v0.2.179). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> batch 392 (v0.2.179) - ported the still-applicable WinAPI structure-layout work from the old `pbsrc` tree onto `pbsrc_b378`: `WSTRINGZ * %MAX_PATH` inline fixed wide strings, `QUAD`/`QWORD` and `NATIVE` alignment, parenthesized/bitwise constant expressions, `SIZEOF(TYPENAME)` and `FixedWString` sizing, and the fork-only `%PB64_TARGET_64` marker. `batch392_test.bas` passes on x86_64 and i686. The old `setup.ps1` was already byte-identical to b378, and the old `setup.bat` / JK-IDE locator changes were superseded by later b378 commits, so they were not reverted.
+> Updated through batch 392 (v0.2.180). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 392 (v0.2.180) - ported the still-applicable WinAPI structure-layout work from the old `pbsrc` tree onto `pbsrc_b378`: `WSTRINGZ * %MAX_PATH` inline fixed wide strings, `QUAD`/`QWORD` and `NATIVE` alignment, parenthesized/bitwise constant expressions, `SIZEOF(TYPENAME)` and `FixedWString` sizing, and the fork-only `%PB64_TARGET_64` marker. `batch392_test.bas` passes on x86_64 and i686. The old `setup.ps1` was already byte-identical to b378, and the old `setup.bat` / JK-IDE locator changes were superseded by later b378 commits, so they were not reverted.
 > batch 391 (v0.2.178) - closed the legacy audit: BSTR/C-string boundary in PRINT/COMM/GRAPHIC, REGREPL return type, dynamic control getters, i686 BYTE rotate, embedded-NUL round-trips, STRING/ASCIIZ file-input padding, END, TCP LINE INPUT and COM GETCOM; batch391_test and the full headless suite pass on both targets.
 > batch 390 (v0.2.177) - fixed the JK-IDE help installer on CRLF configuration files: `Set-IniValue` now finds a section header without swallowing the carriage return, so `Pb64HelpFile` is written and `setup.bat` no longer stops with `section [Compilers] not found`; the installer also normalises mixed line endings.
 > batch 389 (v0.2.176) - signed INTEGER semantics fixed for TYPE fields and i686 locals, and the 952-page language reference was rebuilt with official Purpose/Syntax/Parameters/Remarks text, complete examples, four pseudo-object pages and the refreshed CHM.
@@ -1062,6 +1062,21 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.180 (2026-11-19)
+
+- **Android runtime port (experimental)**: `pb_runtime.c` now builds for
+  `aarch64-linux-android21` and `x86_64-linux-android21` with the Android NDK,
+  while the Windows x86_64/i686 builds keep their existing code paths. The
+  console runtime and JNI bridge were validated on an x86_64 Android 15
+  emulator; arm64 is statically linked and packaged but was not run on ARM64
+  hardware in this release. The companion Gradle/APK builder is a separate
+  local project and is not included in the zip.
+- **Setup console**: `setup.bat` now ends with `pause`, so a double-clicked
+  setup run keeps its result visible instead of closing the console window.
+- **Compatibility**: the Windows x86_64 and i686 runtime objects were rebuilt
+  from the same `pb_runtime.c`; `batch392_test.bas` still passes on both
+  targets with `batch392 failures= 0`.
+
 ### v0.2.179 (2026-11-19)
 
 - **Fixed wide strings in WinAPI structures are inline again**: `WSTRINGZ * N`
@@ -1088,23 +1103,13 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 - **`%PB64_TARGET_64`**: a fork-only constant that is -1 on x86_64 and 0 on
   i686; `%DEF(%PB64_TARGET_64)` is true only on x86_64. This lets one header
   select the NATIVE WinAPI layout without exposing the keyword to PBWin.
-- **Android runtime port (experimental)**: `pb_runtime.c` now builds for
-  `aarch64-linux-android21` and `x86_64-linux-android21` with the Android NDK,
-  while the Windows x86_64/i686 builds keep their existing code paths. The
-  console runtime and JNI bridge were validated on an x86_64 Android 15
-  emulator; arm64 is statically linked and packaged but was not run on ARM64
-  hardware in this release. The companion Gradle/APK builder is a separate
-  local project and is not included in the zip.
-- **Setup console**: `setup.bat` now ends with `pause`, so a double-clicked
-  setup run keeps its result visible instead of closing the console window.
 - **Regression**: `examples/batch392_test.bas` passes on x86_64 and i686 with
   `batch392 failures= 0`; it covers the 525-byte BYTE-aligned wide-string
   structure, the 16-byte QWORD/QUAD layouts and the 16-byte NATIVE layout.
 - **Scope note**: the old `pbsrc` tree's `setup.ps1` was already
   byte-identical to b378, and its `setup.bat` / JK-IDE locator edits were
   superseded by later b378 commits; this batch ports only the still-applicable
-  compiler layout and constant-expression work. This release also carries
-  the Android runtime portability changes and the `setup.bat` pause fix.
+  compiler layout and constant-expression work.
 
 ### v0.2.178 (2026-11-19)
 
