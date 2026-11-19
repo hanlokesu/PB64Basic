@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 393 (v0.2.181). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 394 (v0.2.182). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 394 (v0.2.182) - Android-only runtime patch: native blocking `MSGBOX` through a JNI `AlertDialog` with Win32 `ID*` return codes, `BEEP` through the system notification sound, `PLAY SOUND` through `AudioTrack`, and deterministic input/MSGBOX test hooks. The 20-demo APK suite is published separately as `android-demos-v0.2.181` (20/20 package/ABI/zipalign/signature checks and 20/20 device probes). Windows behavior is unchanged; `batch394_test.bas` covers the Windows `BEEP`/`PLAY SOUND` link path and passes on x86_64 and i686. ARM64 APKs remain build/static-verified only; GUI/COM/GDI/menu/printer/serial surfaces and `TCP NOTIFY` dispatch remain outside the Android runtime.
 > batch 393 (v0.2.181) - Android runtime compatibility closure: native console input for `WAITKEY$`/`INKEY$`, console-page routing for `CON.STDERR`, file and directory wrappers with backslash/drive-path normalization, a cooperative thread suspend/resume layer, Winsock-compatible TCP/UDP loopback, a process-local clipboard/global-memory layer, real `DATE$`/`TIME$`/`TIMER`, `FRE`, process/thread priorities, and one file-number namespace shared by files and sockets (TCP `ACCEPT` now allocates through `pb_freefile()`). `batch393_test.bas` passes on x86_64 and i686. The PB/CC-specific console subset is 381 rows: 379 Implemented and 2 Established (`INTERFACE / END INTERFACE (DIRECT)` and `INTERFACE/END INTERFACE (IDBIND)`), with 0 Not implemented; there is no PB/CC compiler on this host, so those rows are verified by source/CHW review and by the Windows console regressions, not by a PB/CC differential run. Android boundaries remain explicit: GUI/COM/GDI/menus/printers/serial ports, `TCP NOTIFY` message dispatch, native modal `MSGBOX`, and audio output are not implemented, and the ARM64 APK was link-verified but not run on ARM64 hardware.
 > batch 392 (v0.2.180) - ported the still-applicable WinAPI structure-layout work from the old `pbsrc` tree onto `pbsrc_b378`: `WSTRINGZ * %MAX_PATH` inline fixed wide strings, `QUAD`/`QWORD` and `NATIVE` alignment, parenthesized/bitwise constant expressions, `SIZEOF(TYPENAME)` and `FixedWString` sizing, and the fork-only `%PB64_TARGET_64` marker. `batch392_test.bas` passes on x86_64 and i686. The old `setup.ps1` was already byte-identical to b378, and the old `setup.bat` / JK-IDE locator changes were superseded by later b378 commits, so they were not reverted.
 > batch 391 (v0.2.178) - closed the legacy audit: BSTR/C-string boundary in PRINT/COMM/GRAPHIC, REGREPL return type, dynamic control getters, i686 BYTE rotate, embedded-NUL round-trips, STRING/ASCIIZ file-input padding, END, TCP LINE INPUT and COM GETCOM; batch391_test and the full headless suite pass on both targets.
@@ -1063,6 +1064,30 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.182 (2026-11-20)
+
+- **Android native message boxes**: `MessageBoxA` now calls the JNI bridge
+  `pb_android_ui_messagebox`, which opens a blocking `AlertDialog` on the
+  Activity UI thread and maps Win32 styles to `IDOK=1`, `IDCANCEL=2`,
+  `IDABORT=3`, `IDRETRY=4`, `IDIGNORE=5`, `IDYES=6` and `IDNO=7`. When no
+  Activity is attached, the runtime falls back to the console printer.
+- **Android audio**: `BEEP` now plays the system notification sound through
+  `RingtoneManager`; `PLAY SOUND` generates the requested sine tone with
+  `AudioTrack`. Both return success instead of error 68.
+- **Android test hooks**: `pb64_input` seeds the input queue before a run,
+  `pb64_auto_ok_ms` auto-answers message boxes for unattended probes, and the
+  `com.example.pb64app.PUSH_INPUT` broadcast feeds later `WAITKEY$`/`INKEY$`/
+  `CON.LINE` reads.
+- **APK suite**: the 20 demo projects are built as independent
+  `arm64-v8a`/`x86_64` APKs with unique `com.example.pb64demo.*` package ids.
+  The suite passed 20/20 package, ABI, zipalign and signature checks and
+  20/20 device probes on an x86_64 Android 15 emulator. It is published as
+  `android-demos-v0.2.181`; ARM64 APKs are build/static-verified only.
+- **Windows regression**: the new Android branches are compile-time excluded
+  from the Windows runtime. `batch394_test.bas` exercises the Windows `BEEP`
+  and `PLAY SOUND` link path and passes on x86_64 and i686.
+- **Platform boundaries**: GUI, COM, GDI, menus, printers, serial ports and
+  `TCP NOTIFY` dispatch remain outside the Android runtime.
 ### v0.2.181 (2026-11-20)
 
 - **Android console input**: `WAITKEY$` and `INKEY$` now consume a native-key
