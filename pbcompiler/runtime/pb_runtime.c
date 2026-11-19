@@ -23,19 +23,106 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>  /* clock for pb_tix fallback */
+#include <sys/stat.h>  /* _stat / _S_IFDIR for ISFOLDER */
+#include <errno.h>    /* errno -> PB error mapping on OPEN failure */
+#include <stdint.h>   /* uintptr_t for the Windows-compatible declarations */
+
+#ifdef _WIN32
 #include <io.h>  /* _locking / _fileno for LOCK/UNLOCK */
 #include <conio.h>  /* _getch for WAITKEY$ */
 #include <direct.h>  /* _chdrive for CHDRIVE */
 #include <sys/locking.h>  /* _LK_LOCK / _LK_UNLCK */
-#include <sys/stat.h>  /* _stat / _S_IFDIR for ISFOLDER */
 #include <share.h>    /* _SH_DENY* + _fsopen for CHW OPEN LOCK */
-#include <errno.h>    /* errno -> PB error mapping on OPEN failure */
 #include <excpt.h>  /* GetExceptionCode for SEH filters */
 #include <malloc.h>  /* _heapchk for heap integrity probes */
-__declspec(dllimport) void* __stdcall GetProcessHeap(void);
-__declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const void*);
+#endif
 
 #ifdef _WIN32
+__declspec(dllimport) void* __stdcall GetProcessHeap(void);
+__declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const void*);
+#else
+#define __declspec(x)
+#define __stdcall
+#endif
+
+#ifndef _WIN32
+/* Android/POSIX compatibility shims for the Windows CRT and Win32 names used
+   by the portable runtime functions.  Keep these out of the Windows build. */
+#include <unistd.h>
+#include <sys/file.h>
+
+#define _stat stat
+#define _S_IFDIR S_IFDIR
+#define _fileno fileno
+#define _isatty isatty
+#define _snprintf snprintf
+#define _fseeki64 fseeko
+
+#define _SH_DENYNO 0
+#define _SH_DENYRW 1
+#define _SH_DENYWR 2
+#define _SH_DENYRD 3
+#define _LK_LOCK 1
+#define _LK_UNLCK 0
+
+static int _putenv(const char* s) {
+    const char* eq;
+    if (!s) return -1;
+    eq = strchr(s, '=');
+    if (!eq) return unsetenv(s);
+    if (eq[1] == 0) {
+        size_t n = (size_t)(eq - s);
+        char* name = (char*)malloc(n + 1);
+        int rc;
+        if (!name) return -1;
+        memcpy(name, s, n);
+        name[n] = 0;
+        rc = unsetenv(name);
+        free(name);
+        return rc;
+    }
+    {
+        size_t n = (size_t)(eq - s);
+        char* name = (char*)malloc(n + 1);
+        int rc;
+        if (!name) return -1;
+        memcpy(name, s, n);
+        name[n] = 0;
+        rc = setenv(name, eq + 1, 1);
+        free(name);
+        return rc;
+    }
+}
+
+static FILE* _fsopen(const char* path, const char* mode, int share) {
+    (void)share;
+    return fopen(path, mode);
+}
+
+static int _getdrive(void) { return 1; } /* Android has no drive letters. */
+static int _kbhit(void) { return 0; }
+static int _getch(void) { return -1; }
+
+static int _locking(int fd, int mode, long nbytes) {
+    (void)nbytes;
+    if (mode == _LK_LOCK) return flock(fd, LOCK_EX) == 0 ? 0 : -1;
+    if (mode == _LK_UNLCK) return flock(fd, LOCK_UN) == 0 ? 0 : -1;
+    return -1;
+}
+
+static void _i64toa_s(long long value, char* buf, size_t size, int radix) {
+    (void)radix;
+    if (buf && size) snprintf(buf, size, "%lld", value);
+}
+
+/* Thread join is implemented with pthread_join in the Android compat layer. */
+unsigned long WaitForSingleObject(void* h, unsigned long ms);
+
+#define __try
+#define __except(x) if (0)
+#endif
+
+#if defined(_WIN32) || defined(__ANDROID__)
 /* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
 __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, unsigned int len);
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
@@ -408,7 +495,9 @@ typedef struct _pb_in_addr { unsigned long s_addr; } pb_in_addr;
 __declspec(dllimport) pb_hostent* __stdcall gethostbyname(const char* name);
 __declspec(dllimport) pb_hostent* __stdcall gethostbyaddr(const char* addr, int len, int type);
 __declspec(dllimport) char* __stdcall inet_ntoa(pb_in_addr in);
+#ifdef _WIN32
 __declspec(dllimport) int __stdcall gethostname(char* name, int namelen);
+#endif
 __declspec(dllimport) int __stdcall WSAStartup(unsigned short wVersionRequested, void* lpWSAData);
 __declspec(dllimport) int __stdcall WSACleanup(void);
 typedef unsigned long DWORD;
@@ -6571,11 +6660,24 @@ __declspec(dllimport) int __stdcall PlaySoundA(const char* pszSound, void* hmod,
  * the raw rdtsc opcode (verified by disassembly), so we match that instead of
  * QueryPerformanceCounter, whose coarse 100 ns ticks can read 0 for short code. */
 static __inline long long pb_rdtsc_counter(void) {
+#if defined(__aarch64__)
+    /* Android/ARM64 has no RDTSC.  CNTVCT_EL0 is the virtual counter that
+     * user space may read; it is a stable monotonic tick source, not CPU
+     * cycles, but preserves the "smallest available timing increment" role. */
+    unsigned long long v;
+    __asm__ __volatile__("mrs %0, cntvct_el0" : "=r"(v));
+    return (long long)v;
+#elif defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
     unsigned int lo, hi;
     /* "memory" clobber makes rdtsc a compiler barrier: the code being timed
      * must not be reordered or folded across the counter reads. */
     __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi) : : "memory");
     return ((long long)hi << 32) | (long long)lo;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + (long long)ts.tv_nsec;
+#endif
 }
 
 long long pb_tix(void) {

@@ -1088,13 +1088,23 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 - **`%PB64_TARGET_64`**: a fork-only constant that is -1 on x86_64 and 0 on
   i686; `%DEF(%PB64_TARGET_64)` is true only on x86_64. This lets one header
   select the NATIVE WinAPI layout without exposing the keyword to PBWin.
+- **Android runtime port (experimental)**: `pb_runtime.c` now builds for
+  `aarch64-linux-android21` and `x86_64-linux-android21` with the Android NDK,
+  while the Windows x86_64/i686 builds keep their existing code paths. The
+  console runtime and JNI bridge were validated on an x86_64 Android 15
+  emulator; arm64 is statically linked and packaged but was not run on ARM64
+  hardware in this release. The companion Gradle/APK builder is a separate
+  local project and is not included in the zip.
+- **Setup console**: `setup.bat` now ends with `pause`, so a double-clicked
+  setup run keeps its result visible instead of closing the console window.
 - **Regression**: `examples/batch392_test.bas` passes on x86_64 and i686 with
   `batch392 failures= 0`; it covers the 525-byte BYTE-aligned wide-string
   structure, the 16-byte QWORD/QUAD layouts and the 16-byte NATIVE layout.
 - **Scope note**: the old `pbsrc` tree's `setup.ps1` was already
   byte-identical to b378, and its `setup.bat` / JK-IDE locator edits were
   superseded by later b378 commits; this batch ports only the still-applicable
-  compiler layout and constant-expression work.
+  compiler layout and constant-expression work. This release also carries
+  the Android runtime portability changes and the `setup.bat` pause fix.
 
 ### v0.2.178 (2026-11-19)
 

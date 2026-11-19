@@ -261,3 +261,4 @@ if exist "%~dp0jkide\PB64Basic.chm" (
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\enable_userdll.ps1" -JkIdeDir "%JKIDE_DIR%"
 echo [OK] JK-IDE integration installed. Restart JK-IDE to see the Compilers menu.
 :skip_jk
+pause
