@@ -7961,11 +7961,17 @@ long long pb_rotate_right_w(long long v, int n, int width) {
 __declspec(dllimport) int __stdcall Beep(unsigned long dwFreq, unsigned long dwDuration);
 __declspec(dllimport) int __stdcall MessageBeep(unsigned long uType);
 #endif
+#if defined(__ANDROID__)
+extern int pb_android_ui_play_tone(long freq, long dur);
+extern int pb_android_ui_message_beep(void);
+#endif
 
 /* PLAY SOUND freq&, duration& � speaker beep via Beep() */
 int pb_play_sound(long freq, long dur) {
 #ifdef _WIN32
     return Beep((unsigned long)freq, (unsigned long)dur) ? 0 : -1;
+#elif defined(__ANDROID__)
+    return pb_android_ui_play_tone(freq, dur);
 #else
     pb_err_var = pb_err = 68; return -1;
 #endif
@@ -7976,6 +7982,8 @@ int pb_play_sound(long freq, long dur) {
 void pb_beep(void) {
 #ifdef _WIN32
     MessageBeep(0xFFFFFFFF);
+#elif defined(__ANDROID__)
+    (void)pb_android_ui_message_beep();
 #else
     pb_err_var = pb_err = 68;
 #endif
@@ -17257,13 +17265,18 @@ void pb_message_loop(void) {
 }
 
 #if defined(__ANDROID__)
-/* Android has no Win32 dialog stack.  MSGBOX still has to compile, link and
-   surface its text: print it to the Activity console instead of failing at
-   link time or silently dropping the message. */
+/* Android has no Win32 dialog stack.  The JNI bridge owns a real, blocking
+   AlertDialog (including the Win32 IDOK/IDCANCEL/... return codes); only when
+   no Activity is available does it fall back to printing the text to the
+   Activity console. */
+extern int pb_android_ui_messagebox(const char* title, const char* text,
+                                    unsigned int style);
 int __stdcall MessageBoxA(void* hWnd, const char* text, const char* caption,
                           unsigned int style) {
+    int rc;
     (void)hWnd;
-    (void)style;
+    rc = pb_android_ui_messagebox(caption, text, style);
+    if (rc >= 0) return rc;
     if (caption && caption[0]) {
         pb_print_write(caption, (unsigned long)strlen(caption));
         pb_print_write(": ", 2);
