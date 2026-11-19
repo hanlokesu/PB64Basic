@@ -1727,6 +1727,22 @@ impl Compiler {
         Self::ir_size_bytes_arch(ir, self.pointer_width() as u32)
     }
 
+    /// Natural alignment of an IR type.  Used by `TYPE ... NATIVE` to place
+    /// each field on its own boundary (capped at 8 bytes); the default
+    /// `TYPE ... BYTE` path does not call this.  Arrays align like their
+    /// element and pointers follow the target width.
+    fn ir_align_bytes_arch(ir: &IrType, ptr_width: u32) -> u32 {
+        match ir {
+            IrType::I1 | IrType::I8 => 1,
+            IrType::I16 => 2,
+            IrType::I32 | IrType::Float => 4,
+            IrType::I64 | IrType::Double => 8,
+            IrType::Ptr => ptr_width.min(8),
+            IrType::Array(_, elem) => Self::ir_align_bytes_arch(elem, ptr_width).min(8),
+            _ => 4,
+        }
+    }
+
     /// Storage size in bytes of a scalar PowerBASIC type (CHW LEN/SIZEOF).
     /// Handles the 32/64-bit width for pointer-like types; UDT and Variant are
     /// resolved by the caller. Used to fix LEN of numeric variables, which
@@ -1783,7 +1799,14 @@ impl Compiler {
         is_fixed_str: bool,
         ptr_width: u32,
     ) -> u32 {
-        let a = struct_align.max(1);
+        // struct_align == 0 is the NATIVE sentinel: every field uses its own
+        // natural boundary, capped at 8.  A truthy value is the explicit
+        // BYTE/WORD/DWORD/QWORD boundary declared after the TYPE name.
+        let a = if struct_align == 0 {
+            Self::ir_align_bytes_arch(field_ir, ptr_width).max(1)
+        } else {
+            struct_align.max(1)
+        };
         let rem = cur_offset % a;
         let gap = if rem == 0 { 0 } else { a - rem };
         if !is_fill {
@@ -8380,7 +8403,10 @@ impl Compiler {
         // this structure (X.H works directly, per the CHW example).
         let mut idx = 0usize;
         let mut cur_offset = 0u32;
-        let struct_align = td.align.max(1);
+        // 0 is the NATIVE sentinel (PARSER sets it for `TYPE X NATIVE`);
+        // field_padding resolves each field's natural boundary in that case.
+        // A truthy value is the explicit BYTE/WORD/DWORD/QWORD alignment.
+        let struct_align = td.align;
         let is_fill = td.fill;
         // Insert alignment padding before a real field so it lands on its
         // effective boundary (CHW TYPE BYTE/WORD/DWORD/QWORD). Padding is an
@@ -8570,8 +8596,10 @@ impl Compiler {
                     // declaration order.
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
-                        let m_fixed =
-                            matches!(m.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_));
+                        let m_fixed = matches!(
+                            m.pb_type,
+                            PbType::FixedString(_) | PbType::AsciiZ(_) | PbType::FixedWString(_)
+                        );
                         emit_pad(
                             &mut ir_types,
                             &mut idx,
@@ -8603,8 +8631,10 @@ impl Compiler {
                 } else {
                     elem_ir
                 };
-                let fixed = matches!(field.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_))
-                    && field.array_dim.is_none();
+                let fixed = matches!(
+                    field.pb_type,
+                    PbType::FixedString(_) | PbType::AsciiZ(_) | PbType::FixedWString(_)
+                ) && field.array_dim.is_none();
                 emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, fixed);
                 ir_types.push(ir_type.clone());
                 field_map.insert(field_name.clone(), fields.len());
@@ -8622,8 +8652,21 @@ impl Compiler {
         }
 
         // Tail padding so the total size is a multiple of the declared align.
-        // FILL never adds trailing bytes.
-        let tail = Self::tail_padding(cur_offset, struct_align, is_fill);
+        // FILL never adds trailing bytes.  For NATIVE (struct_align == 0) the
+        // tail rounds to the largest natural field alignment actually laid
+        // out, capped at 8; an empty structure still uses 1.
+        let natural_align = fields
+            .iter()
+            .map(|f| Self::ir_align_bytes_arch(&f.ir_type, ptr_width))
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let tail_align = if struct_align == 0 {
+            natural_align
+        } else {
+            struct_align
+        };
+        let tail = Self::tail_padding(cur_offset, tail_align, is_fill);
         if tail > 0 {
             ir_types.push(IrType::Array(tail as usize, Box::new(IrType::I8)));
             cur_offset += tail;
@@ -30091,6 +30134,7 @@ impl Compiler {
                             if let Some(info) = self.symbols.lookup(&norm) {
                                 match &info.pb_type {
                                     PbType::FixedString(n) | PbType::AsciiZ(n) => size = *n as i32,
+                                    PbType::FixedWString(n) => size = (*n as i32) * 2,
                                     PbType::Byte => size = 1,
                                     PbType::Word | PbType::Integer => size = 2,
                                     PbType::Long | PbType::Dword | PbType::Single => size = 4,
@@ -30112,6 +30156,12 @@ impl Compiler {
                                     PbType::Field => size = 16,
                                     _ => size = ptrw,
                                 }
+                            } else if let Some(layout) = self.type_layouts.get(&norm) {
+                                // SIZEOF(TYPENAME) names a type, not a variable.
+                                // Before this fallback the lookup failed and the
+                                // result stayed 0; official headers and WinAPI
+                                // callers use this form for structure sizes.
+                                size = layout.size as i32;
                             }
                         }
                         Expr::TypeMember(base, member) => {
@@ -30126,6 +30176,9 @@ impl Compiler {
                                                 match &layout.fields[*idx].pb_type {
                                                     PbType::FixedString(n) | PbType::AsciiZ(n) => {
                                                         size = *n as i32
+                                                    }
+                                                    PbType::FixedWString(n) => {
+                                                        size = (*n as i32) * 2
                                                     }
                                                     PbType::Byte => size = 1,
                                                     PbType::Word | PbType::Integer => size = 2,
@@ -30183,7 +30236,10 @@ impl Compiler {
                 if let Expr::Variable(orig) = &args[0] {
                     let vname = normalize_name(orig);
                     if let Some(info) = self.symbols.lookup(&vname) {
-                        if matches!(info.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_)) {
+                        if matches!(
+                            info.pb_type,
+                            PbType::FixedString(_) | PbType::AsciiZ(_) | PbType::FixedWString(_)
+                        ) {
                             return Some(Err(PbError::parser(
                                 "STRPTR may not be used with fixed-length or ASCIIZ strings; use VARPTR",
                                 None,

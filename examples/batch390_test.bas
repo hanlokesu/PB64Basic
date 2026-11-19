@@ -18,7 +18,7 @@ FUNCTION PBMAIN() AS LONG
         PRINT "bare form differs"
         fails = fails + 1
     END IF
-    IF v <> "v0.2.178" THEN
+    IF v <> "v0.2.179" THEN
         PRINT "unexpected VERSION$ value"
         fails = fails + 1
     END IF

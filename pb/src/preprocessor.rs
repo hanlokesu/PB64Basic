@@ -324,6 +324,11 @@ impl Preprocessor {
                 // PB_EXE: TRUE for an EXE target; set_build_mode flips it to
                 // 0 for a DLL. Defaults to EXE (the documented default).
                 ("%PB_EXE".to_string(), -1),
+                // %PB64_TARGET_64: fork-only target marker (TRUE on x64),
+                // defined through `%DEF` only on the 64-bit target.  Defaults
+                // to 0 until set_target runs; this is not an official PBWin
+                // constant, so headers must guard it with %DEF.
+                ("%PB64_TARGET_64".to_string(), 0),
             ]),
             string_constants: HashMap::new(),
             included: HashSet::new(),
@@ -369,6 +374,12 @@ impl Preprocessor {
             .insert("%TARGET_64".to_string(), if is_64 { -1 } else { 0 });
         self.constants
             .insert("%TARGET_32".to_string(), if is_64 { 0 } else { -1 });
+        // Fork-only marker: `%DEF(%PB64_TARGET_64)` is true only for x64.
+        // The official headers can therefore keep a NATIVE-aligned layout on
+        // x64 while falling back to their PBWin-compatible packed layout on
+        // i686, without exposing the keyword to PBWin.
+        self.constants
+            .insert("%PB64_TARGET_64".to_string(), if is_64 { -1 } else { 0 });
     }
 
     /// Configure the build output type before preprocessing so %PB_EXE carries
@@ -436,6 +447,13 @@ impl Preprocessor {
             "%PB_EXE",
         ] {
             self.defined_this_pass.insert(k.to_string());
+        }
+        // %PB64_TARGET_64 is defined only on the 64-bit target.  The value
+        // lives in the cross-pass constants table; the presence test (%DEF)
+        // must follow the current target, not merely the fact that the key
+        // exists.
+        if self.constants.get("%PB64_TARGET_64").copied().unwrap_or(0) != 0 {
+            self.defined_this_pass.insert("%PB64_TARGET_64".to_string());
         }
     }
 
@@ -2005,6 +2023,16 @@ impl Preprocessor {
     fn parse_constant_value(&self, s: &str) -> i64 {
         let s = s.trim();
 
+        // Full integer constant expression: parentheses, unary NOT/-,
+        // + - * / \, AND/OR/XOR, SHL/SHR, hex literals and earlier
+        // %CONSTANTs.  Official WinAPI headers define masks such as
+        // `%TH32CS_SNAPALL = (%TH32CS_SNAPHEAPLIST OR ...)`; the legacy
+        // single-literal path below returned 0 for those and the parser's
+        // fixed-string length then fell back to a pointer.
+        if let Some(v) = eval_integer_expression(s, &self.constants) {
+            return v;
+        }
+
         // Hex literal
         if s.starts_with("&H") || s.starts_with("&h") {
             let hex = s[2..].trim_end_matches(['&', '%', '?']);
@@ -2686,4 +2714,358 @@ fn rewrite_data_line(line: &str) -> String {
         out.push_str(tail);
     }
     out
+}
+
+/// One token in a compile-time integer expression.
+#[derive(Debug, Clone, PartialEq)]
+enum ConstExprToken {
+    Number(i64),
+    /// A `%CONSTANT` or a bare identifier, stored without the leading `%`.
+    Name(String),
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Backslash,
+    LParen,
+    RParen,
+    Shl,
+    Shr,
+}
+
+/// Evaluate a PB integer constant expression.  Returns `None` when the text is
+/// not a complete expression (a string literal, an unknown function, an
+/// unbalanced parenthesis, ...), so callers can fall back to their legacy
+/// single-value parser.
+fn eval_integer_expression(
+    text: &str,
+    constants: &std::collections::HashMap<String, i64>,
+) -> Option<i64> {
+    let tokens = tokenize_const_expr(text)?;
+    let mut p = ConstExprParser {
+        tokens,
+        pos: 0,
+        constants,
+    };
+    let value = p.parse_or()?;
+    if p.pos == p.tokens.len() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn tokenize_const_expr(text: &str) -> Option<Vec<ConstExprToken>> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        match c {
+            b'(' => {
+                out.push(ConstExprToken::LParen);
+                i += 1;
+            }
+            b')' => {
+                out.push(ConstExprToken::RParen);
+                i += 1;
+            }
+            b'+' => {
+                out.push(ConstExprToken::Plus);
+                i += 1;
+            }
+            b'-' => {
+                out.push(ConstExprToken::Minus);
+                i += 1;
+            }
+            b'*' => {
+                out.push(ConstExprToken::Star);
+                i += 1;
+            }
+            b'/' => {
+                out.push(ConstExprToken::Slash);
+                i += 1;
+            }
+            b'\\' => {
+                out.push(ConstExprToken::Backslash);
+                i += 1;
+            }
+            b'<' if i + 1 < bytes.len() && bytes[i + 1] == b'<' => {
+                out.push(ConstExprToken::Shl);
+                i += 2;
+            }
+            b'>' if i + 1 < bytes.len() && bytes[i + 1] == b'>' => {
+                out.push(ConstExprToken::Shr);
+                i += 2;
+            }
+            b'&' => {
+                // &H / &h / &O / &o integer literals.  A bare '&' is the PB
+                // string-concatenation operator and is not valid in an integer
+                // constant expression.
+                if i + 1 >= bytes.len() {
+                    return None;
+                }
+                let base_ch = bytes[i + 1].to_ascii_uppercase();
+                if base_ch != b'H' && base_ch != b'O' {
+                    return None;
+                }
+                let radix = if base_ch == b'H' { 16 } else { 8 };
+                let start = i + 2;
+                let mut end = start;
+                while end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+                    end += 1;
+                }
+                if end == start {
+                    return None;
+                }
+                let digits = &text[start..end];
+                let value = i64::from_str_radix(digits, radix).ok()?;
+                // Optional PB literal suffix (&, %, ?).
+                if end < bytes.len() && matches!(bytes[end], b'&' | b'%' | b'?') {
+                    end += 1;
+                }
+                out.push(ConstExprToken::Number(value));
+                i = end;
+            }
+            b'%' => {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if end == start {
+                    return None;
+                }
+                out.push(ConstExprToken::Name(text[start..end].to_ascii_uppercase()));
+                i = end;
+            }
+            c if c.is_ascii_digit() => {
+                let start = i;
+                let mut end = i;
+                while end < bytes.len() && bytes[end].is_ascii_digit() {
+                    end += 1;
+                }
+                let value = text[start..end].parse::<i64>().ok()?;
+                // Optional PB literal suffix (&, %, ?).
+                if end < bytes.len() && matches!(bytes[end], b'&' | b'%' | b'?') {
+                    end += 1;
+                }
+                out.push(ConstExprToken::Number(value));
+                i = end;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                let mut end = i;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                out.push(ConstExprToken::Name(text[start..end].to_ascii_uppercase()));
+                i = end;
+            }
+            _ => return None,
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+struct ConstExprParser<'a> {
+    tokens: Vec<ConstExprToken>,
+    pos: usize,
+    constants: &'a std::collections::HashMap<String, i64>,
+}
+
+impl<'a> ConstExprParser<'a> {
+    fn peek(&self) -> Option<&ConstExprToken> {
+        self.tokens.get(self.pos)
+    }
+
+    /// A bare identifier is either a keyword or a constant name.  Constants
+    /// are stored with a leading `%`; the lookup accepts both spellings and is
+    /// case-insensitive, matching PBWin's equates.
+    fn lookup_name(&self, name: &str) -> Option<i64> {
+        let upper = name.to_ascii_uppercase();
+        if upper == "TRUE" {
+            return Some(-1);
+        }
+        if upper == "FALSE" {
+            return Some(0);
+        }
+        let key = format!("%{}", upper);
+        if let Some(v) = self.constants.get(&key) {
+            return Some(*v);
+        }
+        self.constants
+            .iter()
+            .find(|(k, _)| k.trim_start_matches('%').eq_ignore_ascii_case(&upper))
+            .map(|(_, v)| *v)
+    }
+
+    fn parse_or(&mut self) -> Option<i64> {
+        let mut v = self.parse_xor()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Name(n)) if n.eq_ignore_ascii_case("OR") => {
+                    self.pos += 1;
+                    v |= self.parse_xor()?;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_xor(&mut self) -> Option<i64> {
+        let mut v = self.parse_and()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Name(n)) if n.eq_ignore_ascii_case("XOR") => {
+                    self.pos += 1;
+                    v ^= self.parse_and()?;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_and(&mut self) -> Option<i64> {
+        let mut v = self.parse_shift()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Name(n)) if n.eq_ignore_ascii_case("AND") => {
+                    self.pos += 1;
+                    v &= self.parse_shift()?;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_shift(&mut self) -> Option<i64> {
+        let mut v = self.parse_add()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Shl) => {
+                    self.pos += 1;
+                    let n = self.parse_add()?;
+                    if !(0..64).contains(&n) {
+                        return None;
+                    }
+                    v = v.checked_shl(n as u32)?;
+                }
+                Some(ConstExprToken::Shr) => {
+                    self.pos += 1;
+                    let n = self.parse_add()?;
+                    if !(0..64).contains(&n) {
+                        return None;
+                    }
+                    v = v.checked_shr(n as u32)?;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_add(&mut self) -> Option<i64> {
+        let mut v = self.parse_mul()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Plus) => {
+                    self.pos += 1;
+                    v = v.checked_add(self.parse_mul()?)?;
+                }
+                Some(ConstExprToken::Minus) => {
+                    self.pos += 1;
+                    v = v.checked_sub(self.parse_mul()?)?;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_mul(&mut self) -> Option<i64> {
+        let mut v = self.parse_unary()?;
+        loop {
+            match self.peek() {
+                Some(ConstExprToken::Star) => {
+                    self.pos += 1;
+                    v = v.checked_mul(self.parse_unary()?)?;
+                }
+                Some(ConstExprToken::Slash) => {
+                    self.pos += 1;
+                    let d = self.parse_unary()?;
+                    if d == 0 {
+                        return None;
+                    }
+                    v = v.checked_div(d)?;
+                }
+                Some(ConstExprToken::Backslash) => {
+                    // PBWin's compile-time `\` is a floating-point divide
+                    // followed by banker's rounding, not a truncating integer
+                    // divide.  The runtime arith parser already uses
+                    // banker_round for #IF expressions; keep the same rule here.
+                    self.pos += 1;
+                    let d = self.parse_unary()?;
+                    if d == 0 {
+                        return None;
+                    }
+                    v = banker_round(v as f64 / d as f64) as i64;
+                }
+                _ => break,
+            }
+        }
+        Some(v)
+    }
+
+    fn parse_unary(&mut self) -> Option<i64> {
+        match self.peek().cloned() {
+            Some(ConstExprToken::Minus) => {
+                self.pos += 1;
+                self.parse_unary()?.checked_neg()
+            }
+            Some(ConstExprToken::Plus) => {
+                self.pos += 1;
+                self.parse_unary()
+            }
+            Some(ConstExprToken::Name(n)) if n.eq_ignore_ascii_case("NOT") => {
+                self.pos += 1;
+                Some(!self.parse_unary()?)
+            }
+            Some(ConstExprToken::LParen) => {
+                self.pos += 1;
+                let v = self.parse_or()?;
+                match self.peek() {
+                    Some(ConstExprToken::RParen) => {
+                        self.pos += 1;
+                        Some(v)
+                    }
+                    _ => None,
+                }
+            }
+            Some(ConstExprToken::Number(v)) => {
+                self.pos += 1;
+                Some(v)
+            }
+            Some(ConstExprToken::Name(n)) => {
+                self.pos += 1;
+                self.lookup_name(&n)
+            }
+            _ => None,
+        }
+    }
 }

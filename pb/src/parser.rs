@@ -1435,6 +1435,29 @@ impl Parser {
         Ok(t)
     }
 
+    /// Length after `*` in a fixed string type: a decimal literal or a
+    /// percent constant such as `%MAX_PATH`.  Official WinAPI headers write
+    /// `WSTRINGZ * %MAX_PATH`; the old branches only accepted an integer
+    /// literal and silently fell back to a pointer, so every x64 WinAPI
+    /// structure with a fixed string stayed too small.
+    fn parse_type_length(&mut self) -> Option<usize> {
+        match self.peek().clone() {
+            Token::IntegerLiteral(n) if n >= 0 => {
+                self.advance();
+                Some(n as usize)
+            }
+            Token::PercentConstant(name) => {
+                self.advance();
+                self.percent_consts
+                    .get(&name.to_uppercase())
+                    .copied()
+                    .filter(|v| *v >= 0)
+                    .map(|v| v as usize)
+            }
+            _ => None,
+        }
+    }
+
     fn parse_type_inner(&mut self) -> PbResult<PbType> {
         // Skip LOCAL keyword if present (PB allows DIM arr() AS LOCAL STRING)
         if self.peek() == &Token::Local {
@@ -1456,9 +1479,8 @@ impl Parser {
                 // silently dropping it (same shape as STRING * N).
                 if self.peek() == &Token::Star {
                     self.advance();
-                    if let Token::IntegerLiteral(n) = self.peek().clone() {
-                        self.advance();
-                        return Ok(PbType::FixedWString(n as usize));
+                    if let Some(n) = self.parse_type_length() {
+                        return Ok(PbType::FixedWString(n));
                     }
                 }
                 Ok(PbType::WString) // UTF-16 wide dynamic string (batch280)
@@ -1466,8 +1488,21 @@ impl Parser {
             // batch294: WSTRINGZ is a pointer to a NUL-terminated wide string
             // (WINMAIN's lpszCmdLine parameter); the fork stores wide strings
             // as UTF-16 BSTR pointers, so the same representation applies.
+            //
+            // WSTRINGZ * N is the fixed-length inline form (Windows x64
+            // PROCESSENTRY32W.szExeFile is WCHAR[MAX_PATH]).  The previous
+            // branch dropped the length and laid the member out as an 8-byte
+            // pointer, which made every WinAPI structure carrying a fixed wide
+            // string too small.  Mirror the WSTRING * N branch and keep the
+            // inline array.
             Token::Identifier(w) if w.eq_ignore_ascii_case("WSTRINGZ") => {
                 self.advance();
+                if self.peek() == &Token::Star {
+                    self.advance();
+                    if let Some(n) = self.parse_type_length() {
+                        return Ok(PbType::FixedWString(n));
+                    }
+                }
                 Ok(PbType::WString)
             }
             Token::Integer => {
@@ -1487,9 +1522,8 @@ impl Parser {
                 // Check for STRING * N (fixed string)
                 if self.peek() == &Token::Star {
                     self.advance();
-                    if let Token::IntegerLiteral(n) = self.peek().clone() {
-                        self.advance();
-                        return Ok(PbType::FixedString(n as usize));
+                    if let Some(n) = self.parse_type_length() {
+                        return Ok(PbType::FixedString(n));
                     }
                 }
                 Ok(PbType::String)
@@ -1536,9 +1570,8 @@ impl Parser {
                         // ASCIIZ * N — fixed-size null-terminated string
                         if self.peek() == &Token::Star {
                             self.advance();
-                            if let Token::IntegerLiteral(n) = self.peek().clone() {
-                                self.advance();
-                                return Ok(PbType::AsciiZ(n as usize));
+                            if let Some(n) = self.parse_type_length() {
+                                return Ok(PbType::AsciiZ(n));
                             }
                         }
                         Ok(PbType::AsciiZ(260)) // default ASCIIZ size
@@ -1716,6 +1749,14 @@ impl Parser {
                             Some(a % b)
                         }
                     }
+                    // Integer bitwise operators.  WinAPI headers build masks
+                    // such as `(%FILE_ATTRIBUTE_NORMAL OR &H00000080)` and
+                    // fixed-string lengths from these expressions; without
+                    // these arms eval_const_expr returned None and the length
+                    // fell back to a pointer.
+                    BinaryOp::And => Some(a & b),
+                    BinaryOp::Or => Some(a | b),
+                    BinaryOp::Xor => Some(a ^ b),
                     _ => None,
                 }
             }
@@ -1737,6 +1778,14 @@ impl Parser {
                     self.advance();
                     align = 4;
                 }
+                // QUAD is lexed as Token::Quad (the QUAD data-type keyword),
+                // not as an Identifier.  Without this arm `TYPE X QUAD`
+                // silently kept the default BYTE alignment and every x64
+                // WinAPI structure stayed packed.
+                Token::Quad => {
+                    self.advance();
+                    align = 8;
+                }
                 Token::Identifier(w) => {
                     if w.eq_ignore_ascii_case("BYTE") {
                         self.advance();
@@ -1747,6 +1796,14 @@ impl Parser {
                     } else if w.eq_ignore_ascii_case("QWORD") {
                         self.advance();
                         align = 8;
+                    } else if w.eq_ignore_ascii_case("NATIVE") {
+                        // Fork extension for x64 WinAPI/C structures: fields
+                        // align on their own natural boundary (capped at 8)
+                        // instead of every field on the declared boundary.
+                        // PBWin has no such keyword and never sees this branch
+                        // in its own headers (%TARGET_64 is false there).
+                        self.advance();
+                        align = 0;
                     } else if w.eq_ignore_ascii_case("FILL") {
                         self.advance();
                         fill = true;
