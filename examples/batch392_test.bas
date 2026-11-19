@@ -45,7 +45,7 @@ FUNCTION PBMAIN () AS LONG
 
     fails = 0
     ver = VERSION$()
-    IF ver <> "v0.2.179" THEN INCR fails
+    IF ver <> "v0.2.180" THEN INCR fails
 
     #IF %DEF(%PB64_TARGET_64)
         target64 = 1
