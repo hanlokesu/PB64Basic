@@ -551,6 +551,11 @@ impl Parser {
                     }
                     _ => {
                         self.consume_to_eol();
+                        eprintln!(
+                            "Error: CALLBACK must be followed by FUNCTION or SUB on line {}",
+                            line
+                        );
+                        self.error_count += 1;
                         Ok(Some(TopLevel::Statement(Statement::Noop(
                             "CALLBACK".to_string(),
                             line,
@@ -1533,10 +1538,10 @@ impl Parser {
                             self.advance();
                             if let Token::IntegerLiteral(n) = self.peek().clone() {
                                 self.advance();
-                                return Ok(PbType::FixedString(n as usize));
+                                return Ok(PbType::AsciiZ(n as usize));
                             }
                         }
-                        Ok(PbType::FixedString(260)) // default ASCIIZ size
+                        Ok(PbType::AsciiZ(260)) // default ASCIIZ size
                     }
                     "FIELD" => {
                         self.advance();
@@ -5008,10 +5013,16 @@ impl Parser {
                 Ok(Statement::Iterate(target))
             }
             Token::HashInclude => {
-                // #INCLUDE inside a SUB (e.g., SetupDims including DIMFILE.INC)
-                // We need to treat the included content as statements
-                // For now, skip — the preprocessor should have resolved this
+                // #INCLUDE inside a SUB.  The preprocessor normally resolves
+                // includes before parsing; reaching here means the directive
+                // could not be expanded, and silently skipping it made the
+                // included declarations vanish without a word.
                 self.consume_to_eol();
+                eprintln!(
+                    "Error: #INCLUDE inside a routine could not be expanded - move it to module level (line {})",
+                    line
+                );
+                self.error_count += 1;
                 Ok(Statement::Noop("#INCLUDE".to_string(), line))
             }
             Token::PercentConstant(_) => {
@@ -5044,10 +5055,13 @@ impl Parser {
                         Ok(Statement::Noop("END (mismatched block)".to_string(), line))
                     }
                     _ => {
-                        // Standalone END (program termination)
+                        // Standalone END (program termination).  This must emit
+                        // a real terminator: silently continuing after END made
+                        // every statement below it execute (legacy audit, batch
+                        // 391).
                         self.advance(); // consume END
                         self.consume_to_eol();
-                        Ok(Statement::Noop("END".to_string(), line))
+                        Ok(Statement::End)
                     }
                 }
             }

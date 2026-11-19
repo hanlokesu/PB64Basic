@@ -28,9 +28,11 @@ impl Value {
             PbType::Integer => Value::Integer(0),
             PbType::Double => Value::Double(0.0),
             PbType::Single => Value::Single(0.0),
-            PbType::String | PbType::FixedString(_) | PbType::WString | PbType::FixedWString(_) => {
-                Value::Str(String::new())
-            }
+            PbType::String
+            | PbType::FixedString(_)
+            | PbType::AsciiZ(_)
+            | PbType::WString
+            | PbType::FixedWString(_) => Value::Str(String::new()),
             PbType::Quad => Value::Quad(0),
             PbType::Dword => Value::Dword(0),
             PbType::Ext => Value::Ext(0.0),
@@ -145,7 +147,9 @@ impl Value {
             PbType::Ext => Value::Ext(self.to_f64()),
             PbType::Cur => Value::Currency((self.to_f64() * 10000.0) as i64),
             PbType::CurX => Value::Currency((self.to_f64() * 10000.0) as i64),
-            PbType::String | PbType::FixedString(_) => Value::Str(self.to_string_val()),
+            PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_) => {
+                Value::Str(self.to_string_val())
+            }
             _ => self.clone(),
         }
     }

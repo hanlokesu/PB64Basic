@@ -1689,7 +1689,10 @@ impl Compiler {
             PbType::Quad => IrType::I64,
             PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX => IrType::Double,
             PbType::Single => IrType::Float,
-            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_) => IrType::Ptr,
+            PbType::String
+            | PbType::FixedString(_)
+            | PbType::AsciiZ(_)
+            | PbType::FixedWString(_) => IrType::Ptr,
             PbType::WString => IrType::Ptr, // UTF-16 BSTR pointer (batch280)
             PbType::Field => IrType::Struct("pb.field".to_string()),
             PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
@@ -1735,7 +1738,7 @@ impl Compiler {
             PbType::Integer | PbType::Word => 2,
             PbType::Long | PbType::Dword | PbType::Single => 4,
             PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX | PbType::Quad => 8,
-            PbType::FixedString(n) => *n as i32,
+            PbType::FixedString(n) | PbType::AsciiZ(n) => *n as i32,
             // CHW Fixed-length_strings: N wide characters = 2N bytes.
             PbType::FixedWString(n) => (*n as i32) * 2,
             PbType::String | PbType::WString | PbType::Pointer(_) | PbType::Interface(_) => ptr_w,
@@ -1820,7 +1823,7 @@ impl Compiler {
     /// IR type for a struct field → FixedString becomes [N x i8] instead of ptr
     fn ir_type_for_field(pb_type: &PbType) -> IrType {
         match pb_type {
-            PbType::FixedString(n) => IrType::Array(*n, Box::new(IrType::I8)),
+            PbType::FixedString(n) | PbType::AsciiZ(n) => IrType::Array(*n, Box::new(IrType::I8)),
             // WSTRING * N: inline UTF-16LE buffer of N code units.  Keeping the
             // capacity in the IR type (instead of a bare pointer) is required
             // by pb_line_input_fixed_w / pb_input_file_fixed_w, which write
@@ -1849,7 +1852,7 @@ impl Compiler {
     fn is_string_pb(pb_type: &PbType) -> bool {
         matches!(
             pb_type,
-            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_)
+            PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_) | PbType::FixedWString(_)
         )
     }
 
@@ -2724,6 +2727,7 @@ impl Compiler {
             ("pb_con_focus", IrType::Void, vec![]),
             ("pb_con_new", IrType::Void, vec![]),
             ("pb_con_end", IrType::Void, vec![]),
+            ("pb_program_end", IrType::Void, vec![]),
             ("pb_con_in", IrType::I32, vec![]),
             ("pb_con_out", IrType::I32, vec![]),
             ("pb_con_stdeof", IrType::I32, vec![]),
@@ -3388,9 +3392,21 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_get_text_by_id_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_get_text",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -3805,6 +3821,18 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_listview_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_listview_get_header_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_listview_set_text",
             &IrType::Void,
             &[
@@ -4030,6 +4058,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_treeview_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_scrollbar_get_pos",
             &IrType::I64,
             &[IrType::Ptr, IrType::I32],
@@ -4152,6 +4186,12 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
             ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cblb_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
             false,
         );
 
@@ -4283,6 +4323,12 @@ impl Compiler {
                 IrType::Ptr,
                 IrType::I32,
             ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_tab_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32],
             false,
         );
 
@@ -4526,6 +4572,12 @@ impl Compiler {
             "pb_dialog_get_text",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_dialog_get_text_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -5979,11 +6031,17 @@ impl Compiler {
         self.module.declare_function(
             "pb_input_file_fixed",
             &IrType::Void,
-            &[IrType::I32, IrType::Ptr, IrType::I64],
+            &[IrType::I32, IrType::Ptr, IrType::I64, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_copy_bstr_to_fixed",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_copy_bstr_to_asciiz",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I64],
             false,
@@ -5998,8 +6056,25 @@ impl Compiler {
         );
         // legacy #7 read side: FixedString inline buffer -> COM BSTR
         // (runtime string functions read the BSTR length header).
-        self.module
-            .declare_function("pb_fixed_to_bstr", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_fixed_to_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_asciiz_to_bstr",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
+        // ASCIIZ*n logical length (stops at the first NUL; PBWin LEN).
+        self.module.declare_function(
+            "pb_asciiz_len",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
         // batch 363: WSTRING*n inline buffer -> UTF-16 BSTR (stops at NUL).
         self.module.declare_function(
             "pb_fixedw_to_bstr",
@@ -8124,7 +8199,7 @@ impl Compiler {
                 eprintln!("Error: No FUNCTION PBMAIN found (entry point missing)");
             } else {
                 eprintln!(
-                    "Error: No FUNCTION PBMAIN found. Did you mean: {} ?",
+                    "Error: No FUNCTION PBMAIN found (entry point missing). Candidate entry points: {}",
                     close
                         .iter()
                         .map(|s| format!("FUNCTION {}", s))
@@ -8495,7 +8570,8 @@ impl Compiler {
                     // declaration order.
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
-                        let m_fixed = matches!(m.pb_type, PbType::FixedString(_));
+                        let m_fixed =
+                            matches!(m.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_));
                         emit_pad(
                             &mut ir_types,
                             &mut idx,
@@ -8527,8 +8603,8 @@ impl Compiler {
                 } else {
                     elem_ir
                 };
-                let fixed =
-                    matches!(field.pb_type, PbType::FixedString(_)) && field.array_dim.is_none();
+                let fixed = matches!(field.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_))
+                    && field.array_dim.is_none();
                 emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, fixed);
                 ir_types.push(ir_type.clone());
                 field_map.insert(field_name.clone(), fields.len());
@@ -10077,7 +10153,7 @@ impl Compiler {
             // entered its procedure); a missing argument is shown as its
             // zero / empty-string equivalent instead.
             let f = match &p.pb_type {
-                PbType::String | PbType::FixedString(_) => {
+                PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_) => {
                     // string content: byval → pv is the BSTR ptr; byref → load it
                     let sp = if p.is_byval {
                         pv
@@ -10690,7 +10766,7 @@ impl Compiler {
                     fb.store(&converted, &ptr);
                 }
                 if let Some((ptr, _, _)) = self.lvalue_ptr(fb, out_var) {
-                    let slen = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&ret));
+                    let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&ret));
                     fb.call_void("pb_str_assign_copy", &[ptr, ret, slen]);
                 }
                 Ok(())
@@ -10779,12 +10855,15 @@ impl Compiler {
                 self.compile_asm_block(fb, std::slice::from_ref(text))?;
                 Ok(())
             }
+            Statement::End => {
+                fb.call_void("pb_program_end", &[]);
+                Ok(())
+            }
             Statement::Noop(name, line) => {
                 // Allow benign/intentional NOOPs (preprocessor artifacts, end markers)
                 let benign = matches!(
                     name.as_str(),
-                    "END"
-                        | "REM"
+                    "REM"
                         | "REM "
                         | "'"
                         | "LET"
@@ -11321,6 +11400,7 @@ impl Compiler {
                         target_pb,
                         PbType::String
                             | PbType::FixedString(_)
+                            | PbType::AsciiZ(_)
                             | PbType::FixedWString(_)
                             | PbType::Field
                     ) && value.ty != IrType::Ptr
@@ -11350,12 +11430,13 @@ impl Compiler {
                     } else if let PbType::FixedString(n) = &target_pb {
                         let buf_ptr = Val::new(ptr_name, IrType::Ptr);
                         let src = self.compile_expr(fb, &assign.value)?;
-                        let size = fb.const_i32(*n as i32);
-                        fb.call_void("strncpy", &[buf_ptr.clone(), src, size]);
-                        // Null-terminate at position N (the extra buffer byte).
-                        let term_idx = fb.const_i32(*n as i32);
-                        let term_ptr = fb.gep_byte(&buf_ptr, &term_idx);
-                        fb.store(&Val::new("0".to_string(), IrType::I8), &term_ptr);
+                        let size = fb.const_i64(*n as i64);
+                        fb.call_void("pb_copy_bstr_to_fixed", &[buf_ptr, src, size]);
+                    } else if let PbType::AsciiZ(n) = &target_pb {
+                        let buf_ptr = Val::new(ptr_name, IrType::Ptr);
+                        let src = self.compile_expr(fb, &assign.value)?;
+                        let size = fb.const_i64(*n as i64);
+                        fb.call_void("pb_copy_bstr_to_asciiz", &[buf_ptr, src, size]);
                     } else if self.field_bound_strings.contains(&name) {
                         // FIELD dyn$-bound string: copy into a fresh mutable
                         // buffer. A plain pointer store would make the variable
@@ -11363,14 +11444,14 @@ impl Compiler {
                         // would crash writing through it.
                         let src = self.compile_expr(fb, &assign.value)?;
                         let slot = Val::new(ptr_name.clone(), IrType::Ptr);
-                        let slen = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&src));
+                        let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
                         fb.call_void("pb_str_assign_copy", &[slot, src, slen]);
                     } else if let PbType::Field = &target_pb {
                         // FIELD variable: write into the bound sub-section (pb_field_set).
                         // The value must be a string; pad with blanks to full length.
                         let fv_ptr = Val::new(ptr_name.clone(), IrType::Ptr);
                         let src = self.compile_expr(fb, &assign.value)?;
-                        let slen = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&src));
+                        let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
                         fb.call_void("pb_field_set", &[fv_ptr, src, slen]);
                     } else if matches!(target_pb, PbType::Variant) {
                         // batch293: LET v = <value> stores the 16-byte PB Variant
@@ -11414,7 +11495,7 @@ impl Compiler {
                     // the receiver's INSTANCE fields means this.<name> (batch 216).
                     if let Some(member_expr) = self.implicit_this_member(&name) {
                         let (field_ptr, field_pb) = self.compile_lvalue_ptr(fb, &member_expr)?;
-                        if let PbType::FixedString(n) = &field_pb {
+                        if let PbType::FixedString(n) | PbType::AsciiZ(n) = &field_pb {
                             let src = self.compile_expr(fb, &assign.value)?;
                             let size = fb.const_i32((*n as i32) - 1);
                             fb.call_void("strncpy", &[field_ptr.clone(), src, size]);
@@ -11490,7 +11571,10 @@ impl Compiler {
                     // otherwise indices[2] (when present) is a Count.
                     let is_range = if name == "MIDRANGE" { 1i64 } else { 0i64 };
                     if let Ok((sptr, spb)) = self.compile_lvalue_ptr(fb, s_expr) {
-                        if matches!(spb, PbType::String | PbType::FixedString(_)) {
+                        if matches!(
+                            spb,
+                            PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_)
+                        ) {
                             let start = if indices.len() > 1 {
                                 let sv = self.compile_expr(fb, &indices[1])?;
                                 self.to_i64(fb, &sv)
@@ -11525,7 +11609,7 @@ impl Compiler {
                                         &[sptr.clone(), start, third, fb.const_i64(1), replp],
                                     );
                                 }
-                            } else if let PbType::FixedString(n) = &spb {
+                            } else if let PbType::FixedString(n) | PbType::AsciiZ(n) = &spb {
                                 // Fixed-length STRING*n inline [N x i8] buffer:
                                 // in-place overwrite, never grows/shrinks (CHW).
                                 let buflen = fb.const_i64(*n as i64);
@@ -11569,7 +11653,7 @@ impl Compiler {
                             // (possibly read-only) buffer before writing
                             fb.call_void("pb_asc_stmt", &[sptr.clone(), pos64, code64]);
                         }
-                        PbType::FixedString(n) => {
+                        PbType::FixedString(n) | PbType::AsciiZ(n) => {
                             let buflen = fb.const_i64(*n as i64);
                             fb.call_void(
                                 "pb_asc_stmt_fixed",
@@ -11634,6 +11718,10 @@ impl Compiler {
                     // stops at an embedded NUL and zero-fills the rest, which
                     // does not match PBWin fixed-string assignment.
                     fb.call_void("pb_type_set_str", &[field_ptr, src, size]);
+                } else if let PbType::AsciiZ(n) = &field_pb {
+                    let src = self.compile_expr(fb, &assign.value)?;
+                    let size = fb.const_i64(*n as i64);
+                    fb.call_void("pb_copy_bstr_to_asciiz", &[field_ptr, src, size]);
                 } else if let PbType::FixedWString(n) = &field_pb {
                     let src = value;
                     let wsrc = if self.expr_is_wstring(&assign.value) {
@@ -12730,7 +12818,10 @@ impl Compiler {
             let arr_pb_type = match (self.symbols.lookup_array(&name), &dim.pb_type) {
                 (Some(prev), PbType::Variant) => prev.pb_type.clone(),
                 (Some(prev), PbType::Long)
-                    if matches!(prev.pb_type, PbType::String | PbType::FixedString(_)) =>
+                    if matches!(
+                        prev.pb_type,
+                        PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_)
+                    ) =>
                 {
                     prev.pb_type.clone()
                 }
@@ -12962,7 +13053,7 @@ impl Compiler {
                 Some(fn_name) => format!("__static_{}_{}", fn_name, name),
                 None => format!("__static_{}", name),
             };
-            if let PbType::FixedString(n) = &dim.pb_type {
+            if let PbType::FixedString(n) | PbType::AsciiZ(n) = &dim.pb_type {
                 // +1 keeps the global buffer NUL-terminated after GET fills all N
                 let buf_ir = IrType::Array(*n + 1, Box::new(IrType::I8));
                 self.module
@@ -13016,7 +13107,7 @@ impl Compiler {
         // The extra byte keeps the buffer NUL-terminated even after a
         // GET/PUT/INPUT fills all N data bytes (pb_get writes exactly N),
         // so strlen/strcmp/& -concatenation never read past the buffer.
-        if let PbType::FixedString(n) = &dim.pb_type {
+        if let PbType::FixedString(n) | PbType::AsciiZ(n) = &dim.pb_type {
             let buf_ir = IrType::Array(*n + 1, Box::new(IrType::I8));
             let ptr = fb.alloca(&buf_ir);
             fb.store(&Val::new("zeroinitializer", buf_ir.clone()), &ptr);
@@ -15263,7 +15354,10 @@ impl Compiler {
                 fb.call_void("pb_graphic_input_begin", &[prompt]);
                 for (k, a) in call.args[start..].iter().enumerate() {
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, a) {
-                        let is_str = matches!(pty, PbType::String | PbType::FixedString(_));
+                        let is_str = matches!(
+                            pty,
+                            PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_)
+                        );
                         if is_str {
                             let v = fb.call(
                                 &IrType::Ptr,
@@ -16182,7 +16276,10 @@ impl Compiler {
                     if let Some((ptr, ty, pb_ty)) = self.lvalue_ptr(fb, arg) {
                         let is_num = !matches!(
                             pb_ty,
-                            PbType::String | PbType::FixedString(_) | PbType::Variant
+                            PbType::String
+                                | PbType::FixedString(_)
+                                | PbType::AsciiZ(_)
+                                | PbType::Variant
                         );
                         if is_num {
                             let v = fb.call(&IrType::Double, "pb_read_data_num", &[]);
@@ -16322,7 +16419,7 @@ impl Compiler {
                         | PbType::Ext
                         | PbType::Cur
                         | PbType::CurX => 8,
-                        PbType::FixedString(n) => *n as i64,
+                        PbType::FixedString(n) | PbType::AsciiZ(n) => *n as i64,
                         PbType::String => -1, // dynamic STRING: 2-byte LE length prefix + bytes
                         _ => 0,               // Variant / UDT: raw size not fixed
                     };
@@ -16774,16 +16871,12 @@ impl Compiler {
                         IrType::Ptr => hdlg,
                         _ => fb.inttoptr(&hdlg),
                     };
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_control_get_text_by_id",
-                        &[hdlg64, cid, bp.clone(), fb.const_i32(256)],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_control_get_text_by_id_bstr",
+                        &[hdlg64, cid],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -16792,13 +16885,8 @@ impl Compiler {
             "CONTROL_GET_TEXT" => {
                 if let (Some(hc), Some(tgt)) = (call.args.first(), call.args.get(1)) {
                     let hcv = self.compile_expr(fb, hc)?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void("pb_control_get_text", &[hcv, bp.clone(), fb.const_i32(256)]);
+                    let bstr = fb.call(&IrType::Ptr, "pb_control_get_text_bstr", &[hcv]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, tgt) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -17397,17 +17485,8 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    let _ = fb.call(
-                        &IrType::I64,
-                        "pb_tab_get_text",
-                        &[hd, id, page, bp.clone(), fb.const_i32(256)],
-                    );
+                    let bstr = fb.call(&IrType::Ptr, "pb_tab_get_text_bstr", &[hd, id, page]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -17985,16 +18064,12 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_cblb_get_text",
-                        &[h, id, item, bp.clone(), fb.const_i32(256), fb.const_i64(0)],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_cblb_get_text_bstr",
+                        &[h, id, item, fb.const_i32(0)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 } else if call.args.len() == 3 {
@@ -18003,23 +18078,12 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_cblb_get_text",
-                        &[
-                            h,
-                            id,
-                            fb.const_i32(0),
-                            bp.clone(),
-                            fb.const_i32(256),
-                            fb.const_i64(0),
-                        ],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_cblb_get_text_bstr",
+                        &[h, id, fb.const_i32(0), fb.const_i32(0)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -18453,16 +18517,12 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_cblb_get_text",
-                        &[h, id, item, bp.clone(), fb.const_i32(256), fb.const_i64(1)],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_cblb_get_text_bstr",
+                        &[h, id, item, fb.const_i32(1)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 } else if call.args.len() == 3 {
@@ -18471,23 +18531,12 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_cblb_get_text",
-                        &[
-                            h,
-                            id,
-                            fb.const_i32(0),
-                            bp.clone(),
-                            fb.const_i32(256),
-                            fb.const_i64(1),
-                        ],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_cblb_get_text_bstr",
+                        &[h, id, fb.const_i32(0), fb.const_i32(1)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -19677,16 +19726,12 @@ impl Compiler {
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
                     let col = self.compile_expr(fb, &call.args[3])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_listview_get_text",
-                        &[hd, id, item, col, bp.clone(), fb.const_i32(256)],
+                    let bstr = fb.call(
+                        &IrType::Ptr,
+                        "pb_listview_get_text_bstr",
+                        &[hd, id, item, col],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[4]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -19964,16 +20009,8 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_listview_get_header",
-                        &[hd, id, col, bp.clone(), fb.const_i32(256)],
-                    );
+                    let bstr = fb.call(&IrType::Ptr, "pb_listview_get_header_bstr", &[hd, id, col]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -20554,16 +20591,8 @@ impl Compiler {
                     if hitem.ty != IrType::Ptr {
                         hitem = fb.inttoptr(&hitem);
                     }
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_treeview_get_text",
-                        &[hd, id, hitem, bp.clone(), fb.const_i32(256)],
-                    );
+                    let bstr = fb.call(&IrType::Ptr, "pb_treeview_get_text_bstr", &[hd, id, hitem]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[3]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -21394,16 +21423,8 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = fb.inttoptr(&hd);
-                    let buf = fb.alloca(&IrType::Array(256, Box::new(IrType::I8)));
-                    let bp = fb.gep_byte(&buf, &fb.const_i32(0));
-                    fb.call_void(
-                        "pb_dialog_get_text",
-                        &[hdlg64, bp.clone(), fb.const_i64(256)],
-                    );
+                    let bstr = fb.call(&IrType::Ptr, "pb_dialog_get_text_bstr", &[hdlg64]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                        let len =
-                            fb.call(&IrType::I32, "pb_str_cstr_len", std::slice::from_ref(&bp));
-                        let bstr = fb.call(&IrType::Ptr, "pb_bstr_alloc", &[bp, len]);
                         fb.store(&bstr, &ptr);
                     }
                 }
@@ -22716,10 +22737,10 @@ impl Compiler {
                     let value = self.compile_expr(fb, &call.args[1])?;
                     let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &call.args[0])?;
                     let len = match pb_type {
-                        PbType::FixedString(n) => n as i32,
+                        PbType::FixedString(n) | PbType::AsciiZ(n) => n as i32,
                         _ => 256,
                     };
-                    let is_fixed = matches!(pb_type, PbType::FixedString(_));
+                    let is_fixed = matches!(pb_type, PbType::FixedString(_) | PbType::AsciiZ(_));
                     let len_const = fb.const_i32(len);
                     // Optional third arg: ABS sentinel or USING pad expression.
                     let is_abs = matches!(call.args.get(2),
@@ -22787,7 +22808,7 @@ impl Compiler {
                     let value = self.compile_expr(fb, &call.args[1])?;
                     let (ptr, pb_type) = self.compile_lvalue_ptr(fb, &call.args[0])?;
                     let len = match pb_type {
-                        PbType::FixedString(n) => n as i32,
+                        PbType::FixedString(n) | PbType::AsciiZ(n) => n as i32,
                         _ => 256,
                     };
                     let len_const = fb.const_i32(len);
@@ -22799,7 +22820,7 @@ impl Compiler {
                     } else {
                         None
                     };
-                    if matches!(pb_type, PbType::FixedString(_)) {
+                    if matches!(pb_type, PbType::FixedString(_) | PbType::AsciiZ(_)) {
                         if is_abs {
                             fb.call_void("pb_cset_abs_buf", &[ptr, value, len_const]);
                         } else if let Some(pad) = pad_val {
@@ -26344,12 +26365,22 @@ impl Compiler {
                 PbType::String => {
                     fb.call_void("pb_input_file_str", &[filenum_i32.clone(), ptr]);
                 }
-                PbType::FixedString(n) => {
+                PbType::FixedString(n) | PbType::AsciiZ(n) => {
                     // FixedString member: inline [N x i8] buffer, NOT a char**
                     // slot - pb_input_file_str would write a BSTR pointer into
                     // the buffer and corrupt the struct (legacy #7).
+                    // STRING*n space-pads the tail, ASCIIZ*n zero-fills it;
+                    // the last argument selects that mode (batch 391).
                     let n64 = fb.const_i64(n as i64);
-                    fb.call_void("pb_input_file_fixed", &[filenum_i32.clone(), ptr, n64]);
+                    let asciiz = fb.const_i32(if matches!(&pb_type, PbType::AsciiZ(_)) {
+                        1
+                    } else {
+                        0
+                    });
+                    fb.call_void(
+                        "pb_input_file_fixed",
+                        &[filenum_i32.clone(), ptr, n64, asciiz],
+                    );
                 }
                 PbType::WString => {
                     fb.call_void("pb_input_file_wstr", &[filenum_i32.clone(), ptr]);
@@ -26393,6 +26424,12 @@ impl Compiler {
                 let n64 = fb.const_i64(n as i64);
                 fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
             }
+            PbType::AsciiZ(n) => {
+                // NUL-terminated inline buffer, zero-filled beyond the content.
+                let result = fb.call(&IrType::Ptr, "pb_line_input", &[filenum_i32]);
+                let n64 = fb.const_i64(n as i64);
+                fb.call_void("pb_copy_bstr_to_asciiz", &[ptr, result.clone(), n64]);
+            }
             PbType::WString => {
                 let result = fb.call(&IrType::Ptr, "pb_line_input_w", &[filenum_i32]);
                 fb.store(&result, &ptr);
@@ -26418,7 +26455,7 @@ impl Compiler {
         let wide = match &arr_info.pb_type {
             PbType::String => 0i64,
             PbType::WString => 1i64,
-            PbType::FixedString(_) | PbType::FixedWString(_) => {
+            PbType::FixedString(_) | PbType::AsciiZ(_) | PbType::FixedWString(_) => {
                 return Err(PbError::generic(
                     "LINE INPUT # array form requires a dynamic or WSTRING string array"
                         .to_string(),
@@ -26495,7 +26532,7 @@ impl Compiler {
             let (ptr, pb_type) = self.compile_lvalue_ptr(fb, var_expr)?;
             let idx = fb.const_i32(index as i32);
             match pb_type {
-                PbType::FixedString(n) => {
+                PbType::FixedString(n) | PbType::AsciiZ(n) => {
                     let n64 = fb.const_i64(n as i64);
                     fb.call_void("pb_con_input_field_fixed", &[line.clone(), idx, ptr, n64]);
                 }
@@ -26570,6 +26607,11 @@ impl Compiler {
                 fb.call_void("pb_copy_bstr_to_fixed", &[ptr, result.clone(), n64]);
                 // The fixed-length target copies the text; the temporary
                 // keyboard line must be released explicitly.
+                fb.call_void("pb_bstr_free", std::slice::from_ref(&result));
+            }
+            PbType::AsciiZ(n) => {
+                let n64 = fb.const_i64(n as i64);
+                fb.call_void("pb_copy_bstr_to_asciiz", &[ptr, result.clone(), n64]);
                 fb.call_void("pb_bstr_free", std::slice::from_ref(&result));
             }
             _ => fb.store(&result, &ptr),
@@ -27521,12 +27563,19 @@ impl Compiler {
                 if self.extern_ptr_vars.contains(&name) {
                     return Ok(Val::new(ptr_name, IrType::Ptr));
                 }
-                // FixedString (ASCIIZ*N): alloca IS the buffer → create heap copy
-                // (stack buffer would be dangling after function return)
-                if matches!(info.pb_type, PbType::FixedString(_)) {
+                // STRING*n: the alloca IS the buffer and the declared length is
+                // the logical length, including embedded NULs.  ASCIIZ*n stops
+                // at its NUL terminator.  Never use strlen() here: that
+                // truncated binary fixed strings at the first CHR$(0).
+                if let PbType::FixedString(n) | PbType::AsciiZ(n) = &info.pb_type {
                     let buf_ptr = Val::new(ptr_name, IrType::Ptr);
-                    let len = fb.call(&IrType::I32, "strlen", std::slice::from_ref(&buf_ptr));
-                    return Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf_ptr, len]));
+                    let n64 = fb.const_i64(*n as i64);
+                    let fname = if matches!(info.pb_type, PbType::AsciiZ(_)) {
+                        "pb_asciiz_to_bstr"
+                    } else {
+                        "pb_fixed_to_bstr"
+                    };
+                    return Ok(fb.call(&IrType::Ptr, fname, &[buf_ptr, n64]));
                 }
                 // WSTRING*n (batch 363): inline UTF-16 buffer -> fresh BSTR
                 // (stop at the first NUL code unit; do not copy the capacity).
@@ -27603,6 +27652,7 @@ impl Compiler {
                     PbType::String
                         | PbType::WString
                         | PbType::FixedString(_)
+                        | PbType::AsciiZ(_)
                         | PbType::Interface(_)
                         | PbType::UserDefined(_)
                 );
@@ -28264,8 +28314,14 @@ impl Compiler {
                 // SysStringByteLen (a COM BSTR length header) — an inline
                 // buffer has no header, so materialise a real BSTR once here
                 // (legacy #7 read side).
-                if matches!(field_pb, PbType::FixedString(_)) {
-                    return Ok(fb.call(&IrType::Ptr, "pb_fixed_to_bstr", &[field_ptr]));
+                if let PbType::FixedString(n) | PbType::AsciiZ(n) = &field_pb {
+                    let n64 = fb.const_i64(*n as i64);
+                    let fname = if matches!(field_pb, PbType::AsciiZ(_)) {
+                        "pb_asciiz_to_bstr"
+                    } else {
+                        "pb_fixed_to_bstr"
+                    };
+                    return Ok(fb.call(&IrType::Ptr, fname, &[field_ptr, n64]));
                 }
                 if let PbType::FixedWString(n) = &field_pb {
                     let n64 = fb.const_i64(*n as i64);
@@ -29372,6 +29428,7 @@ impl Compiler {
                                             PbType::String
                                                 | PbType::WString
                                                 | PbType::FixedString(_)
+                                                | PbType::AsciiZ(_)
                                         )
                                     }
                                     None => false,
@@ -30033,7 +30090,7 @@ impl Compiler {
                             let norm = normalize_name(vname);
                             if let Some(info) = self.symbols.lookup(&norm) {
                                 match &info.pb_type {
-                                    PbType::FixedString(n) => size = *n as i32,
+                                    PbType::FixedString(n) | PbType::AsciiZ(n) => size = *n as i32,
                                     PbType::Byte => size = 1,
                                     PbType::Word | PbType::Integer => size = 2,
                                     PbType::Long | PbType::Dword | PbType::Single => size = 4,
@@ -30067,7 +30124,9 @@ impl Compiler {
                                         if let Some(layout) = self.type_layouts.get(&tn) {
                                             if let Some(idx) = layout.field_map.get(member) {
                                                 match &layout.fields[*idx].pb_type {
-                                                    PbType::FixedString(n) => size = *n as i32,
+                                                    PbType::FixedString(n) | PbType::AsciiZ(n) => {
+                                                        size = *n as i32
+                                                    }
                                                     PbType::Byte => size = 1,
                                                     PbType::Word | PbType::Integer => size = 2,
                                                     PbType::Long
@@ -30124,7 +30183,7 @@ impl Compiler {
                 if let Expr::Variable(orig) = &args[0] {
                     let vname = normalize_name(orig);
                     if let Some(info) = self.symbols.lookup(&vname) {
-                        if matches!(info.pb_type, PbType::FixedString(_)) {
+                        if matches!(info.pb_type, PbType::FixedString(_) | PbType::AsciiZ(_)) {
                             return Some(Err(PbError::parser(
                                 "STRPTR may not be used with fixed-length or ASCIIZ strings; use VARPTR",
                                 None,
@@ -30673,7 +30732,7 @@ impl Compiler {
             // measured WSTRING attr1=27 (the CHM row 27 equate cell mislabels
             // it %VARCLASS_FLD, but the number is 27).
             PbType::WString => 27, // %VARCLASS wide dynamic (batch280 -> corrected)
-            PbType::FixedString(_) => 22, // %VARCLASS_FIX
+            PbType::FixedString(_) | PbType::AsciiZ(_) => 22, // %VARCLASS_FIX
             PbType::FixedWString(_) => 26, // %VARCLASS_WFIX (CHW ARRAYATTR)
             PbType::Field => 24,   // %VARCLASS_FLD
             // Bit-field reports the class of its IN container (BYTE/WORD/DWORD).
@@ -32461,6 +32520,24 @@ impl Compiler {
                     // LEN returns the FIXED BUFFER LENGTH, not strlen of the
                     // contents (a NUL inside the buffer must not shrink it).
                     PbType::FixedString(n) => return Ok(fb.const_i32(*n as i32)),
+                    // ASCIIZ*n: PBWin 10 measured 2026-11-19 returns the
+                    // content length up to the first NUL (a="AB" -> 2), while
+                    // SIZEOF stays the declared capacity (10).  Use the raw
+                    // buffer pointer where the lvalue form is known, so LEN
+                    // does not allocate a temporary BSTR.
+                    PbType::AsciiZ(n) => {
+                        if matches!(
+                            &args[0],
+                            Expr::Variable(_)
+                                | Expr::TypeMember(_, _)
+                                | Expr::ArrayAccess(_, _)
+                                | Expr::Deref(_)
+                        ) {
+                            let (ptr, _) = self.compile_lvalue_ptr(fb, &args[0])?;
+                            let n64 = fb.const_i64(*n as i64);
+                            return Ok(fb.call(&IrType::I32, "pb_asciiz_len", &[ptr, n64]));
+                        }
+                    }
                     // WSTRING*n: LEN is the declared character capacity, not
                     // the byte size of the inline [n x i16] buffer (batch 363).
                     PbType::FixedWString(n) => return Ok(fb.const_i32(*n as i32)),
@@ -32777,19 +32854,32 @@ impl Compiler {
         // Fixed-length STRING fields are inline buffers.  compile_expr()
         // converts them to a BSTR via strlen(), which truncates at an embedded
         // NUL, so ASC must take the raw lvalue pointer and the declared size.
-        if let Some(PbType::FixedString(n)) = self.expr_pb_type(&args[0]) {
-            let (ptr, _) = self.compile_lvalue_ptr(fb, &args[0])?;
-            let pos = if args.len() > 1 {
-                let p = self.compile_expr(fb, &args[1])?;
-                self.to_i64(fb, &p)
-            } else {
-                fb.const_i64(1)
-            };
-            return Ok(fb.call(
-                &IrType::I64,
-                "pb_asc_get_buf",
-                &[ptr, fb.const_i64(n as i64), pos],
-            ));
+        if let Some(pbt) = self.expr_pb_type(&args[0]) {
+            if let PbType::FixedString(n) | PbType::AsciiZ(n) = pbt {
+                let (ptr, _) = self.compile_lvalue_ptr(fb, &args[0])?;
+                // STRING*n uses its declared capacity (space padding is part of
+                // the value).  ASCIIZ*n uses the content length: PBWin 10
+                // measured `a="AB"` -> ASC(a,3) = -1 even though the buffer is
+                // 10 bytes wide.  `pb_asc_get_buf` already clamps pos/n and
+                // returns -1 outside the range.
+                let n_eff = if matches!(pbt, PbType::AsciiZ(_)) {
+                    let l = fb.call(
+                        &IrType::I32,
+                        "pb_asciiz_len",
+                        &[ptr.clone(), fb.const_i64(n as i64)],
+                    );
+                    self.to_i64(fb, &l)
+                } else {
+                    fb.const_i64(n as i64)
+                };
+                let pos = if args.len() > 1 {
+                    let p = self.compile_expr(fb, &args[1])?;
+                    self.to_i64(fb, &p)
+                } else {
+                    fb.const_i64(1)
+                };
+                return Ok(fb.call(&IrType::I64, "pb_asc_get_buf", &[ptr, n_eff, pos]));
+            }
         }
         let s = self.compile_expr(fb, &args[0])?;
         let pos = if args.len() > 1 {
@@ -33966,6 +34056,9 @@ impl Compiler {
                 fb.sext(&i32v, &IrType::I64)
             }
             IrType::I16 | IrType::I32 => fb.sext(val, &IrType::I64),
+            // BYTE is unsigned; zero-extend so a rotate/shift sees 0xDD, not
+            // the sign-extended 0xFFFFFFFFFFFFFFDD (batch391 x86 ROR probe).
+            IrType::I8 => fb.zext(val, &IrType::I64),
             IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I64),
             _ => val.clone(),
         }
@@ -34627,7 +34720,7 @@ fn com_type_code(pb: &PbType) -> Result<i32, String> {
     match pb {
         PbType::Long => Ok(0),
         PbType::Double => Ok(1),
-        PbType::String | PbType::FixedString(_) => Ok(2),
+        PbType::String | PbType::FixedString(_) | PbType::AsciiZ(_) => Ok(2),
         PbType::WString => Ok(12), /* UTF-16 BSTR, passed as-is (batch280) */
         PbType::Single => Ok(3),
         PbType::Dword => Ok(4),

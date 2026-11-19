@@ -430,7 +430,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 390 (v0.2.177). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 391 (v0.2.178). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 391 (v0.2.178) - closed the legacy audit: BSTR/C-string boundary in PRINT/COMM/GRAPHIC, REGREPL return type, dynamic control getters, i686 BYTE rotate, embedded-NUL round-trips, STRING/ASCIIZ file-input padding, END, TCP LINE INPUT and COM GETCOM; batch391_test and the full headless suite pass on both targets.
 > batch 390 (v0.2.177) - fixed the JK-IDE help installer on CRLF configuration files: `Set-IniValue` now finds a section header without swallowing the carriage return, so `Pb64HelpFile` is written and `setup.bat` no longer stops with `section [Compilers] not found`; the installer also normalises mixed line endings.
 > batch 389 (v0.2.176) - signed INTEGER semantics fixed for TYPE fields and i686 locals, and the 952-page language reference was rebuilt with official Purpose/Syntax/Parameters/Remarks text, complete examples, four pseudo-object pages and the refreshed CHM.
 > batch 388 (v0.2.175) - the JK-IDE add-on now exposes PB64Basic (64bit) and PB64Basic (32bit) as separate Compilers menu entries. Both entries call the same PB64Basic.exe; the 64-bit entry selects the x86_64 target and runtime, the 32-bit entry selects the i686 target and runtime, and the 32-bit output is named <source>_x86.exe. The 32-bit compile and run paths are live-verified with command IDs 55028 and 55029, and the menu keeps the PBWin 10, PBXB64, Compile (default), Open PB Help, PB64BASIC.CHM and JKIDE.INI entries in their documented order.
@@ -1055,6 +1056,57 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.178 (2026-11-19)
+
+- **C-string / BSTR boundary fixed in three output families**: numeric
+  `PRINT`, `COMM PRINT` and `GRAPHIC` character echo built a C string on the
+  stack and then called a BSTR-length-aware printer, which read four bytes of
+  stack garbage as a length. The numeric and echo paths now use C-string
+  length; the language-level string entry points keep BSTR semantics.
+- **`REGREPL` returns one type on every path**: the replacement path returned
+  a malloc'd C string while the caller expected a BSTR. All success, no-match
+  and allocation-failure paths now return a BSTR; the isolated probe exits 0
+  and reports the replacement text.
+- **Control getters no longer cap at 256 bytes**: ten fixed-size stacks were
+  replaced by a shared dynamic BSTR helper; `LISTVIEW GET HEADER` starts at
+  256 bytes and doubles up to 65536 until the native column text fits.
+- **BYTE rotate and signed shift fixed on i686**: `to_i64` now zero-extends
+  `I8`, so `ROTATE RIGHT` and `SHIFT SIGNED RIGHT` on a `BYTE` give the same
+  result on x86_64 and i686 (`221 -> 238`).
+- **Embedded NUL is preserved end to end**: `CSET`/`LSET`/`RSET`, direct
+  fixed-string assignment, `CHRTOOEM$`/`OEMTOCHR$`, binary `PUT$`/`GET$` and
+  `REMOVE$` all keep bytes after `CHR$(0)`; `batch391_test` covers each path.
+- **`STRING*n` and `ASCIIZ*n` conversions fixed**: a fixed string converted to
+  a dynamic string used `strlen`, so a `STRING * 5` holding `A CHR$(0) B`
+  became length 1. `STRING*n` now copies the full declared capacity (including
+  NULs); `ASCIIZ*n` is a distinct type that copies up to its NUL terminator and
+  zero-fills on assignment. Local variables and TYPE members both use the new
+  paths.
+- **`END` now terminates the process**: the parser previously discarded a
+  bare `END`; it now emits `Statement::End` and calls `pb_program_end`.
+  `CALLBACK` without a following `FUNCTION`/`SUB` and `#INCLUDE` inside a
+  `SUB` are loud parse errors instead of silent statements.
+- **TCP `LINE INPUT` and COM `GETCOM` closed**: the first-byte blocking
+  policy matches PBWin10 in all five socket scenarios (no data, partial line,
+  complete line, two lines, closed with empty buffer), and `GETCOM` uses
+  `IDispatch` query-interface against a live Excel instance.
+- **Diagnostics**: the entry-point error now prints
+  `Candidate entry points:` instead of `Did you mean`.
+- **`ASCIIZ*n` LEN and ASC use content length**: PBWin 10 measured
+  `LOCAL a AS ASCIIZ * 10` with `a = "AB"` gives `LEN(a)=2`,
+  `SIZEOF(a)=10` and `ASC(a,3)=-1`, while `STRING * 10` keeps `LEN=10`.
+  The fork previously returned the declared capacity for `LEN` and read the
+  zero filler for an out-of-range `ASC`. A new `pb_asciiz_len` runtime helper
+  supplies the logical length to both builtins; `batch391_test` now asserts
+  the three values on x64 and i686.
+- **`INPUT#` and `LINE INPUT#` fixed-buffer padding matches PBWin10**: `INPUT #` and `LINE INPUT #` into a
+  `STRING * 5` now space-pads the tail (`A`,`B`,32,32,32), and into an
+  `ASCIIZ * 5` it stops at the NUL and zero-fills (`A`,`B`,0,0,0). The
+  runtime takes an explicit mode instead of always zero-filling through
+  `strncpy`; the same padding applies to `LINE INPUT #`, and `batch391_test` asserts all four combinations on x64 and i686.
+- **Coverage matrix unchanged**: 952 documented rows, no keyword status
+  changed; this batch fixes runtime behaviour and removes silent paths.
+
 ### v0.2.177 (2026-11-19)
 
 - **JK-IDE help installer CRLF fix**: `jkide\install_help.ps1` failed on a

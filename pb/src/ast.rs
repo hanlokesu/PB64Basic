@@ -16,6 +16,10 @@ pub enum PbType {
     /// 4-byte byte-count prefix, exactly like STRING but encoded UTF-16.
     WString,
     FixedString(usize), // STRING * N
+    /// ASCIIZ * N — a fixed-size NUL-terminated ANSI buffer.  Storage is the
+    /// same N-byte inline array as FixedString, but conversion to a dynamic
+    /// string stops at the first NUL instead of copying the declared capacity.
+    AsciiZ(usize),
     /// WSTRING * N — fixed-length wide string (CHW Fixed-length_strings:
     /// N characters, 2N bytes in PBWin).  The fork keeps the same ptr-slot
     /// backing storage as FixedString arrays, but the distinct VARCLASS 26
@@ -61,7 +65,10 @@ impl PbType {
             PbType::Integer => "%",
             PbType::Double => "#",
             PbType::Single => "!",
-            PbType::String | PbType::FixedString(_) | PbType::FixedWString(_) => "$",
+            PbType::String
+            | PbType::FixedString(_)
+            | PbType::AsciiZ(_)
+            | PbType::FixedWString(_) => "$",
             PbType::Quad => "&&",
             PbType::Dword => "???",
             PbType::Ext => "##",
@@ -449,6 +456,7 @@ pub enum Statement {
     Block(Vec<Statement>), // multiple statements from one parse (e.g. LOCAL a, b)
     Data(Vec<DataItem>), // DATA item1, item2, ... (string constants)
     Restore,       // RESTORE — reset DATA read cursor
+    End,           // END — terminate the program immediately (CHW END statement)
     Noop(String, usize), // (unimplemented statement name, source line)
     Asm(String),   // inline assembly text (from ! or ASM)
     DefType(DefTypeStmt), // DEFINT/DEFSTR/... — default type for letters (CHW DEFBYT_..._DEFLNG.htm)

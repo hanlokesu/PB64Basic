@@ -41,11 +41,14 @@ __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, uns
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
 __declspec(dllimport) wchar_t* __stdcall SysAllocStringLen(const wchar_t* psz, unsigned int len);
 __declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr);
+__declspec(dllimport) unsigned int __stdcall SysStringLen(const wchar_t* bstr);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
 __declspec(dllimport) int __stdcall MoveFileExA(const char* lpExisting, const char* lpNew, unsigned long dwFlags);
 __declspec(dllimport) unsigned long __stdcall GetLastError(void);
 __declspec(dllimport) int __stdcall CharToOemA(const char* lpszSrc, char* lpszDst);
 __declspec(dllimport) int __stdcall OemToCharA(const char* lpszSrc, char* lpszDst);
+__declspec(dllimport) int __stdcall CharToOemBuffA(const char* lpszSrc, char* lpszDst, unsigned long cchDstLength);
+__declspec(dllimport) int __stdcall OemToCharBuffA(const char* lpszSrc, char* lpszDst, unsigned long cchDstLength);
 __declspec(dllimport) unsigned long __stdcall CharLowerBuffA(char* lpsz, unsigned long cchLength);
 __declspec(dllimport) unsigned long __stdcall CharUpperBuffA(char* lpsz, unsigned long cchLength);
 __declspec(dllimport) int __stdcall IsDBCSLeadByte(unsigned char TestChar);
@@ -1061,19 +1064,23 @@ char* pb_build(char** arr, long long n) {
 }
 
 /* Batch 40: OEM / UTF-8 code-page conversion. String args are payload pointers,
-   string results are BSTRs. ACODE$ (wide-input) is not implemented: C-strlen
-   cannot measure wide strings containing NUL bytes � honestly skipped. */
+   string results are BSTRs.  Batch 391: every PB string carries a 4-byte BSTR
+   length prefix, so OEM conversion reads pb_str_len and uses the length-taking
+   Win32 forms; an embedded CHR$(0) is data, not a terminator.  ACODE$ already
+   divides pb_str_len by two for its wide input (see pb_acode below). */
 char* pb_chr_to_oem(char* s) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
-    CharToOemA(s, buf);
+    if (!buf) return pb_bstr_alloc("", 0);
+    CharToOemBuffA(s, buf, (unsigned long)n);
     buf[n] = 0;
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
 char* pb_oem_to_chr(char* s) {
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     char* buf = (char*)malloc(n + 1);
-    OemToCharA(s, buf);
+    if (!buf) return pb_bstr_alloc("", 0);
+    OemToCharBuffA(s, buf, (unsigned long)n);
     buf[n] = 0;
     return pb_bstr_alloc(buf, (unsigned int)n);
 }
@@ -2063,6 +2070,12 @@ void pb_desktop_get_ppi(long* x, long* y) {
 }
 
 /* LEN() � BSTR byte length (unlike strlen, handles embedded NUL bytes) */
+/* Audit rule (batch 391): a function that receives a language STRING must use
+   pb_str_len, never strlen - a BSTR carries its byte length in the four bytes
+   before the data pointer and may contain embedded NULs.  strlen is valid only
+   for C buffers produced by Win32, numeric formatting buffers, path/environment
+   strings, and the non-Windows fallback.  Fixed STRING*n values use
+   pb_fixed_to_bstr(buf, n); ASCIIZ*n values use pb_asciiz_to_bstr(buf, n). */
 int pb_str_len(const char* s) {
     if (!s) return 0;
     const unsigned int* p = (const unsigned int*)s - 1;  /* BSTR length prefix */
@@ -3628,28 +3641,32 @@ char* pb_using_multi(const char* fmt, const int* kinds, const double* nums,
  * REMOVE$ � Remove all occurrences of characters in chars from str
  * ============================================================ */
 char* pb_remove(const char* str, const char* chars) {
+    int len, clen, i, j;
+    char* result;
+    char* dst;
     if (str == NULL) {
         char* empty = (char*)malloc(1);
         empty[0] = '\0';
         return bstr_from_buf(empty);
     }
-    if (chars == NULL || chars[0] == '\0') {
-        char* result = (char*)malloc(strlen(str) + 1);
-        strcpy(result, str);
-        return bstr_from_buf(result);
-    }
-
-    int len = (int)strlen(str);
-    char* result = (char*)malloc(len + 1);
-    char* dst = result;
-
-    for (const char* p = str; *p; p++) {
-        if (strchr(chars, *p) == NULL) {
-            *dst++ = *p;
+    len = pb_str_len(str);
+    clen = chars ? pb_str_len(chars) : 0;
+    result = (char*)malloc((size_t)len + 1);
+    if (!result) return pb_bstr_alloc("", 0);
+    dst = result;
+    for (i = 0; i < len; i++) {
+        int keep = 1;
+        for (j = 0; j < clen; j++) {
+            if (chars[j] == str[i]) { keep = 0; break; }
         }
+        if (keep) *dst++ = str[i];
     }
     *dst = '\0';
-    return bstr_from_buf(result);
+    {
+        char* out = pb_bstr_alloc(result, (unsigned int)(dst - result));
+        free(result);
+        return out;
+    }
 }
 
 /* ============================================================
@@ -4335,9 +4352,41 @@ void pb_input_file_str(int filenum, char** dest) {
    Windows, which reads the 4-byte length header of a COM BSTR; an inline
    buffer has no header, so passing it straight through reads garbage as the
    length.  Materialise a real BSTR once at the read site instead. */
-char* pb_fixed_to_bstr(const char* buf) {
+char* pb_fixed_to_bstr(const char* buf, long long n) {
     if (!buf) return pb_bstr_alloc("", 0);
-    return pb_bstr_alloc(buf, (unsigned int)strlen(buf));
+    if (n < 0) n = 0;
+    return pb_bstr_alloc(buf, (unsigned int)n);
+}
+
+/* ASCIIZ*n logical length: count bytes up to the first NUL or the declared
+   capacity.  PBWin 10 measured 2026-11-19: `LOCAL a AS ASCIIZ * 10` with
+   `a = "AB"` gives LEN(a) = 2 and SIZEOF(a) = 10, while `STRING * 10` gives
+   LEN = 10.  LEN must therefore be runtime content length for ASCIIZ, not the
+   declared capacity. */
+int pb_asciiz_len(const char* buf, long long n) {
+    long long len = 0;
+    if (!buf) return 0;
+    if (n < 0) n = 0;
+    while (len < n && buf[len] != 0) len++;
+    return (int)len;
+}
+
+/* ASCIIZ*n -> dynamic string: stop at the first NUL or at the declared
+   capacity.  Unlike STRING*n, an ASCIIZ buffer is NUL-terminated, so the
+   trailing zero fill is not part of the logical value. */
+char* pb_asciiz_to_bstr(const char* buf, long long n) {
+    return pb_bstr_alloc(buf, (unsigned int)pb_asciiz_len(buf, n));
+}
+
+/* ASCIIZ*n assignment: copy at most n-1 bytes and always NUL-terminate.
+   The remaining capacity is zero-filled, never space-padded. */
+void pb_copy_bstr_to_asciiz(char* buf, const char* src, long long n) {
+    int len, i;
+    if (!buf || n <= 0) return;
+    len = src ? pb_str_len(src) : 0;
+    if (len > (int)n - 1) len = (int)n - 1;
+    if (len > 0) memcpy(buf, src, (size_t)len);
+    for (i = len; i < (int)n; i++) buf[i] = 0;
 }
 
 /* WSTRING*n inline [N x i16] buffer -> fresh UTF-16 BSTR, stopping at the
@@ -4349,14 +4398,29 @@ char* pb_fixedw_to_bstr(const char* buf, long long n) {
     return pb_bstr_alloc((const char*)w, (unsigned int)(len * 2));
 }
 
-void pb_input_file_fixed(int filenum, char* buf, long long n) {
+/* Copy an INPUT# token into an inline fixed buffer.  STRING*n is
+   space-padded to its declared capacity; ASCIIZ*n stops one byte short of
+   the capacity and zero-fills the tail.  PBWin10 measured both forms
+   (batch 391): STRING*5 "AB" -> A,B,32,32,32; ASCIIZ*5 "AB" -> A,B,0,0,0. */
+static void pb_token_to_buf(char* buf, const char* src, int len, long long n,
+                            int asciiz) {
+    int keep, i;
+    if (!buf || n <= 0) return;
+    if (len < 0) len = 0;
+    keep = (int)n - (asciiz ? 1 : 0);
+    if (keep < 0) keep = 0;
+    if (len > keep) len = keep;
+    if (len > 0) memcpy(buf, src, (size_t)len);
+    for (i = len; i < (int)n; i++) buf[i] = asciiz ? 0 : ' ';
+}
+
+void pb_input_file_fixed(int filenum, char* buf, long long n, int asciiz) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     if (!buf || n <= 0) return;
     if (file_wide[filenum]) {
         char* w = pb_read_wide_token(filenum);
         char* a = pb_acode(w, PB_CP_ACP);
-        strncpy(buf, a ? a : "", (size_t)n - 1);
-        buf[n - 1] = '\0';
+        pb_token_to_buf(buf, a ? a : "", a ? pb_str_len(a) : 0, n, asciiz);
         pb_bstr_free(a);
         pb_bstr_free(w);
         return;
@@ -4364,7 +4428,7 @@ void pb_input_file_fixed(int filenum, char* buf, long long n) {
     char tmp[4096];
     int i = 0, ch;
     if (file_wide_eof[filenum]) {
-        buf[0] = '\0';
+        pb_token_to_buf(buf, "", 0, n, asciiz);
         return;
     }
     while ((ch = fgetc(file_handles[filenum])) != EOF) {
@@ -4378,12 +4442,11 @@ void pb_input_file_fixed(int filenum, char* buf, long long n) {
         char* unquoted = (char*)malloc(i - 1);
         memcpy(unquoted, tmp + 1, i - 2);
         unquoted[i - 2] = '\0';
-        strncpy(buf, unquoted, (size_t)n - 1);
+        pb_token_to_buf(buf, unquoted, i - 2, n, asciiz);
         free(unquoted);
     } else {
-        strncpy(buf, tmp, (size_t)n - 1);
+        pb_token_to_buf(buf, tmp, i, n, asciiz);
     }
-    buf[n - 1] = '\0';
 }
 
 /* WSTRING-target INPUT#: returns a UTF-16LE BSTR for both WIDE and ANSI
@@ -4413,16 +4476,17 @@ void pb_input_file_fixed_w(int filenum, char* buf, long long n) {
     pb_bstr_free(w);
 }
 
-/* FixedString target for console INPUT / LINE INPUT / LINE INPUT#:
-   copy a freshly read BSTR into an inline [N x i8] buffer truncated to
-   N-1 chars with a trailing NUL (legacy #7).  The BSTR is NOT released
-   here: pb_line_input allocates with bstr_from_buf (malloc, not COM) so
-   pb_bstr_free (SysFreeString) would crash; this matches the existing
-   fork INPUT semantics, which never free the freshly read BSTR. */
+/* FixedString target: copy a BSTR payload by its byte-prefixed length and
+   space-pad to the declared capacity.  strncpy stops at an embedded NUL and
+   zero-fills the tail, which is neither NUL-safe nor PBWin's fixed-string
+   padding. */
 void pb_copy_bstr_to_fixed(char* buf, const char* src, long long n) {
+    int len, i;
     if (!buf || n <= 0) return;
-    if (src) strncpy(buf, src, (size_t)n - 1);
-    buf[n - 1] = '\0';
+    len = src ? pb_str_len(src) : 0;
+    if (len > (int)n) len = (int)n;
+    if (len > 0) memcpy(buf, src, (size_t)len);
+    for (i = len; i < (int)n; i++) buf[i] = ' ';
 }
 
 /* UTF-16 numeric token: comma/CR/space terminate, LF is ignored, leading
@@ -4830,26 +4894,26 @@ static void pb_print_write(const char* s, unsigned long len) {
 
 void pb_print_str(const char* s) {
     if (!s) return;
-    unsigned int len = (unsigned int)strlen(s);
+    unsigned int len = (unsigned int)pb_str_len(s);
     pb_print_write(s, len);
 }
 
 void pb_print_i32(int v) {
     char buf[64];
     snprintf(buf, sizeof(buf), "% d", v);
-    pb_print_str(buf);
+    pb_print_write(buf, (unsigned long)strlen(buf));
 }
 
 void pb_print_i64(long long v) {
     char buf[64];
     snprintf(buf, sizeof(buf), "% lld", v);
-    pb_print_str(buf);
+    pb_print_write(buf, (unsigned long)strlen(buf));
 }
 
 void pb_print_f64(double v) {
     char buf[96];
     snprintf(buf, sizeof(buf), "% .6g", v);
-    pb_print_str(buf);
+    pb_print_write(buf, (unsigned long)strlen(buf));
 }
 
 /* PRINT newline: move to column 0 of the next line and scroll the page up
@@ -5504,6 +5568,13 @@ void pb_con_end(void) {
     pb_err_var = pb_err = 0;
 }
 
+/* END statement: terminate the process immediately.  PB's END is not a
+   block terminator (END IF/SELECT/TYPE are handled separately); reaching the
+   runtime helper means the source asked for program termination. */
+void pb_program_end(void) {
+    ExitProcess(0);
+}
+
 /* ---- input ---- */
 static int pb_con_mouse_enabled = 0;
 static int pb_con_mouse_event_mask = 0;
@@ -5753,10 +5824,10 @@ void pb_con_key_set(int n, const char* s) {
     int idx = n - 1;
     free(pb_con_keys[idx]);
     pb_con_keys[idx] = 0;
-    if (s && s[0]) {
-        size_t len = strlen(s);
+    if (s && pb_str_len(s) > 0) {
+        size_t len = (size_t)pb_str_len(s);
         pb_con_keys[idx] = (char*)malloc(len + 1);
-        if (pb_con_keys[idx]) memcpy(pb_con_keys[idx], s, len + 1);
+        if (pb_con_keys[idx]) { memcpy(pb_con_keys[idx], s, len); pb_con_keys[idx][len] = 0; }
     }
 }
 
@@ -7124,7 +7195,7 @@ static int pb_regex_scan_ex(const char* mask, const char* target, long long star
                             long long* opos, long long* olen,
                             const char** gstart, const char** gend) {
     *opos = 0; *olen = 0;
-    size_t tlen = strlen(target);
+    size_t tlen = (size_t)pb_str_len(target);
     if (!mask || !mask[0]) return 0;
     if (start < 1) start = 1;
     if ((size_t)start > tlen + 1) return 0;
@@ -7154,9 +7225,9 @@ char* pb_regex_replace(const char* mask, const char* target, const char* repl,
     const char* gstart[PB_REX_MAX_GROUPS] = {0};
     const char* gend[PB_REX_MAX_GROUPS] = {0};
     if (!pb_regex_scan_ex(mask, target, start, &pos, &len, gstart, gend)) {
-        return pb_bstr_alloc(target, (int)strlen(target));
+        return pb_bstr_alloc(target, pb_str_len(target));
     }
-    size_t tlen = strlen(target), rlen = strlen(repl);
+    size_t tlen = (size_t)pb_str_len(target), rlen = (size_t)pb_str_len(repl);
     /* worst case: every repl char is a tag referencing a group of length <= tlen */
     size_t outsz = tlen + rlen * (tlen + 1) + 16;
     char* out = (char*)malloc(outsz ? outsz : 1);
@@ -7196,7 +7267,11 @@ char* pb_regex_replace(const char* mask, const char* target, const char* repl,
     out[o] = 0;
     /* iPos& = 1-based position immediately following the replacement in newtarget$ */
     *opos = (long long)(o + 1 - (tlen - pre - (size_t)len));
-    return out;
+    {
+        char* b = pb_bstr_alloc(out, (unsigned int)o);
+        free(out);
+        return b;
+    }
 }
 
 void pb_profile_dump(const char* filename) {
@@ -7528,7 +7603,7 @@ int pb_put_string(int f, const char* s) {
     /* CHW error 54: PUT$ on a file opened in sequential mode -> ERR 54 */
     if (file_modes[f] <= 2) { pb_err_var = pb_err = 54; return -1; }
     if (!s) { pb_err_var = pb_err = 5; return -1; }
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     if (n == 0) return 0;
     return fwrite(s, 1, n, file_handles[f]) == n ? 0 : -1;
 }
@@ -7556,7 +7631,7 @@ int pb_put_wstring(int f, const char* s) {
     /* CHW error 54: PUT$$ on a file opened in sequential mode -> ERR 54 */
     if (file_modes[f] <= 2) { pb_err_var = pb_err = 54; return -1; }
     if (!s) { pb_err_var = pb_err = 5; return -1; }
-    size_t n = strlen(s);
+    size_t n = (size_t)pb_str_len(s);
     if (n == 0) return 0;
     int wlen = MultiByteToWideChar(PB_CP_ACP, 0, s, (int)n, NULL, 0);
     if (wlen <= 0) { pb_err_var = pb_err = 5; return -1; }
@@ -8055,7 +8130,7 @@ double pb_ccux(double x) { return round(x * 100.0) / 100.0; }
 /* CSET$(s$, len& [, pad]) — center s$ into len bytes, pad with first char
    of pad or space.  Left padding = (len - slen)/2 (PBWin behavior). */
 char* pb_cset_str(const char* s, long long len, const char* pad) {
-    unsigned long slen = (unsigned long)strlen(s);
+    unsigned long slen = (unsigned long)pb_str_len(s);
     char padc = (pad && pad[0]) ? pad[0] : ' ';
     if (len < 0) len = 0;
     unsigned long n = (unsigned long)len;
@@ -8072,7 +8147,7 @@ char* pb_cset_str(const char* s, long long len, const char* pad) {
    right with the first char of u (or spaces).  If s is longer than len, only
    the left-most len bytes are returned.  (CHW LSET$_function.htm) */
 char* pb_lset_str(const char* s, long long len, const char* pad) {
-    unsigned long slen = (unsigned long)strlen(s);
+    unsigned long slen = (unsigned long)pb_str_len(s);
     char padc = (pad && pad[0]) ? pad[0] : ' ';
     if (len < 0) len = 0;
     unsigned long n = (unsigned long)len;
@@ -8088,7 +8163,7 @@ char* pb_lset_str(const char* s, long long len, const char* pad) {
    left with the first char of u (or spaces).  If s is longer than len, only
    the left-most len bytes are returned.  (CHW RSET$_function.htm) */
 char* pb_rset_str(const char* s, long long len, const char* pad) {
-    unsigned long slen = (unsigned long)strlen(s);
+    unsigned long slen = (unsigned long)pb_str_len(s);
     char padc = (pad && pad[0]) ? pad[0] : ' ';
     if (len < 0) len = 0;
     unsigned long n = (unsigned long)len;
@@ -8101,15 +8176,18 @@ char* pb_rset_str(const char* s, long long len, const char* pad) {
 }
 
 int pb_clipboard_set_text(const char* text) {
+    static const char empty[] = "";
+    if (!text) text = empty;
     if (!OpenClipboard(0)) return 0;   /* FALSE on failure */
     EmptyClipboard();
-    unsigned long len = (unsigned long)strlen(text);
+    unsigned long len = (unsigned long)pb_str_len(text);
     void* h = GlobalAlloc(GMEM_MOVEABLE, len + 1);
     int ok = 0;
     if (h) {
         char* p = (char*)GlobalLock(h);
         if (p) {
-            memcpy(p, text, len + 1);
+            memcpy(p, text, len);
+            p[len] = '\0';
             GlobalUnlock(h);
         }
         if (SetClipboardData(CF_TEXT, h)) ok = -1;  /* TRUE on success (PBWin10) */
@@ -8134,7 +8212,10 @@ char* pb_clipboard_get_text(void) {
     if (!h) { CloseClipboard(); return empty; }
     char* p = (char*)GlobalLock(h);
     if (!p) { CloseClipboard(); return empty; }
-    unsigned long len = (unsigned long)strlen(p);
+    /* HGLOBAL text may be NUL-terminated; GlobalSize gives the real allocation
+       and trailing NULs are padding, while embedded NULs are kept as data. */
+    unsigned long len = (unsigned long)GlobalSize(h);
+    while (len > 0 && p[len - 1] == '\0') len--;
     char* r = pb_bstr_alloc(p, len);
     GlobalUnlock(h);
     CloseClipboard();
@@ -8157,15 +8238,17 @@ int pb_clipboard_reset(void) {
    comes from SysStringByteLen because embedded NULs break strlen.  BITMAP
    moves a GRAPHIC BITMAP (HBITMAP) handle in/out of the clipboard. */
 int pb_clipboard_set_oemtext(const char* text) {
+    static const char empty[] = "";
+    if (!text) text = empty;
     if (!OpenClipboard(0)) return 0;
     EmptyClipboard();
-    unsigned long len = (unsigned long)strlen(text);
+    unsigned long len = (unsigned long)pb_str_len(text);
     void* h = GlobalAlloc(GMEM_MOVEABLE, len + 1);
     int ok = 0;
     if (h) {
         char* p = (char*)GlobalLock(h);
         if (p) {
-            CharToOemA(text, p);
+            CharToOemBuffA(text, p, len);
             p[len] = 0;
             GlobalUnlock(h);
         }
@@ -8190,12 +8273,13 @@ char* pb_clipboard_get_oemtext(void) {
     if (!h) { CloseClipboard(); return empty; }
     char* p = (char*)GlobalLock(h);
     if (!p) { CloseClipboard(); return empty; }
-    unsigned long len = (unsigned long)strlen(p);
+    unsigned long len = (unsigned long)GlobalSize(h);
+    while (len > 0 && p[len - 1] == '\0') len--;
     char* tmp = (char*)malloc(len + 1);
     if (!tmp) { GlobalUnlock(h); CloseClipboard(); return empty; }
-    OemToCharA(p, tmp);
+    OemToCharBuffA(p, tmp, len);
     tmp[len] = 0;
-    char* r = pb_bstr_alloc(tmp, (int)strlen(tmp));
+    char* r = pb_bstr_alloc(tmp, (int)len);
     free(tmp);
     GlobalUnlock(h);
     CloseClipboard();
@@ -8471,7 +8555,7 @@ void pb_input_console_fixed(char* prompt, int has_prompt, int no_newline,
                             char* dst, int maxlen) {
     if (!dst || maxlen <= 0) return;
     char* s = pb_input_console_line(prompt, has_prompt, no_newline, 0);
-    unsigned int n = (unsigned int)strlen(s);
+    unsigned int n = (unsigned int)pb_str_len(s);
     if (n > (unsigned int)(maxlen - 1)) n = (unsigned int)(maxlen - 1);
     memset(dst, 0, (size_t)maxlen);
     if (n) memcpy(dst, s, n);
@@ -9961,36 +10045,39 @@ int pb_tcp_line_input(int f, char** out) {
         if (out) *out = pb_bstr_alloc(NULL, 0);
         return -1;
     }
-    /* CHW TCP_LINE_INPUT_statement.htm: "even if no $CRLF has been found, TCP
-       LINE will return if no additional data is available.  In that case, TCP
-       LINE will return whatever data has been accumulated, and set EOF to
-       logical TRUE (non-zero)".
-       Batch 350 implements exactly that: once at least one byte has been
-       consumed, a drained receive buffer ends the call (instead of blocking
-       until the socket timeout).  With no bytes at all the call still waits
-       for the first byte - the line-oriented behaviour the batch205 loopback
-       protocol depends on - and a timeout there stays Error 24. */
+    /* Batch 391 measured PBWin10 on a loopback server instead of trusting the
+       CHW prose alone:
+         - no first byte, server silent   -> blocks, then empty / ERR 24 / EOF 0
+         - partial "abc", server holds    -> blocks until timeout, then "abc" /
+           ERR 0 / EOF -1 (the partial line is NOT returned the moment the
+           receive buffer drains)
+         - complete "abc\r\n"             -> immediate "abc" / ERR 0 / EOF -1
+         - two complete lines in one send -> line 1 EOF 0 (more bytes buffered),
+           line 2 EOF -1 (nothing buffered)
+         - peer closes with no bytes      -> empty / ERR 0 / EOF -1
+       So: block one byte at a time until CRLF, close, or timeout.  A timeout
+       after some bytes keeps ERR clear and returns the partial line.  EOF is
+       FALSE only when this call consumed a complete line AND more bytes are
+       already buffered; every other terminal state reports TRUE. */
     long cap = 256;
     char* tmp = (char*)malloc((size_t)cap);
     if (!tmp) { pb_err_var = pb_err = 7; return -1; }
     int n = 0;
-    int incomplete = 0;   /* 1 = returned without a CRLF terminator */
+    int incomplete = 0;      /* terminal without CRLF: close / timeout / error */
+    int line_complete = 0;   /* saw the LF terminator */
     for (;;) {
-        unsigned long avail = 0;
-        if (ioctlsocket(pb_sock[f], PB_FIONREAD, &avail) != 0) avail = 0;
-        if (avail == 0 && n > 0) {
-            incomplete = 1;                 /* no more data: partial line, EOF TRUE */
-            break;
-        }
         char c = 0;
         int r = recv(pb_sock[f], &c, 1, 0);
         if (r == 0) { incomplete = 1; break; }   /* graceful close: partial line */
         if (r < 0) {                             /* timeout=24, other device error=57 */
-            pb_err_var = pb_err = pb_wsa_err_code();
+            int err = pb_wsa_err_code();
+            /* Partial line on timeout: PBWin returns the data with ERR still 0.
+               A real socket error keeps its code even when bytes were read. */
+            if (n == 0 || err != 24) { pb_err_var = pb_err = err; }
             if (n > 0) incomplete = 1;
             break;
         }
-        if (c == '\n') { incomplete = 0; break; }
+        if (c == '\n') { line_complete = 1; break; }
         if (c == '\r') continue;
         if (n == cap) {
             long ncap = cap * 2;
@@ -10000,9 +10087,17 @@ int pb_tcp_line_input(int f, char** out) {
         }
         tmp[n++] = c;
     }
-    /* complete line -> 2 (EOF false until the next LINE INPUT changes it);
-       partial line -> 1 (EOF true). */
-    pb_sock_eof[f] = incomplete ? 1 : 2;
+    if (incomplete) {
+        pb_sock_eof[f] = 1;                    /* partial line / close / error -> TRUE */
+    } else if (line_complete) {
+        unsigned long avail = 0;
+        if (ioctlsocket(pb_sock[f], PB_FIONREAD, &avail) != 0) avail = 0;
+        /* More buffered data -> a following LINE INPUT can return it, so EOF
+           reports FALSE; an empty buffer -> TRUE (measured, both cases). */
+        pb_sock_eof[f] = avail > 0 ? 2 : 1;
+    } else {
+        pb_sock_eof[f] = 2;                    /* empty timeout/error -> FALSE */
+    }
     char* buf = pb_bstr_alloc(NULL, (unsigned int)n);
     memcpy(buf, tmp, n);
     buf[n] = 0;
@@ -10052,15 +10147,17 @@ int pb_tcp_close(int f) {
    pb_eof can fall through to the file check. */
 int pb_socket_eof_state(int filenum) {
     if (filenum < 1 || filenum >= PB_MAX_SOCK || pb_sock_state[filenum] == 0) return -2;
-    /* batch 350: after a TCP LINE, EOF means "the last line was incomplete".
-       A complete line (state 2) must report FALSE even though the receive
-       buffer is temporarily empty; a partial line (state 1) keeps TRUE.  State
-       0 means TCP LINE has not run yet, so fall back to the live probe. */
+    /* Batch 391 (PBWin10 loopback measurements): after a TCP LINE, EOF is
+       FALSE (state 2) only when this call consumed a complete line AND more
+       bytes were already buffered; an empty-buffer complete line, a partial
+       line, a peer close, and a zero-byte timeout all report the stored state
+       1 (TRUE).  State 0 (TCP LINE has not run yet) uses the live probe. */
     if (pb_sock_eof[filenum] == 1) return -1;
     if (pb_sock_eof[filenum] == 2) return 0;
-    unsigned long avail = 0;
-    if (ioctlsocket(pb_sock[filenum], PB_FIONREAD, &avail) != 0) return -1;
-    return avail > 0 ? 0 : -1;
+    /* State 0: TCP LINE has not run yet.  PBWin10 measured EOF(f) = 0 on a
+       freshly opened socket (the live FIONREAD probe returned -1, which was
+       the pre-batch391 implementation, so this is the measured correction). */
+    return 0;
 }
 
 int pb_udp_open(int port, int filenum, long timeout) {
@@ -10377,7 +10474,7 @@ int pb_comm_send(int channel, const char* s) {
         pb_comm_report("SEND", channel);
         pb_err_var = pb_err = 52; return -1;
     }
-    WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
+    WriteFile(pb_comm_h[channel], s, (unsigned long)pb_str_len(s), &written, NULL);
     FlushFileBuffers(pb_comm_h[channel]);
     return (int)written;
 }
@@ -10456,13 +10553,28 @@ int pb_comm_line_input(int channel, char** dest) {
     return n;
 }
 
-int pb_comm_print_str(int channel, const char* s) {
+static int pb_comm_print_cstr(int channel, const char* s) {
     unsigned long written = 0;
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
         pb_err_var = pb_err = 54; return 0;
     }
     if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
         WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
+        FlushFileBuffers(pb_comm_h[channel]);
+        return (int)written;
+    }
+    pb_comm_report("PRINT", channel);
+    pb_err_var = pb_err = 52;
+    return 0;
+}
+
+int pb_comm_print_str(int channel, const char* s) {
+    unsigned long written = 0;
+    if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
+        pb_err_var = pb_err = 54; return 0;
+    }
+    if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
+        WriteFile(pb_comm_h[channel], s, (unsigned long)pb_str_len(s), &written, NULL);
         FlushFileBuffers(pb_comm_h[channel]);
         return (int)written;
     }
@@ -10481,7 +10593,7 @@ int pb_comm_print_line(int channel, const char* s) {
         pb_err_var = pb_err = 54; return 0;
     }
     if (channel >= 0 && channel <= 255 && pb_comm_ok[channel] && s != NULL) {
-        WriteFile(pb_comm_h[channel], s, (unsigned long)strlen(s), &written, NULL);
+        WriteFile(pb_comm_h[channel], s, (unsigned long)pb_str_len(s), &written, NULL);
         n = (int)written;
         if (WriteFile(pb_comm_h[channel], crlf, 2, &written, NULL)) n += (int)written;
         FlushFileBuffers(pb_comm_h[channel]);
@@ -10495,13 +10607,13 @@ int pb_comm_print_line(int channel, const char* s) {
 void pb_comm_print_int(int channel, long long v) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%lld", v);
-    pb_comm_print_str(channel, buf);
+    pb_comm_print_cstr(channel, buf);
 }
 
 void pb_comm_print_dbl(int channel, double v) {
     char buf[64];
     snprintf(buf, sizeof(buf), "%g", v);
-    pb_comm_print_str(channel, buf);
+    pb_comm_print_cstr(channel, buf);
 }
 
 int pb_comm_set(int channel, const char* option, int on) {
@@ -11641,7 +11753,7 @@ static void pb_lpt_write(const char* buf, unsigned int len) {
 }
 /* LPRINT "..." � BSTR payload, no CRLF */
 void pb_lprint_bstr(char* s) {
-    if (s) pb_lpt_write(s, (unsigned int)strlen(s));
+    if (s) pb_lpt_write(s, (unsigned int)pb_str_len(s));
 }
 void pb_lprint_int(int n) {
     char b[32]; int l = sprintf(b, "%d", n);
@@ -12511,7 +12623,7 @@ int pb_graphic_text_size(char* txt, float* w, float* h) {
     if (!g_gr_dc) return 0;
     long sz[2];
     sz[0] = 0; sz[1] = 0;
-    if (!GetTextExtentPoint32A(g_gr_dc, txt, (int)strlen(txt), (void*)sz)) return 0;
+    if (!GetTextExtentPoint32A(g_gr_dc, txt, pb_str_len(txt), (void*)sz)) return 0;
     *w = (float)sz[0];
     *h = (float)sz[1];
     return 1;
@@ -12719,7 +12831,7 @@ static int pb_gr_measure_ok(const char* buf, int len) {
 
 static void pb_graphic_split_core(const char* src, int fieldw,
                                   char** out1, char** out2, int word) {
-    int n = (int)strlen(src);
+    int n = (int)pb_str_len(src);
     int best = 0, i, k;
     char buf[PB_GR_LINECAP];
     if (n >= PB_GR_LINECAP) n = PB_GR_LINECAP - 1;
@@ -12753,12 +12865,11 @@ int pb_graphic_split_word(const char* src, int fieldw, char** out1, char** out2)
     return 1;
 }
 
-int pb_graphic_print_str(const char* s) {
+static int pb_graphic_print_len(const char* s, int len) {
     /* GRAPHIC PRINT - draw text on the attached graphic bitmap DC (batch 118) */
     if (!g_gr_dc) return 0;
     pb_gw_touch();
-    if (!s) s = "";
-    int len = (int)strlen(s);
+    if (!s) return 0;
     SetTextColor(g_gr_dc, (unsigned long)(unsigned int)g_gr_fore);
     SetBkMode(g_gr_dc, 1); /* TRANSPARENT */
     if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
@@ -12768,6 +12879,11 @@ int pb_graphic_print_str(const char* s) {
     long sz[2]; sz[0] = 0; sz[1] = 0;
     if (GetTextExtentPoint32A(g_gr_dc, s, len, (void*)sz)) MoveToEx(g_gr_dc, pt.x + sz[0], pt.y, 0);
     return ok ? 1 : 0;
+}
+
+int pb_graphic_print_str(const char* s) {
+    if (!s) s = "";
+    return pb_graphic_print_len(s, pb_str_len(s));
 }
 
 int pb_graphic_get_pixel(int x, int y, unsigned long* out) {
@@ -14272,9 +14388,14 @@ long pb_objactive(const char* progid) {
     PB_GUID cg;
     wchar_t wbuf[256];
     void* obj = NULL;
+    int n;
     if (!progid) return 0;
     pb_com_init();
-    MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
+    n = pb_str_len(progid);
+    if (n > 255) n = 255;
+    n = MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, n, (short*)wbuf, 255);
+    if (n < 0) n = 0;
+    wbuf[n] = 0;
     if (CLSIDFromProgID(wbuf, &cg) != 0) return 0;
     if (GetActiveObject(&cg, NULL, &obj) != 0 || !obj) return 0;
     /* release the active-object reference we acquired */
@@ -14284,6 +14405,23 @@ long pb_objactive(const char* progid) {
         rel(obj);
     }
     return -1;  /* TRUE */
+}
+
+/* GetActiveObject returns IUnknown*, not IDispatch*.  NEWCOM/ANYCOM store the
+ * resulting pointer in an IDISPATCH variable and later call its vtable, so the
+ * raw IUnknown must be queried for IDispatch and the original reference
+ * released.  Without this, GETCOM hands back an IUnknown whose first slots are
+ * QueryInterface/AddRef/Release; the first automation call then lands on the
+ * wrong vtable entry. */
+static void* pb_com_qi_idispatch(void* unk) {
+    typedef long (__stdcall* QI_FN)(void*, const PB_GUID*, void**);
+    typedef unsigned long (__stdcall* REL_FN)(void*);
+    void* disp = NULL;
+    long hr;
+    if (!unk) return NULL;
+    hr = ((QI_FN)((void***)unk)[0][0])(unk, &PB_IID_IDISPATCH, &disp);
+    ((REL_FN)((void***)unk)[0][2])(unk);
+    return hr == 0 ? disp : NULL;
 }
 
 /* Registry-free COM: load the DLL, resolve DllGetClassObject, ask it for the
@@ -14313,6 +14451,7 @@ void* pb_com_new(int mode, const char* progid, const char* clsid, const char* li
     void* obj = NULL;
     long hr;
     pb_com_init();
+    if (!clsid && !progid) return NULL;
     if (clsid && clsid[0]) {
         /* ClassID$ is a 16-byte binary GUID (CLSID$() result), or a "{...}"
          * string form.  PB BSTRs carry their own length, so the binary form
@@ -14322,27 +14461,41 @@ void* pb_com_new(int mode, const char* progid, const char* clsid, const char* li
             memcpy(&cg, clsid, 16);
         } else {
             wchar_t wc[96];
-            MultiByteToWideChar(0 /*CP_ACP*/, 0, clsid, -1, (short*)wc, 96);
+            int cn = pb_str_len(clsid);
+            int got;
+            if (cn > 95) cn = 95;
+            got = MultiByteToWideChar(0 /*CP_ACP*/, 0, clsid, cn, (short*)wc, 95);
+            if (got < 0) got = 0;
+            wc[got] = 0;
             hr = CLSIDFromString(wc, &cg);
             if (hr != 0) { pb_com_hresult = 0; return NULL; }
         }
     } else {
         wchar_t wbuf[256];
-        MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, -1, (short*)wbuf, 256);
+        int pn = progid ? pb_str_len(progid) : 0;
+        int got;
+        if (pn > 255) pn = 255;
+        got = MultiByteToWideChar(0 /*CP_ACP*/, 0, progid, pn, (short*)wbuf, 255);
+        if (got < 0) got = 0;
+        wbuf[got] = 0;
         hr = CLSIDFromProgID(wbuf, &cg);
         if (hr != 0) { pb_com_hresult = 0; return NULL; }
     }
-    if (lib && lib[0]) {
+    if (lib && pb_str_len(lib) > 0) {
         obj = pb_com_new_from_lib(&cg, lib);
     } else if (mode == 1) {
-        /* GETCOM: open an existing running instance */
+        /* GETCOM: open an existing running instance.  GetActiveObject gives
+         * IUnknown; convert it to IDispatch so later member calls are valid. */
         hr = GetActiveObject(&cg, NULL, &obj);
-        if (hr != 0) obj = NULL;
+        if (hr != 0 || !obj) obj = NULL;
+        else obj = pb_com_qi_idispatch(obj);
     } else {
         hr = CoCreateInstance(&cg, NULL, 0x7 /*CLSCTX_ALL*/, &PB_IID_IDISPATCH, &obj);
         if (hr != 0 && mode == 2) {
             /* ANYCOM: prefer an existing running instance */
-            if (GetActiveObject(&cg, NULL, &obj) != 0) obj = NULL;
+            hr = GetActiveObject(&cg, NULL, &obj);
+            if (hr != 0 || !obj) obj = NULL;
+            else obj = pb_com_qi_idispatch(obj);
         } else if (hr != 0) {
             obj = NULL;
         }
@@ -14494,11 +14647,15 @@ static void pb_com_coerce_result(PB_VARIANT* v, int rtype, void* slot) {
             char* src = NULL;
             int slen = 0;
             if (v->vt == 8 && v->v.pVal) {
-                int n = WideCharToMultiByte(0, 0, (const short*)v->v.pVal, -1, NULL, 0, NULL, NULL);
+                int nw = (int)SysStringLen((const wchar_t*)v->v.pVal);
+                int n = WideCharToMultiByte(0, 0, (const short*)v->v.pVal, nw, NULL, 0, NULL, NULL);
                 if (n > 0) {
-                    src = (char*)malloc((size_t)n);
-                    WideCharToMultiByte(0, 0, (const short*)v->v.pVal, -1, src, n, NULL, NULL);
-                    slen = n - 1;
+                    src = (char*)malloc((size_t)n + 1);
+                    if (src) {
+                        WideCharToMultiByte(0, 0, (const short*)v->v.pVal, nw, src, n, NULL, NULL);
+                        src[n] = 0;
+                        slen = n;
+                    }
                 }
             }
             *(char**)slot = pb_bstr_alloc(src ? src : "", src ? (unsigned int)slen : 0);
@@ -14547,7 +14704,12 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
     pb_com_init();
     if (mname && mname[0]) {
         wchar_t* pname = wname; /* rgszNames is wchar_t*[] — a pointer array */
-        MultiByteToWideChar(0, 0, mname, -1, (short*)wname, 512);
+        int mn = pb_str_len(mname);
+        int got;
+        if (mn > 511) mn = 511;
+        got = MultiByteToWideChar(0, 0, mname, mn, (short*)wname, 511);
+        if (got < 0) got = 0;
+        wname[got] = 0;
         hr = d->lpVtbl->GetIDsOfNames(d, &PB_IID_NULL, &pname, 1,
                                       0x400 /*LOCALE_USER_DEFAULT*/, &dispid);
         if (hr != 0) {
@@ -14570,12 +14732,12 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
                 case 0: v->v.lVal = *(long*)pargs[i]; break;
                 case 1: v->v.dblVal = *(double*)pargs[i]; break;
                 case 2: { /* ANSI PB string (literal-constant pointer or BSTR) -> UTF-16 COM BSTR.
-                           * Fork string slots may point at interned C-string constants (no
-                           * BSTR length prefix) or at real BSTRs; read length via strlen so
-                           * constants cannot make us read before the string (A/V risk).
-                           * NUL-containing BSTRs passed to COM are a recorded limitation. */
+                           * Both literal constants and alloc'd strings carry the
+                           * BSTR-style 4-byte length prefix (llvm_ir's
+                           * add_string_constant), so pb_str_len preserves
+                           * embedded NULs instead of strlen truncating them. */
                     const char* s = *(const char**)pargs[i];
-                    unsigned int blen = s ? (unsigned int)strlen(s) : 0;
+                    unsigned int blen = s ? (unsigned int)pb_str_len(s) : 0;
                     int n = s ? MultiByteToWideChar(0, 0, s, (int)blen, NULL, 0) : 0;
                     wchar_t* wb = n > 0 ? (wchar_t*)SysAllocStringLen(NULL, n) : NULL;
                     if (wb && s && n > 0) {
@@ -15167,7 +15329,7 @@ __declspec(dllimport) int __stdcall EnumPrintersW(unsigned long Flags, const cha
 char* pb_bits_str(const char* director, const char* s) {
     (void)director; /* STRING / WSTRING � this build is ANSI-only */
     if (!s) return pb_bstr_alloc("", 0);
-    return pb_bstr_alloc(s, (int)strlen(s));
+    return pb_bstr_alloc(s, (int)pb_str_len(s));
 }
 char* pb_pathname(const char* director, const char* spec) {
     if (!spec) spec = "";
@@ -16124,7 +16286,7 @@ static void pb_gr_echo_char(char c) {
     char buf[2];
     buf[0] = c;
     buf[1] = '\0';
-    pb_graphic_print_str(buf);
+    pb_graphic_print_len(buf, 1);
 }
 
 /* Blocking, like the statement it backs.  ENTER ends the line, backspace
@@ -17076,6 +17238,27 @@ void pb_control_get_text(void* hctrl, char* out, int outlen) {
     }
 }
 
+/* BSTR-returning CONTROL GET TEXT: allocate by the actual text length so a
+   long caption cannot be dropped by a fixed 256-byte stack buffer. */
+char* pb_control_get_text_bstr(void* hctrl) {
+    int n;
+    char* tmp;
+    char* out;
+    if (!hctrl) return pb_bstr_alloc("", 0);
+    n = GetWindowTextLengthA(hctrl);
+    if (n < 0) n = 0;
+    tmp = (char*)malloc((size_t)n + 1);
+    if (!tmp) return pb_bstr_alloc("", 0);
+    GetWindowTextA(hctrl, tmp, n + 1);
+    out = pb_bstr_alloc(tmp, (unsigned int)n);
+    free(tmp);
+    return out;
+}
+
+char* pb_control_get_text_by_id_bstr(void* hDlg, long id) {
+    return pb_control_get_text_bstr(GetDlgItem(hDlg, id));
+}
+
 void pb_control_set_text(void* hctrl, const char* text) {
     SetWindowTextA(hctrl, text);
 }
@@ -17671,6 +17854,10 @@ void pb_dialog_doevents(void) {
 /* DIALOG GET TEXT hDlg TO var$ */
 void pb_dialog_get_text(void* hDlg, char* buf, long bufsize) {
     GetWindowTextA(hDlg, buf, (int)bufsize);
+}
+
+char* pb_dialog_get_text_bstr(void* hDlg) {
+    return pb_control_get_text_bstr(hDlg);
 }
 
 /* CONTROL KILL hCtrl - destroy a control */
@@ -18921,6 +19108,7 @@ long long pb_scrollbar_set_pos(void* hDlg, long id, int pos) {
 #define PB_CB_GETCOUNT         0x0146
 #define PB_CB_GETCURSEL        0x0147
 #define PB_CB_GETLBTEXT        0x0148
+#define PB_CB_GETLBTEXTLEN     0x0149
 #define PB_CB_INSERTSTRING     0x014A
 #define PB_CB_RESETCONTENT     0x014B
 #define PB_CB_FINDSTRING       0x014C
@@ -18938,6 +19126,7 @@ long long pb_scrollbar_set_pos(void* hDlg, long id, int pos) {
 #define PB_LB_GETSEL           0x0187
 #define PB_LB_GETCURSEL        0x0188
 #define PB_LB_GETTEXT          0x0189
+#define PB_LB_GETTEXTLEN       0x018A
 #define PB_LB_GETCOUNT         0x018B
 #define PB_LB_FINDSTRING       0x018F
 #define PB_LB_GETSELCOUNT      0x0190
@@ -19082,6 +19271,35 @@ void pb_cblb_get_text(void* hDlg, long id, int item, char* out, int outlen, int 
         idx += 1;
     }
     SendMessageA(h, m, (unsigned int)(idx - 1), (pb_lparam_t)out);
+}
+
+/* BSTR-returning COMBOBOX/LISTBOX GET TEXT.  The old fixed 256-byte caller
+   buffer was a stack overflow risk: CB_GETLBTEXT/LB_GETTEXT copy the whole
+   item without knowing the caller's capacity. */
+char* pb_cblb_get_text_bstr(void* hDlg, long id, int item, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long idx = item;
+    long long n;
+    unsigned int lenmsg = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETTEXTLEN : PB_CB_GETLBTEXTLEN);
+    unsigned int m = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETTEXT : PB_CB_GETLBTEXT);
+    unsigned int cur = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETCURSEL : PB_CB_GETCURSEL);
+    char* tmp;
+    char* out;
+    if (!h) return pb_bstr_alloc("", 0);
+    if (idx <= 0) {
+        idx = (long long)(intptr_t)SendMessageA(h, cur, 0, 0);
+        if (idx < 0) return pb_bstr_alloc("", 0);
+        idx += 1;
+    }
+    n = (long long)(intptr_t)SendMessageA(h, lenmsg, (unsigned int)(idx - 1), 0);
+    if (n < 0) return pb_bstr_alloc("", 0);
+    tmp = (char*)malloc((size_t)n + 1);
+    if (!tmp) return pb_bstr_alloc("", 0);
+    tmp[0] = 0;
+    SendMessageA(h, m, (unsigned int)(idx - 1), (pb_lparam_t)tmp);
+    out = pb_bstr_alloc(tmp, (unsigned int)n);
+    free(tmp);
+    return out;
 }
 
 long long pb_cblb_get_user(void* hDlg, long id, int item, int kind) {
@@ -19449,20 +19667,37 @@ long long pb_tab_get_text(void* hDlg, long id, int page, char* out, int outlen) 
     return 1;
 }
 
+/* ---- TAB GET TEXT as BSTR: grow until the control stops truncating ---- */
+char* pb_tab_get_text_bstr(void* hDlg, long id, int page) {
+    void* h = pb_tab_hwnd(hDlg, id);
+    pb_tcitema_t it;
+    int cap = 256;
+    char* tmp = NULL;
+    char* out = NULL;
+    if (!h || page < 1) return pb_bstr_alloc("", 0);
+    for (;;) {
+        tmp = (char*)malloc((size_t)cap);
+        if (!tmp) return pb_bstr_alloc("", 0);
+        tmp[0] = 0;
+        memset(&it, 0, sizeof(it));
+        it.mask = PB_TCIF_TEXT;
+        it.pszText = tmp;
+        it.cchTextMax = cap;
+        SendMessageA(h, PB_TCM_GETITEMA, (unsigned int)(page - 1),
+                     (pb_lparam_t)(size_t)&it);
+        if (strlen(tmp) < (size_t)(cap - 1) || cap >= 65536) break;
+        free(tmp);
+        tmp = NULL;
+        cap *= 2;
+    }
+    out = pb_bstr_alloc(tmp, (unsigned int)strlen(tmp));
+    free(tmp);
+    return out;
+}
+
 /* ---- TAB$(TEXT, hDlg, ID&, PageNum&) — official function form ---------- */
 void* pb_tab_get_text_str(void* hDlg, long id, int page) {
-    void* h = pb_tab_hwnd(hDlg, id);
-    char buf[512];
-    pb_tcitema_t it;
-    if (!h || page < 1) return pb_bstr_alloc("", 0);
-    memset(&it, 0, sizeof(it));
-    it.mask = PB_TCIF_TEXT;
-    it.pszText = buf;
-    it.cchTextMax = 512;
-    buf[0] = 0;
-    SendMessageA(h, PB_TCM_GETITEMA, (unsigned int)(page - 1),
-                 (pb_lparam_t)(size_t)&it);
-    return pb_bstr_alloc(buf, (unsigned int)strlen(buf));
+    return (void*)pb_tab_get_text_bstr(hDlg, id, page);
 }
 
 /* ---------------- TAB INSERT PAGE hDlg, ID&, PageNum&, Image&, Text$
@@ -19660,6 +19895,39 @@ void pb_listview_get_text(void* hDlg, long id, int item, int col,
                  (pb_lparam_t)(size_t)&it);
 }
 
+/* BSTR-returning LISTVIEW GET TEXT: LVM_GETITEMTEXT returns the character
+   count, so grow until the list view stops filling the buffer. */
+char* pb_listview_get_text_bstr(void* hDlg, long id, int item, int col) {
+    PB_LVITEM it;
+    void* h = pb_lv_hwnd(hDlg, id);
+    int cap = 256;
+    char* tmp = NULL;
+    char* out = NULL;
+    if (!h) return pb_bstr_alloc("", 0);
+    for (;;) {
+        long long copied;
+        tmp = (char*)malloc((size_t)cap);
+        if (!tmp) return pb_bstr_alloc("", 0);
+        tmp[0] = 0;
+        memset(&it, 0, sizeof(it));
+        it.mask       = PB_LVIF_TEXT;
+        it.iItem      = pb_lv_idx(item);
+        it.iSubItem   = pb_lv_idx(col);
+        it.pszText    = tmp;
+        it.cchTextMax = cap;
+        copied = (long long)(intptr_t)SendMessageA(
+            h, PB_LVM_GETITEMTEXTA, (unsigned int)pb_lv_idx(item),
+            (pb_lparam_t)(size_t)&it);
+        if (copied < (long long)(cap - 1) || cap >= 65536) break;
+        free(tmp);
+        tmp = NULL;
+        cap *= 2;
+    }
+    out = pb_bstr_alloc(tmp, (unsigned int)strlen(tmp));
+    free(tmp);
+    return out;
+}
+
 /* ---------------- LISTVIEW SET TEXT ---------------- */
 void pb_listview_set_text(void* hDlg, long id, int item, int col,
                           const char* text) {
@@ -19778,6 +20046,38 @@ void pb_listview_get_header(void* hDlg, long id, int col, char* out,
     c.cchTextMax = outlen;
     SendMessageA(h, PB_LVM_GETCOLUMNA, (unsigned int)pb_lv_idx(col),
                  (pb_lparam_t)(size_t)&c);
+}
+
+/* Dynamic-BSTR variant of LISTVIEW GET HEADER: grow the column-text buffer
+   until the header fits, so a long caption is never silently truncated. */
+char* pb_listview_get_header_bstr(void* hDlg, long id, int col) {
+    PB_LVCOLUMN c;
+    void* h = pb_lv_hwnd(hDlg, id);
+    if (!h) return pb_bstr_alloc("", 0);
+    int cap = 256;
+    char* out = (char*)malloc((size_t)cap);
+    if (!out) return pb_bstr_alloc("", 0);
+    out[0] = 0;
+    while (cap <= 65536) {
+        memset(&c, 0, sizeof(c));
+        c.mask       = PB_LVCF_TEXT;
+        c.pszText    = out;
+        c.cchTextMax = cap;
+        SendMessageA(h, PB_LVM_GETCOLUMNA, (unsigned int)pb_lv_idx(col),
+                     (pb_lparam_t)(size_t)&c);
+        if (strlen(out) < (size_t)(cap - 1)) break;
+        if (cap == 65536) break;
+        int ncap = cap * 2;
+        char* nb = (char*)realloc(out, (size_t)ncap);
+        if (!nb) break;
+        out = nb;
+        cap = ncap;
+    }
+    {
+        char* b = pb_bstr_alloc(out, (unsigned int)strlen(out));
+        free(out);
+        return b;
+    }
 }
 
 /* ---------------- LISTVIEW SET HEADER ---------------- */
@@ -20214,6 +20514,35 @@ void pb_treeview_get_text(void* hDlg, long id, void* hItem,
     it.pszText    = out;
     it.cchTextMax = outlen;
     SendMessageA(h, PB_TVM_GETITEMA, 0, (pb_lparam_t)&it);
+}
+
+/* BSTR-returning TREEVIEW GET TEXT: TVM_GETITEM has no length query, so
+   grow until the returned string no longer fills the buffer. */
+char* pb_treeview_get_text_bstr(void* hDlg, long id, void* hItem) {
+    PB_TVITEM it;
+    void* h = GetDlgItem(hDlg, (int)id);
+    int cap = 256;
+    char* tmp = NULL;
+    char* out = NULL;
+    if (!h) return pb_bstr_alloc("", 0);
+    for (;;) {
+        tmp = (char*)malloc((size_t)cap);
+        if (!tmp) return pb_bstr_alloc("", 0);
+        tmp[0] = 0;
+        memset(&it, 0, sizeof(it));
+        it.mask       = PB_TVIF_TEXT;
+        it.hItem      = hItem;
+        it.pszText    = tmp;
+        it.cchTextMax = cap;
+        SendMessageA(h, PB_TVM_GETITEMA, 0, (pb_lparam_t)&it);
+        if (strlen(tmp) < (size_t)(cap - 1) || cap >= 65536) break;
+        free(tmp);
+        tmp = NULL;
+        cap *= 2;
+    }
+    out = pb_bstr_alloc(tmp, (unsigned int)strlen(tmp));
+    free(tmp);
+    return out;
 }
 
 /* ---------------- TREEVIEW DELETE ---------------- */

@@ -45,6 +45,9 @@ pub struct Interpreter {
     static_vars: HashMap<(String, String), Value>,
     /// Static array storage: (sub_name, array_name) -> ArrayDesc
     static_arrays: HashMap<(String, String), ArrayDesc>,
+    /// A bare `END` statement terminated the program; the interpreter is a
+    /// secondary path, but it must not keep executing after END.
+    halted: bool,
 }
 
 impl Default for Interpreter {
@@ -65,6 +68,7 @@ impl Interpreter {
             error_trap: None,
             static_vars: HashMap::new(),
             static_arrays: HashMap::new(),
+            halted: false,
         }
     }
 
@@ -122,11 +126,14 @@ impl Interpreter {
         // Look for PBMAIN function
         if let Some(pbmain) = self.functions.get("PBMAIN").cloned() {
             let result = self.call_function(&pbmain, &[])?;
-            return Ok(result.to_i32());
+            return Ok(if self.halted { 0 } else { result.to_i32() });
         }
 
         // No PBMAIN — execute top-level statements
         for item in &program.items {
+            if self.halted {
+                break;
+            }
             if let TopLevel::Statement(stmt) = item {
                 if let Flow::ExitFunction | Flow::ExitSub = self.exec_statement(stmt)? {
                     break;
@@ -344,6 +351,9 @@ impl Interpreter {
 
         let mut i = 0;
         while i < stmts.len() {
+            if self.halted {
+                return Ok(Flow::ExitFunction);
+            }
             let result = self.exec_statement(&stmts[i]);
 
             match result {
@@ -499,6 +509,10 @@ impl Interpreter {
             }
             Statement::ExitSub => Ok(Flow::ExitSub),
             Statement::ExitFunction => Ok(Flow::ExitFunction),
+            Statement::End => {
+                self.halted = true;
+                Ok(Flow::ExitFunction)
+            }
             Statement::ExitFor => Ok(Flow::ExitFor),
             Statement::ExitDo => Ok(Flow::ExitDo),
             Statement::ExitSelect => Ok(Flow::ExitSelect),
