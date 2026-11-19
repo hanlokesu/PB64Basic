@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 392 (v0.2.180). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 393 (v0.2.181). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 393 (v0.2.181) - Android runtime compatibility closure: native console input for `WAITKEY$`/`INKEY$`, console-page routing for `CON.STDERR`, file and directory wrappers with backslash/drive-path normalization, a cooperative thread suspend/resume layer, Winsock-compatible TCP/UDP loopback, a process-local clipboard/global-memory layer, real `DATE$`/`TIME$`/`TIMER`, `FRE`, process/thread priorities, and one file-number namespace shared by files and sockets (TCP `ACCEPT` now allocates through `pb_freefile()`). `batch393_test.bas` passes on x86_64 and i686. The PB/CC-specific console subset is 381 rows: 379 Implemented and 2 Established (`INTERFACE / END INTERFACE (DIRECT)` and `INTERFACE/END INTERFACE (IDBIND)`), with 0 Not implemented; there is no PB/CC compiler on this host, so those rows are verified by source/CHW review and by the Windows console regressions, not by a PB/CC differential run. Android boundaries remain explicit: GUI/COM/GDI/menus/printers/serial ports, `TCP NOTIFY` message dispatch, native modal `MSGBOX`, and audio output are not implemented, and the ARM64 APK was link-verified but not run on ARM64 hardware.
 > batch 392 (v0.2.180) - ported the still-applicable WinAPI structure-layout work from the old `pbsrc` tree onto `pbsrc_b378`: `WSTRINGZ * %MAX_PATH` inline fixed wide strings, `QUAD`/`QWORD` and `NATIVE` alignment, parenthesized/bitwise constant expressions, `SIZEOF(TYPENAME)` and `FixedWString` sizing, and the fork-only `%PB64_TARGET_64` marker. `batch392_test.bas` passes on x86_64 and i686. The old `setup.ps1` was already byte-identical to b378, and the old `setup.bat` / JK-IDE locator changes were superseded by later b378 commits, so they were not reverted.
 > batch 391 (v0.2.178) - closed the legacy audit: BSTR/C-string boundary in PRINT/COMM/GRAPHIC, REGREPL return type, dynamic control getters, i686 BYTE rotate, embedded-NUL round-trips, STRING/ASCIIZ file-input padding, END, TCP LINE INPUT and COM GETCOM; batch391_test and the full headless suite pass on both targets.
 > batch 390 (v0.2.177) - fixed the JK-IDE help installer on CRLF configuration files: `Set-IniValue` now finds a section header without swallowing the carriage return, so `Pb64HelpFile` is written and `setup.bat` no longer stops with `section [Compilers] not found`; the installer also normalises mixed line endings.
@@ -1062,8 +1063,53 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
-### v0.2.180 (2026-11-19)
+### v0.2.181 (2026-11-20)
 
+- **Android console input**: `WAITKEY$` and `INKEY$` now consume a native-key
+  queue fed by the Activity; `CON.IN`, `CON.INKEY` and `CON.LINE` share the
+  same input path, and `CON.STDERR` writes to the Android console page, with a
+  stderr fallback when no console handle exists. Verified by the Input, Console
+  API and Stderr probes.
+- **Android files and paths**: file and directory wrappers now cover create,
+  read, write, seek, attributes, timestamps, enumeration and disk statistics.
+  Backslash paths and drive-letter prefixes are normalised to Android paths,
+  `DIR$("*.*")` matches extension-less files as Win32 does, and file handles
+  are protected against aliasing the same inode.
+- **Android threads and networking**: thread creation, join, suspend and
+  resume use 32-bit thread handles and a cooperative suspend gate with
+  best-effort signals. A Winsock-compatible layer provides TCP/UDP loopback,
+  `FIONREAD` and the `WSAStartup` surface; `WSAAsyncSelect` is unsupported
+  for a non-null window handle because the Android runtime has no window
+  message pump, while a zero handle only records the event mask.
+- **Android clipboard, memory and system data**: `GlobalAlloc`/`GlobalFree`/
+  `GlobalLock`/`GlobalUnlock`/`GlobalSize` and a process-local clipboard
+  implement `CLIPBOARD GET/SET/RESET`; `FRE`, `COMMAND$`, `OBJRESULT$`,
+  process/thread priorities and `GetSystemTimeAsFileTime` are backed by
+  Android/POSIX calls. `DATE$`, `TIME$` and `TIMER` return live local time
+  instead of fixed placeholder values.
+- **File-number namespace**: TCP `ACCEPT` obtains its slot through
+  `pb_freefile()`, and `TCP OPEN`/`UDP OPEN` reject a number already owned by
+  a regular file. `batch393_test.bas` checks both directions (a file-owned
+  slot rejects TCP and UDP open with ERR 52; server #1 plus client #2 force
+  accept to #3) and passes on x86_64 and i686 with
+  `batch393 failures= 0`.
+- **PB/CC audit**: the PB/CC-specific console subset contains 381 rows: 379
+  Implemented and 2 Established (`INTERFACE / END INTERFACE (DIRECT)` and
+  `INTERFACE/END INTERFACE (IDBIND)`), with no Not implemented rows. No PB/CC
+  compiler is installed on this host, so this release does not claim a
+  differential PB/CC run; the console paths are covered by the Windows
+  headless suite and by CHW/source review.
+- **Platform boundaries**: GUI, COM, GDI, menus, printers and serial ports,
+  `TCP NOTIFY` message dispatch, a native modal `MSGBOX` and audio output
+  (`BEEP`/`PLAY SOUND`) are not implemented in the Android runtime; `MSGBOX`
+  is a console stub and sound calls return error 68. The ARM64 APK is
+  link-verified and packaged but has not been run on ARM64 hardware.
+- **Compatibility**: the Windows x86_64 and i686 runtime objects were rebuilt
+  from the same `pb_runtime.c`; the headless suite compiled 314 examples and
+  ran 311 with 0 failures, and `--compile-all` compiled 466 examples with
+  0 failures.
+
+### v0.2.180 (2026-11-19)
 - **Android runtime port (experimental)**: `pb_runtime.c` now builds for
   `aarch64-linux-android21` and `x86_64-linux-android21` with the Android NDK,
   while the Windows x86_64/i686 builds keep their existing code paths. The

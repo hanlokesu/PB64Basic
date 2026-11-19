@@ -443,6 +443,39 @@ impl ModuleBuilder {
         }
         writeln!(out, "target triple = \"{}\"", self.target_triple).unwrap();
         writeln!(out).unwrap();
+        /* Arithmetic overflow checks call LLVM intrinsics; LLVM requires an
+        explicit declaration (newer clang rejects implicit intrinsics). */
+        writeln!(
+            out,
+            "declare {{ i32, i1 }} @llvm.sadd.with.overflow.i32(i32, i32)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "declare {{ i32, i1 }} @llvm.ssub.with.overflow.i32(i32, i32)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "declare {{ i32, i1 }} @llvm.smul.with.overflow.i32(i32, i32)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "declare {{ i64, i1 }} @llvm.sadd.with.overflow.i64(i64, i64)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "declare {{ i64, i1 }} @llvm.ssub.with.overflow.i64(i64, i64)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "declare {{ i64, i1 }} @llvm.smul.with.overflow.i64(i64, i64)"
+        )
+        .unwrap();
+        writeln!(out).unwrap();
         out.push_str(&self.globals);
         writeln!(out).unwrap();
         out.push_str(&self.functions);

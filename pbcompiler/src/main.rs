@@ -252,7 +252,14 @@ fn real_main() {
         &include_dirs,
     ) {
         Ok(()) => {
-            eprintln!("[PB64Basic] Success: {}", output);
+            // --emit-llvm stops after writing <base>.ll; do not report the
+            // requested .obj name that was never produced.
+            let produced = if emit_llvm {
+                Path::new(&output).with_extension("ll")
+            } else {
+                Path::new(&output).to_path_buf()
+            };
+            eprintln!("[PB64Basic] Success: {}", produced.display());
         }
         Err(e) => {
             eprintln!("Error: {}", e);

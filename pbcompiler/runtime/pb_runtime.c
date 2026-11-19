@@ -27,6 +27,8 @@
 #include <errno.h>    /* errno -> PB error mapping on OPEN failure */
 #include <stdint.h>   /* uintptr_t for the Windows-compatible declarations */
 
+typedef uint32_t DWORD;  /* Win32 DWORD is 32-bit on every supported target. */
+
 #ifdef _WIN32
 #include <io.h>  /* _locking / _fileno for LOCK/UNLOCK */
 #include <conio.h>  /* _getch for WAITKEY$ */
@@ -49,6 +51,40 @@ __declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const voi
 /* Android/POSIX compatibility shims for the Windows CRT and Win32 names used
    by the portable runtime functions.  Keep these out of the Windows build. */
 #include <unistd.h>
+/* Translate Win32-style backslash separators once, at the CRT-alias boundary. */
+static const char* pb_posix_path(const char* in, char* buf, size_t cap) {
+    size_t i;
+    const char* src;
+    if (!in) return in;
+    src = in;
+    if (src[0] && src[1] == ':') src += 2; /* C:\dir -> /dir */
+    if (!strchr(src, '\\') && src == in) return in;
+    for (i = 0; src[i] && i + 1 < cap; ++i)
+        buf[i] = (src[i] == '\\') ? '/' : src[i];
+    buf[i] = '\0';
+    return buf;
+}
+/* Bionic exposes POSIX names without the CRT underscore aliases that PB
+   codegen emits for MKDIR/RMDIR/CHDIR/ACCESS and _errno. */
+#if defined(__ANDROID__)
+int _mkdir(const char* path) {
+    char buf[4096];
+    return mkdir(pb_posix_path(path, buf, sizeof(buf)), 0777);
+}
+int _rmdir(const char* path) {
+    char buf[4096];
+    return rmdir(pb_posix_path(path, buf, sizeof(buf)));
+}
+int _chdir(const char* path) {
+    char buf[4096];
+    return chdir(pb_posix_path(path, buf, sizeof(buf)));
+}
+int _access(const char* path, int mode) {
+    char buf[4096];
+    return access(pb_posix_path(path, buf, sizeof(buf)), mode);
+}
+int* _errno(void) { return &errno; }
+#endif
 #include <sys/file.h>
 
 #define _stat stat
@@ -96,12 +132,31 @@ static int _putenv(const char* s) {
 
 static FILE* _fsopen(const char* path, const char* mode, int share) {
     (void)share;
+#ifndef _WIN32
+    if (path && (strchr(path, '\\') || (path[0] && path[1] == ':'))) {
+        const char* src = path;
+        char buf[4096];
+        size_t i;
+        if (src[0] && src[1] == ':') src += 2;
+        for (i = 0; src[i] && i + 1 < sizeof(buf); ++i)
+            buf[i] = (src[i] == '\\') ? '/' : src[i];
+        buf[i] = '\0';
+        return fopen(buf, mode);
+    }
+#endif
     return fopen(path, mode);
 }
 
 static int _getdrive(void) { return 1; } /* Android has no drive letters. */
+#if defined(__ANDROID__)
+int pb_android_kbhit(void);
+int pb_android_getch(void);
+static int _kbhit(void) { return pb_android_kbhit(); }
+static int _getch(void) { return pb_android_getch(); }
+#else
 static int _kbhit(void) { return 0; }
 static int _getch(void) { return -1; }
+#endif
 
 static int _locking(int fd, int mode, long nbytes) {
     (void)nbytes;
@@ -313,13 +368,13 @@ typedef struct {
 } PB_CONSOLE_SCREEN_BUFFER_INFO;
 __declspec(dllimport) int __stdcall GetConsoleScreenBufferInfo(void* hConsoleOutput, PB_CONSOLE_SCREEN_BUFFER_INFO* lpConsoleScreenBufferInfo);
 __declspec(dllimport) int __stdcall SetConsoleCursorPosition(void* hConsoleOutput, PB_COORD dwCursorPosition);
-__declspec(dllimport) int __stdcall FillConsoleOutputCharacterA(void* hConsoleOutput, char cCharacter, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfCharsWritten);
-__declspec(dllimport) int __stdcall FillConsoleOutputAttribute(void* hConsoleOutput, unsigned short wAttribute, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfAttrsWritten);
-__declspec(dllimport) int __stdcall GetConsoleMode(void* hConsoleHandle, unsigned long* lpMode);
-__declspec(dllimport) int __stdcall SetConsoleMode(void* hConsoleHandle, unsigned long dwMode);
+__declspec(dllimport) int __stdcall FillConsoleOutputCharacterA(void* hConsoleOutput, char cCharacter, unsigned long nLength, PB_COORD dwWriteCoord, DWORD* lpNumberOfCharsWritten);
+__declspec(dllimport) int __stdcall FillConsoleOutputAttribute(void* hConsoleOutput, unsigned short wAttribute, unsigned long nLength, PB_COORD dwWriteCoord, DWORD* lpNumberOfAttrsWritten);
+__declspec(dllimport) int __stdcall GetConsoleMode(void* hConsoleHandle, DWORD* lpMode);
+__declspec(dllimport) int __stdcall SetConsoleMode(void* hConsoleHandle, DWORD dwMode);
 /* PB/CC console pseudo-object family (batch 376): screen buffers, window
    geometry, cell reads/writes, input records and cursor shape. */
-typedef struct { unsigned long dwSize; int bVisible; } PB_CONSOLE_CURSOR_INFO;
+typedef struct { DWORD dwSize; int bVisible; } PB_CONSOLE_CURSOR_INFO;
 typedef struct { unsigned short Char; unsigned short Attributes; } PB_CHAR_INFO;
 typedef struct {
     int bKeyDown;
@@ -327,13 +382,13 @@ typedef struct {
     unsigned short wVirtualKeyCode;
     unsigned short wVirtualScanCode;
     union { char AsciiChar; short UnicodeChar; } uChar;
-    unsigned long dwControlKeyState;
+    DWORD dwControlKeyState;
 } PB_KEY_EVENT_RECORD;
 typedef struct {
     PB_COORD dwMousePosition;
-    unsigned long dwButtonState;
-    unsigned long dwControlKeyState;
-    unsigned long dwEventFlags;
+    DWORD dwButtonState;
+    DWORD dwControlKeyState;
+    DWORD dwEventFlags;
 } PB_MOUSE_EVENT_RECORD;
 typedef struct {
     unsigned short EventType;
@@ -351,10 +406,10 @@ __declspec(dllimport) int __stdcall SetConsoleActiveScreenBuffer(void* hConsoleO
 __declspec(dllimport) int __stdcall SetConsoleScreenBufferSize(void* hConsoleOutput, PB_COORD dwSize);
 __declspec(dllimport) int __stdcall SetConsoleWindowInfo(void* hConsoleOutput, int bAbsolute, const PB_SMALL_RECT* lpConsoleWindow);
 __declspec(dllimport) PB_COORD __stdcall GetLargestConsoleWindowSize(void* hConsoleOutput);
-__declspec(dllimport) int __stdcall ReadConsoleOutputCharacterA(void* hConsoleOutput, char* lpCharacter, unsigned long nLength, PB_COORD dwReadCoord, unsigned long* lpNumberOfCharsRead);
-__declspec(dllimport) int __stdcall WriteConsoleOutputCharacterA(void* hConsoleOutput, const char* lpCharacter, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfCharsWritten);
-__declspec(dllimport) int __stdcall ReadConsoleOutputAttribute(void* hConsoleOutput, unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwReadCoord, unsigned long* lpNumberOfAttrsRead);
-__declspec(dllimport) int __stdcall WriteConsoleOutputAttribute(void* hConsoleOutput, const unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwWriteCoord, unsigned long* lpNumberOfAttrsWritten);
+__declspec(dllimport) int __stdcall ReadConsoleOutputCharacterA(void* hConsoleOutput, char* lpCharacter, unsigned long nLength, PB_COORD dwReadCoord, DWORD* lpNumberOfCharsRead);
+__declspec(dllimport) int __stdcall WriteConsoleOutputCharacterA(void* hConsoleOutput, const char* lpCharacter, unsigned long nLength, PB_COORD dwWriteCoord, DWORD* lpNumberOfCharsWritten);
+__declspec(dllimport) int __stdcall ReadConsoleOutputAttribute(void* hConsoleOutput, unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwReadCoord, DWORD* lpNumberOfAttrsRead);
+__declspec(dllimport) int __stdcall WriteConsoleOutputAttribute(void* hConsoleOutput, const unsigned short* lpAttribute, unsigned long nLength, PB_COORD dwWriteCoord, DWORD* lpNumberOfAttrsWritten);
 __declspec(dllimport) int __stdcall ScrollConsoleScreenBufferA(void* hConsoleOutput, const PB_SMALL_RECT* lpScrollRectangle, const PB_SMALL_RECT* lpClipRectangle, PB_COORD dwDestinationOrigin, const PB_CHAR_INFO* lpFill);
 __declspec(dllimport) int __stdcall GetConsoleCursorInfo(void* hConsoleOutput, PB_CONSOLE_CURSOR_INFO* lpConsoleCursorInfo);
 __declspec(dllimport) int __stdcall SetConsoleCursorInfo(void* hConsoleOutput, const PB_CONSOLE_CURSOR_INFO* lpConsoleCursorInfo);
@@ -362,9 +417,9 @@ __declspec(dllimport) void* __stdcall GetConsoleWindow(void);
 typedef struct { int left; int top; int right; int bottom; } pb_rect_t;
 __declspec(dllimport) int __stdcall GetWindowRect(void* hWnd, pb_rect_t* lpRect);
 __declspec(dllimport) int __stdcall GetClientRect(void* hWnd, void* lpRect);
-typedef struct { unsigned long nFont; PB_COORD dwFontSize; } PB_CONSOLE_FONT_INFO;
+typedef struct { DWORD nFont; PB_COORD dwFontSize; } PB_CONSOLE_FONT_INFO;
 __declspec(dllimport) int __stdcall GetCurrentConsoleFont(void* hConsoleOutput, int bMaximumWindow, PB_CONSOLE_FONT_INFO* lpConsoleCurrentFont);
-typedef struct { long x; long y; } PB_SCREEN_POINT;
+typedef struct { int x; int y; } PB_SCREEN_POINT;
 __declspec(dllimport) int __stdcall ClientToScreen(void* hWnd, void* lpPoint);
 __declspec(dllimport) int __stdcall SetWindowPos(void* hWnd, void* hWndInsertAfter, int X, int Y, int cx, int cy, unsigned int uFlags);
 __declspec(dllimport) int __stdcall SetForegroundWindow(void* hWnd);
@@ -372,12 +427,12 @@ __declspec(dllimport) int __stdcall ShowWindow(void* hWnd, int nCmdShow);
 __declspec(dllimport) int __stdcall AllocConsole(void);
 __declspec(dllimport) int __stdcall FreeConsole(void);
 __declspec(dllimport) unsigned long __stdcall GetFileType(void* hFile);
-__declspec(dllimport) int __stdcall ReadConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, unsigned long* lpNumberOfEventsRead);
-__declspec(dllimport) int __stdcall PeekConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, unsigned long* lpNumberOfEventsRead);
-__declspec(dllimport) int __stdcall GetNumberOfConsoleInputEvents(void* hConsoleInput, unsigned long* lpNumberOfEvents);
+__declspec(dllimport) int __stdcall ReadConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, DWORD* lpNumberOfEventsRead);
+__declspec(dllimport) int __stdcall PeekConsoleInputA(void* hConsoleInput, PB_INPUT_RECORD* lpBuffer, unsigned long nLength, DWORD* lpNumberOfEventsRead);
+__declspec(dllimport) int __stdcall GetNumberOfConsoleInputEvents(void* hConsoleInput, DWORD* lpNumberOfEvents);
 __declspec(dllimport) int __stdcall FlushConsoleInputBuffer(void* hConsoleInput);
-__declspec(dllimport) int __stdcall WriteConsoleA(void* hConsoleOutput, const void* lpBuffer, unsigned long nNumberOfCharsToWrite, unsigned long* lpNumberOfCharsWritten, void* lpReserved);
-__declspec(dllimport) int __stdcall ReadConsoleA(void* hConsoleInput, void* lpBuffer, unsigned long nNumberOfCharsToRead, unsigned long* lpNumberOfCharsRead, void* pInputControl);
+__declspec(dllimport) int __stdcall WriteConsoleA(void* hConsoleOutput, const void* lpBuffer, unsigned long nNumberOfCharsToWrite, DWORD* lpNumberOfCharsWritten, void* lpReserved);
+__declspec(dllimport) int __stdcall ReadConsoleA(void* hConsoleInput, void* lpBuffer, unsigned long nNumberOfCharsToRead, DWORD* lpNumberOfCharsRead, void* pInputControl);
 __declspec(dllimport) int __stdcall GetSystemMetrics(int nIndex);
 
 __declspec(dllimport) void* __stdcall CreateMenu(void);
@@ -500,7 +555,6 @@ __declspec(dllimport) int __stdcall gethostname(char* name, int namelen);
 #endif
 __declspec(dllimport) int __stdcall WSAStartup(unsigned short wVersionRequested, void* lpWSAData);
 __declspec(dllimport) int __stdcall WSACleanup(void);
-typedef unsigned long DWORD;
 /* COMM serial + THREAD (batch 21) */
 typedef void* HANDLE;
 #define PB_INVALID_HANDLE ((void*)(long long)-1)
@@ -508,8 +562,8 @@ __declspec(dllimport) void* __stdcall CreateFileA(const char* lpFileName, unsign
 __declspec(dllimport) int __stdcall GetCommState(void* hFile, void* lpDCB);
 __declspec(dllimport) int __stdcall SetCommState(void* hFile, void* lpDCB);
 __declspec(dllimport) int __stdcall SetCommTimeouts(void* hFile, void* lpCommTimeouts);
-__declspec(dllimport) int __stdcall ReadFile(void* hFile, void* lpBuffer, unsigned long nNumberOfBytesToRead, unsigned long* lpNumberOfBytesRead, void* lpOverlapped);
-__declspec(dllimport) int __stdcall WriteFile(void* hFile, const void* lpBuffer, unsigned long nNumberOfBytesToWrite, unsigned long* lpNumberOfBytesWritten, void* lpOverlapped);
+__declspec(dllimport) int __stdcall ReadFile(void* hFile, void* lpBuffer, unsigned long nNumberOfBytesToRead, DWORD* lpNumberOfBytesRead, void* lpOverlapped);
+__declspec(dllimport) int __stdcall WriteFile(void* hFile, const void* lpBuffer, unsigned long nNumberOfBytesToWrite, DWORD* lpNumberOfBytesWritten, void* lpOverlapped);
 __declspec(dllimport) int __stdcall CloseHandle(void* hObject);
 __declspec(dllimport) int __stdcall FlushFileBuffers(void* hFile);
 __declspec(dllimport) int __stdcall EscapeCommFunction(void* hFile, unsigned long dwFunc);
@@ -517,14 +571,14 @@ __declspec(dllimport) int __stdcall GetCommModemStatus(void* hFile, unsigned lon
 __declspec(dllimport) int __stdcall ClearCommError(void* hFile, unsigned long* lpErrors, void* lpStat);
 __declspec(dllimport) int __stdcall GetCommProperties(void* hFile, void* lpCommProp);
 __declspec(dllimport) int __stdcall SetupComm(void* hFile, unsigned long dwInQueue, unsigned long dwOutQueue);
-__declspec(dllimport) void* __stdcall CreateThread(void* lpThreadAttributes, unsigned long dwStackSize, void* lpStartAddress, void* lpParameter, unsigned long dwCreationFlags, unsigned long* lpThreadId);
+__declspec(dllimport) void* __stdcall CreateThread(void* lpThreadAttributes, unsigned long dwStackSize, void* lpStartAddress, void* lpParameter, unsigned long dwCreationFlags, DWORD* lpThreadId);
 __declspec(dllimport) unsigned long __stdcall SuspendThread(void* hThread);
 __declspec(dllimport) unsigned long __stdcall ResumeThread(void* hThread);
 __declspec(dllimport) int __stdcall TerminateThread(void* hThread, unsigned long dwExitCode);
-__declspec(dllimport) int __stdcall GetExitCodeThread(void* hThread, unsigned long* lpExitCode);
+__declspec(dllimport) int __stdcall GetExitCodeThread(void* hThread, DWORD* lpExitCode);
 __declspec(dllimport) int __stdcall GetThreadPriority(void* hThread);
 __declspec(dllimport) int __stdcall SetThreadPriority(void* hThread, int nPriority);
-typedef struct _pb_filetime { unsigned long lo; unsigned long hi; } pb_filetime;
+typedef struct _pb_filetime { DWORD lo; DWORD hi; } pb_filetime;
 __declspec(dllimport) int __stdcall GetThreadTimes(void* hThread, pb_filetime* creation,
     pb_filetime* exit_time, pb_filetime* kernel, pb_filetime* user);
 __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(pb_filetime* ft);
@@ -651,7 +705,15 @@ char* pb_bstr_alloc(const char* src, unsigned int len) {
 #ifdef _WIN32
     return SysAllocStringByteLen(src, len);
 #else
-    char* buf = (char*)malloc(len + 1);
+    /* Mirror the Win32 BSTR layout: a 4-byte byte-length header immediately
+       before the character data.  pb_str_len() reads that header on every
+       platform, so a plain malloc buffer would make dynamic strings read
+       garbage (empty PRINT, wrong LEN, broken concatenation). */
+    unsigned int* hdr = (unsigned int*)malloc(sizeof(unsigned int) + len + 1);
+    char* buf;
+    if (!hdr) return NULL;
+    hdr[0] = len;
+    buf = (char*)(hdr + 1);
     if (src) memcpy(buf, src, len);
     buf[len] = '\0';
     return buf;
@@ -1858,16 +1920,24 @@ static void pb_root_of(char* root, char* path) {
     root[1] = ':'; root[2] = '\\'; root[3] = 0;
 }
 long long pb_diskfree(char* path) {
+#ifdef _WIN32
     char root[5];
-    unsigned long long freeb = 0, total = 0, totfree = 0;
     pb_root_of(root, path);
+#else
+    char* root = (path && path[0]) ? path : (char*)".";
+#endif
+    unsigned long long freeb = 0, total = 0, totfree = 0;
     if (!GetDiskFreeSpaceExA(root, &freeb, &total, &totfree)) return -1;
     return (long long)freeb;
 }
 long long pb_disksize(char* path) {
+#ifdef _WIN32
     char root[5];
-    unsigned long long freeb = 0, total = 0, totfree = 0;
     pb_root_of(root, path);
+#else
+    char* root = (path && path[0]) ? path : (char*)".";
+#endif
+    unsigned long long freeb = 0, total = 0, totfree = 0;
     if (!GetDiskFreeSpaceExA(root, &freeb, &total, &totfree)) return -1;
     return (long long)total;
 }
@@ -2494,7 +2564,7 @@ void pb_bstr_free(char* bstr) {
 #ifdef _WIN32
     SysFreeString(bstr);
 #else
-    free(bstr);
+    if (bstr) free((unsigned int*)bstr - 1);
 #endif
 }
 
@@ -4773,7 +4843,7 @@ static void* pb_console_base_handle(void) {
     pb_console_tried = 1;
 
     void* h = GetStdHandle((unsigned int)-11); /* STD_OUTPUT_HANDLE */
-    unsigned long mode = 0;
+    DWORD mode = 0;
     if (h && h != (void*)-1 && GetConsoleMode(h, &mode)) {
         pb_console_cached = h;
         return pb_console_cached;
@@ -4885,7 +4955,7 @@ void pb_cls(void) {
     PB_COORD home;
     home.X = 0;
     home.Y = 0;
-    unsigned long written = 0;
+    DWORD written = 0;
     FillConsoleOutputCharacterA(h, ' ', cells, home, &written);
     FillConsoleOutputAttribute(h, info.wAttributes, cells, home, &written);
     SetConsoleCursorPosition(h, home);
@@ -4961,12 +5031,12 @@ static void pb_print_write(const char* s, unsigned long len) {
             pb_con_scroll(2, pos.Y - ht + 1, 1, 1, w, ht);
             pos.Y = ht - 1;
         }
-        unsigned long written = 0;
+        DWORD written = 0;
         WriteConsoleOutputCharacterA(h, &s[i], 1, pos, &written);
         /* CON.PRINT must also apply the current colour attribute; writing
            characters alone leaves whatever attribute the cell already had. */
         unsigned short attr = info.wAttributes;
-        unsigned long awritten = 0;
+        DWORD awritten = 0;
         WriteConsoleOutputAttribute(h, &attr, 1, pos, &awritten);
         pos.X++;
     }
@@ -5229,7 +5299,7 @@ void pb_con_pcopy(int src, int dst) {
         PB_COORD pos;
         pos.X = 0;
         pos.Y = (short)y;
-        unsigned long got = 0;
+        DWORD got = 0;
         if (ReadConsoleOutputCharacterA(sh, cbuf, (unsigned long)cols, pos, &got)
             && got == (unsigned long)cols) {
             WriteConsoleOutputCharacterA(dh, cbuf, (unsigned long)cols, pos, &got);
@@ -5272,7 +5342,7 @@ void pb_con_scroll(int dir, int lines, int row1, int col1, int row2, int col2) {
         PB_COORD fpos;
         fpos.X = rect.Left;
         fpos.Y = rect.Top;
-        unsigned long written = 0;
+        DWORD written = 0;
         FillConsoleOutputCharacterA(h, ' ', (unsigned long)rw * (unsigned long)rh,
                                     fpos, &written);
         FillConsoleOutputAttribute(h, info.wAttributes,
@@ -5295,7 +5365,7 @@ void pb_con_scroll(int dir, int lines, int row1, int col1, int row2, int col2) {
         PB_COORD pos;
         pos.X = rect.Left;
         pos.Y = (short)(rect.Top + y);
-        unsigned long got = 0;
+        DWORD got = 0;
         if (!ReadConsoleOutputCharacterA(h, cbuf + (size_t)y * rw,
                                          (unsigned long)rw, pos, &got)
             || got != (unsigned long)rw) ok = 0;
@@ -5326,7 +5396,7 @@ void pb_con_scroll(int dir, int lines, int row1, int col1, int row2, int col2) {
             PB_COORD pos;
             pos.X = rect.Left;
             pos.Y = (short)(rect.Top + y);
-            unsigned long got = 0;
+            DWORD got = 0;
             if (!WriteConsoleOutputCharacterA(h, dbuf + (size_t)y * rw,
                                               (unsigned long)rw, pos, &got)
                 || got != (unsigned long)rw) ok = 0;
@@ -5583,7 +5653,7 @@ int pb_con_screen_attr(int row, int col) {
     pos.X = (short)(col - 1);
     pos.Y = (short)(row - 1);
     unsigned short attr = info.wAttributes;
-    unsigned long got = 0;
+    DWORD got = 0;
     if (!ReadConsoleOutputAttribute(h, &attr, 1, pos, &got) || got != 1) return 0;
     return (int)attr;
 }
@@ -5602,7 +5672,7 @@ int pb_con_screen_char(int row, int col) {
     pos.X = (short)(col - 1);
     pos.Y = (short)(row - 1);
     char c = 0;
-    unsigned long got = 0;
+    DWORD got = 0;
     if (!ReadConsoleOutputCharacterA(h, &c, 1, pos, &got) || got != 1) return 0;
     return (unsigned char)c;
 }
@@ -5686,7 +5756,7 @@ static void* pb_con_input_handle(void) {
     if (pb_con_kbd_tried) return pb_con_kbd_cached;
     pb_con_kbd_tried = 1;
     void* h = GetStdHandle((unsigned int)-10); /* STD_INPUT_HANDLE */
-    unsigned long mode = 0;
+    DWORD mode = 0;
     if (h && h != (void*)-1 && GetConsoleMode(h, &mode)) {
         pb_con_kbd_cached = h;
         return pb_con_kbd_cached;
@@ -5773,7 +5843,7 @@ static char* pb_con_bstr_from_chars(const char* s, unsigned int n) {
 char* pb_con_inkey(void) {
     void* h = pb_con_input_handle();
     if (!h) return pb_bstr_alloc("", 0);
-    unsigned long count = 0;
+    DWORD count = 0;
     if (!GetNumberOfConsoleInputEvents(h, &count) || count == 0) {
         /* Redirected stdin: fall back to the CRT keyboard buffer. */
         if (_kbhit()) {
@@ -5784,7 +5854,7 @@ char* pb_con_inkey(void) {
     }
     for (unsigned long i = 0; i < count; i++) {
         PB_INPUT_RECORD ir;
-        unsigned long got = 0;
+        DWORD got = 0;
         if (!ReadConsoleInputA(h, &ir, 1, &got) || got != 1) break;
         char out[4];
         int n = pb_con_event_key(&ir, out);
@@ -5813,10 +5883,10 @@ char* pb_con_waitkey(const char* mask, int timeout_ms) {
     int has_mask = mask && mask[0];
     for (;;) {
         void* h = pb_con_input_handle();
-        unsigned long count = 0;
+        DWORD count = 0;
         if (h && GetNumberOfConsoleInputEvents(h, &count) && count > 0) {
             PB_INPUT_RECORD ir;
-            unsigned long got = 0;
+            DWORD got = 0;
             if (ReadConsoleInputA(h, &ir, 1, &got) && got == 1) {
                 char out[4];
                 int n = pb_con_event_key(&ir, out);
@@ -5865,14 +5935,14 @@ char* pb_con_waitkey(const char* mask, int timeout_ms) {
 int pb_con_instat(void) {
     void* h = pb_con_input_handle();
     if (!h) return _kbhit() ? 1 : 0;
-    unsigned long count = 0;
+    DWORD count = 0;
     if (!GetNumberOfConsoleInputEvents(h, &count) || count == 0) return 0;
     /* Peek the whole pending batch: a key-up record at the head of the queue
        must not hide a real key-down or mouse event behind it. */
     if (count > 4096) count = 4096;
     PB_INPUT_RECORD* buf = (PB_INPUT_RECORD*)malloc(count * sizeof(PB_INPUT_RECORD));
     if (!buf) return 0;
-    unsigned long got = 0;
+    DWORD got = 0;
     int ready = 0;
     if (PeekConsoleInputA(h, buf, count, &got)) {
         for (unsigned long i = 0; i < got; i++) {
@@ -5939,7 +6009,7 @@ void pb_con_mouse(int event, int button) {
 void pb_con_mouse_on(void) {
     pb_con_mouse_enabled = 1;
     void* h = pb_con_input_handle();
-    unsigned long mode = 0;
+    DWORD mode = 0;
     if (h && GetConsoleMode(h, &mode)) {
         mode |= 0x0010; /* ENABLE_MOUSE_INPUT */
         mode &= ~0x0040UL; /* disable QUICK_EDIT so mouse events reach us */
@@ -5950,7 +6020,7 @@ void pb_con_mouse_on(void) {
 void pb_con_mouse_off(void) {
     pb_con_mouse_enabled = 0;
     void* h = pb_con_input_handle();
-    unsigned long mode = 0;
+    DWORD mode = 0;
     if (h && GetConsoleMode(h, &mode)) {
         mode &= ~0x0010UL;   /* ENABLE_MOUSE_INPUT */
         SetConsoleMode(h, mode);
@@ -5964,12 +6034,12 @@ static int pb_con_mouse_pending(void) {
     if (!pb_con_mouse_enabled) return 0;
     void* h = pb_con_input_handle();
     if (!h) return 0;
-    unsigned long count = 0;
+    DWORD count = 0;
     if (!GetNumberOfConsoleInputEvents(h, &count) || count == 0) return 0;
     if (count > 4096) count = 4096;
     PB_INPUT_RECORD* buf = (PB_INPUT_RECORD*)malloc(count * sizeof(PB_INPUT_RECORD));
     if (!buf) return 0;
-    unsigned long got = 0;
+    DWORD got = 0;
     int found = 0;
     if (PeekConsoleInputA(h, buf, count, &got)) {
         for (unsigned long i = 0; i < got; i++) {
@@ -5995,13 +6065,13 @@ int pb_con_in(void) {
        here: that helper deliberately falls back to CONIN$ so keyboard APIs
        keep working under redirection, which would mask the redirect. */
     void* h = GetStdHandle((unsigned int)-10);
-    unsigned long mode = 0;
+    DWORD mode = 0;
     return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
 }
 
 int pb_con_out(void) {
     void* h = GetStdHandle((unsigned int)-11);
-    unsigned long mode = 0;
+    DWORD mode = 0;
     return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
 }
 
@@ -6036,7 +6106,7 @@ static int pb_con_stdin_getc(void) {
 
 static int pb_con_stdin_is_console(void) {
     void* h = GetStdHandle((unsigned int)-10);
-    unsigned long mode = 0;
+    DWORD mode = 0;
     return (h && h != (void*)-1 && GetConsoleMode(h, &mode)) ? 1 : 0;
 }
 
@@ -6115,7 +6185,7 @@ void pb_con_stdout(const char* s, int newline) {
        active console page; only a redirected stdout goes to the file.  Plain
        stdout would always hit page 1, bypassing CON.PAGE.ACTIVE. */
     void* out = GetStdHandle((unsigned int)-11);
-    unsigned long mode = 0;
+    DWORD mode = 0;
     if (out && out != (void*)-1 && GetConsoleMode(out, &mode)) {
         void* h = pb_console_output_handle();
         if (h) {
@@ -6156,6 +6226,15 @@ void pb_con_stdout(const char* s, int newline) {
 }
 
 void pb_con_stderr(const char* s, int newline) {
+#if defined(__ANDROID__)
+    /* Android stderr is a logcat stream, not the Activity console buffer.
+       CON.STDERR must land on the same 80x25 text page as CON.STDOUT. */
+    if (pb_console_output_handle()) {
+        if (s) pb_print_write(s, (unsigned long)strlen(s));
+        if (newline) pb_print_newline();
+        return;
+    }
+#endif
     if (s) fputs(s, stderr);
     if (newline) fputc('\n', stderr);
     fflush(stderr);
@@ -6400,8 +6479,8 @@ char* pb_str_concat(const char* a, const char* b) {
     unsigned int len_a = (unsigned int)SysStringByteLen(a);
     unsigned int len_b = (unsigned int)SysStringByteLen(b);
 #else
-    unsigned int len_a = (unsigned int)strlen(a);
-    unsigned int len_b = (unsigned int)strlen(b);
+    unsigned int len_a = (unsigned int)pb_str_len(a);
+    unsigned int len_b = (unsigned int)pb_str_len(b);
 #endif
     int total = (int)(len_a + len_b);
     char* tmp = (char*)malloc(total + 1);
@@ -6439,7 +6518,13 @@ char* pb_date(void) {
     GetLocalTime(&st);
     sprintf(buf, "%02d-%02d-%04d", st.wMonth, st.wDay, st.wYear);
 #else
-    strcpy(buf, "01-01-2026");
+    time_t now = time(NULL);
+    struct tm lt;
+    if (now != (time_t)-1 && localtime_r(&now, &lt) != NULL)
+        sprintf(buf, "%02d-%02d-%04d", lt.tm_mon + 1, lt.tm_mday,
+                lt.tm_year + 1900);
+    else
+        strcpy(buf, "01-01-2026");
 #endif
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
@@ -6452,7 +6537,12 @@ char* pb_time(void) {
     GetLocalTime(&st);
     sprintf(buf, "%02d:%02d:%02d", st.wHour, st.wMinute, st.wSecond);
 #else
-    strcpy(buf, "00:00:00");
+    time_t now = time(NULL);
+    struct tm lt;
+    if (now != (time_t)-1 && localtime_r(&now, &lt) != NULL)
+        sprintf(buf, "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
+    else
+        strcpy(buf, "00:00:00");
 #endif
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
@@ -6467,7 +6557,12 @@ double pb_timer(void) {
     return (double)st.wHour * 3600.0 + (double)st.wMinute * 60.0 +
            (double)st.wSecond + (double)st.wMilliseconds / 1000.0;
 #else
-    return 0.0;
+    struct timespec ts;
+    struct tm lt;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) return 0.0;
+    if (localtime_r(&ts.tv_sec, &lt) == NULL) return 0.0;
+    return (double)lt.tm_hour * 3600.0 + (double)lt.tm_min * 60.0 +
+           (double)lt.tm_sec + (double)ts.tv_nsec / 1000000000.0;
 #endif
 }
 
@@ -6606,6 +6701,14 @@ void pb_set_time(const char* s) {
    window disappears before the user can read the output. */
 char* pb_waitkey(void) {
     int c;
+#if defined(__ANDROID__)
+    /* Android has no CRT console/tty: the JNI input queue is the keyboard. */
+    c = _getch();
+    if (c == 0 || c == 0xE0) {
+        _getch();
+        return pb_bstr_alloc("", 0);
+    }
+#else
     if (_isatty(_fileno(stdin))) {
         c = _getch();
         if (c == 0 || c == 0xE0) {
@@ -6618,7 +6721,7 @@ char* pb_waitkey(void) {
         void* hIn = GetStdHandle((unsigned int)-10); /* STD_INPUT_HANDLE */
         if (hIn != NULL && hIn != PB_INVALID_HANDLE) {
             char ch = 0;
-            unsigned long n = 0;
+            DWORD n = 0;
             if (ReadFile(hIn, &ch, 1, &n, NULL)) {
                 if (n == 1) {
                     char buf[2];
@@ -6633,6 +6736,7 @@ char* pb_waitkey(void) {
         c = getchar();
         if (c == EOF) c = ' ';
     }
+#endif
     char buf[2];
     buf[0] = (char)c;
     buf[1] = '\0';
@@ -8521,7 +8625,7 @@ static void pb_con_prompt_text(const char* s) {
     if (!s) return;
     void* h = pb_console_output_handle();
     if (h) {
-        unsigned long written = 0;
+        DWORD written = 0;
         WriteConsoleA(h, s, (unsigned long)strlen(s), &written, 0);
     } else {
         fputs(s, stdout);
@@ -8542,7 +8646,7 @@ static char* pb_read_line_keyboard(void) {
            file. */
         return pb_bstr_alloc("", 0);
     }
-    unsigned long got = 0;
+    DWORD got = 0;
     if (!ReadConsoleA(h, buf, (unsigned long)(sizeof(buf) - 1), &got, 0)) {
         return pb_bstr_alloc("", 0);
     }
@@ -9919,7 +10023,7 @@ typedef unsigned int pb_sock_t;         /* SOCKET is 32-bit on x86 (stdcall @N d
 struct pb_sockaddr_in {
     short sin_family;
     unsigned short sin_port;
-    unsigned long sin_addr;
+    uint32_t sin_addr;
     char sin_zero[8];
 };
 
@@ -9934,9 +10038,9 @@ __declspec(dllimport) int __stdcall sendto(pb_sock_t s, const char* buf, int len
 __declspec(dllimport) int __stdcall recvfrom(pb_sock_t s, char* buf, int len, int flags, void* from, int* fromlen);
 __declspec(dllimport) int __stdcall closesocket(pb_sock_t s);
 __declspec(dllimport) unsigned short __stdcall htons(unsigned short hostshort);
-__declspec(dllimport) unsigned long __stdcall htonl(unsigned long hostlong);
-__declspec(dllimport) unsigned long __stdcall ntohl(unsigned long netlong);
-__declspec(dllimport) unsigned long __stdcall inet_addr(const char* cp);
+__declspec(dllimport) uint32_t __stdcall htonl(uint32_t hostlong);
+__declspec(dllimport) uint32_t __stdcall ntohl(uint32_t netlong);
+__declspec(dllimport) uint32_t __stdcall inet_addr(const char* cp);
 __declspec(dllimport) int __stdcall setsockopt(pb_sock_t s, int level, int optname, const char* optval, int optlen);
 __declspec(dllimport) int __stdcall ioctlsocket(pb_sock_t s, long cmd, unsigned long* argp);
 __declspec(dllimport) int __stdcall WSAGetLastError(void);
@@ -9995,20 +10099,20 @@ static int pb_wsa_err_code(void) {
     return (WSAGetLastError() == PB_WSAETIMEDOUT) ? 24 : 57;
 }
 
-static unsigned long pb_net_ip(const char* host) {
-    unsigned long ip = inet_addr(host);
-    if (ip == (unsigned long)-1) {
+static uint32_t pb_net_ip(const char* host) {
+    uint32_t ip = inet_addr(host);
+    if (ip == 0xFFFFFFFFu) {
         pb_hostent* he = gethostbyname(host);
         if (he && he->h_addr_list && he->h_addr_list[0]) {
             memcpy(&ip, he->h_addr_list[0], 4);
         } else {
-            return (unsigned long)-1;
+            return 0xFFFFFFFFu;
         }
     }
     return ip;
 }
 
-static void pb_net_fill_addr(struct pb_sockaddr_in* a, unsigned long ip, int port) {
+static void pb_net_fill_addr(struct pb_sockaddr_in* a, uint32_t ip, int port) {
     memset(a, 0, sizeof(*a));
     a->sin_family = 2; /* AF_INET */
     a->sin_port = htons((unsigned short)port);
@@ -10038,7 +10142,7 @@ int pb_resolve_service(const char* name) {
 int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout, unsigned long bind_addr) {
     if (pb_winsock_init() != 0) { pb_err_var = pb_err = 57; return -1; }
     if (filenum < 1 || filenum >= PB_MAX_SOCK) { pb_err_var = pb_err = 52; return -1; }
-    if (pb_sock_state[filenum] != 0) { pb_err_var = pb_err = 52; return -1; }
+    if (pb_sock_state[filenum] != 0 || file_handles[filenum] != NULL) { pb_err_var = pb_err = 52; return -1; }
     /* A service-name string is resolved by pb_resolve_service before this call;
        it returns -1 and sets Error 57 when the name is unknown. Reject the
        invalid port here so no socket is created (PBWin leaves the file closed on
@@ -10061,8 +10165,8 @@ int pb_tcp_open(int mode, int port, const char* addr, int filenum, long timeout,
         return 0;
     }
     /* connect */
-    unsigned long ip = pb_net_ip(addr);
-    if (ip == (unsigned long)-1) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
+    uint32_t ip = pb_net_ip(addr);
+    if (ip == 0xFFFFFFFFu) { closesocket(s); pb_err_var = pb_err = 57; return -1; }
     pb_apply_socket_timeout(s, timeout);
     pb_net_fill_addr(&a, ip, port);   /* pb_net_ip returns network order; fill_addr stores raw */
     if (connect(s, &a, sizeof(a)) != 0) {
@@ -10087,9 +10191,8 @@ int pb_tcp_accept(int srv, int* out_newf) {
     int alen = sizeof(a);
     pb_sock_t s = accept(pb_sock[srv], &a, &alen);
     if (s == PB_SOCK_INVALID) { pb_err_var = pb_err = 57; return -1; }
-    int f = 1;
-    while (f < PB_MAX_SOCK && pb_sock_state[f] != 0) f++;
-    if (f >= PB_MAX_SOCK) { closesocket(s); pb_err_var = pb_err = 52; return -1; }
+    int f = pb_freefile();
+    if (f == 0) { closesocket(s); pb_err_var = pb_err = 52; return -1; }
     pb_sock[f] = s;
     pb_sock_os_handle[f] = (long long)s;
     pb_sock_state[f] = 1;
@@ -10265,7 +10368,7 @@ int pb_socket_eof_state(int filenum) {
 int pb_udp_open(int port, int filenum, long timeout) {
     if (pb_winsock_init() != 0) { pb_err_var = pb_err = 57; return -1; }
     if (filenum < 1 || filenum >= PB_MAX_SOCK) { pb_err_var = pb_err = 52; return -1; }
-    if (pb_sock_state[filenum] != 0) { pb_err_var = pb_err = 52; return -1; }
+    if (pb_sock_state[filenum] != 0 || file_handles[filenum] != NULL) { pb_err_var = pb_err = 52; return -1; }
     pb_sock_t s = socket(2, 2, 17); /* AF_INET, SOCK_DGRAM, UDP */
     if (s == PB_SOCK_INVALID) { pb_err_var = pb_err = 57; return -1; }
     struct pb_sockaddr_in a;
@@ -10284,7 +10387,7 @@ int pb_udp_open(int port, int filenum, long timeout) {
     return 0;
 }
 
-int pb_udp_send(int f, unsigned long ip, int port, const char* data, int len);
+int pb_udp_send(int f, uint32_t ip, int port, const char* data, int len);
 
 int pb_udp_send_str(int f, const char* ipstr, int port, const char* data, int len) {
     /* inet_addr yields network order, same as PBWin's ipaddr& semantics;
@@ -10292,7 +10395,7 @@ int pb_udp_send_str(int f, const char* ipstr, int port, const char* data, int le
     return pb_udp_send(f, inet_addr(ipstr ? ipstr : "0.0.0.0"), port, data, len);
 }
 
-int pb_udp_send(int f, unsigned long ip, int port, const char* data, int len) {
+int pb_udp_send(int f, uint32_t ip, int port, const char* data, int len) {
     if (f < 1 || f >= PB_MAX_SOCK || pb_sock_state[f] != 2) { pb_err_var = pb_err = 52; return -1; }
     if (!data) { data = ""; len = 0; }
     if (len < 0) len = 0;
@@ -10567,7 +10670,7 @@ int pb_comm_get(int channel, const char* option) {
 }
 
 int pb_comm_send(int channel, const char* s) {
-    unsigned long written = 0;
+    DWORD written = 0;
     /* channel number already used by an OPEN FILE -> Bad file mode (PBWin probe) */
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
         pb_err_var = pb_err = 54; return -1;
@@ -10582,7 +10685,7 @@ int pb_comm_send(int channel, const char* s) {
 }
 
 int pb_comm_recv(int channel, long long bytes, char** dest, int want_wide) {
-    unsigned long got = 0;
+    DWORD got = 0;
     char* buf;
     long long n = (bytes > 0) ? bytes : 1;
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
@@ -10628,7 +10731,7 @@ int pb_comm_line_input(int channel, char** dest) {
     if (buf == NULL) { pb_err_var = pb_err = 5; return -1; }
     pb_comm_eof[channel] = 0;
     while (1) {
-        unsigned long got = 0;
+        DWORD got = 0;
         char ch;
         if (!ReadFile(pb_comm_h[channel], &ch, 1, &got, NULL) || got == 0) {
             /* timeout (COMM TIMEOUT) or device error -> partial line + EOF TRUE */
@@ -10656,7 +10759,7 @@ int pb_comm_line_input(int channel, char** dest) {
 }
 
 static int pb_comm_print_cstr(int channel, const char* s) {
-    unsigned long written = 0;
+    DWORD written = 0;
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
         pb_err_var = pb_err = 54; return 0;
     }
@@ -10671,7 +10774,7 @@ static int pb_comm_print_cstr(int channel, const char* s) {
 }
 
 int pb_comm_print_str(int channel, const char* s) {
-    unsigned long written = 0;
+    DWORD written = 0;
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
         pb_err_var = pb_err = 54; return 0;
     }
@@ -10690,7 +10793,7 @@ int pb_comm_print_line(int channel, const char* s) {
        The count returned includes the CR/LF (CHW COMM_PRINT_statement.htm). */
     int n = 0;
     char crlf[2] = { '\r', '\n' };
-    unsigned long written = 0;
+    DWORD written = 0;
     if (channel >= 0 && channel <= 255 && file_modes[channel] != 0) {
         pb_err_var = pb_err = 54; return 0;
     }
@@ -10809,7 +10912,7 @@ int pb_comm_timeout(int channel, long long ms) {
  * ============================================================ */
 typedef struct _pb_thread_slot {
     HANDLE h;
-    unsigned long tid;
+    DWORD tid;
     int state; /* 0 free, 1 running, 2 suspended, 3 finished */
 } pb_thread_slot;
 
@@ -10838,9 +10941,9 @@ static unsigned long __stdcall pb_thread_boot32_proc(void* raw) {
 
 int pb_thread_create(void* func, unsigned long param,
                      unsigned long stack_size, unsigned long create_flags,
-                     unsigned long* out_id) {
+                     DWORD* out_id) {
     int i;
-    unsigned long tid = 0;
+    DWORD tid = 0;
     if (func == NULL) { pb_err_var = pb_err = 5; return -1; }
 #ifdef _WIN64
     for (i = 0; i < 256; i++) {
@@ -10888,9 +10991,21 @@ static pb_thread_slot* pb_thread_slot_of(unsigned long handle) {
     /* THREAD CREATE hands back the real Windows handle, so locate the slot by
        matching that handle value rather than indexing the array. */
     for (i = 0; i < 256; i++) {
-        if (pb_thr[i].h &&
-            (unsigned long)(uintptr_t)pb_thr[i].h == handle) {
-            return &pb_thr[i];
+        if (pb_thr[i].h) {
+            unsigned long full = (unsigned long)(uintptr_t)pb_thr[i].h;
+#if defined(__ANDROID__)
+            /* PB's THREAD handle variable is LONG (32-bit) on Android, while
+               the pthread handle is a 64-bit pointer.  Match the low 32 bits
+               so THREAD STATUS/CLOSE/SUSPEND/RESUME find the slot again. */
+            if (full == handle ||
+                (full & 0xFFFFFFFFUL) == (handle & 0xFFFFFFFFUL)) {
+                return &pb_thr[i];
+            }
+#else
+            if (full == handle) {
+                return &pb_thr[i];
+            }
+#endif
         }
     }
     return NULL;
@@ -10931,7 +11046,7 @@ int pb_thread_resume(unsigned long id) {
 
 int pb_thread_status(unsigned long id) {
     pb_thread_slot* t = pb_thread_slot_of(id);
-    unsigned long code = 0;
+    DWORD code = 0;
     /* CHW THREAD STATUS: failure -> 0; still running -> &H103; once
        terminated (and the handle is open) -> the thread function's return
        value, which GetExitCodeThread reports as the exit code. */
@@ -10969,7 +11084,7 @@ typedef struct _pb_thread_object {
     void* self;
     void* entry;
     void* h;
-    unsigned long tid;
+    DWORD tid;
     long result;
     int launched;
     int finished;
@@ -15155,7 +15270,7 @@ void pb_color_count(int fore, int back, int count) {
     SetConsoleTextAttribute(h, attr);
     if (count > 0) {
         PB_COORD pos = info.dwCursorPosition;
-        unsigned long written = 0;
+        DWORD written = 0;
         FillConsoleOutputAttribute(h, attr, (unsigned long)count, pos, &written);
     }
 }
@@ -17140,6 +17255,24 @@ void pb_message_loop(void) {
         DispatchMessageA(&msg);
     }
 }
+
+#if defined(__ANDROID__)
+/* Android has no Win32 dialog stack.  MSGBOX still has to compile, link and
+   surface its text: print it to the Activity console instead of failing at
+   link time or silently dropping the message. */
+int __stdcall MessageBoxA(void* hWnd, const char* text, const char* caption,
+                          unsigned int style) {
+    (void)hWnd;
+    (void)style;
+    if (caption && caption[0]) {
+        pb_print_write(caption, (unsigned long)strlen(caption));
+        pb_print_write(": ", 2);
+    }
+    if (text) pb_print_write(text, (unsigned long)strlen(text));
+    pb_print_newline();
+    return 1; /* IDOK */
+}
+#endif
 
 int pb_msgbox_impl(void* text, void* title, unsigned int style) {
     return MessageBoxA(0, (const char*)text, (const char*)title, style);

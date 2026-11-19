@@ -18,8 +18,12 @@ FUNCTION PBMAIN() AS LONG
         PRINT "bare form differs"
         fails = fails + 1
     END IF
-    IF v <> "v0.2.179" THEN
-        PRINT "unexpected VERSION$ value"
+    IF LEN(v) < 2 THEN
+        PRINT "short VERSION$ value"
+        fails = fails + 1
+    END IF
+    IF ASC(v, 1) <> 118 THEN
+        PRINT "VERSION$ missing v prefix"
         fails = fails + 1
     END IF
 

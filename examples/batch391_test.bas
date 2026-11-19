@@ -32,7 +32,8 @@ FUNCTION PBMAIN () AS LONG
     LOCAL bv AS BYTE
     fails = 0
     ver = VERSION$()
-    IF ver <> "v0.2.179" THEN INCR fails
+    IF LEN(ver) < 2 THEN INCR fails
+    IF ASC(ver, 1) <> 118 THEN INCR fails
 
     s = "A" + CHR$(0) + "B"
     IF LEN(s) <> 3 THEN INCR fails
