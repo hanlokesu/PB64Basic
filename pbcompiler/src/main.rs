@@ -17,6 +17,28 @@ mod llvm_ir;
 mod resfile;
 mod symbols;
 
+/// Resolve Windows PowerShell without depending on the caller's PATH.
+/// Windows keeps powershell.exe under System32\WindowsPowerShell\v1.0,
+/// which is not always present in a service/sandbox PATH; PB64Basic used
+/// to emit "cannot run powershell for manifest embedding: program not
+/// found" even though PowerShell was installed.  Fall back to the bare
+/// name so a non-standard installation can still be found via PATH.
+fn powershell_exe() -> PathBuf {
+    let root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("C:\\Windows"));
+    let candidate = root
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe");
+    if candidate.is_file() {
+        candidate
+    } else {
+        PathBuf::from("powershell")
+    }
+}
+
 fn main() {
     // The front end (preprocessor -> lexer -> recursive-descent parser) and the code
     // generator recurse deeply enough that an *unoptimized* build's larger stack frames
@@ -738,7 +760,7 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
     }
     script.push_str("[void][ResEm]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
@@ -800,7 +822,7 @@ fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
     }
     script.push_str("[void][ResMf]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
@@ -909,7 +931,7 @@ fn embed_res_files(exe_path: &Path, files: &[pb::preprocessor::ResFileEntry]) {
     }
     script.push_str("[void][ResFile]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
@@ -976,7 +998,7 @@ fn embed_raw_resources(exe_path: &Path, raw: &[pb::preprocessor::RawResource]) {
     }
     script.push_str("[void][ResRaw]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
@@ -1059,7 +1081,7 @@ fn embed_string_resources(exe_path: &Path, entries: &[pb::preprocessor::StringRe
     }
     script.push_str("[void][ResStr]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()
@@ -1247,7 +1269,7 @@ Write-Host "Version info embedded: $($bytes.Length) bytes"
         data = b64
     );
 
-    match std::process::Command::new("powershell")
+    match std::process::Command::new(powershell_exe())
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
         .output()

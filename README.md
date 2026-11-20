@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 396 (v0.2.184). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 397 (v0.2.185). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 397 (v0.2.185) - GUI conformance: grouped `LOCAL`/`DIM` types, per-dialog font/DLU mapping, DDT dialog styles and manifest embedding, ListView style/header, GRAPHIC `WM_INITDIALOG` dispatch, canvas/client units, COLORREF constants, default line colour, `PRINT` line advance, integer position APIs, runtime `REDIM`, `PARSE` lower-bound indexing and buffered control-DC presentation. 12 of 13 paired windows match PBWin10 exactly; all 13 fonts match.
 > batch 396 (v0.2.184) - DIALOG SHOW MODELESS and result targets: `DIALOG SHOW MODELESS hDlg[,] CALL proc [TO result]` now registers the callback and writes the `DIALOG END` result into `result`; `DIALOG SHOW MODAL hDlg[,] CALL proc TO result` writes the modal result; `DIALOG SHOW STATE ... TO result` and `DIALOG DOEVENTS [sleep] [TO count]` now consume and return their optional arguments. `CB.HNDL` values are passed to DIALOG statements without a second `inttoptr`, fixing `DIALOG SET USER CB.HNDL` and `DIALOG POST CB.HNDL` builds. `GRAPHIC LINE [STEP] [(x1,y1)] - [STEP] (x2,y2)` now accepts the omitted-start and STEP forms used by PBWin10 samples. The all-source audit covers 159 sample `.bas` files: 96 full x64 builds succeed (88 EXE and 8 DLL) and 63 fail on unrelated syntax/link gaps. `batch396_test.bas` passes on x86_64 and i686.
 > batch 395 (v0.2.183) - DDT optional separator commas: `DIALOG NEW` accepts `..., style, TO hDlg`; `DIALOG SHOW MODAL` accepts `hDlg, CALL proc` and `hDlg, TO result`. PBWin10 compiles all four comma/no-comma variants; the previous parser rejected the comma before `TO` and silently dropped the modal callback when a comma preceded `CALL`. `batch395_test.bas` passes on x86_64 and i686, and `batch395_modal_probe.bas` covers both modal forms at compile time.
 > batch 394 (v0.2.182) - Android-only runtime patch: native blocking `MSGBOX` through a JNI `AlertDialog` with Win32 `ID*` return codes, `BEEP` through the system notification sound, `PLAY SOUND` through `AudioTrack`, and deterministic input/MSGBOX test hooks. The 20-demo APK suite is published separately as `android-demos-v0.2.181` (20/20 package/ABI/zipalign/signature checks and 20/20 device probes). Windows behavior is unchanged; `batch394_test.bas` covers the Windows `BEEP`/`PLAY SOUND` link path and passes on x86_64 and i686. ARM64 APKs remain build/static-verified only; GUI/COM/GDI/menu/printer/serial surfaces and `TCP NOTIFY` dispatch remain outside the Android runtime.
@@ -1066,6 +1067,19 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.185 (2026-11-20)
+
+GUI conformance batch 397. The DDT runtime now matches PBWin10 on dialog geometry, fonts and drawing for the measured samples.
+
+- `LOCAL` / `DIM` type clauses apply only to their own comma-separated group, so `LOCAL a, b AS LONG, c, d AS DOUBLE` keeps `c` and `d` as `DOUBLE` instead of truncating them to integers.
+- Dialog units are derived from the dialog font (KB125681 letter-average rule); each dialog keeps its own `HFONT` and DLU snapshot, and `DIALOG FONT` no longer leaks into earlier dialogs. `Progress.bas` is 426x317 with 420x288 client area.
+- Dialog styles add `DS_3DLOOK`, `DS_NOFAILCREATE`, `DS_SETFONT`, optional `DS_CENTER`, and mirror `DS_MODALFRAME` into `WS_EX_DLGMODALFRAME`; manifests are embedded through the absolute Windows PowerShell path, restoring themed buttons.
+- ListView uses the PBWin10 control style without `WS_BORDER` / `WS_EX_CLIENTEDGE` after measuring `0x5021000D`, a 451x325 client area and a 451x24 header at 2,23.
+- `GRAPHIC` drawing is dispatched into `WM_INITDIALOG`, canvas size and client size are reported in dialog units for DDT controls, default line colour uses `GRAPHIC COLOR` foreground, `GRAPHIC PRINT` advances to the next line, and position/text-size APIs use 32-bit integers.
+- Built-in `%RGB_*`, `%BLACK`..`%WHITE`, `%LTGRAY` and short colour aliases now resolve to Windows COLORREF values, so SINE, RULER, TEXT3D and TextAlign draw the same content as their PBWin10 originals.
+- Runtime-length `REDIM` allocates through `pb_dynamic_array_resize`; `PARSE` keeps the declared lower bound in its index mapping, so 1-based arrays start at element 1 and TextAlign shows all five rows. `GRAPHIC CLEAR` presents its buffered control DC back to the control, preserving direct `GetPixel` readback after `GRAPHIC ATTACH`.
+- `batch397_test.bas` asserts grouped `LOCAL` types on x86_64 and i686.
+
 ### v0.2.184 (2026-11-20)
 
 - **Modeless callback/result**: `DIALOG SHOW MODELESS hDlg, CALL proc` now

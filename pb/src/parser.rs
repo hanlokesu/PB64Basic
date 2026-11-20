@@ -1249,10 +1249,9 @@ impl Parser {
         };
 
         let mut stmts: Vec<DimStatement> = Vec::new();
-        // PB semantics: a trailing AS type-fills the whole list, both
-        // back-filling previously untyped names and propagating forward
-        // until the next AS. E.g. `DIM a, b AS LONG` → a and b are LONG.
-        let mut pending_type: Option<PbType> = None;
+        // PB semantics: a trailing AS type-fills the current comma group only.
+        // `DIM a, b AS LONG, c, d AS DOUBLE` gives a/b LONG and c/d DOUBLE;
+        // the type does not leak across the comma boundary.
         let mut untyped: Vec<usize> = Vec::new();
 
         loop {
@@ -1280,12 +1279,8 @@ impl Parser {
                     stmts[*i].explicit_type = true;
                 }
                 untyped.clear();
-                pending_type = Some(t.clone());
                 explicit = true;
                 t
-            } else if let Some(t) = &pending_type {
-                explicit = true;
-                t.clone()
             } else {
                 let t = type_from_suffix(&name);
                 untyped.push(idx);
@@ -5980,6 +5975,15 @@ impl Parser {
                             self.advance();
                             self.expect(&Token::To)?;
                             let dst = self.parse_expression()?;
+                            let mut args = vec![dst];
+                            /* GRAPHIC GET CANVAS TO x&, y& returns width AND
+                            height; the old parser consumed the comma and
+                            the second variable without recording it, so
+                            SINE's GET CANVAS left both at zero. */
+                            if sub == "CANVAS" && matches!(self.peek(), &Token::Comma) {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
                             self.consume_to_eol();
                             let name = match sub.as_str() {
                                 "CANVAS" => "GRAPHIC_GET_CANVAS",
@@ -5988,7 +5992,7 @@ impl Parser {
                             };
                             return Ok(Statement::Call(CallStmt {
                                 name: name.to_string(),
-                                args: vec![dst],
+                                args,
                                 line,
                             }));
                         }
@@ -6709,7 +6713,10 @@ impl Parser {
                             args.push(self.parse_expression()?);
                             self.expect(&Token::RParen)?;
                         } else {
-                            // No explicit start: use the current POS.
+                            // No explicit start: use the current POS.  In the
+                            // `GRAPHIC LINE STEP - (x,y)` form STEP belongs to
+                            // the omitted first point; the second point is an
+                            // absolute coordinate (SINE relies on this).
                             args.push(Expr::IntegerLit(0));
                             args.push(Expr::IntegerLit(0));
                             flags |= 4;
@@ -15158,10 +15165,10 @@ impl Parser {
 
         let mut dims: Vec<DimStatement> = Vec::new();
         // PB semantics: `LOCAL aaa, bbb, ccc AS INTEGER` declares ALL names
-        // with the trailing type. So a trailing AS both (a) back-fills every
-        // previously untyped name in the list and (b) propagates forward to
-        // later names until the next AS.
-        let mut pending_type: Option<PbType> = None;
+        // in that comma group with the trailing type.  A type does not
+        // propagate across the comma into the next group: `LOCAL a, b AS LONG,
+        // c, d AS DOUBLE` gives a/b LONG and c/d DOUBLE, while a bare `e`
+        // after a comma keeps its suffix/default type.
         let mut untyped: Vec<usize> = Vec::new(); // indices of names w/o AS yet
 
         loop {
@@ -15183,18 +15190,14 @@ impl Parser {
             let pb_type = if self.peek() == &Token::As {
                 self.advance();
                 let t = self.parse_type()?;
-                // Back-fill all previously untyped names with this type
+                // Back-fill all previously untyped names in this group
                 for i in &untyped {
                     dims[*i].pb_type = t.clone();
                     dims[*i].explicit_type = true;
                 }
                 untyped.clear();
-                pending_type = Some(t.clone());
                 explicit = true;
                 t
-            } else if let Some(t) = &pending_type {
-                explicit = true;
-                t.clone()
             } else {
                 let t = type_from_suffix(&name);
                 untyped.push(idx);

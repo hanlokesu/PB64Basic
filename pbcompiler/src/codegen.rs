@@ -21,6 +21,48 @@ pub const DEFAULT_TARGET: &str = "i686-pc-windows-msvc";
 /// without this, "%BS_DEFAULT OR %WS_TABSTOP" silently lost WS_TABSTOP
 /// (unknown equates resolved to 0).
 const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
+    /* PBWin built-in RGB colour equates (BGR order, as Windows COLORREF). */
+    ("%RGB_BLACK", 0x00000000),
+    ("%RGB_BLUE", 0x00FF0000),
+    ("%RGB_GREEN", 0x0000FF00),
+    ("%RGB_CYAN", 0x00FFFF00),
+    ("%RGB_RED", 0x000000FF),
+    ("%RGB_MAGENTA", 0x00FF00FF),
+    ("%RGB_BROWN", 0x00008080),
+    ("%RGB_LIGHTGRAY", 0x00C0C0C0),
+    ("%RGB_DARKGRAY", 0x00808080),
+    ("%RGB_LIGHTBLUE", 0x00FF8080),
+    ("%RGB_LIGHTGREEN", 0x0080FF80),
+    ("%RGB_LIGHTCYAN", 0x00FFFF80),
+    ("%RGB_LIGHTRED", 0x008080FF),
+    ("%RGB_LIGHTMAGENTA", 0x00FF80FF),
+    ("%RGB_YELLOW", 0x0000FFFF),
+    ("%RGB_WHITE", 0x00FFFFFF),
+    ("%GRAY", 0x00808080),
+    /* PBWin also exposes the short colour names. */
+    ("%BLACK", 0x00000000),
+    ("%BLUE", 0x00FF0000),
+    ("%GREEN", 0x0000FF00),
+    ("%CYAN", 0x00FFFF00),
+    ("%RED", 0x000000FF),
+    ("%MAGENTA", 0x00FF00FF),
+    ("%BROWN", 0x00008080),
+    ("%LIGHTGRAY", 0x00C0C0C0),
+    ("%DARKGRAY", 0x00808080),
+    ("%LIGHTBLUE", 0x00FF8080),
+    ("%LIGHTGREEN", 0x0080FF80),
+    ("%LIGHTCYAN", 0x00FFFF80),
+    ("%LIGHTRED", 0x008080FF),
+    ("%LIGHTMAGENTA", 0x00FF80FF),
+    ("%YELLOW", 0x0000FFFF),
+    ("%WHITE", 0x00FFFFFF),
+    ("%LTGRAY", 0x00C0C0C0),
+    ("%DKGRAY", 0x00808080),
+    ("%LTBLUE", 0x00FF8080),
+    ("%LTGREEN", 0x0080FF80),
+    ("%LTCYAN", 0x00FFFF80),
+    ("%LTRED", 0x008080FF),
+    ("%LTMAGENTA", 0x00FF80FF),
     ("%WS_BORDER", 0x00800000),
     ("%WS_CAPTION", 0x00C00000),
     ("%WS_CHILD", 0x40000000),
@@ -6490,7 +6532,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_graphic_set_pos",
             &IrType::I32,
-            &[IrType::Float, IrType::Float],
+            &[IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -6525,6 +6567,12 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_graphic_get_canvas", &IrType::I64, &[], false);
+        self.module.declare_function(
+            "pb_graphic_get_canvas_size",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_graphic_get_dc", &IrType::I64, &[], false);
         self.module
@@ -12526,7 +12574,11 @@ impl Compiler {
         // count; element access loads the data pointer afresh, so a realloc
         // never leaves codegen GEP'ing a stale stack block.
         let mut dynamic_names: HashSet<String> = HashSet::new();
-        fn collect_dynamic_names(stmts: &[Statement], set: &mut HashSet<String>) {
+        fn collect_dynamic_names(
+            stmts: &[Statement],
+            set: &mut HashSet<String>,
+            eval_const: fn(&Expr) -> Result<i64, &'static str>,
+        ) {
             for st in stmts {
                 match st {
                     Statement::Call(c)
@@ -12541,12 +12593,24 @@ impl Compiler {
                             set.insert(normalize_name(n));
                         }
                     }
-                    Statement::Block(b) => collect_dynamic_names(b, set),
+                    /* A REDIM whose bounds are not compile-time constant needs
+                    a heap-backed descriptor sized at run time; otherwise the
+                    prescan would allocate a [0 x T] block (TextAlign's
+                    `REDIM sLines(1 TO LineCount)`). */
+                    Statement::Redim(d) if !d.bounds.is_empty() => {
+                        let runtime_bound = d.bounds.iter().any(|b| {
+                            eval_const(&b.lower).is_err() || eval_const(&b.upper).is_err()
+                        });
+                        if runtime_bound {
+                            set.insert(normalize_name(&d.name));
+                        }
+                    }
+                    Statement::Block(b) => collect_dynamic_names(b, set, eval_const),
                     _ => {}
                 }
             }
         }
-        collect_dynamic_names(body, &mut dynamic_names);
+        collect_dynamic_names(body, &mut dynamic_names, eval_const);
 
         fn shape_of(
             d: &DimStatement,
@@ -12810,29 +12874,41 @@ impl Compiler {
                     return Ok(());
                 }
                 let mut dims = Vec::new();
-                let mut total = 1usize;
+                let mut total = fb.const_i64(1);
                 for bound in &dim.bounds {
-                    let lower = Self::eval_const_expr(&bound.lower).unwrap_or(0);
-                    let upper = Self::eval_const_expr(&bound.upper).unwrap_or(0);
-                    let count = (upper - lower + 1) as usize;
-                    dims.push((lower, count as i64));
-                    total *= count;
+                    let lo_expr = self.compile_expr(fb, &bound.lower)?;
+                    let lo = self.to_i64(fb, &lo_expr);
+                    let up_expr = self.compile_expr(fb, &bound.upper)?;
+                    let up = self.to_i64(fb, &up_expr);
+                    let diff = fb.sub(&up, &lo);
+                    let one = fb.const_i64(1);
+                    let base_count = fb.add(&diff, &one);
+                    /* Direct-indexed arrays read base[index], so a non-zero
+                    lower bound needs that many extra head slots. */
+                    let zero = fb.const_i64(0);
+                    let lo_pos = fb.icmp("sgt", &lo, &zero);
+                    let extra = fb.select(&lo_pos, &lo, &zero);
+                    let count = fb.add(&base_count, &extra);
+                    total = fb.mul(&total, &count);
+                    match (
+                        Self::eval_const_expr(&bound.lower),
+                        Self::eval_const_expr(&bound.upper),
+                    ) {
+                        (Ok(l), Ok(u)) => dims.push((l, u - l + 1)),
+                        (Ok(l), _) => dims.push((l, 0)),
+                        _ => dims.push((0, 0)),
+                    }
                 }
                 let elem_size = self.array_elem_size_arch(&prev.elem_ir_type);
                 let desc = fb.load(&IrType::Ptr, &Val::new(prev.ptr_name.clone(), IrType::Ptr));
                 let preserve = if dim.is_redim && dim.preserve { 1 } else { 0 };
                 fb.call_void(
                     "pb_dynamic_array_resize",
-                    &[
-                        desc,
-                        fb.const_i64(total as i64),
-                        fb.const_i32(elem_size),
-                        fb.const_i32(preserve),
-                    ],
+                    &[desc, total, fb.const_i32(elem_size), fb.const_i32(preserve)],
                 );
                 let mut next = prev;
                 next.dims = dims;
-                next.total_elements = total;
+                next.total_elements = 0;
                 self.symbols.insert_local_array(name, next);
                 return Ok(());
             }
@@ -12923,6 +12999,90 @@ impl Compiler {
         }
 
         if !dim.bounds.is_empty() {
+            // A REDIM whose bounds are run-time values (TextAlign's
+            // `REDIM sLines(1 TO LineCount)`) needs a heap-backed descriptor.
+            // The prescan only walks top-level blocks, so a REDIM nested in an
+            // IF/FOR reaches here without one.  Build the descriptor now and
+            // size it from the evaluated bounds.
+            let runtime_bound = dim.bounds.iter().any(|b| {
+                Self::eval_const_expr(&b.lower).is_err() || Self::eval_const_expr(&b.upper).is_err()
+            });
+            let already_dynamic = self
+                .symbols
+                .lookup_array(&name)
+                .map(|a| a.dynamic)
+                .unwrap_or(false);
+            if runtime_bound && !already_dynamic {
+                let pb_type = if dim.explicit_type || name_has_type_suffix(&dim.name) {
+                    dim.pb_type.clone()
+                } else {
+                    self.symbols
+                        .lookup_array(&name)
+                        .map(|a| a.pb_type.clone())
+                        .unwrap_or_else(|| dim.pb_type.clone())
+                };
+                let elem_ir = Self::array_elem_ir(&pb_type);
+                let elem_size = self.array_elem_size_arch(&elem_ir) as i64;
+                let slot = fb.alloca(&IrType::Ptr);
+                let desc = fb.call(
+                    &IrType::Ptr,
+                    "pb_dynamic_array_new",
+                    &[fb.const_i32(elem_size as i32), fb.const_i64(0)],
+                );
+                fb.store(&desc, &slot);
+                let mut total = fb.const_i64(1);
+                let mut dims = Vec::new();
+                for bound in &dim.bounds {
+                    let lo_expr = self.compile_expr(fb, &bound.lower)?;
+                    let lo = self.to_i64(fb, &lo_expr);
+                    let up_expr = self.compile_expr(fb, &bound.upper)?;
+                    let up = self.to_i64(fb, &up_expr);
+                    let diff = fb.sub(&up, &lo);
+                    let one = fb.const_i64(1);
+                    let base_count = fb.add(&diff, &one);
+                    /* Direct-indexed arrays read base[index], so a non-zero
+                    lower bound needs that many extra head slots. */
+                    let zero = fb.const_i64(0);
+                    let lo_pos = fb.icmp("sgt", &lo, &zero);
+                    let extra = fb.select(&lo_pos, &lo, &zero);
+                    let count = fb.add(&base_count, &extra);
+                    total = fb.mul(&total, &count);
+                    match (
+                        Self::eval_const_expr(&bound.lower),
+                        Self::eval_const_expr(&bound.upper),
+                    ) {
+                        (Ok(l), Ok(u)) => dims.push((l, u - l + 1)),
+                        (Ok(l), _) => dims.push((l, 0)),
+                        _ => dims.push((0, 0)),
+                    }
+                }
+                let preserve = if dim.is_redim && dim.preserve { 1 } else { 0 };
+                fb.call_void(
+                    "pb_dynamic_array_resize",
+                    &[
+                        desc,
+                        total,
+                        fb.const_i32(elem_size as i32),
+                        fb.const_i32(preserve),
+                    ],
+                );
+                let array_ir = IrType::Array(0, Box::new(elem_ir.clone()));
+                self.symbols.insert_local_array(
+                    name.clone(),
+                    ArrayInfo {
+                        ptr_name: slot.name,
+                        array_ir_type: array_ir,
+                        elem_ir_type: elem_ir,
+                        pb_type,
+                        dims,
+                        total_elements: 0,
+                        indirect_base: false,
+                        dynamic: true,
+                    },
+                );
+                return Ok(());
+            }
+
             // Check if this is a pending global array (GLOBAL arr() + DIM arr(bounds) inside fn)
             if self.pending_global_arrays.contains_key(&name) {
                 let pb_type = if dim.explicit_type {
@@ -13942,7 +14102,7 @@ impl Compiler {
                     let v = self.compile_expr(fb, a5)?;
                     self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
                 } else {
-                    fb.const_i32(0)
+                    fb.const_i32(-1) /* omitted colour: use GRAPHIC COLOR fore */
                 };
                 fb.call_void(
                     "pb_graphic_line_full",
@@ -13967,7 +14127,7 @@ impl Compiler {
                     let v = self.compile_expr(fb, a4)?;
                     self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
                 } else {
-                    fb.const_i32(0)
+                    fb.const_i32(-1) /* omitted colour: use GRAPHIC COLOR fore */
                 };
                 fb.call_void(
                     "pb_graphic_line",
@@ -15296,8 +15456,8 @@ impl Compiler {
             "GRAPHIC_SET_POS" => {
                 let x0 = self.compile_expr(fb, &call.args[0])?;
                 let y0 = self.compile_expr(fb, &call.args[1])?;
-                let xv = self.convert_value(fb, &x0, &IrType::Float, &PbType::Single);
-                let yv = self.convert_value(fb, &y0, &IrType::Float, &PbType::Single);
+                let xv = self.convert_value(fb, &x0, &IrType::I32, &PbType::Long);
+                let yv = self.convert_value(fb, &y0, &IrType::I32, &PbType::Long);
                 fb.call_void("pb_graphic_set_pos", &[xv, yv]);
             }
             "GRAPHIC_TEXT_SIZE" => {
@@ -15335,6 +15495,17 @@ impl Compiler {
             "GRAPHIC_GET_TEXTALIGN" => {
                 if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
                     fb.call_void("pb_graphic_get_textalign", &[ptr]);
+                }
+            }
+            "GRAPHIC_GET_CANVAS" if call.args.len() >= 2 => {
+                // GRAPHIC GET CANVAS TO x&, y& - width/height of the target.
+                // The old arm stored the canvas HANDLE into the first variable
+                // only, so SINE's GET CANVAS left mp=0 and drew nothing.
+                if let (Some((pw, _, _)), Some((ph, _, _))) = (
+                    self.lvalue_ptr(fb, &call.args[0]),
+                    self.lvalue_ptr(fb, &call.args[1]),
+                ) {
+                    fb.call_void("pb_graphic_get_canvas_size", &[pw, ph]);
                 }
             }
             "GRAPHIC_GET_CANVAS" | "GRAPHIC_GET_DC" => {
