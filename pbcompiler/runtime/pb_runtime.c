@@ -1,4 +1,4 @@
-// =====================================================================
+﻿// =====================================================================
 // Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
@@ -196,6 +196,12 @@ __declspec(dllimport) unsigned long __stdcall CharUpperBuffA(char* lpsz, unsigne
 __declspec(dllimport) int __stdcall IsDBCSLeadByte(unsigned char TestChar);
 __declspec(dllimport) unsigned int __stdcall GetMenuState(void* h, unsigned int id, unsigned int f);
 __declspec(dllimport) void* __stdcall GetModuleHandleA(const char* lpModuleName);
+/* Entry-point helper: the synthesized main() must not call the Win32 API
+   directly on i686.  LLVM's x86 stdcall lowering of an i64-returning
+   dllimport emitted an extra `add esp,4` after the call and passed a
+   two-slot i64 to a one-slot DWORD parameter, shifting the frame; every
+   x86 GUI process then crashed at exit with eip=1. */
+void* pb_get_hinstance(void) { return GetModuleHandleA(0); }
 __declspec(dllimport) void* __stdcall FindResourceA(void* hModule, const char* lpName, const char* lpType);
 __declspec(dllimport) unsigned long __stdcall SizeofResource(void* hModule, void* hResInfo);
 __declspec(dllimport) void* __stdcall LoadResource(void* hModule, void* hResInfo);
@@ -667,20 +673,127 @@ void pb_debug_log_msg(const char* category, const char* message) {
 }
 
 #ifdef _WIN32
+__declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void* hModule, char* lpFilename, unsigned long nSize);
+__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char* lpModuleName, void** phModule);
 /* Vectored exception handler: logs fatal exceptions (0xC0000000 mask) to
    stderr.  Informational codes (0x4xxxxxxx, 0xE06D7363 C++ throw inside
    MessageBoxA and friends) are normal runtime noise and are ignored. */
 static long __stdcall pb_crash_handler(void* exception_pointers) {
     /* VEH: only fatal exceptions log (informational/debug codes are normal
-       runtime noise - e.g. 0xE06D7363 C++ throw inside MessageBoxA). */
+       runtime noise - e.g. 0xE06D7363 C++ throw inside MessageBoxA).
+       EXCEPTION_POINTERS and EXCEPTION_RECORD are pointer-sized, so read
+       them with the target architecture's word width instead of assuming
+       x64 (batch 398: i686 reports were reading past the record). */
+#ifdef _WIN64
     unsigned long long* pp = (unsigned long long*)exception_pointers;
     unsigned long long* er = pp ? (unsigned long long*)pp[0] : 0;
+    unsigned long long* ctx = pp ? (unsigned long long*)pp[1] : 0;
     unsigned long code = er ? (unsigned long)(er[0] & 0xFFFFFFFFu) : 0;
+#else
+    unsigned long* pp = (unsigned long*)exception_pointers;
+    unsigned long* er = pp ? (unsigned long*)pp[0] : 0;
+    unsigned long* ctx = pp ? (unsigned long*)pp[1] : 0;
+    unsigned long code = er ? er[0] : 0;
+#endif
     if ((code & 0xF0000000) != 0xC0000000) return 0;
-    unsigned long long addr = er ? er[2] : 0;
-    char b[192];
-    int n = sprintf(b, "CRASH code=%08X addr=%llX\n", (unsigned int)code, addr);
+#ifdef _WIN64
+    unsigned long long addr = er ? *(unsigned long long*)((char*)er + 16) : 0;
+#else
+    unsigned long long addr = er ? (unsigned long long)*(unsigned long*)((char*)er + 12) : 0;
+#endif
+    unsigned long long ret = 0;
+    unsigned long long eip64 = 0, esp64 = 0, ebp64 = 0;
+    unsigned long long exc_info0 = 0, exc_info1 = 0;
+#ifdef _WIN64
+    if (er) {
+        exc_info0 = *(unsigned long long*)((char*)er + 32);
+        exc_info1 = *(unsigned long long*)((char*)er + 40);
+    }
+    if (ctx) {
+        unsigned long long rsp = *(unsigned long long*)((char*)ctx + 0x98);
+        if (rsp) ret = *(unsigned long long*)rsp;
+        eip64 = *(unsigned long long*)((char*)ctx + 0xF8);
+        esp64 = *(unsigned long long*)((char*)ctx + 0x98);
+        ebp64 = *(unsigned long long*)((char*)ctx + 0xA0);
+    }
+#else
+    unsigned long eip = 0, esp = 0, ebp = 0;
+    if (ctx) {
+        eip = *(unsigned long*)((char*)ctx + 184);
+        ebp = *(unsigned long*)((char*)ctx + 180);
+        esp = *(unsigned long*)((char*)ctx + 196);
+        if (esp) ret = (unsigned long long)*(unsigned long*)esp;
+        eip64 = eip;
+        esp64 = esp;
+        ebp64 = ebp;
+    }
+    if (er) {
+        exc_info0 = (unsigned long long)*(unsigned long*)((char*)er + 20);
+        exc_info1 = (unsigned long long)*(unsigned long*)((char*)er + 24);
+    }
+#endif
+    char b[768];
+    char mod[MAX_PATH];
+    mod[0] = 0;
+    {
+        void* hm = 0;
+        if (GetModuleHandleExA(0x00000004 /* FROM_ADDRESS */,
+                               (const char*)(size_t)addr, &hm) && hm)
+            GetModuleFileNameA(hm, mod, MAX_PATH);
+    }
+    char rmod[MAX_PATH];
+    rmod[0] = 0;
+    if (ret) {
+        void* hm = 0;
+        if (GetModuleHandleExA(0x00000004, (const char*)(size_t)ret, &hm) && hm)
+            GetModuleFileNameA(hm, rmod, MAX_PATH);
+    }
+    unsigned long long base = (unsigned long long)(size_t)GetModuleHandleA(0);
+    int n = sprintf(b, "CRASH code=%08X base=%llX off=%llX eip=%llX esp=%llX ebp=%llX info0=%llX info1=%llX ret=%llX retoff=%llX line=%d func=%s mod=%s rmod=%s\n",
+                    (unsigned int)code, base, addr - base, eip64, esp64, ebp64,
+                    exc_info0, exc_info1, ret,
+                    ret >= base ? ret - base : 0ULL, pb_debug_line,
+                    pb_debug_current_func, mod, rmod);
     _write(2, b, n);
+    if (pb_debug_log) {
+        fprintf(pb_debug_log, "%s", b);
+        fflush(pb_debug_log);
+    }
+#ifdef PB_DUMP_STACK
+    if (pb_debug_log) {
+        /* Diagnostic only: inspect the CRT atexit table that exit() walks.
+           A corrupted entry here means a wild write, not a plain null deref. */
+        extern void* __acrt_atexit_table[];
+        void** ab = (void**)__acrt_atexit_table[0];
+        void** ae = (void**)__acrt_atexit_table[1];
+        int k;
+        fprintf(pb_debug_log, "ONEXIT tbl=%p begin=%p end=%p cap=%p\n",
+                (void*)__acrt_atexit_table, (void*)ab, (void*)ae, __acrt_atexit_table[2]);
+        if (ab && ae && ae >= ab && (size_t)(ae - ab) <= 64) {
+            for (k = 0; k < (int)(ae - ab) && k < 8; k++)
+                fprintf(pb_debug_log, "  exit[%d] = %p\n", k, ab[k]);
+        }
+        fflush(pb_debug_log);
+    }
+    if (pb_debug_log) {
+#ifdef _WIN64
+        unsigned long long* sp = (unsigned long long*)(size_t)esp64;
+        int i;
+        fprintf(pb_debug_log, "STACK rsp=%llX\n", esp64);
+        for (i = -8; i < 32; i++) {
+            fprintf(pb_debug_log, "  [%+03d] %p = %p\n", i, (void*)(sp + i), (void*)sp[i]);
+        }
+#else
+        unsigned long* sp = (unsigned long*)(size_t)esp64;
+        int i;
+        fprintf(pb_debug_log, "STACK esp=%lX\n", (unsigned long)esp64);
+        for (i = -8; i < 32; i++) {
+            fprintf(pb_debug_log, "  [%+03d] %p = %p\n", i, (void*)(sp + i), (void*)sp[i]);
+        }
+#endif
+        fflush(pb_debug_log);
+    }
+#endif
     return 0; /* EXCEPTION_CONTINUE_SEARCH */
 }
 #endif
@@ -4364,6 +4477,19 @@ void pb_copy_wstr_to_fixed(char* buf, const char* src, long long n) {
     for (i = len; i < (int)n; i++) ((short*)buf)[i] = 0x20;
 }
 
+/* WSTRINGZ * N (batch401): a NUL-terminated fixed wide buffer, distinct
+   from WSTRING * N's space padding.  Copy the payload, write a UTF-16 NUL
+   at the end, and zero-fill the remaining capacity. */
+void pb_copy_wstr_to_wz(char* buf, const char* src, long long n) {
+    const short* w = (const short*)src;
+    int len, i;
+    if (!buf || n <= 0) return;
+    len = src ? pb_str_len(src) / 2 : 0;
+    if (len > (int)n - 1) len = (int)n - 1;
+    if (len > 0) memcpy(buf, w, (size_t)len * 2);
+    for (i = len; i < (int)n; i++) ((short*)buf)[i] = 0;
+}
+
 void pb_line_input_fixed_w(int filenum, char* buf, long long n) {
     char* w = pb_line_input_w(filenum);
     pb_copy_wstr_to_fixed(buf, w, n);
@@ -6382,6 +6508,7 @@ __declspec(noreturn) void pb_raise_error(int code) {
 #ifdef _WIN32
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char* lpName, char* lpBuffer, unsigned long nSize);
 __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void* hModule, char* lpFilename, unsigned long nSize);
+__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char* lpModuleName, void** phModule);
 #endif
 
 /* ENVIRON$("VARNAME") � returns environment variable value */
@@ -6498,8 +6625,8 @@ char* pb_str_concat(const char* a, const char* b) {
 typedef struct {
     unsigned short wYear;
     unsigned short wMonth;
+    unsigned short wDayOfWeek;   /* Win32 SYSTEMTIME order: DOW precedes DAY */
     unsigned short wDay;
-    unsigned short wDayOfWeek;
     unsigned short wHour;
     unsigned short wMinute;
     unsigned short wSecond;
@@ -6757,6 +6884,7 @@ __declspec(dllimport) int __stdcall PlaySoundA(const char* pszSound, void* hmod,
 #endif
 
 #define PB_SND_FILENAME 0x00020000
+#define PB_SND_ASYNC    0x00000001
 
 /* TIX � high-resolution performance counter (QUAD) */
 /* TIX - read the CPU time-stamp counter (RDTSC). CHW TIX_statement.htm:
@@ -6824,10 +6952,15 @@ int pb_seteof(int f) {
 #endif
 }
 
-/* PLAY WAVE "file.wav" � play a .wav synchronously */
+/* PLAY WAVE "file.wav" — start playback without blocking the caller.
+ * PBWin's PLAY WAVE is the fire-and-forget form (verified with the
+ * PowerBASIC Pong oracle: its 24.8 s AppStart.wav plays while the dialog
+ * is already visible); PLAY WAVE END stops it.  Using synchronous
+ * PlaySound here delayed WM_INITDIALOG for the whole clip and left the
+ * dialog hidden. */
 int pb_play_wave(const char* path) {
 #ifdef _WIN32
-    return PlaySoundA(path, NULL, PB_SND_FILENAME) ? 0 : -1;
+    return PlaySoundA(path, NULL, PB_SND_FILENAME | PB_SND_ASYNC) ? 0 : -1;
 #else
     pb_err_var = pb_err = 68; return -1;
 #endif
@@ -7028,6 +7161,9 @@ typedef struct {
    its own frame stack, matching the per-thread CPU stack it describes. */
 static __declspec(thread) pb_callstk_frame_t pb_callstk_frames[PB_CALLSTK_MAX];
 static __declspec(thread) int pb_callstk_depth = 0;
+/* Frames beyond PB_CALLSTK_MAX are counted here so their matching pop does
+   not steal a real slot (the old code skipped the push but still popped). */
+static __declspec(thread) int pb_callstk_overflow = 0;
 static int pb_profile_enabled = 0;
 #define PB_PROFILE_MAX 256
 static const char* pb_profile_names[PB_PROFILE_MAX];
@@ -7058,6 +7194,12 @@ void pb_profile_enable(void) {
     pb_profile_enabled = 1;
 }
 
+#ifdef PB_TRACE_CALLSTK
+#define PB_CSLOG(...) do { if (pb_debug_log) { fprintf(pb_debug_log, __VA_ARGS__); fprintf(pb_debug_log, "\n"); fflush(pb_debug_log); } } while (0)
+#else
+#define PB_CSLOG(...) ((void)0)
+#endif
+
 void pb_callstk_push(const char* name) {
     if (pb_callstk_depth < PB_CALLSTK_MAX) {
         pb_callstk_frames[pb_callstk_depth].name = name;
@@ -7070,13 +7212,25 @@ void pb_callstk_push(const char* name) {
             pb_callstk_frames[pb_callstk_depth].enter_tick = 0;
         }
         pb_callstk_depth++;
+        PB_CSLOG("CS PUSH %s depth=%d", name ? name : "?", pb_callstk_depth);
+    } else {
+        pb_callstk_overflow++;
+        PB_CSLOG("CS PUSH-OVF %s depth=%d ovf=%d", name ? name : "?", pb_callstk_depth, pb_callstk_overflow);
     }
 }
 
 void pb_callstk_pop(void) {
+    if (pb_callstk_overflow > 0) {
+        pb_callstk_overflow--;
+        return;
+    }
     if (pb_callstk_depth > 0) {
         pb_callstk_depth--;
+        PB_CSLOG("CS POP depth=%d args=%p name=%s", pb_callstk_depth, (void*)pb_callstk_frames[pb_callstk_depth].args, pb_callstk_frames[pb_callstk_depth].name ? pb_callstk_frames[pb_callstk_depth].name : "?");
+#ifndef PB_DIAG_NO_CALLSTK_FREE
         free(pb_callstk_frames[pb_callstk_depth].args);
+#endif
+        PB_CSLOG("CS POP-FREED depth=%d", pb_callstk_depth);
         pb_callstk_frames[pb_callstk_depth].args = NULL;
         if (pb_profile_enabled && pb_callstk_frames[pb_callstk_depth].enter_tick != 0) {
             long long el = pb_now_ms() - pb_callstk_frames[pb_callstk_depth].enter_tick;
@@ -7116,6 +7270,7 @@ char* pb_callstk_get(long long n) {
 void pb_callstk_setargs(const char* s) {
     if (pb_callstk_depth <= 0) return;
     pb_callstk_frame_t* f = &pb_callstk_frames[pb_callstk_depth - 1];
+    PB_CSLOG("CS SET depth=%d old=%p s=%p len=%d text=%s", pb_callstk_depth, (void*)f->args, (void*)s, s ? (int)strlen(s) : -1, s ? s : "");
     free(f->args);
     if (s && s[0]) {
         size_t n = strlen(s);
@@ -7128,13 +7283,25 @@ void pb_callstk_setargs(const char* s) {
     }
 }
 
-/* String parameter -> "..." (double quotes, PBWin CALLSTK$ format) */
+/* String parameter -> "..." (double quotes, PBWin CALLSTK$ format).
+   Resource IDs and NULL are passed through BYVAL into ASCIIZ parameters by
+   Win32 samples (DialogBox(hInst, BYVAL 100&, ...)).  Such a "pointer" is
+   below the first committed page, so dereferencing it inside CALLSTK argument
+   capture faults before the callee ever runs.  Render it as #<id> instead. */
 char* pb_callstk_quote(const char* s) {
-    if (!s) s = "";
-    size_t n = strlen(s);
+    uintptr_t raw = (uintptr_t)s;
+    const char* text = s;
+    char idbuf[32];
+    if (!s) {
+        text = "";
+    } else if (raw < 0x10000u) {
+        snprintf(idbuf, sizeof(idbuf), "#%llu", (unsigned long long)raw);
+        text = idbuf;
+    }
+    size_t n = strlen(text);
     char* b = (char*)malloc(n + 3);
     b[0] = '"';
-    memcpy(b + 1, s, n);
+    memcpy(b + 1, text, n);
     b[n + 1] = '"';
     b[n + 2] = 0;
     char* out = pb_bstr_alloc(b, (unsigned int)(n + 2));
@@ -8058,8 +8225,15 @@ static DataPool data_pools[MAX_DATA_POOLS];
 static DataPool* data_active = NULL;
 static DataPool* data_stack[DATA_STACK];
 static int data_sp = 0;
+/* DATA activation beyond DATA_STACK is tracked separately: the old code
+   skipped the push but still popped, restoring the wrong pool. */
+static int data_overflow = 0;
 
 void pb_data_activate(const char* procname) {
+#ifdef PB_DIAG_NO_DATA
+    (void)procname;
+    return;
+#endif
     DataPool* found = NULL;
     for (int i = 0; i < MAX_DATA_POOLS; i++) {
         if (data_pools[i].in_use && strcmp(data_pools[i].name, procname) == 0) {
@@ -8082,6 +8256,8 @@ void pb_data_activate(const char* procname) {
     }
     if (data_sp < DATA_STACK) {
         data_stack[data_sp++] = data_active;
+    } else {
+        data_overflow++;
     }
     data_active = found;
     /* On each entry the local list is (re)built from the inline DATA items. */
@@ -8092,6 +8268,13 @@ void pb_data_activate(const char* procname) {
 }
 
 void pb_data_deactivate(void) {
+#ifdef PB_DIAG_NO_DATA
+    return;
+#endif
+    if (data_overflow > 0) {
+        data_overflow--;
+        return;
+    }
     if (data_sp > 0) {
         data_sp--;
         data_active = data_stack[data_sp];
@@ -11615,6 +11798,12 @@ __declspec(dllimport) long __stdcall RegQueryInfoKeyA(HKEY_PB, char*, unsigned l
 __declspec(dllimport) long __stdcall RegQueryValueExA(HKEY_PB, const char*, unsigned long*, unsigned long*, unsigned char*, unsigned long*);
 __declspec(dllimport) long __stdcall RegCloseKey(HKEY_PB);;
 __declspec(dllimport) long __stdcall RegEnumKeyExA(HKEY_PB, unsigned long, char*, unsigned long*, unsigned long*, unsigned long*, void*, void*);
+__declspec(dllimport) long __stdcall RegCreateKeyExA(HKEY_PB, const char*, unsigned long, char*, unsigned long, unsigned long, void*, HKEY_PB*, unsigned long*);
+__declspec(dllimport) long __stdcall RegSetValueExA(HKEY_PB, const char*, unsigned long, unsigned long, const unsigned char*, unsigned long);
+__declspec(dllimport) long __stdcall RegDeleteTreeA(HKEY_PB, const char*);
+
+#define PB_KEY_ALL_ACCESS 0xF003FL
+#define PB_REG_SZ 1UL
 
 /* CLSID$(ProgramID$) - batch259 C batch, CHW CLSID$ function:
    Look up HKCR\<progid>\CLSID default value, parse the GUID string
@@ -11738,6 +11927,82 @@ char* pb_progid_get(const char* clsid) {
    38-byte text.  The 16-byte layout is the COM GUID binary layout
    (Data1..3 little-endian, Data4 raw), identical to the CLSID$/PROGID$
    helpers above. */
+/* COM server registration used by generated DllRegisterServer.  Writes the
+   standard HKCR\CLSID + ProgID keys and InprocServer32 path.  This covers
+   registration; DllGetClassObject activation remains a separate feature. */
+static int pb_reg_set_sz(HKEY_PB root, const char* sub, const char* name, const char* val) {
+    HKEY_PB key = 0;
+    unsigned long disp = 0;
+    long rc;
+    if (!sub || !val) return -1;
+    rc = RegCreateKeyExA(root, sub, 0, 0, 0, PB_KEY_ALL_ACCESS, 0, &key, &disp);
+    if (rc != 0 || !key) return -1;
+    rc = RegSetValueExA(key, name, 0, PB_REG_SZ,
+                        (const unsigned char*)val,
+                        (unsigned long)strlen(val) + 1);
+    RegCloseKey(key);
+    return rc == 0 ? 0 : -1;
+}
+
+static int pb_com_register_tree(HKEY_PB root, const char* prefix,
+                                const char* guid, const char* progid) {
+    char clsid_key[320];
+    char clsid_value[160];
+    char inproc[360];
+    char prog_key[320];
+    char prog_curver[320];
+    char module[1024];
+    void* hmod = 0;
+    unsigned long n;
+    // Resolve the DLL that contains this function, not the host process.
+    if (!GetModuleHandleExA(0x5, (const char*)&pb_com_register_tree, &hmod) || !hmod) {
+        hmod = 0;
+    }
+    n = GetModuleFileNameA(hmod, module, (unsigned long)sizeof(module));
+    if (n == 0 || n >= sizeof(module)) return -1;
+    sprintf(clsid_key, "%sCLSID\\%s", prefix, guid);
+    sprintf(clsid_value, "CLSID\\%s", guid);
+    if (pb_reg_set_sz(root, clsid_key, 0, progid) != 0) return -1;
+    sprintf(inproc, "%s\\InprocServer32", clsid_key);
+    if (pb_reg_set_sz(root, inproc, 0, module) != 0) return -1;
+    if (pb_reg_set_sz(root, inproc, "ThreadingModel", "Apartment") != 0) return -1;
+    sprintf(prog_key, "%s%s", prefix, progid);
+    if (pb_reg_set_sz(root, prog_key, 0, clsid_value) != 0) return -1;
+    sprintf(prog_curver, "%s.1", progid);
+    if (pb_reg_set_sz(root, prog_key, "CurVer", prog_curver) != 0) return -1;
+    sprintf(prog_curver, "%s%s.1", prefix, progid);
+    if (pb_reg_set_sz(root, prog_curver, 0, clsid_value) != 0) return -1;
+    return 0;
+}
+
+int pb_com_register_server(const char* guid, const char* progid) {
+    if (!guid || !guid[0] || !progid || !progid[0]) return -1;
+    // HKCR needs elevation on current Windows; COM also supports per-user
+    // registration under HKCU\Software\Classes, which lets an unelevated
+    // sample register itself.  Try machine-wide first, fall back to per-user.
+    if (pb_com_register_tree((HKEY_PB)0x80000000L, "", guid, progid) == 0) return 0;
+    if (pb_com_register_tree((HKEY_PB)0x80000001L, "Software\\Classes\\", guid, progid) == 0) return 0;
+    return -1;
+}
+
+int pb_com_unregister_server(const char* guid, const char* progid) {
+    char clsid_key[320];
+    char prog_curver[320];
+    if (!guid || !guid[0] || !progid || !progid[0]) return -1;
+    sprintf(clsid_key, "CLSID\\%s", guid);
+    RegDeleteTreeA((HKEY_PB)0x80000000L, clsid_key);
+    sprintf(prog_curver, "%s.1", progid);
+    RegDeleteTreeA((HKEY_PB)0x80000000L, prog_curver);
+    RegDeleteTreeA((HKEY_PB)0x80000000L, progid);
+    sprintf(clsid_key, "Software\\Classes\\CLSID\\%s", guid);
+    RegDeleteTreeA((HKEY_PB)0x80000001L, clsid_key);
+    sprintf(clsid_key, "Software\\Classes\\%s", progid);
+    RegDeleteTreeA((HKEY_PB)0x80000001L, clsid_key);
+    sprintf(clsid_key, "Software\\Classes\\%s.1", progid);
+    RegDeleteTreeA((HKEY_PB)0x80000001L, clsid_key);
+    return 0;
+}
+
 __declspec(dllimport) long __stdcall CoCreateGuid(void* pguid);
 
 char* pb_guid_new(void) {
@@ -12828,6 +13093,9 @@ int pb_graphic_set_autosize(long w, long h) {
 #define PB_LOGPIXELSY 90
 /* GRAPHIC SET SIZE / SET CLIP / SET VIRTUAL / WORDWRAP (batch 65) */
 __declspec(dllimport) int __stdcall IntersectClipRect(void* hdc, int l, int t, int r, int b);
+/* GRAPHIC SET SIZE needs the current graphic window, which is defined with
+   the GRAPHIC WINDOW family further down this file. */
+static void* pb_gw_cur;
 int pb_graphic_set_size(int w, int h) {
     if (!g_gr_dc || !g_gr_bmp) return 0;
     if (w <= 0 || h <= 0 || w > 100000 || h > 100000) return 0;
@@ -12854,6 +13122,16 @@ int pb_graphic_set_size(int w, int h) {
     }
     g_gr_bmp = nb;
     SelectObject(g_gr_dc, g_gr_bmp);
+    /* GRAPHIC SET SIZE sizes the graphic window itself, not just the
+       offscreen bitmap.  PBWin measures the result as the outer window
+       rectangle (the Calendar sample asks for 700x252 and measures
+       700x252), so pass the requested size straight to SetWindowPos. */
+    void* gw = g_gr_dc_win ? g_gr_dc_win : pb_gw_cur;
+    if (gw) {
+        SetWindowPos(gw, 0, 0, 0, w, h,
+                     0x0002u /* SWP_NOMOVE */ | 0x0004u /* SWP_NOZORDER */
+                     | 0x0010u /* SWP_NOACTIVATE */);
+    }
     return 1;
 }
 static float g_gr_clip_l = 0, g_gr_clip_t = 0, g_gr_clip_r = 0, g_gr_clip_b = 0;
@@ -13024,6 +13302,83 @@ void* pb_graphic_bitmap_load(char* fname) {
     if (!fname) return 0;
     return LoadImageA(0, fname, 0, 0, 0, 0x10); /* IMAGE_BITMAP, LR_LOADFROMFILE */
 }
+/* GRAPHIC BITMAP LOAD BmpName$, nWidth, nHeight TO hBmp
+   A leading '#' selects a resource id (DIGITAL/HITGAME); otherwise the
+   period rule is the same as GRAPHIC RENDER (file vs resource). */
+void* pb_graphic_bitmap_load_ex(char* fname, int nw, int nh) {
+    if (!fname) return 0;
+    unsigned int flags = 0;
+    void* inst = 0;
+    const char* name = fname;
+    if (fname[0] == '#') {
+        long long id = 0;
+        for (int i = 1; fname[i]; i++) {
+            if (fname[i] < '0' || fname[i] > '9') break;
+            id = id * 10 + (fname[i] - '0');
+        }
+        inst = GetModuleHandleA(0);
+        name = (const char*)(size_t)id;
+        flags = 0;
+    } else if (strchr(fname, '.')) {
+        flags = 0x10; /* LR_LOADFROMFILE */
+    } else {
+        inst = GetModuleHandleA(0);
+    }
+    void* h = LoadImageA(inst, name, 0 /* IMAGE_BITMAP */, nw, nh, flags);
+    if (!h && inst) h = LoadImageA(0, fname, 0, nw, nh, 0x10);
+    return h;
+}
+
+static long g_gr_cell_row = 0;
+static long g_gr_cell_col = 0;
+int pb_graphic_set_cell(long row, long col) {
+    g_gr_cell_row = row;
+    g_gr_cell_col = col;
+    return 1;
+}
+int pb_graphic_get_cell(long* row, long* col) {
+    if (row) *row = g_gr_cell_row;
+    if (col) *col = g_gr_cell_col;
+    return 1;
+}
+
+/* GRAPHIC COPY hbmpSource, id, ... TO (x,y) */
+static void pb_graphic_present_ctl(void);
+int pb_graphic_copy_bmp(long long src_handle, int id, int dx, int dy) {
+    (void)id;
+    void* bmp = (void*)(size_t)src_handle;
+    if (!g_gr_dc || !bmp) return 0;
+    unsigned char bi[40];
+    for (int i = 0; i < 40; i++) bi[i] = 0;
+    if (!GetObjectA(bmp, 40, (void*)bi)) return 0;
+    int w = bi[4] | (bi[5] << 8) | (bi[6] << 16) | (bi[7] << 24);
+    int h = bi[8] | (bi[9] << 8) | (bi[10] << 16) | (bi[11] << 24);
+    void* mem = CreateCompatibleDC(g_gr_dc);
+    if (!mem) return 0;
+    void* old = SelectObject(mem, bmp);
+    int ok = BitBlt(g_gr_dc, dx, dy, w, h, mem, 0, 0, 0x00CC0020);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    if (ok) pb_graphic_present_ctl();
+    return ok ? 1 : 0;
+}
+int pb_graphic_copy_bmp_rect(long long src_handle, int id, int sx1, int sy1,
+                             int sx2, int sy2, int dx, int dy) {
+    (void)id;
+    void* bmp = (void*)(size_t)src_handle;
+    if (!g_gr_dc || !bmp) return 0;
+    int w = sx2 - sx1 + 1;
+    int h = sy2 - sy1 + 1;
+    if (w <= 0 || h <= 0) return 0;
+    void* mem = CreateCompatibleDC(g_gr_dc);
+    if (!mem) return 0;
+    void* old = SelectObject(mem, bmp);
+    int ok = BitBlt(g_gr_dc, dx, dy, w, h, mem, sx1, sy1, 0x00CC0020);
+    SelectObject(mem, old);
+    DeleteDC(mem);
+    if (ok) pb_graphic_present_ctl();
+    return ok ? 1 : 0;
+}
 static int gr_char_w(void) {
     unsigned char sz[8];
     for (int i = 0; i < 8; i++) sz[i] = 0;
@@ -13043,16 +13398,18 @@ static int gr_char_h(void) {
     return h > 0 ? h : 16;
 }
 int pb_graphic_chr_size(char* text, long* w, long* h) {
-    if (!text) text = "";
-    int len = 0;
-    while (text[len]) len++;
+    /* GRAPHIC CHR SIZE returns the cell size of ONE character in the font
+       currently selected into the graphic target.  The old implementation
+       measured whatever string the caller happened to pass (usually an
+       empty one), so Calendar got 0x0 and GRAPHIC SET SIZE became a no-op.
+       Measure a representative wide glyph instead, as PBWin does. */
+    (void)text;
+    if (!g_gr_dc) { if (w) *w = 0; if (h) *h = 0; return 0; }
     unsigned char sz[8];
     for (int i = 0; i < 8; i++) sz[i] = 0;
-    void* old = SelectObject(g_gr_dc, GetStockObject(17));
-    GetTextExtentPoint32A(g_gr_dc, text, len, (void*)sz);
-    SelectObject(g_gr_dc, old);
-    *w = sz[0] | (sz[1] << 8) | (sz[2] << 16) | (sz[3] << 24);
-    *h = sz[4] | (sz[5] << 8) | (sz[6] << 16) | (sz[7] << 24);
+    GetTextExtentPoint32A(g_gr_dc, "W", 1, (void*)sz);
+    if (w) *w = sz[0] | (sz[1] << 8) | (sz[2] << 16) | (sz[3] << 24);
+    if (h) *h = sz[4] | (sz[5] << 8) | (sz[6] << 16) | (sz[7] << 24);
     return 1;
 }
 int pb_graphic_cell_size(long rows, long cols, long* w, long* h) {
@@ -13483,15 +13840,25 @@ static void* g_xp_dc = 0;
 #define PB_PHYSICALWIDTH 110
 #define PB_PHYSICALHEIGHT 111
 
+static char g_xp_job_name[512];
 int pb_xprint_attach(char* printer, char* job) {
-    (void)job;
     (void)printer;  /* XPRINT currently renders to the screen DC */
+    if (job) {
+        strncpy(g_xp_job_name, job, sizeof(g_xp_job_name) - 1);
+        g_xp_job_name[sizeof(g_xp_job_name) - 1] = 0;
+    } else {
+        g_xp_job_name[0] = 0;
+    }
     if (g_xp_dc) { DeleteDC(g_xp_dc); g_xp_dc = 0; }
     void* dc = 0;
     /* Always use screen DC for now � printer DC requires winspool and may not exist in CI */
     dc = CreateDCA("DISPLAY", 0, 0, 0);
     g_xp_dc = dc;
     return dc ? 1 : 0;
+}
+/* XPRINT$ system variable: the current print-job name. */
+char* pb_xprint_job_name(void) {
+    return g_xp_job_name;
 }
 
 int pb_xprint_close(void) {
@@ -13709,6 +14076,23 @@ int pb_xprint_set_font(long hFont) {
     g_xp_font = (void*)(uintptr_t)hFont;
     if (g_xp_dc) SelectObject(g_xp_dc, g_xp_font);
     return 1;
+}
+/* XPRINT FONT face$, points, style  (style bit 0 italic, 1 underline, 2 strike) */
+int pb_xprint_font(char* face, int points, int style) {
+    int height = -(points * 96 / 72);
+    int weight = 400;
+    unsigned char italic = (style & 1) ? 1 : 0;
+    unsigned char underline = (style & 2) ? 1 : 0;
+    unsigned char strike = (style & 4) ? 1 : 0;
+    void* hf = CreateFontA(height, 0, 0, 0, weight, italic, underline, strike,
+                           1, 0, 0, 0, 0x31, face ? face : "Courier New");
+    if (!hf) return 0;
+    return pb_xprint_set_font((long)(uintptr_t)hf);
+}
+/* XPRINT ATTACH CHOOSE: the runtime renders to the screen DC, so the
+   choose dialog is accepted and the job name recorded without blocking. */
+int pb_xprint_attach_choose(char* job) {
+    return pb_xprint_attach(0, job);
 }
 int pb_xprint_set_mix(int mode) {
     if (!g_xp_dc) return 0;
@@ -14057,6 +14441,7 @@ typedef unsigned int pb_lparam_t;
 typedef unsigned int pb_wparam_t;
 #endif
 __declspec(dllimport) void* __stdcall SendMessageA(void* hWnd, unsigned int Msg, pb_wparam_t wParam, pb_lparam_t lParam);
+__declspec(dllimport) void* __stdcall SendMessageW(void* hWnd, unsigned int Msg, pb_wparam_t wParam, pb_lparam_t lParam);
 __declspec(dllimport) void* __stdcall GetDlgItem(void* hDlg, int nId);
 __declspec(dllimport) unsigned long __stdcall RegisterClassExA(const void* lpwcx);
 __declspec(dllimport) void* __stdcall CreateWindowExA(unsigned long dwExStyle, const char* lpClassName, const char* lpWindowName, unsigned long dwStyle, int x, int y, int nWidth, int nHeight, void* hWndParent, void* hMenu, void* hInstance, void* lpParam);
@@ -14519,6 +14904,61 @@ int pb_display_savefile(const char* title, const char* filter, const char* initi
     *out = SysAllocStringByteLen("", 0);
     return 0;
 }
+
+/* Full DISPLAY OPENFILE/SAVEFILE positional signature.  x/y are accepted
+   for syntax/ABI compatibility (Win32's common dialogs never exposed
+   coordinates). */
+static int pb_display_file_full(int save, void* parent, int x, int y,
+                                const char* title, const char* folder,
+                                const char* filter, const char* start,
+                                const char* defext, int flags, char** out,
+                                long long* count) {
+    (void)x;
+    (void)y;
+    if (count) *count = 0;
+    if (!out) return 0;
+    char file_buf[MAX_PATH] = {0};
+    OPENFILENAMEA ofn = {0};
+    ofn.lStructSize = sizeof(OPENFILENAMEA);
+    ofn.hwndOwner = parent;
+    if (filter && filter[0]) ofn.lpstrFilter = filter;
+    else ofn.lpstrFilter = "All Files\0*.*\0";
+    ofn.lpstrFile = file_buf;
+    ofn.nMaxFile = MAX_PATH;
+    if (start && start[0]) {
+        unsigned int n = (unsigned int)strlen(start);
+        if (n >= MAX_PATH) n = MAX_PATH - 1;
+        for (unsigned int i = 0; i < n; i++) file_buf[i] = start[i];
+    }
+    ofn.lpstrInitialDir = (folder && folder[0]) ? folder : 0;
+    ofn.lpstrTitle = (title && title[0]) ? title : 0;
+    ofn.lpstrDefExt = (defext && defext[0]) ? defext : 0;
+    ofn.Flags = (unsigned long)(flags ? flags
+                                  : (save ? OFN_OVERWRITEPROMPT
+                                          : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST)));
+    int ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+    if (ok) {
+        *out = SysAllocStringByteLen(file_buf, (unsigned int)strlen(file_buf));
+        if (count) *count = 1;
+        return 1;
+    }
+    *out = SysAllocStringByteLen("", 0);
+    return 0;
+}
+int pb_display_openfile_full(void* parent, int x, int y, const char* title,
+                             const char* folder, const char* filter,
+                             const char* start, const char* defext, int flags,
+                             char** out, long long* count) {
+    return pb_display_file_full(0, parent, x, y, title, folder, filter, start,
+                                defext, flags, out, count);
+}
+int pb_display_savefile_full(void* parent, int x, int y, const char* title,
+                             const char* folder, const char* filter,
+                             const char* start, const char* defext, int flags,
+                             char** out, long long* count) {
+    return pb_display_file_full(1, parent, x, y, title, folder, filter, start,
+                                defext, flags, out, count);
+}
 int pb_display_color(long* out_color) {
     if (!out_color) return 0;
     static unsigned char cust_colors[16] = {0};
@@ -14573,6 +15013,31 @@ int pb_display_browse(const char* title, const char* initialdir, char** out) {
     *out = SysAllocStringByteLen("", 0); /* user cancelled */
     return 0;
 }
+/* Full DISPLAY BROWSE form: hParent,x,y,title$,folder$,flags& TO result$. */
+int pb_display_browse_full(void* parent, int x, int y, const char* title,
+                           const char* initialdir, int flags, char** out) {
+    (void)x;
+    (void)y;
+    (void)initialdir; /* BROWSEINFO has no plain initial-directory field */
+    if (!out) return 0;
+    char display_name[MAX_PATH] = {0};
+    char path[MAX_PATH] = {0};
+    BROWSEINFOA bi = {0};
+    bi.hwndOwner = (void*)parent;
+    bi.pidlRoot = 0;
+    bi.pszDisplayName = display_name;
+    bi.lpszTitle = title && title[0] ? title : "Select Folder";
+    bi.ulFlags = (unsigned int)(flags ? flags : 0x00000001);
+    void* pidl = SHBrowseForFolderA(&bi);
+    if (pidl) {
+        if (SHGetPathFromIDListA(pidl, path)) {
+            *out = SysAllocStringByteLen(path, (unsigned int)strlen(path));
+            return 1;
+        }
+    }
+    *out = SysAllocStringByteLen("", 0);
+    return 0;
+}
 /* === Batch 79: ARRAY REDIM backing store ===
    The old OOP stubs (pb_class_create/pb_class_destroy/pb_method_call and the
    unreferenced pb_instance_create) were removed: codegen declares none of them
@@ -14587,6 +15052,12 @@ typedef struct {
     long long count;
     long long cap;
     int elem_size;
+    /* Multi-dimensional shape for REDIM'd arrays (Boltcalc: GLOBAL a()
+       followed by REDIM a(1 TO n, 1 TO 2)).  Legacy one-dimensional
+       descriptors keep ndims=1 with lower[0]=0. */
+    int ndims;
+    long long lower[8];
+    long long dim_count[8];
 } pb_dyn_array;
 
 static void pb_dyn_zero_range(void* data, long long from, long long to, int elem_size) {
@@ -14602,6 +15073,9 @@ void* pb_dynamic_array_new(int elem_size, long long count) {
     d->elem_size = elem_size;
     d->count = count < 1 ? 0 : count;
     d->cap = d->count;
+    d->ndims = 1;
+    d->lower[0] = 0;
+    d->dim_count[0] = d->count;
     if (d->cap > 0) {
         d->data = calloc((size_t)d->cap, (size_t)elem_size);
         if (!d->data) {
@@ -14620,6 +15094,66 @@ void* pb_dynamic_array_data(void* v) {
 long long pb_dynamic_array_total(void* v) {
     pb_dyn_array* d = (pb_dyn_array*)v;
     return d ? d->count : 0;
+}
+
+/* ERASE dynamic array: PBWin releases the element block and leaves the
+   array undimensioned (LBOUND 0 / UBOUND -1).  The descriptor itself stays
+   alive so a later REDIM can reuse the same variable slot. */
+void pb_dynamic_array_erase(void* v) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d) return;
+    free(d->data);
+    d->data = NULL;
+    d->count = 0;
+    d->cap = 0;
+    d->ndims = 1;
+    d->lower[0] = 0;
+    d->dim_count[0] = 0;
+}
+
+void* pb_dynamic_array_ensure(void* v, int elem_size) {
+    if (v) return v;
+    return pb_dynamic_array_new(elem_size, 0);
+}
+
+/* Multi-dimensional shape.  dim is 1-based; out-of-range dimensions
+   report LBOUND 0 / UBOUND -1 so an undimensioned array stays empty. */
+long long pb_dynamic_array_bound(void* v, int dim, int upper) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d || dim < 1 || dim > d->ndims) return upper ? -1 : 0;
+    return upper ? d->lower[dim - 1] + d->dim_count[dim - 1] - 1
+                 : d->lower[dim - 1];
+}
+
+int pb_dynamic_array_ndims(void* v) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    return d ? d->ndims : 0;
+}
+
+long long pb_dynamic_array_dim_count(void* v, int dim) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d || dim < 1 || dim > d->ndims) return 0;
+    return d->dim_count[dim - 1];
+}
+
+void pb_dynamic_array_set_shape(void* v, int ndims, long long total) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d) return;
+    if (ndims < 1) ndims = 1;
+    if (ndims > 8) ndims = 8;
+    /* The total passed to resize already reflects the caller's extra
+       head slots for non-zero lower bounds; clamp the stored counts so
+       their product matches that allocation. */
+    d->ndims = ndims;
+    d->count = total;
+    if (ndims == 1 && d->dim_count[0] == 0) d->dim_count[0] = total;
+}
+
+void pb_dynamic_array_set_dim(void* v, int dim, long long lower, long long dim_count) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d || dim < 1 || dim > 8) return;
+    d->lower[dim - 1] = lower;
+    d->dim_count[dim - 1] = dim_count;
 }
 
 /* INCR/DECR: preserve the prefix, realloc only when growing past capacity.
@@ -14672,6 +15206,10 @@ long long pb_dynamic_array_resize(void* v, long long count, int elem_size, int p
         pb_dyn_zero_range(d->data, 0, count, elem_size);
     }
     d->count = count;
+    if (d->ndims <= 1) {
+        d->ndims = 1;
+        d->dim_count[0] = count;
+    }
     return d->count;
 }
 
@@ -14697,7 +15235,7 @@ void pb_events_enable(int enable) { g_event_enabled = enable; }
  * subscribing client object.  RAISEEVENT fires by method id across every
  * attached client.  Handlers are called as fn(client, arg); a zero-argument
  * handler simply ignores the second register (x64 calling convention). */
-typedef int (*pb_event_fn)(void* client, int arg);
+typedef int (*pb_event_fn)(void* client, int arg, ...);
 typedef struct pb_event_ent { int mname; pb_event_fn fn; } pb_event_ent;
 typedef struct pb_event_tbl { int count; int cap; pb_event_ent* ents; } pb_event_tbl;
 typedef struct pb_sub { void* client; pb_event_tbl* tbl; } pb_sub;
@@ -14836,12 +15374,310 @@ static void* pb_com_new_from_lib(const PB_GUID* cg, const char* lib) {
     return hr == 0 ? obj : NULL;
 }
 
+/* ---- built-in PowerTime object -------------------------------------------
+   PBWin ships PowerTime as an internal dual-interface object; there is no
+   registered COM server on a plain PB64 install, so CoCreateInstance used to
+   return NULL and every property/method yielded an uninitialized slot (the
+   Calendar sample titled itself " 16 32758" and stayed HIDE).  Represent the
+   documented FILETIME value directly and dispatch the documented members
+   without a vtable. */
+#define PB_PT_MAGIC 0x50545754u  /* 'PTWT' */
+typedef struct {
+    unsigned int magic;
+    int refs;
+    long long ft;                 /* 100 ns since 1601-01-01 */
+} PB_POWERTIME;
+
+/* The runtime deliberately avoids <windows.h>; use the local structures. */
+__declspec(dllimport) int __stdcall SystemTimeToFileTime(const PB_SYSTEMTIME*, pb_filetime*);
+__declspec(dllimport) int __stdcall FileTimeToSystemTime(const pb_filetime*, PB_SYSTEMTIME*);
+__declspec(dllimport) int __stdcall FileTimeToLocalFileTime(const pb_filetime*, pb_filetime*);
+__declspec(dllimport) int __stdcall LocalFileTimeToFileTime(const pb_filetime*, pb_filetime*);
+__declspec(dllimport) int __stdcall GetDateFormatA(unsigned long, unsigned long,
+                                                   const PB_SYSTEMTIME*, const char*, char*, int);
+__declspec(dllimport) int __stdcall GetTimeFormatA(unsigned long, unsigned long,
+                                                   const PB_SYSTEMTIME*, const char*, char*, int);
+
+static int pb_pt_eq(const char* a, const char* b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        char ca = *a++, cb = *b++;
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 'a' + 'A');
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 'a' + 'A');
+        if (ca != cb) return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static long long pb_pt_ft_now_local(void) {
+    PB_SYSTEMTIME st;
+    pb_filetime ft;
+    GetLocalTime(&st);
+    if (!SystemTimeToFileTime(&st, &ft)) return 0;
+    return ((long long)ft.hi << 32) | ft.lo;
+}
+
+static long long pb_pt_ft_now_utc(void) {
+    pb_filetime ft;
+    GetSystemTimeAsFileTime(&ft);
+    return ((long long)ft.hi << 32) | ft.lo;
+}
+
+static int pb_pt_get_st(PB_POWERTIME* o, PB_SYSTEMTIME* st) {
+    pb_filetime ft;
+    if (!o || !st) return 0;
+    ft.lo = (unsigned long)(o->ft & 0xFFFFFFFFu);
+    ft.hi = (unsigned long)((unsigned long long)o->ft >> 32);
+    return FileTimeToSystemTime(&ft, st) != 0;
+}
+
+static void pb_pt_set_st(PB_POWERTIME* o, const PB_SYSTEMTIME* st) {
+    pb_filetime ft;
+    if (!o || !st) return;
+    if (SystemTimeToFileTime(st, &ft))
+        o->ft = ((long long)ft.hi << 32) | ft.lo;
+}
+
+static int pb_pt_days_in_month(int y, int m) {
+    static const int d[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    if (m < 1 || m > 12) return 0;
+    if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+    return d[m-1];
+}
+
+static long long pb_pt_arg_long(const int* ptypes, void** pargs, int nargs, int i) {
+    if (!ptypes || !pargs || i < 0 || i >= nargs || !pargs[i]) return 0;
+    switch (ptypes[i]) {
+        case 0: return *(long*)pargs[i];
+        case 1: return (long long)*(double*)pargs[i];
+        case 3: return (long long)*(float*)pargs[i];
+        case 4: return *(unsigned long*)pargs[i];
+        case 5: return *(unsigned short*)pargs[i];
+        case 6: return *(unsigned char*)pargs[i];
+        case 7: case 8: return *(long long*)pargs[i];
+        case 9: return (*(long*)pargs[i]) ? -1 : 0;
+        default: return 0;
+    }
+}
+
+static void pb_pt_result(void* presult, int rtype, long long n, const char* s) {
+    if (!presult) return;
+    switch (rtype) {
+        case 0: *(long*)presult = (long)n; break;
+        case 1: *(double*)presult = (double)n; break;
+        case 2:
+            *(char**)presult = pb_bstr_alloc(s ? s : "", s ? (unsigned int)strlen(s) : 0);
+            break;
+        case 3: *(float*)presult = (float)n; break;
+        case 4: *(unsigned long*)presult = (unsigned long)n; break;
+        case 5: *(unsigned short*)presult = (unsigned short)n; break;
+        case 6: *(unsigned char*)presult = (unsigned char)n; break;
+        case 7: case 8: *(long long*)presult = n; break;
+        case 9: *(long*)presult = n ? -1 : 0; break;
+        default: break;
+    }
+}
+
+static void pb_pt_month_name(int m, char* out, int cap) {
+    static const char* names[] = {"January","February","March","April","May","June",
+                                  "July","August","September","October","November","December"};
+    out[0] = 0;
+    if (m >= 1 && m <= 12) {
+        int n = (int)strlen(names[m-1]);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, names[m-1], (size_t)n);
+        out[n] = 0;
+    }
+}
+
+static void pb_pt_day_name(int dow, char* out, int cap) {
+    static const char* names[] = {"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+    out[0] = 0;
+    if (dow >= 0 && dow <= 6) {
+        int n = (int)strlen(names[dow]);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, names[dow], (size_t)n);
+        out[n] = 0;
+    }
+}
+
+static void pb_pt_add_months(PB_POWERTIME* o, long long months) {
+    PB_SYSTEMTIME st;
+    if (!pb_pt_get_st(o, &st)) return;
+    long long total = (long long)st.wYear * 12 + (st.wMonth - 1) + months;
+    int y = (int)(total / 12);
+    int m = (int)(total % 12);
+    if (m < 0) { m += 12; y -= 1; }
+    m += 1;
+    if (y < 1601 || y > 30827) return;
+    int dim = pb_pt_days_in_month(y, m);
+    if ((int)st.wDay > dim) st.wDay = (unsigned short)dim;
+    st.wYear = (unsigned short)y;
+    st.wMonth = (unsigned short)m;
+    st.wDayOfWeek = 0;
+    pb_pt_set_st(o, &st);
+}
+
+/* Returns non-zero when the member was handled. */
+static int pb_powertime_invoke(PB_POWERTIME* o, const char* mname,
+                               void** pargs, const int* ptypes, int nargs,
+                               void* presult, int rtype, int wflags) {
+    PB_SYSTEMTIME st;
+    char buf[256];
+    long long n = 0;
+    if (!o || o->magic != PB_PT_MAGIC) return 0;
+    if (!mname) mname = "";
+    if (pb_pt_eq(mname, "Now")) {
+        o->ft = pb_pt_ft_now_local();
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "NowUTC")) {
+        o->ft = pb_pt_ft_now_utc();
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "Today")) {
+        o->ft = pb_pt_ft_now_local();
+        if (pb_pt_get_st(o, &st)) {
+            st.wHour = st.wMinute = st.wSecond = st.wMilliseconds = 0;
+            pb_pt_set_st(o, &st);
+        }
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddDays")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 864000000000LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddHours")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 36000000000LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddMinutes")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 600000000LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddSeconds")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 10000000LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddMSeconds")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 1000000LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddTicks")) {
+        o->ft += pb_pt_arg_long(ptypes, pargs, nargs, 0) * 100LL;
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddMonths")) {
+        pb_pt_add_months(o, pb_pt_arg_long(ptypes, pargs, nargs, 0));
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "AddYears")) {
+        pb_pt_add_months(o, pb_pt_arg_long(ptypes, pargs, nargs, 0) * 12);
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "NewDate")) {
+        if (!pb_pt_get_st(o, &st)) return 1;
+        st.wYear = (unsigned short)pb_pt_arg_long(ptypes, pargs, nargs, 0);
+        long long mo = nargs > 1 ? pb_pt_arg_long(ptypes, pargs, nargs, 1) : 0;
+        long long da = nargs > 2 ? pb_pt_arg_long(ptypes, pargs, nargs, 2) : 0;
+        if (mo > 0) st.wMonth = (unsigned short)mo;
+        if (da > 0) st.wDay = (unsigned short)da;
+        int dim = pb_pt_days_in_month(st.wYear, st.wMonth);
+        if (st.wDay > dim) st.wDay = (unsigned short)dim;
+        st.wDayOfWeek = 0;
+        pb_pt_set_st(o, &st);
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "NewTime")) {
+        if (!pb_pt_get_st(o, &st)) return 1;
+        st.wHour = (unsigned short)pb_pt_arg_long(ptypes, pargs, nargs, 0);
+        if (nargs > 1) st.wMinute = (unsigned short)pb_pt_arg_long(ptypes, pargs, nargs, 1);
+        if (nargs > 2) st.wSecond = (unsigned short)pb_pt_arg_long(ptypes, pargs, nargs, 2);
+        if (nargs > 3) st.wMilliseconds = (unsigned short)pb_pt_arg_long(ptypes, pargs, nargs, 3);
+        pb_pt_set_st(o, &st);
+        pb_pt_result(presult, rtype, 0, NULL);
+    } else if (pb_pt_eq(mname, "FileTime")) {
+        if (wflags & 4) {
+            o->ft = pb_pt_arg_long(ptypes, pargs, nargs, 0);
+            pb_pt_result(presult, rtype, 0, NULL);
+        } else {
+            pb_pt_result(presult, rtype, o->ft, NULL);
+        }
+    } else {
+        if (!pb_pt_get_st(o, &st)) return 1;
+        if (pb_pt_eq(mname, "Day")) n = st.wDay;
+        else if (pb_pt_eq(mname, "DayOfWeek")) n = st.wDayOfWeek;
+        else if (pb_pt_eq(mname, "DaysInMonth")) n = pb_pt_days_in_month(st.wYear, st.wMonth);
+        else if (pb_pt_eq(mname, "Hour")) n = st.wHour;
+        else if (pb_pt_eq(mname, "Minute")) n = st.wMinute;
+        else if (pb_pt_eq(mname, "Month")) n = st.wMonth;
+        else if (pb_pt_eq(mname, "MSecond")) n = st.wMilliseconds;
+        else if (pb_pt_eq(mname, "Second")) n = st.wSecond;
+        else if (pb_pt_eq(mname, "Tick")) n = 0;
+        else if (pb_pt_eq(mname, "Year")) n = st.wYear;
+        else if (pb_pt_eq(mname, "IsLeapYear")) n = pb_pt_days_in_month(st.wYear, 2) == 29 ? -1 : 0;
+        else if (pb_pt_eq(mname, "MonthString")) {
+            pb_pt_month_name(st.wMonth, buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "DayOfWeekString")) {
+            pb_pt_day_name(st.wDayOfWeek, buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "DateString")) {
+            buf[0] = 0;
+            GetDateFormatA(0x400, 0x1 /*DATE_SHORTDATE*/, &st, NULL, buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "DateStringLong")) {
+            buf[0] = 0;
+            GetDateFormatA(0x400, 0x2 /*DATE_LONGDATE*/, &st, NULL, buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "TimeString")) {
+            buf[0] = 0;
+            GetTimeFormatA(0x400, 0, &st, "h:mm tt", buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "TimeString24")) {
+            buf[0] = 0;
+            GetTimeFormatA(0x400, 0x80 /*TIME_FORCE24HOURFORMAT*/, &st, "HH:mm", buf, sizeof(buf));
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "TimeStringFull")) {
+            snprintf(buf, sizeof(buf), "%02u:%02u:%02u.%03u", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+            pb_pt_result(presult, rtype, 0, buf);
+            return 1;
+        } else if (pb_pt_eq(mname, "ToLocalTime")) {
+            pb_filetime u, l;
+            u.lo = (unsigned long)(o->ft & 0xFFFFFFFFu);
+            u.hi = (unsigned long)((unsigned long long)o->ft >> 32);
+            if (FileTimeToLocalFileTime(&u, &l))
+                o->ft = ((long long)l.hi << 32) | l.lo;
+            pb_pt_result(presult, rtype, 0, NULL);
+            return 1;
+        } else if (pb_pt_eq(mname, "ToUTC")) {
+            pb_filetime l, u;
+            l.lo = (unsigned long)(o->ft & 0xFFFFFFFFu);
+            l.hi = (unsigned long)((unsigned long long)o->ft >> 32);
+            if (LocalFileTimeToFileTime(&l, &u))
+                o->ft = ((long long)u.hi << 32) | u.lo;
+            pb_pt_result(presult, rtype, 0, NULL);
+            return 1;
+        } else {
+            return 0; /* unknown member: preserve previous E_NOTIMPL behaviour */
+        }
+        pb_pt_result(presult, rtype, n, NULL);
+    }
+    return 1;
+}
+
+void* pb_powercollection_new(void);
+
 void* pb_com_new(int mode, const char* progid, const char* clsid, const char* lib) {
     PB_GUID cg;
     void* obj = NULL;
     long hr;
     pb_com_init();
     if (!clsid && !progid) return NULL;
+    if (progid && progid[0] && (!clsid || !clsid[0])) {
+        if (pb_pt_eq(progid, "PowerTime")) {
+            PB_POWERTIME* pt = (PB_POWERTIME*)calloc(1, sizeof(PB_POWERTIME));
+            if (pt) { pt->magic = PB_PT_MAGIC; pt->refs = 1; pt->ft = pb_pt_ft_now_local(); }
+            return pt;
+        }
+        if (pb_pt_eq(progid, "PowerCollection")) {
+            return pb_powercollection_new();
+        }
+    }
     if (clsid && clsid[0]) {
         /* ClassID$ is a 16-byte binary GUID (CLSID$() result), or a "{...}"
          * string form.  PB BSTRs carry their own length, so the binary form
@@ -14978,8 +15814,247 @@ typedef struct _PB_VARIANT {
         short boolVal;            /* VT_BOOL  */
         long long cyVal;          /* VT_CY    */
         void* pVal;               /* VT_BSTR / VT_DISPATCH / VT_UNKNOWN */
+        /* Real VARIANT reserves 16 bytes on Win64 for DECIMAL/IUnknown pairs.
+           A 16-byte PB_VARIANT would let IDispatch::Invoke read past the
+           argument array and return garbage (PowerTime properties on x64). */
+        struct { void* pvRecord; void* pRecInfo; } dec;
     } v;
 } PB_VARIANT;
+
+/* ---- Built-in PowerCollection object ------------------------------------
+   PowerBASIC ships PowerCollection as an in-process automation object.  On
+   machines without it registered, CLASS "PowerCollection" used to return
+   NULL and every sample ListView stayed empty.  This registry-free
+   implementation covers the members used by the shipped samples:
+   Add/Append, Count, Entry, Contains, Sort, Clear, Item, Remove. */
+#define PB_PC_MAGIC 0x50414354u /* 'PACT' */
+
+typedef struct {
+    wchar_t* key;
+    PB_VARIANT val;
+} pb_pc_item;
+
+typedef struct {
+    unsigned magic;
+    int refs;
+    int count;
+    int cap;
+    pb_pc_item* items;
+} PB_POWERCOLLECTION;
+
+void* pb_powercollection_new(void) {
+    PB_POWERCOLLECTION* c = (PB_POWERCOLLECTION*)calloc(1, sizeof(PB_POWERCOLLECTION));
+    if (c) { c->magic = PB_PC_MAGIC; c->refs = 1; }
+    return c;
+}
+
+static int pb_pc_eq(const char* a, const char* b) {
+    return pb_pt_eq(a, b);
+}
+
+/* Duplicate a string argument (ANSI PB BSTR or UTF-16 WSTRING slot) into a
+   COM BSTR.  Returns NULL for an empty/unsupported argument. */
+static wchar_t* pb_pc_arg_bstr(void** pargs, const int* ptypes, int i, int nargs) {
+    if (!pargs || !ptypes || i >= nargs) return NULL;
+    if (ptypes[i] == 12) {
+        wchar_t* w = *(wchar_t**)pargs[i];
+        if (!w) return NULL;
+        unsigned int n = SysStringLen(w);
+        return SysAllocStringLen(w, n);
+    }
+    if (ptypes[i] == 2) {
+        const char* s = *(const char**)pargs[i];
+        if (!s) return NULL;
+        int blen = pb_str_len(s);
+        int n = MultiByteToWideChar(0, 0, s, blen, NULL, 0);
+        wchar_t* w = SysAllocStringLen(NULL, n);
+        if (w && n > 0) MultiByteToWideChar(0, 0, s, blen, (short*)w, n);
+        return w;
+    }
+    return NULL;
+}
+
+/* The fork's PB_VARIANT stores VT_BSTR payloads in ANSI form (see
+   pb_variant_str / pb_variant_wstr).  PowerCollection arguments arrive as
+   UTF-16 WSTRING BSTRs, so convert before storing; otherwise VARIANT$$()
+   would reinterpret UTF-16 bytes as ANSI and every cell collapses to its
+   first character in Extensions.bas. */
+static char* pb_wstr_to_ansi_bstr(const wchar_t* w) {
+    int n, need;
+    char* buf;
+    char* out;
+    if (!w) return NULL;
+    n = (int)SysStringLen(w);
+    if (n <= 0) return pb_bstr_alloc("", 0);
+    need = WideCharToMultiByte(0, 0, (const short*)w, n, NULL, 0, NULL, NULL);
+    if (need <= 0) return NULL;
+    buf = (char*)malloc((size_t)need + 1);
+    if (!buf) return NULL;
+    if (WideCharToMultiByte(0, 0, (const short*)w, n, buf, need, NULL, NULL) <= 0) {
+        free(buf);
+        return NULL;
+    }
+    buf[need] = 0;
+    out = pb_bstr_alloc(buf, (unsigned int)need);
+    free(buf);
+    return out;
+}
+
+static void pb_pc_arg_variant(void** pargs, const int* ptypes, int i, int nargs,
+                              PB_VARIANT* out) {
+    memset(out, 0, sizeof(*out));
+    if (!pargs || !ptypes || i >= nargs) return;
+    switch (ptypes[i]) {
+        case 10: *out = *(PB_VARIANT*)pargs[i]; break;
+        case 12:
+        case 2: {
+            wchar_t* w = pb_pc_arg_bstr(pargs, ptypes, i, nargs);
+            out->vt = 8; /* VT_BSTR */
+            out->v.pVal = pb_wstr_to_ansi_bstr(w);
+            SysFreeString((char*)w);
+            break;
+        }
+        case 0: out->vt = 3; out->v.lVal = *(long*)pargs[i]; break;
+        case 1: out->vt = 5; out->v.dblVal = *(double*)pargs[i]; break;
+        case 3: out->vt = 4; out->v.fltVal = *(float*)pargs[i]; break;
+        case 7: out->vt = 20; out->v.llVal = *(long long*)pargs[i]; break;
+        case 9: out->vt = 11; out->v.boolVal = (*(long*)pargs[i]) ? -1 : 0; break;
+        default: break;
+    }
+}
+
+static int pb_pc_append(PB_POWERCOLLECTION* c, wchar_t* key, const PB_VARIANT* val) {
+    if (!c) { SysFreeString((char*)key); return 0; }
+    if (c->count >= c->cap) {
+        int next = c->cap ? c->cap * 2 : 16;
+        pb_pc_item* p = (pb_pc_item*)realloc(c->items, (size_t)next * sizeof(pb_pc_item));
+        if (!p) { SysFreeString((char*)key); return 0; }
+        c->items = p;
+        c->cap = next;
+    }
+    c->items[c->count].key = key;
+    c->items[c->count].val = *val;
+    c->count++;
+    return c->count;
+}
+
+static int pb_pc_item_cmp_asc(const void* a, const void* b) {
+    const pb_pc_item* x = (const pb_pc_item*)a;
+    const pb_pc_item* y = (const pb_pc_item*)b;
+    const wchar_t* kx = x->key ? x->key : L"";
+    const wchar_t* ky = y->key ? y->key : L"";
+    int r = _wcsicmp(kx, ky);
+    if (r == 0) r = wcscmp(kx, ky);
+    return r;
+}
+
+static int pb_pc_item_cmp_desc(const void* a, const void* b) {
+    return -pb_pc_item_cmp_asc(a, b);
+}
+
+static void pb_pc_copy_variant_out(PB_VARIANT* dst, const PB_VARIANT* src) {
+    if (!dst || !src) return;
+    *dst = *src;
+    if (src->vt == 8 && src->v.pVal) {
+        wchar_t* w = (wchar_t*)src->v.pVal;
+        unsigned int n = SysStringLen(w);
+        dst->v.pVal = SysAllocStringLen(w, n);
+    }
+}
+
+/* Returns 1 when the member was handled. */
+static int pb_powercollection_invoke(PB_POWERCOLLECTION* c, const char* mname,
+                                     void** pargs, const int* ptypes,
+                                     int nargs, void* presult, int rtype) {
+    if (!c) return 0;
+    if (pb_pc_eq(mname, "COUNT")) {
+        if (presult) *(long*)presult = c->count;
+        return 1;
+    }
+    if (pb_pc_eq(mname, "ADD") || pb_pc_eq(mname, "APPEND")) {
+        if (nargs >= 2) {
+            wchar_t* key = pb_pc_arg_bstr(pargs, ptypes, 0, nargs);
+            PB_VARIANT val;
+            pb_pc_arg_variant(pargs, ptypes, 1, nargs, &val);
+            if (presult) *(long*)presult = pb_pc_append(c, key, &val);
+            else pb_pc_append(c, key, &val);
+        }
+        return 1;
+    }
+    if (pb_pc_eq(mname, "ENTRY") || pb_pc_eq(mname, "ITEM")) {
+        if (nargs >= 1) {
+            long idx = 0;
+            if (ptypes[0] == 0) idx = *(long*)pargs[0];
+            if (idx < 1) idx = 1;
+            if (idx > c->count) idx = c->count;
+            if (nargs >= 2 && pargs[1]) {
+                const pb_pc_item* it = idx >= 1 ? &c->items[idx - 1] : NULL;
+                *(void**)pargs[1] = (it && it->key)
+                    ? SysAllocStringLen(it->key, SysStringLen(it->key)) : NULL;
+            }
+            if (nargs >= 3 && pargs[2]) {
+                const pb_pc_item* it = idx >= 1 ? &c->items[idx - 1] : NULL;
+                if (it) pb_pc_copy_variant_out((PB_VARIANT*)pargs[2], &it->val);
+                else memset(pargs[2], 0, sizeof(PB_VARIANT));
+            }
+            if (presult) *(long*)presult = idx;
+        }
+        return 1;
+    }
+    if (pb_pc_eq(mname, "CONTAINS")) {
+        wchar_t* key = pb_pc_arg_bstr(pargs, ptypes, 0, nargs);
+        int found = 0;
+        if (key) {
+            for (int i = 0; i < c->count; i++) {
+                if (c->items[i].key && _wcsicmp(c->items[i].key, key) == 0) {
+                    found = i + 1;
+                    break;
+                }
+            }
+        }
+        SysFreeString((char*)key);
+        if (presult) *(long*)presult = found;
+        return 1;
+    }
+    if (pb_pc_eq(mname, "SORT")) {
+        long mode = 0;
+        if (nargs >= 1 && ptypes[0] == 0) mode = *(long*)pargs[0];
+        if (c->count > 1)
+            qsort(c->items, (size_t)c->count, sizeof(pb_pc_item),
+                  mode ? pb_pc_item_cmp_desc : pb_pc_item_cmp_asc);
+        return 1;
+    }
+    if (pb_pc_eq(mname, "CLEAR") || pb_pc_eq(mname, "REMOVEALL")) {
+        for (int i = 0; i < c->count; i++) {
+            SysFreeString((char*)c->items[i].key);
+            if (c->items[i].val.vt == 8) SysFreeString((char*)c->items[i].val.v.pVal);
+        }
+        c->count = 0;
+        return 1;
+    }
+    if (pb_pc_eq(mname, "REMOVE")) {
+        long idx = (nargs >= 1 && ptypes[0] == 0) ? *(long*)pargs[0] : 0;
+        if (idx >= 1 && idx <= c->count) {
+            SysFreeString((char*)c->items[idx - 1].key);
+            if (c->items[idx - 1].val.vt == 8)
+                SysFreeString((char*)c->items[idx - 1].val.v.pVal);
+            memmove(&c->items[idx - 1], &c->items[idx],
+                    (size_t)(c->count - idx) * sizeof(pb_pc_item));
+            c->count--;
+        }
+        return 1;
+    }
+    if (pb_pc_eq(mname, "LBOUND")) {
+        if (presult) *(long*)presult = c->count ? 1 : 0;
+        return 1;
+    }
+    if (pb_pc_eq(mname, "UBOUND")) {
+        if (presult) *(long*)presult = c->count;
+        return 1;
+    }
+    (void)rtype;
+    return 0;
+}
 
 typedef struct _PB_DISPPARAMS {
     PB_VARIANT* rgvarg;           /* last-to-first! */
@@ -15087,6 +16162,19 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
     unsigned int argerr = 0;
     int i;
 
+    /* Built-in PowerTime object: no vtable, direct member dispatch. */
+    if (d && ((PB_POWERTIME*)d)->magic == PB_PT_MAGIC) {
+        int handled = pb_powertime_invoke((PB_POWERTIME*)d, mname, pargs, ptypes,
+                                          nargs, presult, rtype, wflags);
+        pb_com_hresult = handled ? 0 : (long)0x80020003L; /* DISP_E_MEMBERNOTFOUND */
+        return pb_com_hresult;
+    }
+    if (d && ((PB_POWERCOLLECTION*)d)->magic == PB_PC_MAGIC) {
+        int handled = pb_powercollection_invoke((PB_POWERCOLLECTION*)d, mname, pargs,
+                                                ptypes, nargs, presult, rtype);
+        pb_com_hresult = handled ? 0 : (long)0x80020003L;
+        return pb_com_hresult;
+    }
     if (!d) {
         pb_com_hresult = (long)0x80004003L; /* E_POINTER */
         return pb_com_hresult;
@@ -15219,6 +16307,24 @@ int pb_raise_event(int mname, int arg) {
         for (j = 0; j < t->count; j++) {
             if (t->ents[j].mname == mname) {
                 t->ents[j].fn(g_ev_subs[i].client, arg);
+                called++;
+            }
+        }
+    }
+    return called;
+}
+/* Two-argument RAISEEVENT (Prime2 `RAISEEVENT IProgress.Value(hDlg, p)`).
+   The event bridge functions accept the declared parameters after the
+   receiver; extra registers are ignored by the System V / Win64 ABI, so
+   existing one-argument bridges stay compatible. */
+int pb_raise_event2(int mname, int arg, int arg2) {
+    int called = 0, i, j;
+    if (!g_event_enabled) return 0;
+    for (i = 0; i < g_ev_sub_count; i++) {
+        pb_event_tbl* t = g_ev_subs[i].tbl;
+        for (j = 0; j < t->count; j++) {
+            if (t->ents[j].mname == mname) {
+                t->ents[j].fn(g_ev_subs[i].client, arg, arg2);
                 called++;
             }
         }
@@ -15980,6 +17086,20 @@ static unsigned long long cb_wparam = 0;
 static unsigned long long cb_lparam = 0;
 /* Dialog callback function (CB.MSG etc. are visible inside it) */
 static void* pb_dialog_cb = 0;
+/* CALLBACK FUNCTION now carries the Win64 four-parameter entry (implicit
+   hWnd/uMsg/wParam/lParam for a no-parameter declaration).  The dialog
+   dispatcher must therefore pass the real values, not an empty argument
+   list: a zero-argument call left the prologue's pb_set_cb_state() writing
+   garbage over cb_msg, so WM_INITDIALOG handlers never matched. */
+#if defined(_WIN64)
+typedef long long (*pb_dlg_cb_fn)(void*, unsigned long long, unsigned long long, unsigned long long);
+#else
+/* i686 PB CALLBACK FUNCTION is stdcall with four 32-bit ABI words.  Calling
+   it through a 64-bit-argument typedef pushed 32 bytes of arguments while the
+   callee only cleaned 16, so every DDT callback shifted ESP by 16 bytes and
+   returned into garbage (ListView WM_NOTIFY crash). */
+typedef long (__stdcall *pb_dlg_cb_fn)(void*, unsigned int, unsigned int, unsigned int);
+#endif
 /* Modal dialog: when DIALOG END is called, set this */
 static int pb_modal_result = 0;
 static int pb_modal_done = 0;
@@ -15992,6 +17112,17 @@ unsigned int pb_get_cb_ctl(void) { return cb_ctl; }
 unsigned int pb_get_cb_ctlmsg(void) { return cb_ctlmsg; }
 unsigned long long pb_get_cb_wparam(void) { return cb_wparam; }
 unsigned long long pb_get_cb_lparam(void) { return cb_lparam; }
+
+/* Raw CALLBACK FUNCTION entry points (registered directly as WNDPROC) do not
+   pass through pb_dialog_wndproc, so the compiler emits this call at function
+   entry to mirror the four ABI arguments into the CB.* slots. */
+void pb_set_cb_state(long long hwnd, long long msg, long long wparam, long long lparam) {
+    PB_CSLOG("CS CBSTATE hwnd=%p msg=%x wp=%p lp=%p", (void*)(size_t)hwnd, (unsigned int)msg, (void*)(size_t)wparam, (void*)(size_t)lparam);
+    cb_hwnd = (void*)(unsigned long long)hwnd;
+    cb_msg = (unsigned int)msg;
+    cb_wparam = (unsigned long long)wparam;
+    cb_lparam = (unsigned long long)lparam;
+}
 
 /* CB.NM* (CHW CB_Callback_functions.htm).  On WM_NOTIFY the lParam points at
    the Win64 NMHDR (hwndFrom UINT_PTR, idFrom UINT_PTR, code LONG -> 20 bytes
@@ -16193,11 +17324,20 @@ typedef struct { long x, y; } pb_point_t;
 
 #if defined(_WIN64)
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
+    PB_CSLOG("CS WNDPROC msg=%x hwnd=%p wp=%p lp=%p cb=%p", Msg, hWnd, (void*)(size_t)wParam, (void*)(size_t)lParam, pb_dialog_cb);
 #else
 /* i686 WndProc: HWND/MSG are 32-bit and WPARAM/LPARAM are 4 bytes each.
    Declaring 64-bit parameters made the prologue read past the stack slots,
    so WM_NCCALCSIZE saw a bogus RECT and the process crashed (0xC0000005). */
 static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wParam, long lParam) {
+    PB_CSLOG("CS WNDPROC msg=%x hwnd=%p wp=%p lp=%p cb=%p", Msg, hWnd, (void*)(size_t)wParam, (void*)(size_t)lParam, pb_dialog_cb);
+#endif
+#ifdef PB_DIAG_HEAPCHECK
+    if (pb_debug_log) {
+        int heap_ok = HeapValidate(GetProcessHeap(), 0, NULL);
+        fprintf(pb_debug_log, "HEAP msg=%x ok=%d depth=%d\n", Msg, heap_ok, pb_callstk_depth);
+        fflush(pb_debug_log);
+    }
 #endif
     if (Msg == 0x0030) /* WM_SETFONT */ {
         pb_font_store(hWnd, (void*)(size_t)wParam);
@@ -16269,16 +17409,17 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
            callback never fired. */
         void* fn = pb_lookup_callback_hwnd((void*)lParam);
         if (fn) {
-            long (*cf)(void) = (long(*)(void))fn;
-            if (cf()) return 0;
+            pb_dlg_cb_fn cf = (pb_dlg_cb_fn)fn;
+            if (cf(hWnd, Msg, wParam, lParam)) return 0;
         }
         if (pb_dialog_cb) {
-            long (*df)(void) = (long(*)(void))pb_dialog_cb;
-            if (df()) return 0;
+            pb_dlg_cb_fn df = (pb_dlg_cb_fn)pb_dialog_cb;
+            if (df(hWnd, Msg, wParam, lParam)) return 0;
         }
         return DefWindowProcA(hWnd, Msg, wParam, lParam);
     }
     if (Msg == 0x004E) /* WM_NOTIFY */ {
+        PB_CSLOG("CS WNDPROC WM_NOTIFY hwnd=%p wp=%p lp=%p cb=%p", hWnd, (void*)(size_t)wParam, (void*)(size_t)lParam, pb_dialog_cb);
         /* NMHDR is { HWND hwndFrom; UINT_PTR idFrom; UINT code; } (WinUser.h) */
         void** nh = (void**)lParam;
         if (nh) {
@@ -16312,8 +17453,8 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
             cb_wparam = wParam;
             cb_lparam = lParam;
             if (pb_dialog_cb) {
-                void (*fn)(void) = (void(*)(void))pb_dialog_cb;
-                fn();
+                pb_dlg_cb_fn fn = (pb_dlg_cb_fn)pb_dialog_cb;
+                fn(hWnd, Msg, wParam, lParam);
             }
         }
         return 0;
@@ -16341,9 +17482,9 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
             cb_ctlmsg = 0;
             cb_wparam = wParam;
             cb_lparam = lParam;
-            long (*df)(void) = (long(*)(void))pb_dialog_cb;
-            long r = df();
-            if (r) return r;
+            pb_dlg_cb_fn df = (pb_dlg_cb_fn)pb_dialog_cb;
+            long long r = df(hWnd, Msg, wParam, lParam);
+            if (r) return (long)r;
         }
     }
     if (Msg == 0x020A) /* WM_MOUSEWHEEL */ {
@@ -16716,8 +17857,19 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
        this for HelloDDT/ListView (DS_MODALFRAME present) but not for
        Progress/SubClass (plain WS_CAPTION|WS_SYSMENU). */
     if ((dwStyle & 0x80u) && !(dwEx & 0x1u)) dwEx |= 0x1u;
+    /* PBWin quirk verified with a four-dialog oracle probe (_b402_dlgstyle):
+       100x100 DLU with style 0 / WS_CAPTION / WS_CAPTION|WS_SYSMENU ->
+       outer 156x192 (client + 6x29), but WS_SYSMENU alone -> outer 150x163,
+       i.e. the converted size is used as the OUTER size and no caption frame
+       is added.  DDT Calendar (400x232, %WS_SYSMENU) depends on this exact
+       behaviour: 600x377 outer, 594x348 client. */
+    int add_frame = 1;
+    if (style && (style & 0x00080000u /* WS_SYSMENU */)
+        && !(style & 0x00C00000u /* WS_CAPTION / WS_DLGFRAME */)
+        && !(style & 0x00000030u /* DS_MODALFRAME */)) add_frame = 0;
     void* hwnd = CreateWindowExA(dwEx, "PBWIN_DLG_CLASS", title, dwStyle,
-        px, py, cw + 6, ch + 29, 0, 0, GetModuleHandleA(0), 0);
+        px, py, cw + (add_frame ? 6 : 0), ch + (add_frame ? 29 : 0),
+        0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
         pb_live_dialogs++;
         pb_dlg_info_store(hwnd, pb_dialog_font_for(hwnd), dluX, dluY);
@@ -16753,7 +17905,7 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
    created (and therefore selected) last, else a target attached with
    GRAPHIC ATTACH.  */
 #define PB_GW_SLOTS 8
-#define PB_GW_CLASS "PBGRAPHIC_CLASS"
+#define PB_GW_CLASS "POWERGRAPH"
 #define PB_SC_CLOSE 0xF060u
 #define PB_GWLP_USERDATA (-21)
 #define PB_GW_STABLE 1
@@ -16807,6 +17959,40 @@ static void pb_gw_free_slot(int i) {
     if (pb_gw_bmp[i]) DeleteObject(pb_gw_bmp[i]);
     pb_gw_win[i] = 0; pb_gw_dc[i] = 0; pb_gw_bmp[i] = 0;
     pb_gw_click[i] = 0; pb_gw_cx[i] = 0; pb_gw_cy[i] = 0;
+}
+
+/* CHW GRAPHIC(SIZE.X) / GRAPHIC(SIZE.Y): current graphic-window client
+   dimensions.  Falls back to the graphic control/canvas when no standalone
+   graphic window is selected. */
+int pb_graphic_size_x(void) {
+    int idx = pb_gw_find(pb_gw_cur);
+    if (idx >= 0 && pb_gw_win[idx]) {
+        unsigned char rc[16];
+        for (int k = 0; k < 16; k++) rc[k] = 0;
+        if (GetClientRect(pb_gw_win[idx], (void*)rc)) {
+            int x = 0, y = 0, w = 0, h = 0;
+            pb_gw_rect(rc, &x, &y, &w, &h);
+            return w;
+        }
+    }
+    int w = 0, h = 0;
+    pb_graphic_get_canvas_size(&w, &h);
+    return w;
+}
+int pb_graphic_size_y(void) {
+    int idx = pb_gw_find(pb_gw_cur);
+    if (idx >= 0 && pb_gw_win[idx]) {
+        unsigned char rc[16];
+        for (int k = 0; k < 16; k++) rc[k] = 0;
+        if (GetClientRect(pb_gw_win[idx], (void*)rc)) {
+            int x = 0, y = 0, w = 0, h = 0;
+            pb_gw_rect(rc, &x, &y, &w, &h);
+            return h;
+        }
+    }
+    int w = 0, h = 0;
+    pb_graphic_get_canvas_size(&w, &h);
+    return h;
 }
 
 static int pb_gw_alloc(int i) {
@@ -17116,11 +18302,11 @@ static void pb_gw_register(void) {
     pb_wndclassex_t wc;
     memset(&wc, 0, sizeof(wc));
     wc.cbSize = sizeof(wc);
-    wc.style = 0x0008;                 /* CS_DBLCLKS: GRAPHIC WINDOW CLICK's double */
+    wc.style = 0x0023;                  /* CS_VREDRAW|CS_HREDRAW|CS_OWNDC|CS_DBLCLKS */
     wc.lpfnWndProc = (void*)pb_graphic_wndproc;
     wc.hInstance = GetModuleHandleA(0);
     wc.hCursor = LoadCursorA(0, (const char*)32512);
-    wc.lpszClassName = PB_GW_CLASS;
+    wc.lpszClassName = "POWERGRAPH";   /* PBWin's class name, for parity */
     RegisterClassExA(&wc);
     done = 1;
 }
@@ -17135,15 +18321,52 @@ static void* pb_gw_create(const char* cap, int x, int y, int w, int h,
        ALT+F4 is not recognized.  WS_CAPTION gives the title bar without
        WS_SYSMENU; the stable flag additionally swallows WM_CLOSE/WM_SYSCOMMAND
        close requests, so the window can only be destroyed by TXT.END. */
-    unsigned long style = (stable ? 0x00C00000u : 0x00CF0000u) | (show ? 0x10000000u : 0u);
-    void* hwnd = CreateWindowExA(0, PB_GW_CLASS, cap, style, x, y, w, h,
+    /* PBWin's GRAPHIC WINDOW is a popup with a thin caption frame, not a
+       resizable overlapped window: the reference Cartesian window reports
+       style 0x96CA0000 (WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+       | WS_CLIPSIBLINGS | WS_CLIPCHILDREN | WS_VISIBLE) and a 6x29 frame.
+       The old WS_OVERLAPPEDWINDOW style produced a thick 16x39 frame and
+       did not look like PBWin.  A stable window drops the system menu and
+       minimize box, matching GRAPHIC WINDOW STABILIZE. */
+    unsigned long style = 0x86C00000u; /* WS_POPUP|WS_CAPTION|CLIPSIBLINGS|CLIPCHILDREN */
+    if (!stable) style |= 0x000A0000u; /* WS_SYSMENU | WS_MINIMIZEBOX */
+    if (show) style |= 0x10000000u;    /* WS_VISIBLE */
+    void* hwnd = CreateWindowExA(0x100u /* WS_EX_WINDOWEDGE */, PB_GW_CLASS, cap,
+                                 style, x, y, w, h,
                                  0, 0, GetModuleHandleA(0), 0);
     if (!hwnd) return 0;
+    /* GRAPHIC WINDOW width/height are the CLIENT area, matching PBWin:
+       the Cartesian sample asks for 500x500 and the reference window
+       measures 506x529, i.e. 500x500 client plus the frame.  CreateWindowEx
+       takes the outer size, so grow it by the non-client area first.
+       NOTE: on this Windows 11 host a 64-bit caption window reports a 16x39
+       DWM frame (AdjustWindowRectEx -> 516x539), while the PBWin 10 (32-bit,
+       classic-frame) oracle reports 506x529.  The CLIENT area is the
+       functional contract and stays exactly 500x500; the 10 px outer delta
+       is a DWM/legacy-frame difference, not a compiler defect. */
+    {
+        pb_rect_t rc;
+        rc.left = 0; rc.top = 0; rc.right = w; rc.bottom = h;
+        AdjustWindowRectEx(&rc, style, 0, 0x100u);
+        if ((rc.right - rc.left) != w || (rc.bottom - rc.top) != h) {
+            SetWindowPos(hwnd, 0, 0, 0, (int)(rc.right - rc.left),
+                         (int)(rc.bottom - rc.top),
+                         0x0002u | 0x0004u | 0x0010u);
+        }
+    }
     pb_gw_win[i] = hwnd;
     if (stable) pb_set_winlong(hwnd, PB_GWLP_USERDATA, PB_GW_STABLE);
     if (font) SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
                            (pb_wparam_t)(size_t)font, 1);
     if (!pb_gw_alloc(i)) { DestroyWindow(hwnd); return 0; }
+    /* The font passed to GRAPHIC WINDOW NEW is the drawing font.  Sending
+       WM_SETFONT only affects child controls; the memory DC used by all
+       GRAPHIC statements needs the font selected explicitly (PBWin's
+       Calendar sample gets a 10px Courier New cell this way). */
+    if (font) {
+        SelectObject(pb_gw_dc[i], font);
+        g_gr_font = font;
+    }
     if (show) { ShowWindow(hwnd, 5); UpdateWindow(hwnd); }
     /* "if there is no selected graphic target at the time of creation, the
        new Graphic Window is automatically attached and selected" */
@@ -17753,7 +18976,7 @@ static void pb_dispatch_init(void* hDlg) {
     cb_ctlmsg = 0;
     cb_wparam = 0;
     cb_lparam = 0;
-    ((long(*)(void))pb_dialog_cb)();
+    ((pb_dlg_cb_fn)pb_dialog_cb)(hDlg, 0x0110, 0, 0);
 }
 
 int pb_show_modal_to(void* hDlg) {
@@ -18886,10 +20109,20 @@ typedef struct {
 __declspec(dllimport) int __stdcall GetScrollInfo(void* hWnd, int nBar, PB_SCROLLINFO* lpsi);
 __declspec(dllimport) int __stdcall SetScrollInfo(void* hWnd, int nBar, const PB_SCROLLINFO* lpsi, int redraw);
 
-long long pb_control_send(void* hDlg, long long id, long long msg, long long wp, long long lp) {
-    void* h = pb_pb_hwnd(hDlg, id);
+__declspec(dllimport) int __stdcall GetClassNameA(void* hWnd, char* lpClassName, int nMaxCount);
+long long pb_control_send(void* hDlg, long long id, long long msg, long long wp, long long lp) {    void* h = pb_pb_hwnd(hDlg, id);
     if (!h) return 0;
+    if ((unsigned long long)msg == 0x40Bull) {
+        char cls[128]; cls[0] = 0;
+        GetClassNameA(h, cls, 127);
+        fprintf(stderr, "SEND h=%p id=%lld msg=%llX lp=%llX cls=%s\n",
+                h, id, msg, lp, cls);
+        fflush(stderr);
+    }
     long long rv = (long long)SendMessageA(h, (unsigned int)msg, (pb_wparam_t)wp, (pb_lparam_t)lp);
+    if ((unsigned long long)msg == 0x40Bull) {
+        fprintf(stderr, "SEND done rv=%lld\n", rv); fflush(stderr);
+    }
     /* batch 245d: on our ListBoxes a WM_MOUSEWHEEL scroll moves the scrollbar
        position but leaves the internal top index stuck at 0 (the wheel goes
        through the scrollbar path, the ListBox's own top-index state is never
@@ -19396,11 +20629,14 @@ static void pb_icc(unsigned long flags) {
 #define PB_LVM_FIRST                  0x1000
 #define PB_LVM_GETITEMCOUNT           (PB_LVM_FIRST + 4)   /* 0x1004 */
 #define PB_LVM_INSERTITEMA            (PB_LVM_FIRST + 7)   /* 0x1007 */
+#define PB_LVM_INSERTITEMW            (PB_LVM_FIRST + 77)  /* 0x104D */
 #define PB_LVM_DELETEITEM             (PB_LVM_FIRST + 8)   /* 0x1008 */
 #define PB_LVM_DELETEALLITEMS         (PB_LVM_FIRST + 9)   /* 0x1009 */
 #define PB_LVM_INSERTCOLUMNA          (PB_LVM_FIRST + 27)  /* 0x101B */
 #define PB_LVM_GETITEMTEXTA           (PB_LVM_FIRST + 45)  /* 0x102D */
 #define PB_LVM_SETITEMTEXTA           (PB_LVM_FIRST + 46)  /* 0x102E */
+#define PB_LVM_GETITEMTEXTW           (PB_LVM_FIRST + 115) /* 0x1073 */
+#define PB_LVM_SETITEMTEXTW           (PB_LVM_FIRST + 116) /* 0x1074 */
 #define PB_LVM_SETEXTENDEDLISTVIEWSTYLE (PB_LVM_FIRST + 54) /* 0x1036 */
 
 #define PB_LVIF_TEXT   0x0001
@@ -19583,6 +20819,28 @@ typedef struct {
     int*          piColFmt;
     int           iGroup;
 } PB_LVITEM;
+
+/* x64 LVITEMW: identical layout except pszText points at UTF-16 text.
+   Talking to SysListView32 (a Unicode common control) through the W
+   messages avoids the A->W translation that truncated PB WSTRING text
+   to its first character in Extensions.bas. */
+typedef struct {
+    unsigned int  mask;
+    int           iItem;
+    int           iSubItem;
+    unsigned int  state;
+    unsigned int  stateMask;
+    const wchar_t* pszText;
+    int           cchTextMax;
+    int           iImage;
+    long long     lParam;
+    int           iIndent;
+    int           iGroupId;
+    unsigned int  cColumns;
+    unsigned int* puColumns;
+    int*          piColFmt;
+    int           iGroup;
+} PB_LVITEMW;
 
 /* x64 TVITEMA. Offsets: mask 0, hItem 8, state 16, stateMask 20,
    pszText 24, cchTextMax 32, iImage 36, iSelectedImage 40,
@@ -19774,6 +21032,12 @@ void* pb_control_add_custom(const char* cls, void* parent, long id, const char* 
                             long style, long exstyle) {
     unsigned long s = (unsigned long)style;
     void* h;
+    /* Register every common-control class family before CreateWindowExA.
+       ComboBoxEx32 (ICC_USEREX_CLASSES), SysDateTimePick32/SysMonthCal32
+       (ICC_DATE_CLASSES) and the CoolBar class are not covered by the
+       legacy InitCommonControls(), so the generic CONTROL ADD form used to
+       get NULL handles and the following messages crashed the app. */
+    pb_icc(0x00007FFFu);
     if (s == 0) {
         s = 0x40000000 | 0x10000000; /* WS_CHILD | WS_VISIBLE */
     }
@@ -20311,11 +21575,11 @@ static long __stdcall pb_tabpage_wndproc(void* hWnd, unsigned int Msg,
         cb_lparam = lParam;
         fn = pb_lookup_callback_hwnd(hWnd);
         if (fn) {
-            void (*f)(void) = (void(*)(void))fn;
-            f();
+            pb_dlg_cb_fn f = (pb_dlg_cb_fn)fn;
+            f(hWnd, Msg, (unsigned long long)wParam, (unsigned long long)lParam);
         } else if (pb_dialog_cb) {
-            void (*f)(void) = (void(*)(void))pb_dialog_cb;
-            f();
+            pb_dlg_cb_fn f = (pb_dlg_cb_fn)pb_dialog_cb;
+            f(hWnd, Msg, (unsigned long long)wParam, (unsigned long long)lParam);
         }
         return 0;
     }
@@ -20705,6 +21969,44 @@ char* pb_listview_get_text_bstr(void* hDlg, long id, int item, int col) {
     return out;
 }
 
+/* ---------------- LISTVIEW text: ANSI + UTF-16 entry points ----------------
+   LISTVIEW INSERT ITEM / SET TEXT receive a WSTRING payload whenever the
+   source expression is wide (Extensions.bas passes wsExt from
+   PowerCollection.Entry and VARIANT$$(vDesc)).  SysListView32 is a Unicode
+   common control, so the wide wrappers talk to it through LVM_*W directly;
+   handing UTF-16 to LVM_*A previously showed only the first letter. */
+void pb_listview_set_text(void* hDlg, long id, int item, int col,
+                          const char* text);
+
+void pb_listview_insert_item_w(void* hDlg, long id, int item, int image,
+                               const wchar_t* text) {
+    PB_LVITEMW it;
+    void* h = pb_lv_hwnd(hDlg, id);
+    if (!h) return;
+    memset(&it, 0, sizeof(it));
+    it.mask     = PB_LVIF_TEXT | PB_LVIF_IMAGE;
+    it.iItem    = pb_lv_idx(item);
+    it.iSubItem = 0;
+    it.pszText  = text;
+    it.iImage   = image;
+    SendMessageW(h, PB_LVM_INSERTITEMW, 0, (pb_lparam_t)(size_t)&it);
+}
+
+void pb_listview_set_text_w(void* hDlg, long id, int item, int col,
+                            const wchar_t* text) {
+    PB_LVITEMW it;
+    void* h = pb_lv_hwnd(hDlg, id);
+    if (!h) return;
+    memset(&it, 0, sizeof(it));
+    it.mask     = PB_LVIF_TEXT;
+    it.iItem    = pb_lv_idx(item);
+    it.iSubItem = pb_lv_idx(col);
+    it.pszText  = text;
+    it.cchTextMax = text ? (int)SysStringLen(text) : 0;
+    SendMessageW(h, PB_LVM_SETITEMTEXTW, (pb_wparam_t)(unsigned int)pb_lv_idx(item),
+                 (pb_lparam_t)(size_t)&it);
+}
+
 /* ---------------- LISTVIEW SET TEXT ---------------- */
 void pb_listview_set_text(void* hDlg, long id, int item, int col,
                           const char* text) {
@@ -20716,6 +22018,7 @@ void pb_listview_set_text(void* hDlg, long id, int item, int col,
     it.iItem    = pb_lv_idx(item);
     it.iSubItem = pb_lv_idx(col);
     it.pszText  = (const char*)text;
+    it.cchTextMax = text ? (int)strlen(text) : 0;
     SendMessageA(h, PB_LVM_SETITEMTEXTA, (unsigned int)pb_lv_idx(item),
                  (pb_lparam_t)(size_t)&it);
 }

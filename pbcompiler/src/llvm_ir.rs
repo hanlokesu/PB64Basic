@@ -125,6 +125,8 @@ pub struct ModuleBuilder {
     str_counter: usize,
     /// Track declared external functions to avoid duplicates
     declared: HashSet<String>,
+    /// Track emitted global variable names to avoid duplicate definitions
+    global_names: HashSet<String>,
 }
 
 impl ModuleBuilder {
@@ -133,6 +135,7 @@ impl ModuleBuilder {
             target_triple: target_triple.to_string(),
             globals: String::new(),
             declared: HashSet::new(),
+            global_names: HashSet::new(),
             functions: String::new(),
             str_counter: 0,
         }
@@ -285,6 +288,9 @@ impl ModuleBuilder {
 
     /// Add a global variable.
     pub fn add_global(&mut self, name: &str, ty: &IrType, init: &str) {
+        if !self.global_names.insert(name.to_string()) {
+            return;
+        }
         writeln!(self.globals, "@{} = global {} {}", name, ty, init).unwrap();
     }
 
@@ -1149,6 +1155,37 @@ impl FunctionBuilder {
         )
         .unwrap();
         Val::new(r, ret_ty.clone())
+    }
+
+    /// Indirect x86 stdcall call (CALL DWORD ... USING <stdcall proto>).
+    /// The callee pops its arguments; emitting a cdecl call for a stdcall
+    /// target leaves the caller's stack short and crashes at the next
+    /// return (batch174_test on i686).
+    pub fn call_indirect_stdcall(&mut self, ret_ty: &IrType, target: &Val, args: &[Val]) -> Val {
+        let r = self.next_reg();
+        let args_str: Vec<String> = args.iter().map(|a| a.typed()).collect();
+        writeln!(
+            self.body,
+            "  {} = call x86_stdcallcc {} {}({})",
+            r,
+            ret_ty,
+            target.name,
+            args_str.join(", ")
+        )
+        .unwrap();
+        Val::new(r, ret_ty.clone())
+    }
+
+    /// Indirect void x86 stdcall call.
+    pub fn call_indirect_void_stdcall(&mut self, target: &Val, args: &[Val]) {
+        let args_str: Vec<String> = args.iter().map(|a| a.typed()).collect();
+        writeln!(
+            self.body,
+            "  call x86_stdcallcc void {}({})",
+            target.name,
+            args_str.join(", ")
+        )
+        .unwrap();
     }
 
     /// Call a void function with x86_stdcallcc convention (Win32 API on 32-bit).

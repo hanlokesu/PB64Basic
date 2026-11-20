@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 397 (v0.2.185). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 398 (v0.2.186). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 398 (v0.2.186) - Windows sample conformance: target-aware import libraries, 32-bit stdcall callbacks and CODEPTR thunks, architecture-aware dialog callback signatures, fixed-width GLOBAL strings, synthetic WINMAIN hInstance, pointer-width conversion and GET TEXT fixed buffers. 152 of 159 PBWin10 samples build on x64 and x86; the other 7 are invalid in PBWin10. 64 GUI candidates, 10 include wrappers, 7 resource scripts and 6 resource-embedding samples verified.
 > batch 397 (v0.2.185) - GUI conformance: grouped `LOCAL`/`DIM` types, per-dialog font/DLU mapping, DDT dialog styles and manifest embedding, ListView style/header, GRAPHIC `WM_INITDIALOG` dispatch, canvas/client units, COLORREF constants, default line colour, `PRINT` line advance, integer position APIs, runtime `REDIM`, `PARSE` lower-bound indexing and buffered control-DC presentation. 12 of 13 paired windows match PBWin10 exactly; all 13 fonts match.
 > batch 396 (v0.2.184) - DIALOG SHOW MODELESS and result targets: `DIALOG SHOW MODELESS hDlg[,] CALL proc [TO result]` now registers the callback and writes the `DIALOG END` result into `result`; `DIALOG SHOW MODAL hDlg[,] CALL proc TO result` writes the modal result; `DIALOG SHOW STATE ... TO result` and `DIALOG DOEVENTS [sleep] [TO count]` now consume and return their optional arguments. `CB.HNDL` values are passed to DIALOG statements without a second `inttoptr`, fixing `DIALOG SET USER CB.HNDL` and `DIALOG POST CB.HNDL` builds. `GRAPHIC LINE [STEP] [(x1,y1)] - [STEP] (x2,y2)` now accepts the omitted-start and STEP forms used by PBWin10 samples. The all-source audit covers 159 sample `.bas` files: 96 full x64 builds succeed (88 EXE and 8 DLL) and 63 fail on unrelated syntax/link gaps. `batch396_test.bas` passes on x86_64 and i686.
 > batch 395 (v0.2.183) - DDT optional separator commas: `DIALOG NEW` accepts `..., style, TO hDlg`; `DIALOG SHOW MODAL` accepts `hDlg, CALL proc` and `hDlg, TO result`. PBWin10 compiles all four comma/no-comma variants; the previous parser rejected the comma before `TO` and silently dropped the modal callback when a comma preceded `CALL`. `batch395_test.bas` passes on x86_64 and i686, and `batch395_modal_probe.bas` covers both modal forms at compile time.
@@ -1067,6 +1068,29 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.186 (2026-11-21)
+
+Windows sample conformance batch 398. Every PBWin10 sample that is valid in PBWin10 itself now builds on both targets.
+
+- Target-aware DLL import library resolution: `DECLARE ... LIB "x.dll"` prefers an import library from the output directory and skips architecture-mismatched `.lib` files left behind by PBWin. `DLL\TestDLL` and `Objects\VB\Reg` now link and run on x86_64.
+- 32-bit callback ABI: `CALLBACK FUNCTION` / `SUB` are registered as stdcall, `CODEPTR` emits a stdcall thunk, and Win32 fast-path calls (`GetDlgItem`, `IsWindow`, `GetSystemMetrics`, `GetCurrentThreadId`), `MSGBOX` and `CALL DWORD ... USING` use the same ABI. ListView, Calendar and PBNote2 no longer crash.
+- Dialog callbacks use the architecture-specific four-argument signature, so a 32-bit dialog procedure no longer shifts ESP by 16 bytes per message.
+- Fixed-length `GLOBAL` and session strings reserve their full declared width: `ASCIIZ * 260` is 261 bytes of storage, not a pointer. PBNote2 no longer lets the CRT atexit table overlap `g_zIni`, and exits cleanly on both targets.
+- The synthetic `main` obtains `hInstance` through `pb_get_hinstance()` and passes 32-bit arguments on i686, so `WINMAIN` returns to a valid address.
+- Integer-to-pointer conversion truncates or extends to the target pointer width before `inttoptr`, fixing the 32-bit Calendar `CB.LPARAM` crash.
+- `GET TEXT` into fixed buffers copies through the BSTR/fixed-buffer helpers instead of storing a pointer.
+- `CALLSTK$` argument capture no longer dereferences low values used as resource IDs (`DialogBox(hInst, BYVAL 100&, ...)`); the SDK Tray sample opens and exits cleanly.
+- Dialog callback and call/data stack overflow bookkeeping is architecture-aware.
+
+Validation:
+
+- PBWin10 samples: 159 attempted per target, 152 build (141 EXE + 11 DLL); the other 7 are rejected by PBWin10 itself. x64 and x86 results are identical.
+- GUI: 64 candidates, 63 EXE + 1 DLL per target; the paired runtime matrix measured 120 windows, with 2 intentionally windowless samples.
+- Includes: 10 `.inc` wrappers, 10/10 parse and build per target.
+- Resources: 7 `.rc` files compile 7/7; 6 resource-embedding samples rebuild 12/12 and close with exit code 0.
+- Targeted: ListView, Calendar, PBNote2, DateTime and Tray pass on both targets.
+- `batch398_test.bas` checks fixed-string storage widths on both targets.
+
 ### v0.2.185 (2026-11-20)
 
 GUI conformance batch 397. The DDT runtime now matches PBWin10 on dialog geometry, fonts and drawing for the measured samples.

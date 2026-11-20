@@ -194,6 +194,13 @@ impl Parser {
                 Token::Global => "GLOBAL",
                 Token::Open => "OPEN",
                 Token::Shared => "SHARED",
+                // Excel/Word generated headers declare `METHOD Select`, so
+                // the member-name position must accept SELECT as well.
+                Token::Select => "SELECT",
+                // COM collection methods are spelled with the built-in
+                // array-bound keywords: `Scores.LBound(1)`, `Scores.UBound(2)`.
+                Token::Lbound => "LBOUND",
+                Token::Ubound => "UBOUND",
                 _ => return None,
             }
             .to_string(),
@@ -541,12 +548,14 @@ impl Parser {
                 match self.peek_at(1) {
                     Some(Token::Function) => {
                         self.advance(); // CALLBACK
-                        let fd = self.parse_function_decl()?;
+                        let mut fd = self.parse_function_decl()?;
+                        fd.is_callback = true;
                         Ok(Some(TopLevel::FunctionDecl(fd)))
                     }
                     Some(Token::Sub) => {
                         self.advance(); // CALLBACK
-                        let sd = self.parse_sub_decl()?;
+                        let mut sd = self.parse_sub_decl()?;
+                        sd.is_callback = true;
                         Ok(Some(TopLevel::SubDecl(sd)))
                     }
                     _ => {
@@ -641,6 +650,42 @@ impl Parser {
                 } else {
                     String::new()
                 };
+                // CLASS Name GUID$("{...}") AS COM.  Preserve the literal
+                // GUID + COM flag for DllRegisterServer generation.
+                let mut com = false;
+                let mut guid: Option<String> = None;
+                let mut k = 0usize;
+                while k < 12 {
+                    match self.peek_at(k) {
+                        Some(Token::Eol) | Some(Token::Eof) | None => break,
+                        Some(Token::StringLiteral(s))
+                            if k > 0
+                                && (matches!(self.peek_at(k - 1),
+                                    Some(Token::Identifier(g))
+                                        if g.eq_ignore_ascii_case("GUID$")
+                                            || g.eq_ignore_ascii_case("GUID"))
+                                    || (k > 1
+                                        && matches!(self.peek_at(k - 1), Some(Token::LParen))
+                                        && matches!(self.peek_at(k - 2),
+                                            Some(Token::Identifier(g))
+                                                if g.eq_ignore_ascii_case("GUID$")
+                                                    || g.eq_ignore_ascii_case("GUID")))) =>
+                        {
+                            guid = Some(s.clone());
+                        }
+                        Some(Token::Identifier(w))
+                            if w.eq_ignore_ascii_case("COM")
+                                && (matches!(self.peek_at(k - 1),
+                                    Some(Token::Identifier(a))
+                                        if a.eq_ignore_ascii_case("AS"))
+                                    || matches!(self.peek_at(k - 1), Some(Token::As))) =>
+                        {
+                            com = true;
+                        }
+                        _ => {}
+                    }
+                    k += 1;
+                }
                 self.consume_to_eol();
                 self.skip_eol();
 
@@ -685,13 +730,72 @@ impl Parser {
                             };
                             // INSTANCE a(10) AS LONG needs an array-typed struct slot, which is not
                             // supported yet.  Reject it loudly instead of skipping the line silently.
-                            if self.peek() == &Token::LParen {
-                                self.error_count += 1;
-                                self.consume_to_eol();
-                                break;
-                            }
+                            let (array_dim, dims) = if self.peek() == &Token::LParen {
+                                self.advance();
+                                let mut total: Option<usize> = Some(1);
+                                let mut dims: Vec<(i64, i64)> = Vec::new();
+                                if self.peek() == &Token::RParen {
+                                    // Empty parentheses: dynamic instance array.
+                                    // Reserve the sample ceiling; REDIM bounds act
+                                    // on this storage (GlossaryServer).
+                                    total = Some(512);
+                                    dims.push((0, 512));
+                                } else {
+                                    loop {
+                                        let lo = self.parse_expression()?;
+                                        let (lo_v, hi_v) = if self.peek() == &Token::To {
+                                            self.advance();
+                                            let hi = self.parse_expression()?;
+                                            (self.eval_const_expr(&lo), self.eval_const_expr(&hi))
+                                        } else {
+                                            (self.eval_const_expr(&lo), None)
+                                        };
+                                        let (cnt, real_lower) = match (lo_v, hi_v) {
+                                            (Some(lo), None) if lo >= 0 => {
+                                                (Some(lo as usize + 1), 0i64)
+                                            }
+                                            (Some(lo), Some(hi)) if hi >= lo => {
+                                                (Some((hi - lo) as usize + 1), lo)
+                                            }
+                                            _ => (None, 0i64),
+                                        };
+                                        if let Some(c) = cnt {
+                                            dims.push((real_lower, c as i64));
+                                        }
+                                        match (total, cnt) {
+                                            (Some(t), Some(c)) => total = Some(t * c),
+                                            _ => {
+                                                total = None;
+                                                break;
+                                            }
+                                        }
+                                        if self.peek() == &Token::Comma {
+                                            self.advance();
+                                            continue;
+                                        }
+                                        break;
+                                    }
+                                }
+                                self.expect(&Token::RParen)?;
+                                match total {
+                                    Some(t) if t >= 1 => (Some(t), dims),
+                                    _ => {
+                                        self.error_count += 1;
+                                        self.consume_to_eol();
+                                        break;
+                                    }
+                                }
+                            } else {
+                                (None, Vec::new())
+                            };
                             let ftype = if self.peek() == &Token::As {
                                 self.advance();
+                                // Scope word in `AS INSTANCE WSTRING`.
+                                if matches!(self.peek(), Token::Identifier(k)
+                                            if k.eq_ignore_ascii_case("INSTANCE"))
+                                {
+                                    self.advance();
+                                }
                                 self.parse_type()?
                             } else {
                                 PbType::Long
@@ -700,8 +804,8 @@ impl Parser {
                                 name: fname,
                                 pb_type: ftype,
                                 nested: None,
-                                array_dim: None,
-                                dims: Vec::new(),
+                                array_dim,
+                                dims,
                             });
                             if self.peek() == &Token::Comma {
                                 self.advance();
@@ -818,6 +922,9 @@ impl Parser {
                         self.advance(); // SOURCE
                         if let Token::Identifier(iface) = self.peek() {
                             event_sources.push(iface.clone());
+                            // `EVENT SOURCE <name>` also makes <name> usable as
+                            // an object-reference type (`LOCAL o AS DISPATCH`).
+                            self.interface_names.insert(iface.to_uppercase());
                             self.advance();
                         }
                         self.consume_to_eol();
@@ -842,6 +949,8 @@ impl Parser {
                         event_sources,
                         interfaces,
                         thread_method,
+                        com,
+                        guid,
                     })))
                 }
             }
@@ -865,17 +974,24 @@ impl Parser {
                 Ok(Some(self.parse_method_decl(None)?))
             }
             Token::Identifier(w) if w.eq_ignore_ascii_case("INTERFACE") => {
-                // INTERFACE Name [DIRECT|IDBIND] ... END INTERFACE — OOP interface block (skip)
+                // INTERFACE Name [DIRECT|IDBIND] ... END INTERFACE — OOP interface block
                 self.advance(); // consume INTERFACE
-                if let Token::Identifier(_) = self.peek() {
-                    self.advance();
-                }
-                // optional DIRECT or IDBIND
+                                // `INTERFACE IDBIND Name` / `INTERFACE DIRECT Name`: the
+                                // binding keyword precedes the interface name (Excel.inc).
                 if let Token::Identifier(w2) = self.peek() {
                     let up = w2.to_uppercase();
                     if up == "DIRECT" || up == "IDBIND" {
                         self.advance();
                     }
+                }
+                let iface_name = if let Token::Identifier(n) = self.peek().clone() {
+                    self.advance();
+                    Some(n)
+                } else {
+                    None
+                };
+                if let Some(n) = &iface_name {
+                    self.interface_names.insert(n.to_uppercase());
                 }
                 self.consume_to_eol();
                 let mut depth = 1;
@@ -957,6 +1073,14 @@ impl Parser {
                 // Should have been handled by preprocessor, but skip if present
                 self.skip_conditional_block();
                 Ok(None)
+            }
+            Token::Identifier(name) if is_deftype_name(&name) => {
+                // DEFBYTE/DEFINT/DEFLNG/... are legal at top level in PBWin.
+                // `parse_statement` already knows how to consume them, but the
+                // top-level dispatcher used to fall straight through to the
+                // generic "unrecognized statement" arm (probe_deflng).
+                let stmt = self.parse_deftype_statement()?;
+                Ok(Some(TopLevel::Statement(stmt)))
             }
             Token::Identifier(name) => {
                 eprintln!(
@@ -1241,7 +1365,7 @@ impl Parser {
         self.advance(); // consume DIM/LOCAL/STATIC
 
         // DIM SHARED -> treat as global
-        let actual_scope = if self.peek() == &Token::Shared {
+        let mut actual_scope = if self.peek() == &Token::Shared {
             self.advance();
             DimScope::Global
         } else {
@@ -1273,6 +1397,26 @@ impl Parser {
             let mut explicit = false;
             let pb_type = if self.peek() == &Token::As {
                 self.advance();
+                // `DIM arr(1 TO 5) AS GLOBAL LONG` — the scope word may appear
+                // after AS (PBWin PowerBASIC Pong / HighScores).
+                if self.peek() == &Token::Global {
+                    self.advance();
+                    actual_scope = DimScope::Global;
+                } else if self.peek() == &Token::Static {
+                    self.advance();
+                    actual_scope = DimScope::Static;
+                } else if self.peek() == &Token::Shared {
+                    self.advance();
+                    actual_scope = DimScope::Global;
+                } else if let Token::Identifier(k) = self.peek().clone() {
+                    if k.eq_ignore_ascii_case("GLOBAL") {
+                        self.advance();
+                        actual_scope = DimScope::Global;
+                    } else if k.eq_ignore_ascii_case("STATIC") {
+                        self.advance();
+                        actual_scope = DimScope::Static;
+                    }
+                }
                 let t = self.parse_type()?;
                 for i in &untyped {
                     stmts[*i].pb_type = t.clone();
@@ -1338,8 +1482,27 @@ impl Parser {
         }
 
         let explicit_type = self.peek() == &Token::As;
+        let mut scope = DimScope::Dim;
         let pb_type = if explicit_type {
             self.advance();
+            // `REDIM PRESERVE arr(n) AS GLOBAL WSTRING` — scope word after AS
+            // (PBWin FileFind.bas).
+            if self.peek() == &Token::Global {
+                self.advance();
+                scope = DimScope::Global;
+            } else if let Token::Identifier(k) = self.peek().clone() {
+                if k.eq_ignore_ascii_case("GLOBAL") {
+                    self.advance();
+                    scope = DimScope::Global;
+                }
+            }
+            // `REDIM ... AS INSTANCE WSTRING` — INSTANCE is a scope word
+            // naming per-object storage, not a data type.
+            if matches!(self.peek(), Token::Identifier(k)
+                        if k.eq_ignore_ascii_case("INSTANCE"))
+            {
+                self.advance();
+            }
             self.parse_type()?
         } else {
             let t = type_from_suffix(&name);
@@ -1365,7 +1528,7 @@ impl Parser {
 
         self.consume_to_eol();
         Ok(DimStatement {
-            scope: DimScope::Dim,
+            scope,
             name,
             pb_type,
             bounds,
@@ -1475,7 +1638,7 @@ impl Parser {
                 if self.peek() == &Token::Star {
                     self.advance();
                     if let Some(n) = self.parse_type_length() {
-                        return Ok(PbType::FixedWString(n));
+                        return Ok(PbType::FixedWString(n, false));
                     }
                 }
                 Ok(PbType::WString) // UTF-16 wide dynamic string (batch280)
@@ -1495,7 +1658,7 @@ impl Parser {
                 if self.peek() == &Token::Star {
                     self.advance();
                     if let Some(n) = self.parse_type_length() {
-                        return Ok(PbType::FixedWString(n));
+                        return Ok(PbType::FixedWString(n, true));
                     }
                 }
                 Ok(PbType::WString)
@@ -1626,11 +1789,23 @@ impl Parser {
                     _ => {
                         let name = s.clone();
                         self.advance();
+                        let upper = name.to_uppercase();
                         // An interface name used as a variable type is an
                         // object reference (batch 264): `LOCAL o AS MyIface`.
-                        if self.interface_names.contains(&name.to_uppercase()) {
-                            Ok(PbType::Interface(name.to_uppercase()))
-                        } else if self.defined_enums.contains(&name.to_uppercase()) {
+                        // COM interfaces may come from a registered type
+                        // library (PowerArray/PowerTime/...), so they have no
+                        // INTERFACE declaration in the source; PBWin accepts
+                        // the conventional `I` + capital spelling.
+                        let implicit_iface = upper.starts_with('I')
+                            && name
+                                .chars()
+                                .nth(1)
+                                .map(|c| c.is_uppercase())
+                                .unwrap_or(false)
+                            && !self.defined_types.contains(&upper);
+                        if self.interface_names.contains(&upper) || implicit_iface {
+                            Ok(PbType::Interface(upper))
+                        } else if self.defined_enums.contains(&upper) {
                             // ENUM as a member/variable type = its underlying
                             // integer (PBWin; official headers do this in TYPE
                             // members, batch306 #5).
@@ -1951,6 +2126,8 @@ impl Parser {
             event_sources: Vec::new(),
             interfaces: Vec::new(),
             thread_method: None,
+            com: false,
+            guid: None,
         })
     }
 
@@ -2083,6 +2260,8 @@ impl Parser {
             event_sources: Vec::new(),
             interfaces: Vec::new(),
             thread_method: None,
+            com: false,
+            guid: None,
         })
     }
 
@@ -2189,7 +2368,16 @@ impl Parser {
     fn parse_method_decl(&mut self, prefix: Option<&str>) -> PbResult<TopLevel> {
         let line = self.current_line();
         self.advance(); // METHOD
-        let mname = self.consume_identifier()?;
+                        // COM interface headers legitimately declare `METHOD Select`,
+                        // `METHOD Open`, `METHOD Close`; accept reserved words here.
+        let mname = if self.peek_identifier().is_some() {
+            self.consume_identifier()?
+        } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+            self.advance();
+            spelling
+        } else {
+            self.consume_identifier()?
+        };
 
         // Optional CDECL/STDCALL/BDECL decoration.
         let call_conv = self.parse_optional_call_conv();
@@ -2277,6 +2465,7 @@ impl Parser {
                 export,
                 threadsafe,
                 call_conv,
+                is_callback: false,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2287,6 +2476,7 @@ impl Parser {
                 export,
                 threadsafe,
                 call_conv,
+                is_callback: false,
                 line,
             }),
         })
@@ -2369,6 +2559,7 @@ impl Parser {
                 export: false,
                 threadsafe,
                 call_conv,
+                is_callback: false,
                 line,
             }),
             None => TopLevel::SubDecl(SubDecl {
@@ -2379,6 +2570,7 @@ impl Parser {
                 export: false,
                 threadsafe,
                 call_conv,
+                is_callback: false,
                 line,
             }),
         })
@@ -2388,6 +2580,10 @@ impl Parser {
     /// statements:  `(x1, y1)` -> [x1, y1] ; `(x1, y1)-(x2, y2)` -> [x1, y1, x2, y2] ;
     /// a bare expression -> [expr] (back-compat with this fork's older examples).
     fn parse_xprint_pt(&mut self) -> PbResult<Vec<Expr>> {
+        // XPRINT SET POS STEP (x,y): STEP selects relative positioning.
+        if self.peek_plain_upper() == "STEP" {
+            self.advance();
+        }
         if self.peek() == &Token::LParen {
             self.advance();
             let x = self.parse_expression()?;
@@ -2502,6 +2698,7 @@ impl Parser {
             export,
             threadsafe,
             call_conv,
+            is_callback: false,
             line,
         })
     }
@@ -2590,6 +2787,7 @@ impl Parser {
             export,
             threadsafe,
             call_conv,
+            is_callback: false,
             line,
         })
     }
@@ -2669,6 +2867,7 @@ impl Parser {
             export,
             threadsafe,
             call_conv,
+            is_callback: false,
             line,
         })
     }
@@ -4370,6 +4569,9 @@ impl Parser {
             args.push(self.parse_expression()?);
             // The optional CALL operand is always emitted, as IntegerLit(0)
             // when absent, so codegen sees a fixed seven-operand layout.
+            if self.peek() == &Token::Comma {
+                self.advance();
+            }
             if self.peek() == &Token::Call {
                 self.advance();
                 args.push(self.parse_expression()?);
@@ -5410,7 +5612,12 @@ impl Parser {
                     self.advance(); // consume member
 
                     if member == "WINDOW" {
-                        self.expect(&Token::LParen)?;
+                        // Officially `TXT.WINDOW (caption,x,y,rows,cols) TO h`,
+                        // but PBWin also accepts the bare statement form.
+                        let paren = self.peek() == &Token::LParen;
+                        if paren {
+                            self.advance();
+                        }
                         let cap = self.parse_expression()?;
                         self.expect(&Token::Comma)?;
                         let x = self.parse_expression()?;
@@ -5426,7 +5633,9 @@ impl Parser {
                                 cols = self.parse_expression()?;
                             }
                         }
-                        self.expect(&Token::RParen)?;
+                        if paren {
+                            self.expect(&Token::RParen)?;
+                        }
                         self.expect(&Token::To)?;
                         let target = self.parse_expression()?;
                         self.consume_to_eol();
@@ -5773,6 +5982,44 @@ impl Parser {
                             return Ok(Statement::Call(CallStmt {
                                 name: format!("GRAPHIC_WINDOW_{}", sub),
                                 args: vec![hw],
+                                line,
+                            }));
+                        }
+                        // Bare `GRAPHIC WINDOW Caption$, x, y, w, h TO hWin`
+                        // is the NEW shorthand (Cartesian.bas).
+                        if !self.at_eol_or_eof() {
+                            let cap = self.parse_expression()?;
+                            let mut vals = Vec::new();
+                            for default in [0i64, 0, 0, 0, 0] {
+                                if self.peek() == &Token::Comma {
+                                    self.advance();
+                                    if matches!(
+                                        self.peek(),
+                                        Token::Comma | Token::To | Token::Eol | Token::Eof
+                                    ) {
+                                        vals.push(Expr::IntegerLit(default));
+                                    } else {
+                                        vals.push(self.parse_expression()?);
+                                    }
+                                } else {
+                                    vals.push(Expr::IntegerLit(default));
+                                }
+                            }
+                            self.expect(&Token::To)?;
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "GRAPHIC_WINDOW_NEW".to_string(),
+                                args: vec![
+                                    cap,
+                                    vals[0].clone(),
+                                    vals[1].clone(),
+                                    vals[2].clone(),
+                                    vals[3].clone(),
+                                    vals[4].clone(),
+                                    target,
+                                    Expr::IntegerLit(1),
+                                ],
                                 line,
                             }));
                         }
@@ -6318,12 +6565,22 @@ impl Parser {
                         }));
                     }
                     if gop == "CHR" {
-                        // GRAPHIC CHR SIZE (text$) TO w&, h&
+                        // GRAPHIC CHR SIZE [(text$)] TO w&, h&
+                        // The text is optional in PBWin: without it the size
+                        // of the current font's widest character is returned
+                        // (DIGITAL.bas / PowerTime use the bare form).
                         self.advance();
                         self.expect(&Token::Identifier("SIZE".to_string()))?;
-                        self.expect(&Token::LParen)?;
-                        let txt = self.parse_expression()?;
-                        self.expect(&Token::RParen)?;
+                        let txt = if self.peek() == &Token::LParen {
+                            self.advance();
+                            let t = self.parse_expression()?;
+                            self.expect(&Token::RParen)?;
+                            t
+                        } else if self.peek() == &Token::To {
+                            Expr::StringLit(String::new())
+                        } else {
+                            self.parse_expression()?
+                        };
                         self.expect(&Token::To)?;
                         let w = self.parse_expression()?;
                         self.expect(&Token::Comma)?;
@@ -6336,8 +6593,35 @@ impl Parser {
                         }));
                     }
                     if gop == "CELL" {
-                        // GRAPHIC CELL SIZE (rows,cols) TO w,h  |  GRAPHIC CELL (row,col) TO x,y
+                        // GRAPHIC CELL SIZE (rows,cols) TO w,h
+                        // GRAPHIC CELL (row,col) TO x,y
+                        // GRAPHIC CELL = row, col
+                        // GRAPHIC CELL TO rowVar, colVar
                         self.advance();
+                        if self.peek() == &Token::Eq {
+                            self.advance();
+                            let r = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let c = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "GRAPHIC_SET_CELL".to_string(),
+                                args: vec![r, c],
+                                line,
+                            }));
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let r = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let c = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "GRAPHIC_GET_CELL".to_string(),
+                                args: vec![r, c],
+                                line,
+                            }));
+                        }
                         let sub = self.peek_plain_upper();
                         if sub == "SIZE" {
                             self.advance();
@@ -6543,8 +6827,76 @@ impl Parser {
                         }));
                     }
                     if gop == "COPY" {
-                        // GRAPHIC COPY (x1,y1)-(x2,y2), (x3,y3)
+                        // Two official families:
+                        //   GRAPHIC COPY (x1,y1)-(x2,y2), (x3,y3)
+                        //   GRAPHIC COPY hbmpSource, id& [, (x1,y1)-(x2,y2)] TO (x,y) [, style]
                         self.advance();
+                        if self.peek() != &Token::LParen {
+                            let src = self.parse_expression()?;
+                            let id = if self.peek() == &Token::Comma {
+                                self.advance();
+                                self.parse_expression()?
+                            } else {
+                                Expr::IntegerLit(0)
+                            };
+                            let mut srcrect: Option<Vec<Expr>> = None;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                if self.peek() == &Token::LParen {
+                                    let mut r = Vec::new();
+                                    self.advance();
+                                    r.push(self.parse_expression()?);
+                                    self.expect(&Token::Comma)?;
+                                    r.push(self.parse_expression()?);
+                                    self.expect(&Token::RParen)?;
+                                    if self.peek() == &Token::Minus {
+                                        self.advance();
+                                    }
+                                    self.expect(&Token::LParen)?;
+                                    r.push(self.parse_expression()?);
+                                    self.expect(&Token::Comma)?;
+                                    r.push(self.parse_expression()?);
+                                    self.expect(&Token::RParen)?;
+                                    srcrect = Some(r);
+                                } else {
+                                    // trailing style with no rect
+                                    let _ = self.parse_expression()?;
+                                }
+                            }
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                            }
+                            // GRAPHIC COPY hbmp, id  (no destination) copies the
+                            // bitmap onto the current canvas at 0,0.
+                            let mut dx = Expr::IntegerLit(0);
+                            let mut dy = Expr::IntegerLit(0);
+                            if self.peek() == &Token::To {
+                                self.advance();
+                                self.expect(&Token::LParen)?;
+                                dx = self.parse_expression()?;
+                                self.expect(&Token::Comma)?;
+                                dy = self.parse_expression()?;
+                                self.expect(&Token::RParen)?;
+                            }
+                            let mut args = vec![src, id];
+                            let name = if let Some(r) = srcrect {
+                                args.extend(r);
+                                args.push(dx);
+                                args.push(dy);
+                                "GRAPHIC_COPY_BMP_RECT"
+                            } else {
+                                args.push(dx);
+                                args.push(dy);
+                                "GRAPHIC_COPY_BMP"
+                            };
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: name.to_string(),
+                                args,
+                                line,
+                            }));
+                        }
+                        // GRAPHIC COPY (x1,y1)-(x2,y2), (x3,y3)
                         let mut args = Vec::new();
                         self.expect(&Token::LParen)?;
                         args.push(self.parse_expression()?);
@@ -6763,7 +7115,12 @@ impl Parser {
                         }
                         while self.peek() == &Token::Comma {
                             self.advance();
-                            args.push(self.parse_expression()?);
+                            // Omitted optional slots are legal: `,,RGB(...)`.
+                            if matches!(self.peek(), Token::Comma | Token::Eol | Token::Eof) {
+                                args.push(Expr::IntegerLit(-1));
+                            } else {
+                                args.push(self.parse_expression()?);
+                            }
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
@@ -7101,17 +7458,25 @@ impl Parser {
                         self.advance();
                         let op = self.peek_plain_upper();
                         if op == "LOAD" {
-                            // GRAPHIC BITMAP LOAD "file.bmp" TO hbmp
+                            // GRAPHIC BITMAP LOAD BmpName$, nWidth&, nHeight& [, stretch&] TO hBmp
                             self.advance();
-                            let fname = self.parse_expression()?;
+                            let mut args = vec![self.parse_expression()?];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                if matches!(self.peek(), Token::To | Token::Eol | Token::Eof) {
+                                    args.push(Expr::IntegerLit(0));
+                                } else {
+                                    args.push(self.parse_expression()?);
+                                }
+                            }
                             if matches!(self.peek(), Token::To) {
                                 self.advance();
                             }
-                            let dst = self.parse_expression()?;
+                            args.push(self.parse_expression()?);
                             self.consume_to_eol();
                             return Ok(Statement::Call(CallStmt {
                                 name: "GRAPHIC_BITMAP_LOAD".to_string(),
-                                args: vec![fname, dst],
+                                args,
                                 line,
                             }));
                         }
@@ -7172,6 +7537,24 @@ impl Parser {
                         let printer = if first == "DEFAULT" {
                             self.advance();
                             Expr::StringLit(String::new())
+                        } else if first == "CHOOSE" {
+                            // XPRINT ATTACH CHOOSE [USING flags] [, JobName$]
+                            self.advance();
+                            let mut choose_args = vec![Expr::IntegerLit(0)];
+                            if self.peek_plain_upper() == "USING" {
+                                self.advance();
+                                choose_args.push(self.parse_expression()?);
+                            }
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                choose_args.push(self.parse_expression()?);
+                            }
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "XPRINT_ATTACH_CHOOSE".to_string(),
+                                args: choose_args,
+                                line,
+                            }));
                         } else {
                             self.parse_expression()?
                         };
@@ -7293,12 +7676,70 @@ impl Parser {
                     }
                     if xop == "STRETCH" {
                         self.advance();
-                        let mut args = vec![];
-                        for i in 0..8 {
-                            args.push(self.parse_expression()?);
-                            if i < 7 {
+                        // Official block form (Boltcalc.bas):
+                        //   XPRINT STRETCH hBmp, ID,
+                        //       (x1,y1)-(x2,y2) TO (x3,y3)-(x4,y4)
+                        // Legacy flat form remains comma-separated.
+                        let mut prefix = Vec::new();
+                        while self.peek() != &Token::LParen
+                            && self.peek() != &Token::Eol
+                            && self.peek() != &Token::Eof
+                        {
+                            prefix.push(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                            } else {
+                                break;
+                            }
+                        }
+                        if self.peek() == &Token::LParen {
+                            let mut pts: Vec<(Expr, Expr)> = Vec::new();
+                            for pi in 0..4 {
+                                self.expect(&Token::LParen)?;
+                                let px = self.parse_expression()?;
+                                self.expect(&Token::Comma)?;
+                                let py = self.parse_expression()?;
+                                self.expect(&Token::RParen)?;
+                                pts.push((px, py));
+                                if pi == 1 {
+                                    self.expect(&Token::To)?;
+                                } else if pi == 0 || pi == 2 {
+                                    self.expect(&Token::Minus)?;
+                                }
+                            }
+                            let sub = |a: &Expr, b: &Expr| {
+                                Expr::BinaryOp(
+                                    crate::ast::BinaryOp::Sub,
+                                    Box::new(b.clone()),
+                                    Box::new(a.clone()),
+                                )
+                            };
+                            let mut args = prefix;
+                            // dx, dy, dw, dh, sx, sy, sw, sh
+                            args.push(pts[0].0.clone());
+                            args.push(pts[0].1.clone());
+                            args.push(sub(&pts[0].0, &pts[1].0));
+                            args.push(sub(&pts[0].1, &pts[1].1));
+                            args.push(pts[2].0.clone());
+                            args.push(pts[2].1.clone());
+                            args.push(sub(&pts[2].0, &pts[3].0));
+                            args.push(sub(&pts[2].1, &pts[3].1));
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "XPRINT_STRETCH".to_string(),
+                                args,
+                                line,
+                            }));
+                        }
+                        let mut args = prefix;
+                        while args.len() < 8 {
+                            if self.peek() == &Token::Eol || self.peek() == &Token::Eof {
+                                break;
+                            }
+                            if !args.is_empty() {
                                 self.expect(&Token::Comma)?;
                             }
+                            args.push(self.parse_expression()?);
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
@@ -8139,6 +8580,42 @@ impl Parser {
                             }));
                         }
                     }
+                    if xop == "FONT" {
+                        // XPRINT FONT FontName$, size& [, style&]  — the
+                        // legacy direct-font form used by PBNote2/FrmPrint.
+                        self.advance();
+                        let mut fargs = vec![self.parse_expression()?];
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            fargs.push(self.parse_expression()?);
+                        }
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "XPRINT_FONT".to_string(),
+                            args: fargs,
+                            line,
+                        }));
+                    }
+                    // XPRINT <expr> / XPRINT "text": direct text output at the
+                    // current print position (the most common legacy form).
+                    if xop != "SET" && xop != "GET" {
+                        let mut args = Vec::new();
+                        while !matches!(self.peek(), Token::Eol | Token::Colon | Token::Eof) {
+                            if matches!(self.peek(), Token::Comma | Token::Semicolon) {
+                                self.advance();
+                                continue;
+                            }
+                            args.push(self.parse_expression()?);
+                        }
+                        if !args.is_empty() {
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "XPRINT_PRINT".to_string(),
+                                args,
+                                line,
+                            }));
+                        }
+                    }
                     // fallback: consume rest as noop for unimplemented XPRINT verbs
                     self.consume_to_eol();
                     eprintln!("Error: XPRINT: unsupported verb on line {}", line);
@@ -8523,7 +9000,10 @@ impl Parser {
                 }
 
                 // SCREEN rows, cols — PB/CC spelling for CON.SCREEN.
-                if name_upper == "SCREEN" {
+                // `SCREEN = value` in a GUI sample assigns a user variable
+                // named SCREEN; only the two-argument console statement form
+                // belongs to this branch.
+                if name_upper == "SCREEN" && self.peek_at(1) != Some(&Token::Eq) {
                     self.advance();
                     if self.peek() == &Token::Eq {
                         self.advance();
@@ -9393,6 +9873,66 @@ impl Parser {
                                     self.advance(); // consume TO
                                 }
                                 args.push(self.parse_expression()?);
+                            } else if sub == "OPENFILE" || sub == "SAVEFILE" || sub == "BROWSE" {
+                                // DISPLAY OPENFILE/SAVEFILE [hParent],[x],[y],title$,
+                                //   folder$,filter$,start$,defextn$,flags&
+                                //   TO filevar$ [, countvar&]
+                                // DISPLAY BROWSE [hParent],[x],[y],title$,
+                                //   folder$,flags& TO result$
+                                // Every positional slot may be omitted.
+                                let nslots = if sub == "BROWSE" { 6 } else { 9 };
+                                let defaults = vec![
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                    Expr::StringLit(String::new()),
+                                    Expr::StringLit(String::new()),
+                                    Expr::StringLit(String::new()),
+                                    Expr::StringLit(String::new()),
+                                    Expr::StringLit(String::new()),
+                                    Expr::IntegerLit(0),
+                                ];
+                                let mut args = Vec::new();
+                                let mut slot = 0usize;
+                                while slot < nslots {
+                                    let default = defaults[slot].clone();
+                                    if self.peek() == &Token::To
+                                        || self.peek() == &Token::Eol
+                                        || self.peek() == &Token::Eof
+                                    {
+                                        args.push(default);
+                                        slot += 1;
+                                        continue;
+                                    }
+                                    if self.peek() == &Token::Comma {
+                                        self.advance();
+                                        args.push(default);
+                                        slot += 1;
+                                        continue;
+                                    }
+                                    args.push(self.parse_expression()?);
+                                    if self.peek() == &Token::Comma {
+                                        self.advance();
+                                    } else if self.peek() != &Token::To {
+                                        while args.len() < nslots {
+                                            args.push(defaults[args.len()].clone());
+                                        }
+                                        break;
+                                    }
+                                    slot += 1;
+                                }
+                                self.expect(&Token::To)?;
+                                args.push(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    self.advance();
+                                    args.push(self.parse_expression()?);
+                                }
+                                self.consume_to_eol();
+                                return Ok(Statement::Call(CallStmt {
+                                    name: format!("DISPLAY_{sub}"),
+                                    args,
+                                    line,
+                                }));
                             } else {
                                 // input string expressions, then `TO result`
                                 args.push(self.parse_expression()?);
@@ -9776,9 +10316,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -9846,9 +10394,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10484,9 +11040,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10602,9 +11166,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10679,9 +11251,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10784,9 +11364,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10863,9 +11451,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -10942,9 +11538,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11300,9 +11904,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11379,9 +11991,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11479,9 +12099,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11551,9 +12179,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11623,9 +12259,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -11695,9 +12339,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -12066,9 +12718,17 @@ impl Parser {
                                 callback = Some(self.parse_expression()?);
                                 break;
                             } else if style.is_none() {
-                                style = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    style = Some(Expr::IntegerLit(0));
+                                } else {
+                                    style = Some(self.parse_expression()?);
+                                }
                             } else if exstyle.is_none() {
-                                exstyle = Some(self.parse_expression()?);
+                                if self.peek() == &Token::Comma {
+                                    exstyle = Some(Expr::IntegerLit(0));
+                                } else {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
                             } else {
                                 break;
                             }
@@ -12776,7 +13436,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_SHOW_MODAL".to_string(),
-                        args: vec![hd, Expr::IntegerLit(0)],
+                        args: vec![hd],
                         line,
                     }));
                 }
@@ -14189,6 +14849,15 @@ impl Parser {
                                 self.advance();
                                 continue;
                             }
+                            // PB allows the event names in the list to be separated
+                            // by spaces as well as commas (batch 398 EchoServ:
+                            // `TCP NOTIFY hEcho, RECV CLOSE TO ...`).
+                            if matches!(
+                                self.peek_plain_upper().as_str(),
+                                "SEND" | "RECV" | "ACCEPT" | "CONNECT" | "CLOSE"
+                            ) {
+                                continue;
+                            }
                             break;
                         }
                         if !(self.peek() == &Token::To
@@ -14334,6 +15003,13 @@ impl Parser {
                         args: vec![],
                         line,
                     }));
+                }
+                // SET obj = NOTHING — release an object reference.  PBWin's
+                // SET statement is an ordinary assignment with object semantics.
+                if name_upper == "SET" && matches!(self.peek_at(1), Some(Token::Identifier(_))) {
+                    self.advance(); // consume SET
+                    let primary = self.parse_primary()?;
+                    return self.parse_assignment_tail(primary, line);
                 }
                 // LET obj2 = expr (plain LET keyword) — consume LET, then normal assignment
                 if name_upper == "LET" && self.peek_at(1) != Some(&Token::Star) {
@@ -15024,8 +15700,47 @@ impl Parser {
                 // expression, so treat it as a zero-argument call (batch 373).
                 let empty_parens_with_space = self.peek_at(1) == Some(&Token::LParen)
                     && self.peek_at(2) == Some(&Token::RParen);
+                // `MdiTile (hWnd, flag)` / `movememory (BYVAL p, ...)`: PBWin
+                // accepts a space before the LParen.  A single parenthesized
+                // argument is indistinguishable from `Sub (expr), arg2`, so
+                // only treat it as a call when the group contains a top-level
+                // comma or begins with BYVAL/BYCOPY (neither can start a
+                // parenthesized value expression).
+                let spaced_paren_call = if self.peek_at(1) == Some(&Token::LParen) {
+                    let mut depth = 0i32;
+                    let mut has_top_comma = false;
+                    let mut first_inside: Option<&Token> = None;
+                    let mut i = 1usize;
+                    loop {
+                        match self.peek_at(i) {
+                            None | Some(Token::Eol) | Some(Token::Eof) => break,
+                            Some(Token::LParen) => {
+                                depth += 1;
+                                if depth == 1 {
+                                    first_inside = self.peek_at(i + 1);
+                                }
+                            }
+                            Some(Token::RParen) => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            Some(Token::Comma) if depth == 1 => {
+                                has_top_comma = true;
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    has_top_comma || matches!(first_inside, Some(Token::Byval))
+                } else {
+                    false
+                };
                 if self.peek_at(1) == Some(&Token::LParen)
-                    && (self.lparen_is_adjacent(name) || empty_parens_with_space)
+                    && (self.lparen_is_adjacent(name)
+                        || empty_parens_with_space
+                        || spaced_paren_call)
                 {
                     // Could be: arr(idx) = expr  (array assignment)
                     // Or:       Sub(args)        (sub call)
@@ -15567,6 +16282,12 @@ impl Parser {
                     self.advance();
                 }
             }
+        }
+        // PBWin also accepts the short form `SELECT CASE LONG expr` without
+        // the AS keyword (used by SDK\Floating\Floating.bas).
+        if self.peek() == &Token::Long {
+            modifier = SelectModifier::Long;
+            self.advance();
         }
         let expr = self.parse_expression()?;
         self.consume_to_eol();
@@ -16136,6 +16857,7 @@ impl Parser {
             Token::Dword => "DWORD".to_string(),
             Token::End => "END".to_string(),
             Token::Step => "STEP".to_string(),
+            Token::Replace => "REPLACE".to_string(),
             _ => String::new(),
         }
     }
@@ -16396,15 +17118,20 @@ impl Parser {
                 // collected and CALL DWORD always called the target with zero
                 // arguments (measured: IsWindow(hwnd) returned 0 for a live hwnd,
                 // while the no-argument GetTickCount() worked).
+                let mut proto_name: Option<String> = None;
                 if matches!(self.peek(), Token::Identifier(_)) {
+                    if let Token::Identifier(n) = self.peek() {
+                        proto_name = Some(n.clone());
+                    }
                     self.advance();
                 } else {
                     let _proto = self.parse_primary()?;
                 }
                 if self.peek() == &Token::LParen {
+                    let mut using_args: Vec<Expr> = Vec::new();
                     self.advance();
                     while !self.at_eol_or_eof() && self.peek() != &Token::RParen {
-                        args.push(self.parse_expression()?);
+                        using_args.push(self.parse_expression()?);
                         if self.peek() == &Token::Comma {
                             self.advance();
                         } else {
@@ -16414,6 +17141,15 @@ impl Parser {
                     if self.peek() == &Token::RParen {
                         self.advance();
                     }
+                    // Keep the prototype name attached to its argument list so
+                    // codegen can honour the declared BYREF/BYVAL signature.
+                    // Previously the name was discarded and every argument was
+                    // evaluated by value, which passed INIT_COMMON_CONTROLSEX
+                    // by value to COMCTL32 (0xC0000005 in PBNote2).
+                    args.push(Expr::FunctionCall(
+                        proto_name.unwrap_or_default(),
+                        using_args,
+                    ));
                 }
                 if matches!(self.peek(), Token::To) {
                     self.advance();
@@ -18205,7 +18941,14 @@ impl Parser {
         let object = match self.peek().clone() {
             Token::Identifier(v) => {
                 self.advance();
-                Expr::Variable(v)
+                // `OBJECT RAISEEVENT IStatus.Done()` names the event
+                // interface, not an object variable: the event is raised on
+                // the current CLASS instance (EVENT SOURCE semantics).
+                if kind == "RAISEEVENT" && self.interface_names.contains(&v.to_uppercase()) {
+                    Expr::Variable("this".to_string())
+                } else {
+                    Expr::Variable(v)
+                }
             }
             _ => {
                 self.consume_to_eol();
@@ -18223,18 +18966,32 @@ impl Parser {
         let mut members: Vec<ObjectMember> = Vec::new();
         while self.peek() == &Token::Dot {
             self.advance();
-            let Some(name) = self.peek_identifier() else {
+            // Member names in COM object models often collide with PB
+            // reserved words (`ActiveWindow.Close`, `Worksheet.Select`).
+            let name = if self.peek_identifier().is_some() {
+                self.consume_identifier()?
+            } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+                self.advance();
+                spelling
+            } else {
                 self.consume_to_eol();
                 eprintln!("Error: OBJECT: expected a member name on line {}", line);
                 self.error_count += 1;
                 return Ok(Statement::Noop("OBJECT".to_string(), line));
             };
-            let _ = name;
-            let name = self.consume_identifier()?;
             let mut margs: Vec<Expr> = Vec::new();
             if self.peek() == &Token::LParen {
                 self.advance();
                 while self.peek() != &Token::RParen && !self.at_eol_or_eof() {
+                    // COM named argument `Name = value` (Excel
+                    // `BorderAround(Weight = vVnt)`): the name is
+                    // informational here; compile the value positionally.
+                    if matches!(self.peek(), Token::Identifier(_))
+                        && self.peek_at(1) == Some(&Token::Eq)
+                    {
+                        self.advance();
+                        self.advance();
+                    }
                     let arg = self.parse_expression()?;
                     margs.push(arg);
                     if self.peek() == &Token::Comma {
@@ -18745,6 +19502,18 @@ impl Parser {
         // helper (WinSock2.inc FD_CLR/FD_SET, WinNT.inc TP_*).  Parse a
         // dot-free ATOM here, dereference it, then attach the member chain.
         let inner = self.parse_deref_atom()?;
+        // `@ptr[i]` — byte-dereference at ptr+i (PBWin treats the result as an
+        // indexed BYTE read, not as array syntax).  Keep the pointer and the
+        // offset as separate arguments: lowering this to `PEEK(BYTE, ptr+i)`
+        // made the generic `+` operator see a Ptr operand and emit PB string
+        // concatenation, so `@x[1]` read from a formatted string instead of
+        // the byte at x+1 (UDP DottedIP crashed on it).
+        if self.peek() == &Token::LBracket {
+            self.advance();
+            let idx = self.parse_expression()?;
+            self.expect(&Token::RBracket)?;
+            return Ok(Expr::FunctionCall("PEEKPTR".to_string(), vec![inner, idx]));
+        }
         let mut e = Expr::Deref(Box::new(inner));
         while self.peek() == &Token::Dot {
             self.advance();
@@ -18876,6 +19645,27 @@ impl Parser {
                 }
             }
         }
+        // Legacy bare callback registers (PBWin pre-CB.* spelling).  The DDT
+        // samples call these without a receiver; they behave exactly like the
+        // CB.MSG / CB.HNDL / ... properties.
+        if let Token::Identifier(w) = self.peek() {
+            let alias = match w.to_uppercase().as_str() {
+                "CBMSG" => Some("PB_GET_CB_MSG"),
+                "CBHNDL" => Some("PB_GET_CB_HNDL"),
+                "CBCTL" => Some("PB_GET_CB_CTL"),
+                "CBCTLMSG" => Some("PB_GET_CB_CTLMSG"),
+                "CBWPARAM" => Some("PB_GET_CB_WPARAM"),
+                "CBLPARAM" => Some("PB_GET_CB_LPARAM"),
+                "ERR" => Some("PB_GET_ERR"),
+                "ERRCLEAR" => Some("PB_GET_ERRCLEAR"),
+                "XPRINT$" => Some("PB_GET_XPRINT_JOB"),
+                _ => None,
+            };
+            if let Some(fn_name) = alias {
+                self.advance();
+                return Ok(Expr::FunctionCall(fn_name.to_string(), Vec::new()));
+            }
+        }
         // METRICS(Scroll.Horz) - the official metric names are dotted identifiers
         // (Frame.Fixed.X has three segments).  Fold them to integer literals so the
         // argument parses at all; a plain numeric expression is accepted as well.
@@ -18952,6 +19742,26 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 self.expect(&Token::RParen)?;
                 Ok(expr)
+            }
+            Token::Identifier(name) if name.eq_ignore_ascii_case("GUID$") => {
+                // CHW GUID_function.htm allows the argumentless spelling
+                // `GUID$` (no parentheses) for a new unique GUID.  Macro
+                // bodies use exactly that form (pbmail.inc MessageId), and
+                // leaving it as a Variable made codegen report an undeclared
+                // variable.
+                self.advance();
+                if self.peek() == &Token::LParen {
+                    self.advance();
+                    let args = if self.peek() == &Token::RParen {
+                        Vec::new()
+                    } else {
+                        self.parse_arg_list()?
+                    };
+                    self.expect(&Token::RParen)?;
+                    Ok(Expr::FunctionCall("GUID$".to_string(), args))
+                } else {
+                    Ok(Expr::FunctionCall("GUID$".to_string(), Vec::new()))
+                }
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("EOF") => {
                 // CHW EOF_function.htm: y = EOF([#] filenum&) — the number sign
@@ -19428,7 +20238,28 @@ impl Parser {
                     // CHR$(a TO b) — range form returns CHR$(a)+CHR$(a+1)+..+CHR$(b)
                     // (CHW CHR$_function.htm).  Encode as CHR$RANGE so codegen
                     // can emit a loop; the plain multi-arg path stays unchanged.
-                    if name.eq_ignore_ascii_case("CHR$") && self.peek() != &Token::RParen {
+                    // GRAPHIC(SIZE.X) / GRAPHIC(SIZE.Y) — the CHW graphic
+                    // pseudo-object read form used by Calendar.bas.  The dot
+                    // spelling is a member selector, not a variable named
+                    // SIZE, so OPTION EXPLICIT must not see it.
+                    if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("SIZE"))
+                        && matches!(self.peek_at(1), Some(Token::Dot))
+                        && matches!(self.peek_at(2), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("X") || k.eq_ignore_ascii_case("Y"))
+                        && matches!(self.peek_at(3), Some(Token::RParen))
+                    {
+                        self.advance(); // SIZE
+                        self.advance(); // .
+                        let axis = match self.peek() {
+                            Token::Identifier(k) => k.to_uppercase(),
+                            _ => "X".to_string(),
+                        };
+                        self.advance(); // X / Y
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall(format!("GRAPHIC_SIZE_{}", axis), Vec::new())
+                    } else if name.eq_ignore_ascii_case("CHR$") && self.peek() != &Token::RParen {
                         let first = self.parse_expression()?;
                         if self.peek() == &Token::To {
                             self.advance();

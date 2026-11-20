@@ -24,7 +24,9 @@ pub enum PbType {
     /// N characters, 2N bytes in PBWin).  The fork keeps the same ptr-slot
     /// backing storage as FixedString arrays, but the distinct VARCLASS 26
     /// identity is preserved instead of silently dropping the `* N`.
-    FixedWString(usize),
+    /// WSTRING * N (flag=false, space-padded) or WSTRINGZ * N (flag=true,
+    /// NUL-terminated).  N characters, 2N bytes in PBWin.
+    FixedWString(usize, bool),
     Quad,
     Dword,
     Ext,
@@ -68,7 +70,7 @@ impl PbType {
             PbType::String
             | PbType::FixedString(_)
             | PbType::AsciiZ(_)
-            | PbType::FixedWString(_) => "$",
+            | PbType::FixedWString(_, _) => "$",
             PbType::Quad => "&&",
             PbType::Dword => "???",
             PbType::Ext => "##",
@@ -240,6 +242,11 @@ pub struct TypeDecl {
     /// method name without the class prefix; codegen uses it as the thread
     /// entry point and synthesizes the IPowerThread bridges.
     pub thread_method: Option<String>,
+    /// `CLASS Name GUID$("...") AS COM`: PBWin auto-generates
+    /// DllRegisterServer/DllUnregisterServer for the DLL.  The literal GUID
+    /// is kept so codegen can emit those exports.
+    pub com: bool,
+    pub guid: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -294,6 +301,10 @@ pub struct SubDecl {
     /// default (SLL/DLL: stdcall on i686; ordinary EXE: the fork's internal
     /// cdecl ABI, which the THREAD CREATE runtime thunk depends on).
     pub call_conv: Option<CallConv>,
+    /// `CALLBACK SUB` — USER32 invokes it directly, so it needs the Windows
+    /// callback ABI (stdcall on i686) even though ordinary EXE subs use the
+    /// fork's internal cdecl ABI.
+    pub is_callback: bool,
     pub line: usize,
 }
 
@@ -307,6 +318,10 @@ pub struct FunctionDecl {
     pub export: bool,
     pub threadsafe: bool,
     pub call_conv: Option<CallConv>,
+    /// Declared with the CALLBACK keyword.  PBWin gives these functions the
+    /// implicit (hWnd, uMsg, wParam, lParam) Windows callback signature and
+    /// exposes the arguments through CB.HNDL / CB.MSG / CB.WPARAM / CB.LPARAM.
+    pub is_callback: bool,
     pub line: usize,
 }
 

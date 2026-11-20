@@ -39,6 +39,43 @@ fn powershell_exe() -> PathBuf {
     }
 }
 
+/// Run a generated PowerShell embedding script from a temporary .ps1 file.
+///
+/// Passing the whole script through `-Command` breaks as soon as a sample
+/// carries many resources: TOOLBAR.BAS embeds 23 icons and the resulting
+/// command line exceeds the Windows 32 KB limit, so `Command::spawn` fails
+/// with "The filename or extension is too long. (os error 206)" and all
+/// icons are silently lost.  Writing the script to a UTF-8-with-BOM file
+/// and using `-File` keeps the command line short regardless of resource
+/// count, and the BOM makes Windows PowerShell 5.1 decode non-ASCII paths
+/// correctly.
+fn run_powershell_script(script: &str) -> std::io::Result<std::process::Output> {
+    use std::io::Write;
+    use std::os::windows::process::CommandExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("pb64_res_{}_{}.ps1", std::process::id(), seq));
+    {
+        let mut f = std::fs::File::create(&path)?;
+        f.write_all(&[0xEF, 0xBB, 0xBF])?;
+        f.write_all(script.as_bytes())?;
+    }
+    let out = std::process::Command::new(powershell_exe())
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &path.to_string_lossy(),
+        ])
+        .creation_flags(0x08000000)
+        .output();
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
 fn main() {
     // The front end (preprocessor -> lexer -> recursive-descent parser) and the code
     // generator recurse deeply enough that an *unoptimized* build's larger stack frames
@@ -147,8 +184,10 @@ fn real_main() {
     let mut dll_name: Option<(String, bool)> = None;
     // Scan the first 64 lines for the single #COMPILE directive. The parser
     // returns the case-preserved name and whether the exact-name '=' is used.
-    let compile_dir = std::fs::read_to_string(file_path)
-        .ok()
+    let src_text = std::fs::read_to_string(file_path).ok();
+    let com_progid = src_text.as_deref().and_then(parse_com_name);
+    let compile_dir = src_text
+        .as_ref()
         .and_then(|s| s.lines().take(64).find_map(parse_compile_directive));
     let src_has_compile_dll = if let Some(cd) = &compile_dir {
         match cd.kind.as_str() {
@@ -263,6 +302,7 @@ fn real_main() {
         option_explicit: false,
         stack_size: None,
         console_mode: None,
+        com_progid,
     };
 
     match compile_file(
@@ -402,6 +442,35 @@ struct CompileDirective {
     kind: String, // "EXE" | "DLL" | "SLL"
     has_eq: bool, // optional '=' present: name is exact, nothing appended
     name: String, // case-preserved target name (may be empty)
+}
+
+/// Extract the ProgID from `#COM NAME "Prime", 1.0` (or `#COM NAME = "Prime"`).
+fn parse_com_name(text: &str) -> Option<String> {
+    for line in text.lines().take(256) {
+        let t = line.trim();
+        let upper = t.to_uppercase();
+        if !upper.starts_with("#COM") {
+            continue;
+        }
+        let rest = t["#COM".len()..].trim_start();
+        let rest_upper = rest.to_uppercase();
+        if !rest_upper.starts_with("NAME") {
+            continue;
+        }
+        let after = rest["NAME".len()..].trim_start();
+        let after = after
+            .strip_prefix('=')
+            .map(str::trim_start)
+            .unwrap_or(after);
+        if let Some(q) = after.chars().next() {
+            if q == '"' || q == '\'' {
+                if let Some(end) = after[1..].find(q) {
+                    return Some(after[1..1 + end].to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn parse_compile_directive(line: &str) -> Option<CompileDirective> {
@@ -719,7 +788,6 @@ fn compile_file(
 /// Embed icon resources into the compiled EXE using Win32 UpdateResourceW.
 /// Properly splits .ico into RT_ICON (type 3) + RT_GROUP_ICON (type 14).
 fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
-    use std::os::windows::process::CommandExt;
     let mut script = String::new();
     script.push_str("Add-Type -TypeDefinition @'\n");
     script.push_str("using System;\n");
@@ -760,11 +828,7 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
     }
     script.push_str("[void][ResEm]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
@@ -791,7 +855,6 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
 /// buttons — exactly like a PBWin build that carries
 /// `#RESOURCE MANIFEST, 1, "XPTheme.xml"`.
 fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
-    use std::os::windows::process::CommandExt;
     let mut script = String::new();
     script.push_str("Add-Type -TypeDefinition @'\n");
     script.push_str("using System;\n");
@@ -822,11 +885,7 @@ fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
     }
     script.push_str("[void][ResMf]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
@@ -853,7 +912,6 @@ fn embed_manifest(exe_path: &Path, manifests: &[(u32, std::path::PathBuf)]) {
 /// UpdateResource, preserving its type (integer or Unicode name), resource
 /// id, language and byte-for-byte data.
 fn embed_res_files(exe_path: &Path, files: &[pb::preprocessor::ResFileEntry]) {
-    use std::os::windows::process::CommandExt;
     let mut script = String::new();
     script.push_str("Add-Type -TypeDefinition @'\n");
     script.push_str("using System;\n");
@@ -931,11 +989,7 @@ fn embed_res_files(exe_path: &Path, files: &[pb::preprocessor::ResFileEntry]) {
     }
     script.push_str("[void][ResFile]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
@@ -964,7 +1018,6 @@ fn embed_res_files(exe_path: &Path, files: &[pb::preprocessor::ResFileEntry]) {
 /// BITMAP data drops the 14-byte BITMAPFILEHEADER (RT_BITMAP stores only
 /// the BITMAPINFO section).  All mappings match a PBWin10 build.
 fn embed_raw_resources(exe_path: &Path, raw: &[pb::preprocessor::RawResource]) {
-    use std::os::windows::process::CommandExt;
     let mut script = String::new();
     script.push_str("Add-Type -TypeDefinition @'\n");
     script.push_str("using System;\n");
@@ -998,11 +1051,7 @@ fn embed_raw_resources(exe_path: &Path, raw: &[pb::preprocessor::RawResource]) {
     }
     script.push_str("[void][ResRaw]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
@@ -1030,8 +1079,6 @@ fn embed_raw_resources(exe_path: &Path, raw: &[pb::preprocessor::RawResource]) {
 /// followed by that many UTF-16 code units); empty slots have length 0.
 /// Layout matches a PBWin10 build byte-for-byte.
 fn embed_string_resources(exe_path: &Path, entries: &[pb::preprocessor::StringResource]) {
-    use std::os::windows::process::CommandExt;
-
     // Determine the set of block indices present.
     let mut blocks: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     for e in entries {
@@ -1081,11 +1128,7 @@ fn embed_string_resources(exe_path: &Path, entries: &[pb::preprocessor::StringRe
     }
     script.push_str("[void][ResStr]::EndUpdateResource($h, $false)\n");
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(
@@ -1110,8 +1153,6 @@ fn embed_string_resources(exe_path: &Path, entries: &[pb::preprocessor::StringRe
 
 /// Build and embed VS_VERSION_INFO resource into the EXE.
 fn embed_version_info(exe_path: &Path, vi: &pb::preprocessor::VersionInfo) {
-    use std::os::windows::process::CommandExt;
-
     // Build the VS_VERSIONINFO binary blob in little-endian UTF-16
     let _buf: Vec<u8> = Vec::new();
     let _pos: usize = 0;
@@ -1269,11 +1310,7 @@ Write-Host "Version info embedded: $($bytes.Length) bytes"
         data = b64
     );
 
-    match std::process::Command::new(powershell_exe())
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-    {
+    match run_powershell_script(&script) {
         Ok(out) => {
             if out.status.success() {
                 eprintln!(

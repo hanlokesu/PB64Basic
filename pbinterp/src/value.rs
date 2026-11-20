@@ -32,7 +32,7 @@ impl Value {
             | PbType::FixedString(_)
             | PbType::AsciiZ(_)
             | PbType::WString
-            | PbType::FixedWString(_) => Value::Str(String::new()),
+            | PbType::FixedWString(_, _) => Value::Str(String::new()),
             PbType::Quad => Value::Quad(0),
             PbType::Dword => Value::Dword(0),
             PbType::Ext => Value::Ext(0.0),

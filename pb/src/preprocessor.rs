@@ -636,7 +636,15 @@ impl Preprocessor {
                 // `_` (`FUNCTION = bearermode_` in Mcx.inc), and gluing the
                 // next physical line onto it silently swallows `END FUNCTION`.
                 let before_underscore = &trimmed_code[..trimmed_code.len() - 1];
-                if !(before_underscore.ends_with(' ') || before_underscore.ends_with('\t')) {
+                // PBWin accepts `_` after any token boundary, not only after
+                // whitespace: official samples write `... ,_` / `)... _`.
+                // Only refuse when the underscore is part of an identifier
+                // (`bearermode_`), which would otherwise swallow the next line.
+                let prev = before_underscore.chars().last();
+                let ident_char = prev
+                    .map(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+                    .unwrap_or(false);
+                if ident_char {
                     break;
                 }
                 full_line = before_underscore.to_string();
@@ -1723,9 +1731,20 @@ impl Preprocessor {
                 }
                 let word = &result[start..i];
                 let key = word.to_uppercase();
-                let hit = macros.get(&key).filter(|d| {
-                    d.body.len() == 1 && !(d.kind == MacroKind::Function && d.return_expr.is_some())
-                });
+                // `%LOCALE_USER_DEFAULT` is a named constant, not the macro
+                // LOCALE_USER_DEFAULT.  WinNT.inc defines both; expanding the
+                // macro here left a bare `%` in front of `(` and the lexer
+                // rejected it.  Never expand an identifier immediately
+                // preceded by the PB constant prefix.
+                let prefixed_by_percent = start > 0 && bytes[start - 1] == b'%';
+                let hit = if prefixed_by_percent {
+                    None
+                } else {
+                    macros.get(&key).filter(|d| {
+                        d.body.len() == 1
+                            && !(d.kind == MacroKind::Function && d.return_expr.is_some())
+                    })
+                };
                 if let Some(def) = hit {
                     let body = def.body.first().cloned().unwrap_or_default();
                     let mut j = i;
