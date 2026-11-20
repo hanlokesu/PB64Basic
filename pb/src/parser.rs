@@ -6689,7 +6689,54 @@ impl Parser {
                             line,
                         }));
                     }
-                    if gop == "LINE" || gop == "BOX" || gop == "ELLIPSE" {
+                    if gop == "LINE" {
+                        // GRAPHIC LINE [STEP] [(x1!,y1!)] - [STEP] (x2!,y2!) [, color&]
+                        // PBWin10 lets the first point be omitted; the line then
+                        // starts at the last POS.  STEP before the first point
+                        // makes x1/y1 relative to POS; STEP before the second
+                        // point makes x2/y2 relative to the start.
+                        self.advance();
+                        let mut flags = 0i32;
+                        if self.peek_plain_upper() == "STEP" {
+                            self.advance();
+                            flags |= 1;
+                        }
+                        let mut args = Vec::new();
+                        if matches!(self.peek(), Token::LParen) {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                            self.expect(&Token::Comma)?;
+                            args.push(self.parse_expression()?);
+                            self.expect(&Token::RParen)?;
+                        } else {
+                            // No explicit start: use the current POS.
+                            args.push(Expr::IntegerLit(0));
+                            args.push(Expr::IntegerLit(0));
+                            flags |= 4;
+                        }
+                        self.expect(&Token::Minus)?;
+                        if self.peek_plain_upper() == "STEP" {
+                            self.advance();
+                            flags |= 2;
+                        }
+                        self.expect(&Token::LParen)?;
+                        args.push(self.parse_expression()?);
+                        self.expect(&Token::Comma)?;
+                        args.push(self.parse_expression()?);
+                        self.expect(&Token::RParen)?;
+                        args.push(Expr::IntegerLit(flags as i64));
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "GRAPHIC_LINE_FULL".to_string(),
+                            args,
+                            line,
+                        }));
+                    }
+                    if gop == "BOX" || gop == "ELLIPSE" {
                         self.advance();
                         let mut args = Vec::new();
                         // [STEP] (x1,y1) - [STEP] (x2,y2) [, color& [, ...]]
@@ -6715,8 +6762,7 @@ impl Parser {
                         return Ok(Statement::Call(CallStmt {
                             name: match gop.as_str() {
                                 "BOX" => "GRAPHIC_BOX".to_string(),
-                                "ELLIPSE" => "GRAPHIC_ELLIPSE".to_string(),
-                                _ => "GRAPHIC_LINE".to_string(),
+                                _ => "GRAPHIC_ELLIPSE".to_string(),
                             },
                             args,
                             line,
@@ -12679,10 +12725,26 @@ impl Parser {
                     {
                         self.advance();
                     }
-                    // DIALOG SHOW MODAL hDlg CALL proc   (fork callback form)
+                    // DIALOG SHOW MODAL hDlg CALL proc [TO result]
+                    //   (fork callback form; official syntax also allows the
+                    //   optional TO clause after the callback)
                     if self.peek() == &Token::Call {
                         self.advance();
                         let proc = self.parse_expression()?;
+                        // PBWin also tolerates the separator comma before TO.
+                        if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
+                            self.advance();
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "DIALOG_SHOW_MODAL_CB_TO".to_string(),
+                                args: vec![hd, proc, target],
+                                line,
+                            }));
+                        }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
                             name: "DIALOG_SHOW_MODAL".to_string(),
@@ -12787,16 +12849,35 @@ impl Parser {
                         line,
                     }));
                 }
-                // DIALOG DOEVENTS - process pending messages non-blocking
+                // DIALOG DOEVENTS [sleep&] [TO count&]
                 if name_upper == "DIALOG"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="DOEVENTS")
                 {
                     self.advance();
                     self.advance();
+                    // The official statement accepts an optional sleep
+                    // argument and an optional TO count result.  The old
+                    // branch consumed both silently.
+                    let sleep = if matches!(self.peek(), Token::Eol | Token::Eof | Token::To)
+                        || (self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To))
+                    {
+                        Expr::IntegerLit(1)
+                    } else {
+                        self.parse_expression()?
+                    };
+                    if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
+                        self.advance();
+                    }
+                    let target = if self.peek() == &Token::To {
+                        self.advance();
+                        self.parse_expression()?
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_DOEVENTS".to_string(),
-                        args: vec![],
+                        args: vec![sleep, target],
                         line,
                     }));
                 }
@@ -12867,6 +12948,20 @@ impl Parser {
                     let hd = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let state = self.parse_expression()?;
+                    // Official syntax: DIALOG SHOW STATE hDlg, state [TO lResult&]
+                    if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
+                        self.advance();
+                    }
+                    if self.peek() == &Token::To {
+                        self.advance();
+                        let target = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_SHOW_STATE_TO".to_string(),
+                            args: vec![hd, state, target],
+                            line,
+                        }));
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_SHOW_STATE".to_string(),
@@ -13001,6 +13096,47 @@ impl Parser {
                     self.advance();
                     self.advance();
                     let hd = self.parse_expression()?;
+                    // Official syntax permits the separator comma before
+                    // either CALL or TO; the old branch consumed the rest
+                    // of the line and silently dropped both clauses.
+                    if self.peek() == &Token::Comma
+                        && matches!(self.peek_at(1), Some(Token::Call) | Some(Token::To))
+                    {
+                        self.advance();
+                    }
+                    if self.peek() == &Token::Call {
+                        self.advance();
+                        let proc = self.parse_expression()?;
+                        if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
+                            self.advance();
+                        }
+                        if self.peek() == &Token::To {
+                            self.advance();
+                            let target = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "DIALOG_SHOW_MODELESS_CB_TO".to_string(),
+                                args: vec![hd, proc, target],
+                                line,
+                            }));
+                        }
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_SHOW_MODELESS_CB".to_string(),
+                            args: vec![hd, proc],
+                            line,
+                        }));
+                    }
+                    if self.peek() == &Token::To {
+                        self.advance();
+                        let target = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "DIALOG_SHOW_MODELESS_TO".to_string(),
+                            args: vec![hd, target],
+                            line,
+                        }));
+                    }
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "DIALOG_SHOW".to_string(),
@@ -15996,6 +16132,7 @@ impl Parser {
             Token::On => "ON".to_string(),
             Token::Dword => "DWORD".to_string(),
             Token::End => "END".to_string(),
+            Token::Step => "STEP".to_string(),
             _ => String::new(),
         }
     }

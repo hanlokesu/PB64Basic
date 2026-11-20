@@ -4592,6 +4592,24 @@ impl Compiler {
         self.module
             .declare_function("pb_dialog_doevents", &IrType::Void, &[], false);
         self.module.declare_function(
+            "pb_dialog_doevents_ex",
+            &IrType::Void,
+            &[IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_dialog_show_state_to",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_register_modeless_result",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_dialog_get_text",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I64],
@@ -6200,6 +6218,19 @@ impl Compiler {
             "pb_graphic_line",
             &IrType::I32,
             &[
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_graphic_line_full",
+            &IrType::I32,
+            &[
+                IrType::I32,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -13894,6 +13925,37 @@ impl Compiler {
                 let c2 = self.convert_value(fb, &c, &IrType::I32, &PbType::Long);
                 fb.call_void("pb_graphic_clear", &[c2]);
             }
+            "GRAPHIC_LINE_FULL" => {
+                // args: x1,y1,x2,y2,flags [,color]
+                let mut ia = Vec::new();
+                for arg in call.args.iter().take(4) {
+                    let v = self.compile_expr(fb, arg)?;
+                    ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
+                }
+                let flags = if let Some(a4) = call.args.get(4) {
+                    let v = self.compile_expr(fb, a4)?;
+                    self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                } else {
+                    fb.const_i32(0)
+                };
+                let col = if let Some(a5) = call.args.get(5) {
+                    let v = self.compile_expr(fb, a5)?;
+                    self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                } else {
+                    fb.const_i32(0)
+                };
+                fb.call_void(
+                    "pb_graphic_line_full",
+                    &[
+                        ia[0].clone(),
+                        ia[1].clone(),
+                        ia[2].clone(),
+                        ia[3].clone(),
+                        col,
+                        flags,
+                    ],
+                );
+            }
             "GRAPHIC_LINE" => {
                 // args: x1,y1,x2,y2 [,color]
                 let mut ia = Vec::new();
@@ -16956,7 +17018,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17008,7 +17070,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17028,7 +17090,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17048,7 +17110,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17068,7 +17130,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17088,7 +17150,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -17368,7 +17430,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17391,7 +17453,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let v = fb.call(&IrType::I64, "pb_tab_get_count", &[hd, id]);
@@ -17417,7 +17479,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17444,7 +17506,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17473,7 +17535,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let v = fb.call(&IrType::I64, "pb_tab_get_page", &[hd]);
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[1]) {
@@ -17498,7 +17560,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let v = fb.call(&IrType::I64, "pb_tab_get_select", &[hd, id]);
@@ -17524,7 +17586,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17543,7 +17605,7 @@ impl Compiler {
                 if call.args.len() >= 7 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17591,7 +17653,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let _ = fb.call(&IrType::I64, "pb_tab_reset", &[hd, id]);
@@ -17614,7 +17676,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17637,7 +17699,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -17661,7 +17723,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hlst = self.compile_expr(fb, &call.args[2])?;
@@ -17687,7 +17749,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let page = self.compile_expr(fb, &call.args[2])?;
@@ -18804,7 +18866,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -19687,7 +19749,7 @@ impl Compiler {
                 if call.args.len() >= 6 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -19715,7 +19777,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19739,7 +19801,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let n = fb.call(&IrType::I64, "pb_listview_get_count", &[hd, id]);
@@ -19764,7 +19826,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19794,7 +19856,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19818,7 +19880,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19840,7 +19902,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     fb.call_void("pb_listview_reset", &[hd, id]);
@@ -19862,7 +19924,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -19885,7 +19947,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19919,7 +19981,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -19951,7 +20013,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -19974,7 +20036,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -19997,7 +20059,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -20024,7 +20086,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -20048,7 +20110,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -20074,7 +20136,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -20100,7 +20162,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let hlv_tmp = fb.alloca(&IrType::I64);
@@ -20140,7 +20202,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let v = fb.call(&IrType::I64, "pb_listview_get_mode", &[hd, id]);
@@ -20166,7 +20228,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mode = self.compile_expr(fb, &call.args[2])?;
@@ -20189,7 +20251,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let v = fb.call(&IrType::I64, "pb_listview_get_selcount", &[hd, id]);
@@ -20216,7 +20278,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let start = self.compile_expr(fb, &call.args[2])?;
@@ -20243,7 +20305,7 @@ impl Compiler {
                 if call.args.len() >= 5 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20271,7 +20333,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20295,7 +20357,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20319,7 +20381,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let v = fb.call(&IrType::I64, "pb_listview_get_stylexx", &[hd, id]);
@@ -20345,7 +20407,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let style = self.compile_expr(fb, &call.args[2])?;
@@ -20368,7 +20430,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20395,7 +20457,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20419,7 +20481,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20443,7 +20505,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20467,7 +20529,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20491,7 +20553,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hlst = self.compile_expr(fb, &call.args[2])?;
@@ -20518,7 +20580,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
@@ -20534,7 +20596,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
@@ -20557,7 +20619,7 @@ impl Compiler {
                 if call.args.len() >= 8 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hparent = self.compile_expr(fb, &call.args[2])?;
@@ -20602,7 +20664,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let n = fb.call(&IrType::I64, "pb_treeview_get_count", &[hd, id]);
@@ -20627,7 +20689,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hitem = self.compile_expr(fb, &call.args[2])?;
@@ -20676,7 +20738,7 @@ impl Compiler {
                     let target_idx = if has_item { 3 } else { 2 };
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let hitem = if has_item {
@@ -20716,7 +20778,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hitem = self.compile_expr(fb, &call.args[2])?;
@@ -20741,7 +20803,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     fb.call_void("pb_treeview_unselect", &[hd, id]);
@@ -20761,7 +20823,7 @@ impl Compiler {
                     };
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hitem = self.compile_expr(fb, &call.args[2])?;
@@ -20791,7 +20853,7 @@ impl Compiler {
                 if call.args.len() >= 4 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hitem = self.compile_expr(fb, &call.args[2])?;
@@ -20817,7 +20879,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hl = self.compile_expr(fb, &call.args[2])?;
@@ -20842,7 +20904,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let mut hitem = self.compile_expr(fb, &call.args[2])?;
@@ -20867,7 +20929,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     fb.call_void("pb_treeview_reset", &[hd, id]);
@@ -20918,7 +20980,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hd_ptr = if hd.ty != IrType::Ptr {
-                        fb.inttoptr(&hd)
+                        self.value_as_ptr(fb, &hd)
                     } else {
                         hd
                     };
@@ -20943,6 +21005,62 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "DIALOG_SHOW_MODAL_CB_TO" => {
+                // DIALOG SHOW MODAL hDlg [,] CALL callback [TO result]
+                // The callback was previously parsed but the TO target was
+                // consumed silently by consume_to_eol().
+                if let Some(Expr::Variable(tname)) = call.args.get(2) {
+                    let tn = normalize_name(tname);
+                    if self.register_vars.contains(&tn) {
+                        return Err(pb::error::PbError::parser(
+                            "Error 491: Invalid register variable (DIALOG SHOW MODAL CALL ... TO register variable)"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                if call.args.len() >= 3 {
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        self.value_as_ptr(fb, &hd)
+                    } else {
+                        hd
+                    };
+                    if let Expr::Variable(name) = &call.args[1] {
+                        let upper = name.to_uppercase();
+                        let fi = self
+                            .functions
+                            .get(&upper)
+                            .cloned()
+                            .or_else(|| self.subs.get(&upper).cloned());
+                        if let Some(fi) = fi {
+                            self.note_reference(&upper, &fi);
+                            let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
+                            fb.call_void("pb_register_dialog_cb", &[fn_ptr]);
+                            let res = fb.call(&IrType::I32, "pb_show_modal_to", &[hd_ptr]);
+                            if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
+                                let cv = self.convert_value(fb, &res, &ty, &pty);
+                                fb.store(&cv, &ptr);
+                            }
+                        } else {
+                            return Err(pb::error::PbError::parser(
+                                format!("DIALOG SHOW MODAL: unknown callback function '{}'", upper),
+                                None,
+                                call.line,
+                            ));
+                        }
+                    } else {
+                        return Err(pb::error::PbError::parser(
+                            "DIALOG SHOW MODAL: callback must be a CALLBACK FUNCTION name"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                return Ok(());
+            }
             "DIALOG_SHOW_MODAL_TO" => {
                 // DIALOG SHOW MODAL hDlg TO result   (official PB form)
                 // batch 238: HelloDDT (C:\PBWin10\samples\DDT) - the modal
@@ -20963,7 +21081,7 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hd_ptr = if hd.ty != IrType::Ptr {
-                        fb.inttoptr(&hd)
+                        self.value_as_ptr(fb, &hd)
                     } else {
                         hd
                     };
@@ -20995,7 +21113,23 @@ impl Compiler {
                 return Ok(());
             }
             "DIALOG_DOEVENTS" => {
-                fb.call_void("pb_dialog_doevents", &[]);
+                // DIALOG DOEVENTS [sleep&] [TO count&]
+                let sleep = if let Some(expr) = call.args.first() {
+                    self.compile_expr(fb, expr)?
+                } else {
+                    fb.const_i64(1)
+                };
+                let sleep32 = self.to_i32(fb, &sleep);
+                let count_ptr = if call.args.len() >= 2 {
+                    if let Some((ptr, _ty, _pty)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        ptr
+                    } else {
+                        fb.const_null_ptr()
+                    }
+                } else {
+                    fb.const_null_ptr()
+                };
+                fb.call_void("pb_dialog_doevents_ex", &[sleep32, count_ptr]);
                 return Ok(());
             }
             "DIALOG_GET_SIZE" => {
@@ -21013,7 +21147,7 @@ impl Compiler {
                 // DIALOG GET SIZE hDlg TO x&, y&   (official statement)
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let pw = fb.alloca(&IrType::I64);
                     let ph = fb.alloca(&IrType::I64);
                     fb.call_void("pb_dialog_get_size", &[hdlg64, pw.clone(), ph.clone()]);
@@ -21041,7 +21175,7 @@ impl Compiler {
                 }
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let w = self.compile_expr(fb, &call.args[1])?;
                     let w64 = self.convert_value(fb, &w, &IrType::I64, &PbType::Quad);
                     let h = self.compile_expr(fb, &call.args[2])?;
@@ -21064,10 +21198,143 @@ impl Compiler {
                 // DIALOG ENABLE hDlg / DIALOG DISABLE hDlg
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let on = self.compile_expr(fb, &call.args[1])?;
                     let on32 = self.to_i32(fb, &on);
                     fb.call_void("pb_dialog_enable", &[hdlg64, on32]);
+                }
+                return Ok(());
+            }
+            "DIALOG_SHOW_MODELESS_CB" => {
+                // DIALOG SHOW MODELESS hDlg [,] CALL callback
+                if call.args.len() >= 2 {
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        self.value_as_ptr(fb, &hd)
+                    } else {
+                        hd
+                    };
+                    if let Expr::Variable(name) = &call.args[1] {
+                        let upper = name.to_uppercase();
+                        let fi = self
+                            .functions
+                            .get(&upper)
+                            .cloned()
+                            .or_else(|| self.subs.get(&upper).cloned());
+                        if let Some(fi) = fi {
+                            self.note_reference(&upper, &fi);
+                            let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
+                            fb.call_void("pb_register_dialog_cb", &[fn_ptr]);
+                            fb.call_void("pb_dialog_show", &[hd_ptr, fb.const_i32(5)]);
+                        } else {
+                            return Err(pb::error::PbError::parser(
+                                format!(
+                                    "DIALOG SHOW MODELESS: unknown callback function '{}'",
+                                    upper
+                                ),
+                                None,
+                                call.line,
+                            ));
+                        }
+                    } else {
+                        return Err(pb::error::PbError::parser(
+                            "DIALOG SHOW MODELESS: callback must be a CALLBACK FUNCTION name"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            "DIALOG_SHOW_MODELESS_CB_TO" => {
+                // DIALOG SHOW MODELESS hDlg [,] CALL callback [TO result]
+                if let Some(Expr::Variable(tname)) = call.args.get(2) {
+                    let tn = normalize_name(tname);
+                    if self.register_vars.contains(&tn) {
+                        return Err(pb::error::PbError::parser(
+                            "Error 491: Invalid register variable (DIALOG SHOW MODELESS CALL ... TO register variable)"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                if call.args.len() >= 3 {
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        self.value_as_ptr(fb, &hd)
+                    } else {
+                        hd
+                    };
+                    if let Expr::Variable(name) = &call.args[1] {
+                        let upper = name.to_uppercase();
+                        let fi = self
+                            .functions
+                            .get(&upper)
+                            .cloned()
+                            .or_else(|| self.subs.get(&upper).cloned());
+                        if let Some(fi) = fi {
+                            self.note_reference(&upper, &fi);
+                            let fn_ptr = Val::new(format!("@{}", fi.ir_name), IrType::Ptr);
+                            fb.call_void("pb_register_dialog_cb", &[fn_ptr]);
+                            fb.call_void("pb_dialog_show", &[hd_ptr.clone(), fb.const_i32(5)]);
+                            if let Some((ptr, ty, _pty)) = self.lvalue_ptr(fb, &call.args[2]) {
+                                let width = if ty == IrType::I64 { 8 } else { 4 };
+                                fb.call_void(
+                                    "pb_register_modeless_result",
+                                    &[hd_ptr, ptr, fb.const_i32(width)],
+                                );
+                            }
+                        } else {
+                            return Err(pb::error::PbError::parser(
+                                format!(
+                                    "DIALOG SHOW MODELESS: unknown callback function '{}'",
+                                    upper
+                                ),
+                                None,
+                                call.line,
+                            ));
+                        }
+                    } else {
+                        return Err(pb::error::PbError::parser(
+                            "DIALOG SHOW MODELESS: callback must be a CALLBACK FUNCTION name"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                return Ok(());
+            }
+            "DIALOG_SHOW_MODELESS_TO" => {
+                // DIALOG SHOW MODELESS hDlg [TO result]
+                if let Some(Expr::Variable(tname)) = call.args.get(1) {
+                    let tn = normalize_name(tname);
+                    if self.register_vars.contains(&tn) {
+                        return Err(pb::error::PbError::parser(
+                            "Error 491: Invalid register variable (DIALOG SHOW MODELESS TO register variable)"
+                                .to_string(),
+                            None,
+                            call.line,
+                        ));
+                    }
+                }
+                if call.args.len() >= 2 {
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let hd_ptr = if hd.ty != IrType::Ptr {
+                        self.value_as_ptr(fb, &hd)
+                    } else {
+                        hd
+                    };
+                    fb.call_void("pb_dialog_show", &[hd_ptr.clone(), fb.const_i32(5)]);
+                    if let Some((ptr, ty, _pty)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        let width = if ty == IrType::I64 { 8 } else { 4 };
+                        fb.call_void(
+                            "pb_register_modeless_result",
+                            &[hd_ptr, ptr, fb.const_i32(width)],
+                        );
+                    }
                 }
                 return Ok(());
             }
@@ -21085,7 +21352,7 @@ impl Compiler {
                 // DIALOG HIDE / NORMALIZE / MINIMIZE / MAXIMIZE / SHOW MODELESS
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let cmd = self.compile_expr(fb, &call.args[1])?;
                     let cmd32 = self.to_i32(fb, &cmd);
                     fb.call_void("pb_dialog_show", &[hdlg64, cmd32]);
@@ -21107,7 +21374,7 @@ impl Compiler {
                 // DIALOG STABILIZE hDlg / DIALOG NONSTABLE hDlg
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let st = self.compile_expr(fb, &call.args[1])?;
                     let st32 = self.to_i32(fb, &st);
                     fb.call_void("pb_dialog_stabilize", &[hdlg64, st32]);
@@ -21118,7 +21385,7 @@ impl Compiler {
                 // DIALOG REDRAW hDlg
                 if let Some(a0) = call.args.first() {
                     let hd = self.compile_expr(fb, a0)?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     fb.call_void("pb_dialog_redraw", &[hdlg64]);
                 }
                 return Ok(());
@@ -21137,7 +21404,7 @@ impl Compiler {
                 // DIALOG SEND hDlg, msg&, wParam&, lParam& [TO lResult&]
                 if call.args.len() >= 4 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let msg = self.compile_expr(fb, &call.args[1])?;
                     let msg64 = self.convert_value(fb, &msg, &IrType::I64, &PbType::Quad);
                     let wp = self.compile_expr(fb, &call.args[2])?;
@@ -21168,7 +21435,7 @@ impl Compiler {
                 // DIALOG POST hDlg, msg&, wParam&, lParam&
                 if call.args.len() >= 4 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let msg = self.compile_expr(fb, &call.args[1])?;
                     let msg64 = self.convert_value(fb, &msg, &IrType::I64, &PbType::Quad);
                     let wp = self.compile_expr(fb, &call.args[2])?;
@@ -21193,7 +21460,7 @@ impl Compiler {
                 // DIALOG SET USER hDlg, index&, usrval&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let idx = self.compile_expr(fb, &call.args[1])?;
                     let idx64 = self.convert_value(fb, &idx, &IrType::I64, &PbType::Quad);
                     let val = self.compile_expr(fb, &call.args[2])?;
@@ -21216,7 +21483,7 @@ impl Compiler {
                 // DIALOG GET USER hDlg, index& TO retvar&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let idx = self.compile_expr(fb, &call.args[1])?;
                     let idx64 = self.convert_value(fb, &idx, &IrType::I64, &PbType::Quad);
                     let res = fb.call(&IrType::I64, "pb_dialog_get_user", &[hdlg64, idx64]);
@@ -21241,7 +21508,7 @@ impl Compiler {
                 }
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let nm = self.compile_expr(fb, &call.args[1])?;
                     fb.call_void("pb_dialog_set_icon", &[hdlg64, nm]);
                 }
@@ -21261,7 +21528,7 @@ impl Compiler {
                 // DIALOG GET CLIENT hDlg TO nWide&, nHigh&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let pw = fb.alloca(&IrType::I64);
                     let ph = fb.alloca(&IrType::I64);
                     fb.call_void("pb_dialog_get_client", &[hdlg64, pw.clone(), ph.clone()]);
@@ -21289,7 +21556,7 @@ impl Compiler {
                 // DIALOG SET CLIENT hDlg, x&, y&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let w = self.compile_expr(fb, &call.args[1])?;
                     let w64 = self.convert_value(fb, &w, &IrType::I64, &PbType::Quad);
                     let h = self.compile_expr(fb, &call.args[2])?;
@@ -21313,7 +21580,7 @@ impl Compiler {
                 // DIALOG GET LOC hDlg TO x&, y&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let px = fb.alloca(&IrType::I64);
                     let py = fb.alloca(&IrType::I64);
                     fb.call_void("pb_dialog_get_loc", &[hdlg64, px.clone(), py.clone()]);
@@ -21342,7 +21609,7 @@ impl Compiler {
                 // DIALOG SET LOC hDlg, x&, y&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let x = self.compile_expr(fb, &call.args[1])?;
                     let x64 = self.convert_value(fb, &x, &IrType::I64, &PbType::Quad);
                     let y = self.compile_expr(fb, &call.args[2])?;
@@ -21369,7 +21636,7 @@ impl Compiler {
                 //   the runtime.
                 if call.args.len() >= 4 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
                     let fg = self.compile_expr(fb, &call.args[2])?;
@@ -21394,7 +21661,7 @@ impl Compiler {
                 // DIALOG SET COLOR hDlg, foreclr&, backclr&
                 if call.args.len() >= 3 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let fg = self.compile_expr(fb, &call.args[1])?;
                     let fg64 = self.convert_value(fb, &fg, &IrType::I64, &PbType::Quad);
                     let bg = self.compile_expr(fb, &call.args[2])?;
@@ -21434,7 +21701,7 @@ impl Compiler {
                         "pb_dialog_units"
                     };
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let x = self.compile_expr(fb, &call.args[1])?;
                     let x64 = self.convert_value(fb, &x, &IrType::I64, &PbType::Quad);
                     let y = self.compile_expr(fb, &call.args[2])?;
@@ -21465,7 +21732,7 @@ impl Compiler {
 
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     let bstr = fb.call(&IrType::Ptr, "pb_dialog_get_text_bstr", &[hdlg64]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
                         fb.store(&bstr, &ptr);
@@ -21487,8 +21754,23 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let st = self.compile_expr(fb, &call.args[1])?;
-                    let hdlg64 = fb.inttoptr(&hd);
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
                     fb.call_void("pb_dialog_show_state", &[hdlg64, st]);
+                }
+                return Ok(());
+            }
+            "DIALOG_SHOW_STATE_TO" => {
+                // DIALOG SHOW STATE hDlg, state [TO result]
+                if call.args.len() >= 3 {
+                    let hd = self.compile_expr(fb, &call.args[0])?;
+                    let st = self.compile_expr(fb, &call.args[1])?;
+                    let hdlg64 = self.value_as_ptr(fb, &hd);
+                    let st32 = self.to_i32(fb, &st);
+                    let res = fb.call(&IrType::I32, "pb_dialog_show_state_to", &[hdlg64, st32]);
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
+                        let cv = self.convert_value(fb, &res, &ty, &pty);
+                        fb.store(&cv, &ptr);
+                    }
                 }
                 return Ok(());
             }
@@ -21513,7 +21795,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21553,7 +21835,7 @@ impl Compiler {
                 let hd = self.compile_expr(fb, &call.args[0])?;
                 let hdlg64 = match hd.ty {
                     IrType::Ptr => hd,
-                    _ => fb.inttoptr(&hd),
+                    _ => self.value_as_ptr(fb, &hd),
                 };
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21565,7 +21847,7 @@ impl Compiler {
             "DIALOG_CENTER" => {
                 if !call.args.is_empty() {
                     let hd = self.compile_expr(fb, &call.args[0])?;
-                    let hd64 = fb.inttoptr(&hd);
+                    let hd64 = self.value_as_ptr(fb, &hd);
                     fb.call_void("pb_dialog_center", &[hd64]);
                 }
                 return Ok(());
@@ -21708,7 +21990,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21744,7 +22026,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21780,7 +22062,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21816,7 +22098,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21844,7 +22126,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21872,7 +22154,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21902,7 +22184,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21930,7 +22212,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21970,7 +22252,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -21990,7 +22272,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22019,7 +22301,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22045,7 +22327,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22084,7 +22366,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22112,7 +22394,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22399,7 +22681,7 @@ impl Compiler {
                     let hd = self.compile_expr(fb, &call.args[0])?;
                     let hdlg64 = match hd.ty {
                         IrType::Ptr => hd,
-                        _ => fb.inttoptr(&hd),
+                        _ => self.value_as_ptr(fb, &hd),
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
@@ -22479,7 +22761,7 @@ impl Compiler {
                 if call.args.len() >= 3 {
                     let mut hd = self.compile_expr(fb, &call.args[0])?;
                     if hd.ty != IrType::Ptr {
-                        hd = fb.inttoptr(&hd);
+                        hd = self.value_as_ptr(fb, &hd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let image = self.compile_expr(fb, &call.args[2])?;
@@ -29170,6 +29452,17 @@ impl Compiler {
         }
     }
 
+    /// Convert a value to a Win32 handle pointer.  CB.HNDL and other
+    /// pseudo-object handles already have IrType::Ptr, and LLVM rejects
+    /// `inttoptr ptr`; numeric handles still need inttoptr.
+    fn value_as_ptr(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
+        if val.ty == IrType::Ptr {
+            val.clone()
+        } else {
+            fb.inttoptr(val)
+        }
+    }
+
     fn convert_value(
         &self,
         fb: &mut FunctionBuilder,
@@ -30662,8 +30955,13 @@ impl Compiler {
                 return Ok(Val::new("null".to_string(), IrType::Ptr));
             }
             let upper = name.to_uppercase();
-            let fi = self.functions.get(&upper).or_else(|| self.subs.get(&upper));
+            let fi = self
+                .functions
+                .get(&upper)
+                .cloned()
+                .or_else(|| self.subs.get(&upper).cloned());
             if let Some(fi) = fi {
+                self.note_reference(&upper, &fi);
                 return Ok(Val::new(format!("@{}", fi.ir_name), IrType::Ptr));
             }
             eprintln!(
@@ -33348,7 +33646,7 @@ impl Compiler {
         let hd_val = self.compile_expr(fb, &args[1])?;
         let mut hd = hd_val;
         if hd.ty != IrType::Ptr {
-            hd = fb.inttoptr(&hd);
+            hd = self.value_as_ptr(fb, &hd);
         }
         match noun.as_str() {
             "COUNT" | "SELECT" => {

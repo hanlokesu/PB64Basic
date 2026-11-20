@@ -13153,6 +13153,28 @@ int pb_graphic_line(int x1, int y1, int x2, int y2, int color) {
     if (pen) DeleteObject(pen);
     return ok ? 1 : 0;
 }
+
+/* GRAPHIC LINE with optional STEP and omitted-start forms.
+   flags bit 0: first point is relative to POS
+   flags bit 1: second point is relative to the start
+   flags bit 2: first point omitted, start at POS */
+int pb_graphic_line_full(int x1, int y1, int x2, int y2, int color, int flags) {
+    if (!g_gr_dc) return 0;
+    pb_pt pos;
+    pos.x = 0; pos.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pos);
+    int sx = x1, sy = y1;
+    if (flags & 4) {
+        sx = pos.x; sy = pos.y;
+    } else if (flags & 1) {
+        sx = pos.x + x1; sy = pos.y + y1;
+    }
+    int ex = x2, ey = y2;
+    if (flags & 2) {
+        ex = sx + x2; ey = sy + y2;
+    }
+    return pb_graphic_line(sx, sy, ex, ey, color);
+}
 int pb_graphic_box(int x1, int y1, int x2, int y2, int color, int fillcolor, int fillstyle) {
     if (!g_gr_dc) return 0;
     if (g_gr_overlap) { x2 += 1; y2 += 1; }   /* batch 181 */
@@ -15744,6 +15766,8 @@ static void* pb_dialog_cb = 0;
 /* Modal dialog: when DIALOG END is called, set this */
 static int pb_modal_result = 0;
 static int pb_modal_done = 0;
+/* Active DIALOG NEW windows, used by DIALOG DOEVENTS TO count&. */
+static int pb_live_dialogs = 0;
 
 unsigned int pb_get_cb_msg(void) { return cb_msg; }
 void*        pb_get_cb_hwnd(void) { return cb_hwnd; }
@@ -15783,9 +15807,60 @@ unsigned int pb_get_cb_nmid(void) {
 }
 
 void pb_register_dialog_cb(void* fn) { pb_dialog_cb = fn; }
+
+/* DIALOG SHOW MODELESS ... TO result: the result is assigned when the
+   dialog is destroyed by DIALOG END, not when the modeless statement
+   returns.  Remember the target variable and its storage width here. */
+#define PB_MODELESS_RESULT_SLOTS 64
+typedef struct {
+    void* hwnd;
+    void* target;
+    int width;
+} pb_modeless_result_slot;
+static pb_modeless_result_slot pb_modeless_results[PB_MODELESS_RESULT_SLOTS];
+
+void pb_register_modeless_result(void* hWnd, void* target, int width) {
+    int i;
+    if (!hWnd || !target) return;
+    for (i = 0; i < PB_MODELESS_RESULT_SLOTS; i++) {
+        if (pb_modeless_results[i].hwnd == hWnd) {
+            pb_modeless_results[i].target = target;
+            pb_modeless_results[i].width = width;
+            return;
+        }
+    }
+    for (i = 0; i < PB_MODELESS_RESULT_SLOTS; i++) {
+        if (!pb_modeless_results[i].hwnd) {
+            pb_modeless_results[i].hwnd = hWnd;
+            pb_modeless_results[i].target = target;
+            pb_modeless_results[i].width = width;
+            return;
+        }
+    }
+}
+
+static void pb_store_modeless_result(void* hWnd, int result) {
+    int i;
+    for (i = 0; i < PB_MODELESS_RESULT_SLOTS; i++) {
+        if (pb_modeless_results[i].hwnd == hWnd && pb_modeless_results[i].target) {
+            if (pb_modeless_results[i].width == 8) {
+                *(long long*)pb_modeless_results[i].target = (long long)result;
+            } else {
+                *(int*)pb_modeless_results[i].target = result;
+            }
+            pb_modeless_results[i].hwnd = 0;
+            pb_modeless_results[i].target = 0;
+            pb_modeless_results[i].width = 0;
+            return;
+        }
+    }
+}
+
 void pb_dialog_end(void* hWnd, int result) {
     pb_modal_result = result;
     pb_modal_done = 1;
+    pb_store_modeless_result(hWnd, result);
+    if (pb_live_dialogs > 0) pb_live_dialogs--;
     DestroyWindow(hWnd);
 }
 
@@ -16270,6 +16345,7 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
     void* hwnd = CreateWindowExA(dwEx, "PBWIN_DLG_CLASS", title, dwStyle,
         px, py, cw + 6, ch + 29, 0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
+        pb_live_dialogs++;
         SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
                      (unsigned long long)(size_t)pb_dialog_font(), 1);
     }
@@ -18085,10 +18161,15 @@ __declspec(dllimport) int __stdcall GetClientRect(void*, void*);
 __declspec(dllimport) int __stdcall SetWindowPos(void*, void*, int, int, int, int, unsigned int);
 typedef struct { long left; long top; long right; long bottom; } RECT;
 
-/* DIALOG DOEVENTS - process pending messages non-blocking */
-void pb_dialog_doevents(void) {
+/* DIALOG DOEVENTS [sleep&] [TO count&] - process pending messages, then
+   sleep for sleep& milliseconds when the queue was empty.  count&
+   receives the number of live dialogs (DIALOG NEW increments, DIALOG END
+   decrements). */
+void pb_dialog_doevents_ex(int sleep_ms, int* count) {
     pb_msg_t msg;
+    int processed = 0;
     while (PeekMessageA(&msg, 0, 0, 0, 1 /* PM_REMOVE */)) {
+        processed = 1;
         if (msg.message == 0x0012 /* WM_QUIT */) {
             PostQuitMessage(0);
             break;
@@ -18097,6 +18178,13 @@ void pb_dialog_doevents(void) {
         TranslateMessage(&msg);
         DispatchMessageA(&msg);
     }
+    if (!processed && sleep_ms > 0) Sleep((unsigned long)sleep_ms);
+    if (count) *count = pb_live_dialogs;
+}
+
+/* DIALOG DOEVENTS - process pending messages non-blocking */
+void pb_dialog_doevents(void) {
+    pb_dialog_doevents_ex(1, 0);
 }
 
 /* DIALOG GET TEXT hDlg TO var$ */
@@ -18116,6 +18204,12 @@ void pb_control_kill(void* hctrl) {
 /* DIALOG SHOW STATE: nCmdShow=1 normal, 2 min, 3 max */
 void pb_dialog_show_state(void* hDlg, int nCmdShow) {
     ShowWindow(hDlg, nCmdShow);
+}
+
+/* DIALOG SHOW STATE hDlg, state TO result: ShowWindow returns the
+   previous visibility state (non-zero if the window was visible). */
+int pb_dialog_show_state_to(void* hDlg, int nCmdShow) {
+    return ShowWindow(hDlg, nCmdShow);
 }
 
 /* CONTROL SET CHECK hCtrl, state */

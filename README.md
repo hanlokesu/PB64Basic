@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 395 (v0.2.183). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 396 (v0.2.184). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 396 (v0.2.184) - DIALOG SHOW MODELESS and result targets: `DIALOG SHOW MODELESS hDlg[,] CALL proc [TO result]` now registers the callback and writes the `DIALOG END` result into `result`; `DIALOG SHOW MODAL hDlg[,] CALL proc TO result` writes the modal result; `DIALOG SHOW STATE ... TO result` and `DIALOG DOEVENTS [sleep] [TO count]` now consume and return their optional arguments. `CB.HNDL` values are passed to DIALOG statements without a second `inttoptr`, fixing `DIALOG SET USER CB.HNDL` and `DIALOG POST CB.HNDL` builds. `GRAPHIC LINE [STEP] [(x1,y1)] - [STEP] (x2,y2)` now accepts the omitted-start and STEP forms used by PBWin10 samples. The all-source audit covers 159 sample `.bas` files: 96 full x64 builds succeed (88 EXE and 8 DLL) and 63 fail on unrelated syntax/link gaps. `batch396_test.bas` passes on x86_64 and i686.
 > batch 395 (v0.2.183) - DDT optional separator commas: `DIALOG NEW` accepts `..., style, TO hDlg`; `DIALOG SHOW MODAL` accepts `hDlg, CALL proc` and `hDlg, TO result`. PBWin10 compiles all four comma/no-comma variants; the previous parser rejected the comma before `TO` and silently dropped the modal callback when a comma preceded `CALL`. `batch395_test.bas` passes on x86_64 and i686, and `batch395_modal_probe.bas` covers both modal forms at compile time.
 > batch 394 (v0.2.182) - Android-only runtime patch: native blocking `MSGBOX` through a JNI `AlertDialog` with Win32 `ID*` return codes, `BEEP` through the system notification sound, `PLAY SOUND` through `AudioTrack`, and deterministic input/MSGBOX test hooks. The 20-demo APK suite is published separately as `android-demos-v0.2.181` (20/20 package/ABI/zipalign/signature checks and 20/20 device probes). Windows behavior is unchanged; `batch394_test.bas` covers the Windows `BEEP`/`PLAY SOUND` link path and passes on x86_64 and i686. ARM64 APKs remain build/static-verified only; GUI/COM/GDI/menu/printer/serial surfaces and `TCP NOTIFY` dispatch remain outside the Android runtime.
 > batch 393 (v0.2.181) - Android runtime compatibility closure: native console input for `WAITKEY$`/`INKEY$`, console-page routing for `CON.STDERR`, file and directory wrappers with backslash/drive-path normalization, a cooperative thread suspend/resume layer, Winsock-compatible TCP/UDP loopback, a process-local clipboard/global-memory layer, real `DATE$`/`TIME$`/`TIMER`, `FRE`, process/thread priorities, and one file-number namespace shared by files and sockets (TCP `ACCEPT` now allocates through `pb_freefile()`). `batch393_test.bas` passes on x86_64 and i686. The PB/CC-specific console subset is 381 rows: 379 Implemented and 2 Established (`INTERFACE / END INTERFACE (DIRECT)` and `INTERFACE/END INTERFACE (IDBIND)`), with 0 Not implemented; there is no PB/CC compiler on this host, so those rows are verified by source/CHW review and by the Windows console regressions, not by a PB/CC differential run. Android boundaries remain explicit: GUI/COM/GDI/menus/printers/serial ports, `TCP NOTIFY` message dispatch, native modal `MSGBOX`, and audio output are not implemented, and the ARM64 APK was link-verified but not run on ARM64 hardware.
@@ -1065,6 +1066,31 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.184 (2026-11-20)
+
+- **Modeless callback/result**: `DIALOG SHOW MODELESS hDlg, CALL proc` now
+  registers the callback instead of silently dropping it. The optional `TO
+  result` target is written when `DIALOG END` destroys the modeless dialog,
+  matching the PBWin10 rule. `DIALOG SHOW MODELESS hDlg TO result` without a
+  callback also registers the result target.
+- **Modal result**: `DIALOG SHOW MODAL hDlg, CALL proc TO result` now stores the
+  `DIALOG END` result instead of consuming `TO` without writing it.
+- **Show state and DOEVENTS**: `DIALOG SHOW STATE hDlg, state TO result` returns
+  the previous visibility state; `DIALOG DOEVENTS [sleep] [TO count]` honors the
+  sleep interval and returns the live dialog count.
+- **Handle width**: DIALOG statements no longer apply `inttoptr` to an already-
+  pointer-typed `CB.HNDL`, so `DIALOG SET USER CB.HNDL` and `DIALOG POST CB.HNDL`
+  build on x64.
+- **GRAPHIC LINE**: `GRAPHIC LINE [STEP] [(x1,y1)] - [STEP] (x2,y2)` accepts the
+  omitted-start and STEP forms documented by PBWin10; this fixes the compiler
+  panic on `DDT\Graphic\sine\SINE.BAS`.
+- **Sample audit**: 159 `C:\PBWin10\samples` `.bas` files were parse-tested and
+  full-built on x86_64. 96 builds succeed (88 EXE, 8 DLL); the 63 failures are
+  unrelated parser/link gaps and are listed in the audit report.
+- **Regression**: `batch396_test.bas` exercises modeless callback+TO, modal
+  callback+TO, `DIALOG SHOW STATE TO` and `DIALOG DOEVENTS ... TO` on x86_64 and
+  i686; both report `failures=0`.
+
 ### v0.2.183 (2026-11-20)
 
 - **DDT separator commas**: `DIALOG NEW` now accepts the optional comma
