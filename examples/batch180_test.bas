@@ -316,14 +316,14 @@ FUNCTION PBMAIN () AS LONG
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hGr, VARPTR(buf), 64) TO n
 #IF %MY_PBVER = 0
-    IF n > 0 AND INSTR(buf, "PBGRAPHIC_CLASS") > 0 THEN
-        ConPrint "ok   it is the PBGRAPHIC_CLASS window of this batch"
+    IF n > 0 AND INSTR(buf, "POWERGRAPH") > 0 THEN
+        ConPrint "ok   it is the POWERGRAPH window of this batch"
     ELSE
         fail = fail + 1
         ConPrint "FAIL window class (len" & STR$(n) & ")"
     END IF
 #ELSE
-    ConPrint "ok   it is the PBGRAPHIC_CLASS window of this batch"
+    ConPrint "ok   it is the POWERGRAPH window of this batch"
 #ENDIF
 
     ' No HIDE keyword means the documented default: the window is visible.
@@ -504,7 +504,7 @@ FUNCTION PBMAIN () AS LONG
     buf = ""
     n = 0
     CALL DWORD gcnA USING GetClassNameA(hTx, VARPTR(buf), 64) TO n
-    IF n > 0 AND INSTR(buf, "PBGRAPHIC_CLASS") > 0 THEN
+    IF n > 0 AND INSTR(buf, "POWERGRAPH") > 0 THEN
         ConPrint "ok   the TEXT window shares the same window class"
     ELSE
         fail = fail + 1

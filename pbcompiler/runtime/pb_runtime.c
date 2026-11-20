@@ -15165,6 +15165,7 @@ long long pb_dynamic_array_grow(void* v, long long delta, int elem_size, int inc
     if (elem_size <= 0) elem_size = d->elem_size;
     long long next = increase ? d->count + delta : d->count - delta;
     if (next < 0) next = 0;
+    long long old_dim = d->ndims <= 1 ? d->dim_count[0] : d->count;
     if (next > d->cap) {
         long long old_cap = d->cap;
         void* p = realloc(d->data, (size_t)next * (size_t)elem_size);
@@ -15175,7 +15176,26 @@ long long pb_dynamic_array_grow(void* v, long long delta, int elem_size, int inc
     } else if (next < d->count) {
         pb_dyn_zero_range(d->data, next, d->count, elem_size);
     }
+    /* The allocation count includes head slots for a non-zero lower bound
+       while element indices are offset from zero, so the dropped live tail
+       ends at dim_count[0], not at count.  Zero it explicitly; regrow must
+       expose defined zero slots. */
+    if (!increase && d->ndims <= 1) {
+        long long new_dim = old_dim - delta;
+        if (new_dim < 0) new_dim = 0;
+        pb_dyn_zero_range(d->data, new_dim, old_dim, elem_size);
+    }
     d->count = next;
+    /* UBOUND reads dim_count[0], not count.  count also carries the extra
+       head slots for a non-zero lower bound (DIM a(1 TO 4) stores count=5,
+       dim_count=4), so grow the live dimension by delta instead of copying
+       the allocation count. */
+    if (d->ndims <= 1) {
+        d->ndims = 1;
+        long long next_dim = increase ? d->dim_count[0] + delta
+                                      : d->dim_count[0] - delta;
+        d->dim_count[0] = next_dim < 0 ? 0 : next_dim;
+    }
     return d->count;
 }
 

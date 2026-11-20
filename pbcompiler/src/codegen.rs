@@ -8522,20 +8522,38 @@ impl Compiler {
 
         // Second pass: compile function/sub bodies.
         //
-        // EXE builds compile only bodies reachable from PBMAIN.  A header set
-        // such as Jose Roca's WINAPI_III_107 defines 1,200 files full of GUI
-        // and COM wrappers; compiling every unused wrapper made a console
-        // sample fail on features it never calls.  Calls encountered while
-        // compiling a reachable body queue the callee, so the closure grows
-        // until no new procedure is referenced.  DLL/SLL builds and programs
-        // without PBMAIN keep the old eager all-bodies behaviour.
+        // EXE builds compile only bodies reachable from their entry point.  A
+        // header set such as Jose Roca's WINAPI_III_107 defines 1,200 files
+        // full of GUI and COM wrappers; compiling every unused wrapper made a
+        // console sample fail on features it never calls.  Calls encountered
+        // while compiling a reachable body queue the callee, so the closure
+        // grows until no new procedure is referenced.  DLL/SLL builds and
+        // programs without a recognised entry point keep the old eager
+        // all-bodies behaviour.
         let mut codegen_errors = 0usize;
         let mut first_codegen_err: Option<PbError> = None;
-        let lazy_bodies = !self.dll_mode
-            && !self.sll_mode
-            && (self.functions.contains_key("PBMAIN") || self.subs.contains_key("PBMAIN"));
+        // GUI EXEs use WINMAIN as their entry point.  Jose Roca's
+        // WINAPI_III_107 header set contains thousands of unused GUI/COM
+        // wrappers, several of which use features this fork does not yet
+        // implement (array parameters, IWinHttpRequest, etc.).  Compiling
+        // every body eagerly made a small WINMAIN sample fail on helpers it
+        // never calls, so WINMAIN must start the same reachability closure
+        // as PBMAIN.
+        let has_pbmain = self.functions.contains_key("PBMAIN") || self.subs.contains_key("PBMAIN");
+        let has_winmain = self.functions.contains_key("WINMAIN");
+        let has_legacy_main = self.functions.contains_key("MAIN");
+        let lazy_bodies =
+            !self.dll_mode && !self.sll_mode && (has_pbmain || has_winmain || has_legacy_main);
         if lazy_bodies {
-            self.queue_body("PBMAIN");
+            // Mirror the synthetic main() selection below: PBMAIN first,
+            // then WINMAIN, then its legacy synonym MAIN.
+            self.queue_body(if has_pbmain {
+                "PBMAIN"
+            } else if has_winmain {
+                "WINMAIN"
+            } else {
+                "MAIN"
+            });
             while let Some(name) = self.pending_bodies.pop() {
                 if !self.compiled_bodies.insert(name.clone()) {
                     continue;

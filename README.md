@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 398 (v0.2.186). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 399 (v0.2.187). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 399 (v0.2.187) - WINMAIN and legacy MAIN entry points now compile only the reachable function/sub closure, matching the existing PBMAIN path; this lets standard Win32 SDK window samples build against large header sets that declare unused BYREF array helpers. `ARRAY REDIM INCR`/`DECR` now updates the live one-dimensional bound and zeros the regrown tail, so `UBOUND` and element access agree after grow/shrink cycles. `batch399_test.bas` and `batch378_redim.bas` pass on x86_64, and Discussion #5's `Window.bas` builds and displays its window with both the José Roca WINAPI_III_107 and stock PBWin10 include sets.
 > batch 398 (v0.2.186) - Windows sample conformance: target-aware import libraries, 32-bit stdcall callbacks and CODEPTR thunks, architecture-aware dialog callback signatures, fixed-width GLOBAL strings, synthetic WINMAIN hInstance, pointer-width conversion, GET TEXT fixed buffers and pre-body dynamic global array descriptors. 152 of 159 PBWin10 samples build on x64 and x86; the other 7 are invalid in PBWin10. 64 GUI candidates, 10 include wrappers, 7 resource scripts and 6 resource-embedding samples verified.
 > batch 397 (v0.2.185) - GUI conformance: grouped `LOCAL`/`DIM` types, per-dialog font/DLU mapping, DDT dialog styles and manifest embedding, ListView style/header, GRAPHIC `WM_INITDIALOG` dispatch, canvas/client units, COLORREF constants, default line colour, `PRINT` line advance, integer position APIs, runtime `REDIM`, `PARSE` lower-bound indexing and buffered control-DC presentation. 12 of 13 paired windows match PBWin10 exactly; all 13 fonts match.
 > batch 396 (v0.2.184) - DIALOG SHOW MODELESS and result targets: `DIALOG SHOW MODELESS hDlg[,] CALL proc [TO result]` now registers the callback and writes the `DIALOG END` result into `result`; `DIALOG SHOW MODAL hDlg[,] CALL proc TO result` writes the modal result; `DIALOG SHOW STATE ... TO result` and `DIALOG DOEVENTS [sleep] [TO count]` now consume and return their optional arguments. `CB.HNDL` values are passed to DIALOG statements without a second `inttoptr`, fixing `DIALOG SET USER CB.HNDL` and `DIALOG POST CB.HNDL` builds. `GRAPHIC LINE [STEP] [(x1,y1)] - [STEP] (x2,y2)` now accepts the omitted-start and STEP forms used by PBWin10 samples. The all-source audit covers 159 sample `.bas` files: 96 full x64 builds succeed (88 EXE and 8 DLL) and 63 fail on unrelated syntax/link gaps. `batch396_test.bas` passes on x86_64 and i686.
@@ -1068,6 +1069,24 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.187 (2026-11-21)
+
+WINMAIN entry-point and REDIM closure batch 399.
+
+- Lazy function-body compilation now applies to executables whose entry point is `WINMAIN` or legacy `MAIN`, not only `PBMAIN`. Header sets that declare many unused helpers, such as José Roca's WINAPI_III_107, are compiled only along the reachable entry closure, so `Window.bas` no longer stops on `UBOUND/LBOUND array RGBYTE not declared` or the `XMLENCODEBASE64` codegen error.
+- The synthetic `main` selects `PBMAIN`, then `WINMAIN`, then `MAIN` as its root and passes the four Win32 `WINMAIN` arguments on both targets.
+- `ARRAY REDIM INCR` and `DECR` now keep the live one-dimensional bound in `dim_count[0]` in step with `count`. `UBOUND` follows the new bound, and regrowing a shrunk static array starts the new tail at zero instead of exposing stale elements.
+- `examples/batch399_test.bas` covers a `WINMAIN` entry with an unreachable `BYREF` array-parameter helper. The old eager pass failed on the unused helper; the lazy pass skips it and the EXE returns 0.
+- `examples/batch378_redim.bas` now reports `failures=0` after grow, shrink and regrow cycles on a `DIM a(1 TO 4)` static array.
+- `examples/batch180_test.bas` now asserts the shipping window class `POWERGRAPH` instead of the obsolete `PBGRAPHIC_CLASS` string.
+
+Validation:
+
+- `run_examples.py --compile-all`: 474 compiled / 0 failed.
+- `run_examples.py --all-headless`: 317 examples exit 0 / 0 failed / 0 timed out.
+- GitHub Discussion #5: `Window.bas` builds and shows its `Main dialog` window with both José Roca's WINAPI_III_107 include set and the stock PBWin10 WinAPI include set.
+- Remaining boundary: BYREF array-parameter wrappers such as `AfxByteArrayToString` and `XMLENCODEBASE64` still report codegen errors when a program actually calls them; they are outside the Discussion #5 sample path.
+
 ### v0.2.186 (2026-11-21)
 
 Windows sample conformance batch 398. Every PBWin10 sample that is valid in PBWin10 itself now builds on both targets.
