@@ -16532,12 +16532,12 @@ impl Compiler {
                     let hp = self.compile_expr(fb, &call.args[0])?;
                     let hpv = self.convert_value(fb, &hp, &IrType::Ptr, &PbType::Dword);
                     let mut vals = vec![hpv];
-                    for i in 1..=2 {
-                        let e = self.compile_expr(fb, &call.args[i])?;
+                    for arg in call.args.iter().take(3).skip(1) {
+                        let e = self.compile_expr(fb, arg)?;
                         vals.push(self.convert_value(fb, &e, &IrType::I32, &PbType::Long));
                     }
-                    for i in 3..=7 {
-                        let e = self.compile_expr(fb, &call.args[i])?;
+                    for arg in call.args.iter().take(8).skip(3) {
+                        let e = self.compile_expr(fb, arg)?;
                         vals.push(self.convert_value(fb, &e, &IrType::Ptr, &PbType::String));
                     }
                     let e = self.compile_expr(fb, &call.args[8])?;
@@ -16607,8 +16607,8 @@ impl Compiler {
                     let hp = self.compile_expr(fb, &call.args[0])?;
                     let hpv = self.convert_value(fb, &hp, &IrType::Ptr, &PbType::Dword);
                     let mut vals = vec![hpv];
-                    for i in 1..=2 {
-                        let e = self.compile_expr(fb, &call.args[i])?;
+                    for arg in call.args.iter().take(3).skip(1) {
+                        let e = self.compile_expr(fb, arg)?;
                         vals.push(self.convert_value(fb, &e, &IrType::I32, &PbType::Long));
                     }
                     let t = self.compile_expr(fb, &call.args[3])?;
@@ -17190,8 +17190,8 @@ impl Compiler {
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let idv = self.convert_value(fb, &id, &IrType::I32, &PbType::Long);
                 let mut v = vec![srcv, idv];
-                for i in 2..8 {
-                    let e = self.compile_expr(fb, &call.args[i])?;
+                for arg in call.args.iter().take(8).skip(2) {
+                    let e = self.compile_expr(fb, arg)?;
                     v.push(self.convert_value(fb, &e, &IrType::I32, &PbType::Long));
                 }
                 fb.call_void("pb_graphic_copy_bmp_rect", &v);

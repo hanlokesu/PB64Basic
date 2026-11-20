@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 399 (v0.2.187). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 400 (v0.2.188). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 400 (v0.2.188) - Replaced four index-based codegen argument loops with iterator loops to satisfy Rust 1.100.0 `clippy::needless_range_loop`. Argument order and bounds are unchanged; there is no compiler behavior change.
 > batch 399 (v0.2.187) - WINMAIN and legacy MAIN entry points now compile only the reachable function/sub closure, matching the existing PBMAIN path; this lets standard Win32 SDK window samples build against large header sets that declare unused BYREF array helpers. `ARRAY REDIM INCR`/`DECR` now updates the live one-dimensional bound and zeros the regrown tail, so `UBOUND` and element access agree after grow/shrink cycles. `batch399_test.bas` and `batch378_redim.bas` pass on x86_64, and Discussion #5's `Window.bas` builds and displays its window with both the José Roca WINAPI_III_107 and stock PBWin10 include sets.
 > batch 398 (v0.2.186) - Windows sample conformance: target-aware import libraries, 32-bit stdcall callbacks and CODEPTR thunks, architecture-aware dialog callback signatures, fixed-width GLOBAL strings, synthetic WINMAIN hInstance, pointer-width conversion, GET TEXT fixed buffers and pre-body dynamic global array descriptors. 152 of 159 PBWin10 samples build on x64 and x86; the other 7 are invalid in PBWin10. 64 GUI candidates, 10 include wrappers, 7 resource scripts and 6 resource-embedding samples verified.
 > batch 397 (v0.2.185) - GUI conformance: grouped `LOCAL`/`DIM` types, per-dialog font/DLU mapping, DDT dialog styles and manifest embedding, ListView style/header, GRAPHIC `WM_INITDIALOG` dispatch, canvas/client units, COLORREF constants, default line colour, `PRINT` line advance, integer position APIs, runtime `REDIM`, `PARSE` lower-bound indexing and buffered control-DC presentation. 12 of 13 paired windows match PBWin10 exactly; all 13 fonts match.
@@ -1069,6 +1070,21 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.188 (2026-11-21)
+
+CI lint maintenance batch 400. No compiler behavior change.
+
+- Replaced four index-based argument loops in `pbcompiler/src/codegen.rs` with iterator loops. The loops feed `DISPLAY_OPENFILE`, `DISPLAY_SAVEFILE`, `DISPLAY_BROWSE` and `GRAPHIC_COPY_BMP_RECT`; argument order and bounds are unchanged.
+- This clears the four `clippy::needless_range_loop` errors reported by the Rust 1.100.0 toolchain used in GitHub Actions. Rust 1.98.1, used for the v0.2.187 build, did not report this lint.
+- `cargo fmt --all -- --check` and `cargo clippy --all-targets -- -D warnings` now pass on both the local Rust 1.100.0 toolchain and the Rust 1.98.1 default toolchain.
+
+Validation:
+
+- `run_examples.py --compile-all`: 474 compiled / 0 failed.
+- `run_examples.py --all-headless`: 320 compiled / 317 ran / 0 failed / 0 timed out.
+- Negative probes: 34 probes / 0 BAD. Link smoke: 0 failures on x86_64 and i686. Coverage: 35 checks / 0 FAIL.
+- The functional fixes shipped in v0.2.187 are unchanged, including lazy `WINMAIN`/`MAIN` entry closures and `ARRAY REDIM` bound handling.
+
 ### v0.2.187 (2026-11-21)
 
 WINMAIN entry-point and REDIM closure batch 399.
