@@ -303,6 +303,7 @@ fn real_main() {
         stack_size: None,
         console_mode: None,
         com_progid,
+        export_names: Vec::new(),
     };
 
     match compile_file(
@@ -565,6 +566,7 @@ fn compile_file(
         preprocessor.add_include_dir(dir);
     }
     let source_lines = preprocessor.preprocess(path)?;
+    opts.export_names = preprocessor.export_names.clone();
     eprintln!(
         "[PB64Basic] Preprocessed {} lines ({:.1}s)",
         source_lines.len(),
@@ -633,16 +635,23 @@ fn compile_file(
     );
 
     if parser.error_count > 0 {
-        // Append the first error message so pbwin_code() can resolve the precise
-        // PBWin expected-code (411..459) instead of always falling back to 477.
-        let suffix = parser
-            .first_error_message
-            .map(|m| format!(" First error: {}", m))
-            .unwrap_or_default();
-        return Err(pb::error::PbError::parser(
-            format!("Build failed with {} parse error(s). Search for unexpected tokens in your .bas file.{}",
-                    parser.error_count, suffix),
-            None, 0));
+        // pbwin_code() only trusts a message that begins with "Error NNN".
+        // Put the replicated PBWin error first, then the human summary.
+        let msg = match parser.first_error_message {
+            Some(m) if m.starts_with("Error ") => format!(
+                "{} Build failed with {} parse error(s).",
+                m, parser.error_count
+            ),
+            Some(m) => format!(
+                "Build failed with {} parse error(s). Search for unexpected tokens in your .bas file. First error: {}",
+                parser.error_count, m
+            ),
+            None => format!(
+                "Build failed with {} parse error(s). Search for unexpected tokens in your .bas file.",
+                parser.error_count
+            ),
+        };
+        return Err(pb::error::PbError::parser(msg, None, 0));
     }
 
     // #DIM ALL (official meta-directive) == OPTION EXPLICIT. The parser only

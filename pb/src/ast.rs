@@ -242,6 +242,11 @@ pub struct TypeDecl {
     /// method name without the class prefix; codegen uses it as the thread
     /// entry point and synthesizes the IPowerThread bridges.
     pub thread_method: Option<String>,
+    /// Base CLASS named by `CLASS Derived INHERIT Base`.  The base instance
+    /// fields are merged into `fields` at parse time (so field layout is
+    /// inherited), and codegen uses this link to resolve inherited METHODs.
+    /// `INHERIT IPowerThread` is not a base class and leaves this None.
+    pub base_class: Option<String>,
     /// `CLASS Name GUID$("...") AS COM`: PBWin auto-generates
     /// DllRegisterServer/DllUnregisterServer for the DLL.  The literal GUID
     /// is kept so codegen can emit those exports.

@@ -1,4 +1,4 @@
-﻿// =====================================================================
+// =====================================================================
 // Modified by the hanlokesu/PB64Basic fork (https://github.com/hanlokesu/PB64Basic).
 // Derived from benstopics/powerbasilisk (https://github.com/benstopics/powerbasilisk), Apache-2.0.
 // See LICENSE for the full license terms.
@@ -51,6 +51,8 @@ __declspec(dllimport) int __stdcall HeapValidate(void*, unsigned long, const voi
 /* Android/POSIX compatibility shims for the Windows CRT and Win32 names used
    by the portable runtime functions.  Keep these out of the Windows build. */
 #include <unistd.h>
+#include <wchar.h>
+#define _wcsicmp(a, b) wcscasecmp((a), (b))
 /* Translate Win32-style backslash separators once, at the CRT-alias boundary. */
 static const char* pb_posix_path(const char* in, char* buf, size_t cap) {
     size_t i;
@@ -196,6 +198,8 @@ __declspec(dllimport) unsigned long __stdcall CharUpperBuffA(char* lpsz, unsigne
 __declspec(dllimport) int __stdcall IsDBCSLeadByte(unsigned char TestChar);
 __declspec(dllimport) unsigned int __stdcall GetMenuState(void* h, unsigned int id, unsigned int f);
 __declspec(dllimport) void* __stdcall GetModuleHandleA(const char* lpModuleName);
+__declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char* lpModuleName, void** phModule);
+__declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void* hModule, char* lpFilename, unsigned long nSize);
 /* Entry-point helper: the synthesized main() must not call the Win32 API
    directly on i686.  LLVM's x86 stdcall lowering of an i64-returning
    dllimport emitted an extra `add esp,4` after the call and passed a
@@ -595,6 +599,7 @@ __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(pb_filetime* ft);
 __declspec(dllimport) void __stdcall AcquireSRWLockExclusive(void* SRWLock);
 __declspec(dllimport) void __stdcall ReleaseSRWLockExclusive(void* SRWLock);
 #endif
+__declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(pb_filetime* ft);
 
 /* ===== Debug/crash reporting ===== */
 static const char* pb_debug_current_func = "unknown";
@@ -6621,7 +6626,9 @@ char* pb_str_concat(const char* a, const char* b) {
 
 /* ===== DATE$ and TIME$ builtins ===== */
 
-#ifdef _WIN32
+/* Shared SYSTEMTIME layout: the portable PowerTime object declares Win32
+   entry points that take it, and Android compiles those declarations even
+   though the calls are unreachable there. */
 typedef struct {
     unsigned short wYear;
     unsigned short wMonth;
@@ -6632,9 +6639,10 @@ typedef struct {
     unsigned short wSecond;
     unsigned short wMilliseconds;
 } PB_SYSTEMTIME;
-
-__declspec(dllimport) int __stdcall SetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 __declspec(dllimport) void __stdcall GetLocalTime(PB_SYSTEMTIME* lpSystemTime);
+
+#ifdef _WIN32
+__declspec(dllimport) int __stdcall SetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 #endif
 
 /* DATE$ � returns "MM-DD-YYYY" */
@@ -7333,8 +7341,8 @@ void pb_callstk_dump(const char* filename) {
    '?', '^', '$', '|', '[class] / [^class] (incl. a-z ranges), '\' escapes
    (\b word boundary, \n \r \t \e \f \q, \c case-sensitive toggle, any other
    escaped char = literal), '(' ')' groups for alternation precedence.
-   Longest match at the leftmost start position. Tags (\01..\99) and the
-   shortest-match '\s' operator are NOT implemented (documented as subset). */
+   Longest match at the leftmost start position; a leading '\s' selects the
+   shortest match.  Capture tags (\01..\99) are filled for REGREPL. */
 
 typedef struct { const char* pat; const char* s; const char* send; int cs; int depth; } pb_rex_t;
 
@@ -7465,7 +7473,7 @@ static const char* pb_rex_atom_end(const char* p) {
  * *gdepth as read-only except when entering a new group (it uses a local). */
 #define PB_REX_MAX_GROUPS 100
 static const char* pb_rex_match_here(const char* pat, const char* s, const char* send,
-                                     const char* tbegin, int cs,
+                                     const char* tbegin, int cs, int shortest,
                                      const char** gstart, const char** gend, int gdepth) {
     if (!*pat) return s;
     int at_line_start = (s == tbegin) ||
@@ -7480,28 +7488,28 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
             size_t l = (size_t)(bar - pat);
             if (l >= sizeof(tmp)) return NULL;
             memcpy(tmp, pat, l); tmp[l] = 0;
-            const char* e = pb_rex_match_here(tmp, s, send, tbegin, cs, gstart, gend, gdepth);
+            const char* e = pb_rex_match_here(tmp, s, send, tbegin, cs, shortest, gstart, gend, gdepth);
             if (e) return e;
-            return pb_rex_match_here(bar + 1, s, send, tbegin, cs, gstart, gend, gdepth);
+            return pb_rex_match_here(bar + 1, s, send, tbegin, cs, shortest, gstart, gend, gdepth);
         }
     }
     if (*pat == '^') {
         if (!at_line_start) return NULL;
-        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, gstart, gend, gdepth);
+        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, shortest, gstart, gend, gdepth);
     }
     if (*pat == '$') {
         if (!at_line_end) return NULL;
-        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, gstart, gend, gdepth);
+        return pb_rex_match_here(pat + 1, s, send, tbegin, cs, shortest, gstart, gend, gdepth);
     }
     if (pat[0] == '\\' && pat[1] == 'c') {
-        return pb_rex_match_here(pat + 2, s, send, tbegin, cs ? 0 : 1, gstart, gend, gdepth);
+        return pb_rex_match_here(pat + 2, s, send, tbegin, cs ? 0 : 1, shortest, gstart, gend, gdepth);
     }
     if (pat[0] == '\\' && pat[1] == 'b') {
         /* word boundary: previous/next char class change */
         int prev_word = (s > tbegin) && pb_re_is_word_char((unsigned char)s[-1]);
         int next_word = (s < send) && pb_re_is_word_char((unsigned char)s[0]);
         if (prev_word == next_word) return NULL;
-        return pb_rex_match_here(pat + 2, s, send, tbegin, cs, gstart, gend, gdepth);
+        return pb_rex_match_here(pat + 2, s, send, tbegin, cs, shortest, gstart, gend, gdepth);
     }
     {
         const char* aend = pb_rex_atom_end(pat);
@@ -7514,20 +7522,46 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
             if (alen >= sizeof(atom)) return NULL;
             memcpy(atom, pat, alen); atom[alen] = 0;
             const char* rest = aend + 1;
+            if (shortest) {
+                /* CHW `\s`: try the shortest match first, extending the
+                 * quantified atom one iteration at a time. */
+                const char* cur = s;
+                int n = 0;
+                while (n < min) {
+                    const char* e = pb_rex_match_here(atom, cur, send, tbegin, cs,
+                                                      shortest, gstart, gend, gdepth);
+                    if (!e || e == cur) return NULL;
+                    cur = e; n++;
+                }
+                while (1) {
+                    const char* e = pb_rex_match_here(rest, cur, send, tbegin, cs,
+                                                      shortest, gstart, gend, gdepth);
+                    if (e) return e;
+                    if ((max >= 0 && n >= max) || cur >= send) break;
+                    const char* e2 = pb_rex_match_here(atom, cur, send, tbegin, cs,
+                                                       shortest, gstart, gend, gdepth);
+                    if (!e2 || e2 == cur) break;
+                    cur = e2; n++;
+                }
+                return NULL;
+            }
             const char* cur = s;
             int n = 0;
             while ((max < 0 || n < max) && cur < send) {
-                const char* e = pb_rex_match_here(atom, cur, send, tbegin, cs, gstart, gend, gdepth);
+                const char* e = pb_rex_match_here(atom, cur, send, tbegin, cs,
+                                                  shortest, gstart, gend, gdepth);
                 if (!e || e == cur) break;
                 cur = e; n++;
             }
             while (n >= min) {
-                const char* e = pb_rex_match_here(rest, cur, send, tbegin, cs, gstart, gend, gdepth);
+                const char* e = pb_rex_match_here(rest, cur, send, tbegin, cs,
+                                                  shortest, gstart, gend, gdepth);
                 if (e) return e;
                 if (n == 0) break;
                 const char* prev = s;
                 for (int k = 1; k < n; k++) {
-                    const char* e2 = pb_rex_match_here(atom, prev, send, tbegin, cs, gstart, gend, gdepth);
+                    const char* e2 = pb_rex_match_here(atom, prev, send, tbegin, cs,
+                                                       shortest, gstart, gend, gdepth);
                     if (!e2) break;
                     prev = e2;
                 }
@@ -7546,7 +7580,7 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
         memcpy(inner, pat + 1, ilen); inner[ilen] = 0;
         int child = gdepth + 1;
         if (child < PB_REX_MAX_GROUPS) gstart[child] = s;
-        const char* e = pb_rex_match_here(inner, s, send, tbegin, cs, gstart, gend, child);
+        const char* e = pb_rex_match_here(inner, s, send, tbegin, cs, shortest, gstart, gend, child);
         if (!e) return NULL;
         if (child < PB_REX_MAX_GROUPS) gend[child] = e;
         /* After this group, the next sibling group must be numbered after this
@@ -7554,12 +7588,12 @@ static const char* pb_rex_match_here(const char* pat, const char* s, const char*
          * capture numbering). Passing the parent gdepth here reused index 1
          * for the second sibling group, so \01 grabbed the wrong capture. */
         int after = child + pb_rex_count_groups(inner);
-        return pb_rex_match_here(close + 1, e, send, tbegin, cs, gstart, gend, after);
+        return pb_rex_match_here(close + 1, e, send, tbegin, cs, shortest, gstart, gend, after);
     }
     {
         const char* e = pb_rex_match_one(pat, s, send, cs);
         if (!e) return NULL;
-        return pb_rex_match_here(pb_rex_atom_end(pat), e, send, tbegin, cs, gstart, gend, gdepth);
+        return pb_rex_match_here(pb_rex_atom_end(pat), e, send, tbegin, cs, shortest, gstart, gend, gdepth);
     }
 }
 
@@ -7570,12 +7604,20 @@ static int pb_regex_scan_ex(const char* mask, const char* target, long long star
     *opos = 0; *olen = 0;
     size_t tlen = (size_t)pb_str_len(target);
     if (!mask || !mask[0]) return 0;
+    /* CHW: the \s flag must appear at the beginning of the mask and selects
+     * the shortest (non-greedy) match instead of the longest one. */
+    int shortest = 0;
+    if (mask[0] == '\\' && mask[1] == 's') {
+        shortest = 1;
+        mask += 2;
+        if (!mask[0]) return 0;
+    }
     if (start < 1) start = 1;
     if ((size_t)start > tlen + 1) return 0;
     const char* begin = target + (size_t)(start - 1);
     const char* send = target + tlen;
     for (const char* s = begin; s <= send; s++) {
-        const char* e = pb_rex_match_here(mask, s, send, target, 0,
+        const char* e = pb_rex_match_here(mask, s, send, target, 0, shortest,
                                           gstart, gend, 0);
         if (e) {
             *opos = (long long)(s - target) + 1;
@@ -12336,6 +12378,52 @@ void pb_import_close(void* hndl) {
     if (hndl) FreeLibrary(hndl);
 }
 
+/* Run-time resolution for `DECLARE ... LIB "x.dll"`.  PBWin loads the DLL
+   when the first call executes (the DLL and an import .lib are not build
+   dependencies).  Keep a small process-wide cache so repeated calls do not
+   re-run LoadLibrary/GetProcAddress; the module handle stays loaded for the
+   process lifetime, matching PBWin's implicit import lifetime. */
+#define PB_DYN_CACHE_SLOTS 64
+typedef struct {
+    char lib[260];
+    char proc[128];
+    void* fp;
+} pb_dyn_cache_entry;
+#ifndef _WIN32
+void* pb_dyn_proc(const char* lib, const char* proc) {
+    (void)lib;
+    (void)proc;
+    return NULL;  /* DECLARE LIB is a Windows facility. */
+}
+#else
+static pb_dyn_cache_entry pb_dyn_cache[PB_DYN_CACHE_SLOTS];
+static volatile long pb_dyn_cache_next = 0;
+void* pb_dyn_proc(const char* lib, const char* proc) {
+    if (!lib || !proc || !*lib || !*proc) return NULL;
+    long n = pb_dyn_cache_next;
+    if (n > PB_DYN_CACHE_SLOTS) n = PB_DYN_CACHE_SLOTS;
+    for (long i = 0; i < n; i++) {
+        if (strcmp(pb_dyn_cache[i].lib, lib) == 0 &&
+            strcmp(pb_dyn_cache[i].proc, proc) == 0) {
+            return pb_dyn_cache[i].fp;
+        }
+    }
+    void* mod = LoadLibraryA(lib);
+    if (!mod) return NULL;
+    void* fp = (void*)GetProcAddress(mod, proc);
+    if (!fp) { FreeLibrary(mod); return NULL; }
+    long slot = pb_dyn_cache_next++;
+    if (slot >= 0 && slot < PB_DYN_CACHE_SLOTS) {
+        strncpy(pb_dyn_cache[slot].lib, lib, sizeof(pb_dyn_cache[slot].lib) - 1);
+        pb_dyn_cache[slot].lib[sizeof(pb_dyn_cache[slot].lib) - 1] = '\0';
+        strncpy(pb_dyn_cache[slot].proc, proc, sizeof(pb_dyn_cache[slot].proc) - 1);
+        pb_dyn_cache[slot].proc[sizeof(pb_dyn_cache[slot].proc) - 1] = '\0';
+        pb_dyn_cache[slot].fp = fp;
+    }
+    return fp;
+}
+#endif
+
 /* Batch 43: PRINTERCOUNT (placed mid-file next to pb_import_addr � file-tail
    placement of fresh Win32 dllimport calls crashed inside PB-linked exes). */
 #define PB_PRINTER_ENUM_LOCAL 0x00000002
@@ -13446,6 +13534,58 @@ int pb_graphic_polygon(long* pts, int count, unsigned long col) {
     DeleteObject(pen);
     return rc;
 }
+/* CHW GRAPHIC POLYGON/POLYLINE points form: a LONG vertex count followed by
+   SINGLE x/y pairs.  The UDT may be a scalar list or an array of POINT-like
+   user types; in both cases the packed layout is count(4) + 8*n. */
+static int pb_poly_udt_points(const void* udt, long* pts, int maxpts) {
+    if (!udt) return 0;
+    int count = *(const int*)udt;
+    if (count < 0 || count > maxpts) return 0;
+    const float* xy = (const float*)((const char*)udt + 4);
+    for (int i = 0; i < count; i++) {
+        pts[i * 2] = (long)xy[i * 2];
+        pts[i * 2 + 1] = (long)xy[i * 2 + 1];
+    }
+    return count;
+}
+int pb_graphic_polygon_udt(const void* udt, unsigned long edge, long fill, int fillstyle, int fillmode) {
+    if (!g_gr_dc) return 0;
+    long pts[2048];
+    int count = pb_poly_udt_points(udt, pts, 1024);
+    if (count < 3) return 0;
+    void* pen = CreatePen(g_gr_style, g_gr_width, (unsigned long)(unsigned int)edge);
+    SelectObject(g_gr_dc, pen);
+    void* brush = NULL;
+    if (fill != -2) {
+        unsigned long color = fill == -1 ? edge : (unsigned long)(unsigned int)fill;
+        brush = CreateSolidBrush(color);
+        SelectObject(g_gr_dc, brush);
+    } else {
+        SelectObject(g_gr_dc, GetStockObject(5)); /* NULL_BRUSH */
+    }
+    /* The current brush selects a solid fill; pattern styles 1..6 are not
+       implemented by the GDI shim, matching GRAPHIC BOX's existing behaviour. */
+    (void)fillstyle;
+    (void)fillmode;
+    int rc = Polygon(g_gr_dc, (const long*)pts, count);
+    SelectObject(g_gr_dc, GetStockObject(0)); /* NULL_PEN */
+    SelectObject(g_gr_dc, GetStockObject(5));
+    DeleteObject(pen);
+    if (brush) DeleteObject(brush);
+    return rc;
+}
+int pb_graphic_polyline_udt(const void* udt, unsigned long edge) {
+    if (!g_gr_dc) return 0;
+    long pts[2048];
+    int count = pb_poly_udt_points(udt, pts, 1024);
+    if (count < 2) return 0;
+    void* pen = CreatePen(g_gr_style, g_gr_width, (unsigned long)(unsigned int)edge);
+    SelectObject(g_gr_dc, pen);
+    int rc = Polyline(g_gr_dc, (const void*)pts, count);
+    SelectObject(g_gr_dc, GetStockObject(0));
+    DeleteObject(pen);
+    return rc;
+}
 int pb_graphic_get_client(long* w, long* h) {
     if (!g_gr_dc) return 0;
     /* A control-attached canvas reports the live client rectangle; the
@@ -13568,6 +13708,21 @@ static int pb_graphic_print_len(const char* s, int len) {
 int pb_graphic_print_str(const char* s) {
     if (!s) s = "";
     return pb_graphic_print_len(s, pb_str_len(s));
+}
+
+/* GRAPHIC PRINT TAB(n): move the text cursor to column n on the current
+   line.  PB measures the column in average character cells, so one cell is
+   the extent of a representative glyph in the selected font.  Means.bas
+   uses this to align its score column. */
+int pb_graphic_print_tab(int col) {
+    if (!g_gr_dc || col < 1) return 0;
+    pb_gw_touch();
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    long sz[2]; sz[0] = 8; sz[1] = 0;
+    if (!GetTextExtentPoint32A(g_gr_dc, "0", 1, (void*)sz) || sz[0] <= 0) sz[0] = 8;
+    return MoveToEx(g_gr_dc, (col - 1) * sz[0], pt.y, 0) ? 1 : 0;
 }
 
 int pb_graphic_get_pixel(int x, int y, unsigned long* out) {
@@ -13944,6 +14099,11 @@ int pb_xprint_line(long x1, long y1, long x2, long y2) {
     g_xp_pos_x = x2;
     g_xp_pos_y = y2;
     return 1;
+}
+
+/* `XPRINT LINE STEP - (x,y)`: start from the last printer position. */
+int pb_xprint_line_rel(long x2, long y2) {
+    return pb_xprint_line(g_xp_pos_x, g_xp_pos_y, x2, y2);
 }
 
 int pb_xprint_box(long x1, long y1, long x2, long y2) {
@@ -15056,6 +15216,10 @@ typedef struct {
        followed by REDIM a(1 TO n, 1 TO 2)).  Legacy one-dimensional
        descriptors keep ndims=1 with lower[0]=0. */
     int ndims;
+    /* 1 when `data` is owned by this descriptor, 0 when it borrows the
+       caller's static-array storage.  A borrowed descriptor must detach
+       before realloc/free so BYREF writes stay visible to the caller. */
+    int owns_data;
     long long lower[8];
     long long dim_count[8];
 } pb_dyn_array;
@@ -15074,6 +15238,7 @@ void* pb_dynamic_array_new(int elem_size, long long count) {
     d->count = count < 1 ? 0 : count;
     d->cap = d->count;
     d->ndims = 1;
+    d->owns_data = 1;
     d->lower[0] = 0;
     d->dim_count[0] = d->count;
     if (d->cap > 0) {
@@ -15091,6 +15256,56 @@ void* pb_dynamic_array_data(void* v) {
     return d ? d->data : NULL;
 }
 
+/* Bind a fixed-size array to a temporary descriptor when it is passed to a
+   `BYREF a() AS T` parameter.  The descriptor borrows the caller's storage, so
+   element writes performed by the callee remain visible to the caller.  A
+   REDIM/ERASE on the parameter first detaches a private heap copy (the static
+   caller storage cannot change shape). */
+void* pb_static_array_to_desc(void* data, long long total, int elem_size) {
+    if (elem_size <= 0) elem_size = 1;
+    pb_dyn_array* d = (pb_dyn_array*)calloc(1, sizeof(pb_dyn_array));
+    if (!d) return NULL;
+    d->elem_size = elem_size;
+    d->count = total < 0 ? 0 : total;
+    d->cap = d->count;
+    d->ndims = 1;
+    d->owns_data = 0;
+    d->lower[0] = 0;
+    d->dim_count[0] = d->count;
+    d->data = data;
+    return d;
+}
+
+/* Convert a borrowed static-array descriptor into an owned copy before any
+   operation that may realloc or free the element block. */
+static int pb_dyn_detach(pb_dyn_array* d) {
+    if (!d || d->owns_data) return 1;
+    if (d->cap <= 0) {
+        d->data = NULL;
+        d->owns_data = 1;
+        return 1;
+    }
+    void* p = calloc((size_t)d->cap, (size_t)d->elem_size);
+    if (!p) return 0;
+    if (d->data) {
+        memcpy(p, d->data, (size_t)d->cap * (size_t)d->elem_size);
+    }
+    d->data = p;
+    d->owns_data = 1;
+    return 1;
+}
+
+/* Release a descriptor returned by pb_static_array_to_desc after the BYREF
+   array-parameter call returns.  A callee REDIM detaches an owned copy; that
+   copy is freed here too.  Caller storage is never freed because owns_data
+   stays 0 unless detach replaced it. */
+void pb_static_array_desc_free(void* v) {
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    if (!d) return;
+    if (d->owns_data && d->data) free(d->data);
+    free(d);
+}
+
 long long pb_dynamic_array_total(void* v) {
     pb_dyn_array* d = (pb_dyn_array*)v;
     return d ? d->count : 0;
@@ -15102,8 +15317,9 @@ long long pb_dynamic_array_total(void* v) {
 void pb_dynamic_array_erase(void* v) {
     pb_dyn_array* d = (pb_dyn_array*)v;
     if (!d) return;
-    free(d->data);
+    if (d->owns_data) free(d->data);
     d->data = NULL;
+    d->owns_data = 1;
     d->count = 0;
     d->cap = 0;
     d->ndims = 1;
@@ -15152,6 +15368,7 @@ void pb_dynamic_array_set_shape(void* v, int ndims, long long total) {
 void pb_dynamic_array_set_dim(void* v, int dim, long long lower, long long dim_count) {
     pb_dyn_array* d = (pb_dyn_array*)v;
     if (!d || dim < 1 || dim > 8) return;
+    if (d->ndims < dim) d->ndims = dim;
     d->lower[dim - 1] = lower;
     d->dim_count[dim - 1] = dim_count;
 }
@@ -15168,6 +15385,7 @@ long long pb_dynamic_array_grow(void* v, long long delta, int elem_size, int inc
     long long old_dim = d->ndims <= 1 ? d->dim_count[0] : d->count;
     if (next > d->cap) {
         long long old_cap = d->cap;
+        if (!pb_dyn_detach(d)) return d->count;
         void* p = realloc(d->data, (size_t)next * (size_t)elem_size);
         if (!p) return d->count;
         d->data = p;
@@ -15210,6 +15428,7 @@ long long pb_dynamic_array_resize(void* v, long long count, int elem_size, int p
     long long old_count = d->count;
     if (count > d->cap) {
         long long old_cap = d->cap;
+        if (!pb_dyn_detach(d)) return old_count;
         void* p = realloc(d->data, (size_t)count * (size_t)elem_size);
         if (!p) return old_count;
         d->data = p;
@@ -17012,10 +17231,12 @@ void* pb_lookup_callback_hwnd(void* hwnd) {
    already-created dialog.  pb_dlg_info_units() is defined with the dialog
    table below; the fallback keeps WINDOW/child-window controls on 6 x 13. */
 static void pb_dlg_info_units(void* hwnd, int* dlu_x, int* dlu_y);
+static int  pb_dlg_info_is_pixels(void* hwnd);
 static void pb_dialog_base_units(int* dlu_x, int* dlu_y);
 
 static void pb_dlu_to_px_for(void* parent, int *x, int *y, int *w, int *h) {
     int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
+    if (parent && pb_dlg_info_is_pixels(parent)) return;  /* PIXELS dialog */
     if (parent) {
         int sx = 0, sy = 0;
         pb_dlg_info_units(parent, &sx, &sy);
@@ -17025,51 +17246,31 @@ static void pb_dlu_to_px_for(void* parent, int *x, int *y, int *w, int *h) {
         if (dx <= 0) dx = PB_CTL_DLU_X;
         if (dy <= 0) dy = PB_CTL_DLU_Y;
     }
-    *x = (*x * dx + 2) / 4;
-    *y = (*y * dy + 4) / 8;
-    *w = (*w * dx) / 4;
-    *h = (*h * dy + 4) / 8;
-}
-
-/* PBWin truncates the vertical EXTENT of an EDIT/STATIC: a 12-DLU edit
-   in the default 13-pixel font unit is 19 px (156/8), not the rounded 20,
-   and Progress.bas's 10-DLU label in Times New Roman 23 is 28 px (230/8),
-   not 29.  Positions and BUTTON extents still round (see +4 above). */
-static int pb_dlu_h_trunc_for(void* parent, int h) {
-    int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
-    if (parent) {
-        int sx = 0, sy = 0;
-        pb_dlg_info_units(parent, &sx, &sy);
-        if (sx > 0 && sy > 0) { dx = sx; dy = sy; }
-    } else {
-        pb_dialog_base_units(&dx, &dy);
-        if (dx <= 0) dx = PB_CTL_DLU_X;
-        if (dy <= 0) dy = PB_CTL_DLU_Y;
+    /* batch 401: PBWin converts a control rectangle by rounding its left/top
+       and right/bottom edges independently and subtracting, not by rounding
+       the width and height separately.  The difference is visible at
+       fractional edges: three otherwise identical 10-DLU radio buttons at
+       y=94/104/114 measured 16/16/17 px in the original TEXT3D.EXE.  Using
+       rounded extents reproduces that exactly, and also fixes the 1-px
+       label/edit differences in ScrollMon (12 DLU -> 20 px) and Progress
+       (10 DLU at Times New Roman 16 -> 28 px). */
+    {
+        int x1 = (*x * dx + 2) / 4;
+        int x2 = ((*x + *w) * dx + 2) / 4;
+        int y1 = (*y * dy + 4) / 8;
+        int y2 = ((*y + *h) * dy + 4) / 8;
+        *x = x1;
+        *y = y1;
+        *w = x2 - x1;
+        *h = y2 - y1;
     }
-    return (h * dy) / 8;
-}
-
-/* PBWin rounds a STATIC's vertical extent UP: a 10-DLU label in the
-   default 13-pixel font unit is 17 px (130/8), while its 12-DLU edit
-   neighbour is the truncated 19 px. */
-static int pb_dlu_h_ceil_for(void* parent, int h) {
-    int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
-    if (parent) {
-        int sx = 0, sy = 0;
-        pb_dlg_info_units(parent, &sx, &sy);
-        if (sx > 0 && sy > 0) { dx = sx; dy = sy; }
-    } else {
-        pb_dialog_base_units(&dx, &dy);
-        if (dx <= 0) dx = PB_CTL_DLU_X;
-        if (dy <= 0) dy = PB_CTL_DLU_Y;
-    }
-    return (h * dy + 7) / 8;
 }
 
 /* Parent-aware DLU conversion; see pb_dlu_to_px_for above. */
 
 static int pb_px_x_to_dlu_for(void* parent, long long v) {
     int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
+    if (parent && pb_dlg_info_is_pixels(parent)) return (int)v;
     if (parent) {
         int sx = 0, sy = 0;
         pb_dlg_info_units(parent, &sx, &sy);
@@ -17083,6 +17284,7 @@ static int pb_px_x_to_dlu_for(void* parent, long long v) {
 }
 static int pb_px_y_to_dlu_for(void* parent, long long v) {
     int dx = PB_CTL_DLU_X, dy = PB_CTL_DLU_Y;
+    if (parent && pb_dlg_info_is_pixels(parent)) return (int)v;
     if (parent) {
         int sx = 0, sy = 0;
         pb_dlg_info_units(parent, &sx, &sy);
@@ -17542,6 +17744,26 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
             return 1;
         }
     }
+    /* Every message not consumed above must still reach the DIALOG callback.
+       PBWin's dialog procedure sees the whole stream (WM_USER+ socket
+       notifications from WSAAsyncSelect, WM_TIMER, WM_SIZE, WM_MOVE ...);
+       the fork previously only forwarded WM_COMMAND/WM_NOTIFY/WM_CTLCOLOR,
+       so a `TCP NOTIFY ... 1024` event was posted and silently dropped by
+       DefWindowProcA.  A non-zero callback result consumes the message,
+       exactly like the WM_COMMAND branch above. */
+    if (pb_dialog_cb) {
+        cb_msg = Msg;
+        cb_hwnd = hWnd;
+        cb_ctl = 0;
+        cb_ctlmsg = 0;
+        cb_wparam = wParam;
+        cb_lparam = lParam;
+        {
+            pb_dlg_cb_fn df = (pb_dlg_cb_fn)pb_dialog_cb;
+            long long r = df(hWnd, Msg, wParam, lParam);
+            if (r) return (long)r;
+        }
+    }
     __try {
         return DefWindowProcA(hWnd, Msg, wParam, lParam);
     } __except(1) {
@@ -17706,10 +17928,10 @@ static void* pb_dialog_font_for(void* parent) {
    dialog was created; changing DIALOG FONT afterwards only affects later
    dialogs.  Keep one record per HWND so a later DIALOG FONT cannot resize
    the controls of an existing dialog (Progress.bas is the regression). */
-typedef struct { void* hwnd; void* font; int dlu_x, dlu_y; } pb_dlg_info_t;
+typedef struct { void* hwnd; void* font; int dlu_x, dlu_y, pixel_units; } pb_dlg_info_t;
 #define PB_DLG_INFO_SLOTS 512
 static pb_dlg_info_t pb_dlg_infos[PB_DLG_INFO_SLOTS];
-static void pb_dlg_info_store(void* hwnd, void* font, int dx, int dy) {
+static void pb_dlg_info_store(void* hwnd, void* font, int dx, int dy, int pixel_units) {
     int i, free_slot = -1;
     if (!hwnd) return;
     for (i = 0; i < PB_DLG_INFO_SLOTS; i++) {
@@ -17717,6 +17939,7 @@ static void pb_dlg_info_store(void* hwnd, void* font, int dx, int dy) {
             pb_dlg_infos[i].font = font;
             pb_dlg_infos[i].dlu_x = dx;
             pb_dlg_infos[i].dlu_y = dy;
+            pb_dlg_infos[i].pixel_units = pixel_units;
             return;
         }
         if (!pb_dlg_infos[i].hwnd && free_slot < 0) free_slot = i;
@@ -17726,6 +17949,7 @@ static void pb_dlg_info_store(void* hwnd, void* font, int dx, int dy) {
     pb_dlg_infos[free_slot].font = font;
     pb_dlg_infos[free_slot].dlu_x = dx;
     pb_dlg_infos[free_slot].dlu_y = dy;
+    pb_dlg_infos[free_slot].pixel_units = pixel_units;
 }
 static void pb_dlg_info_units(void* hwnd, int* dlu_x, int* dlu_y) {
     int i;
@@ -17740,6 +17964,13 @@ static void pb_dlg_info_units(void* hwnd, int* dlu_x, int* dlu_y) {
         }
     }
 }
+static int pb_dlg_info_is_pixels(void* hwnd) {
+    int i;
+    if (!hwnd) return 0;
+    for (i = 0; i < PB_DLG_INFO_SLOTS; i++)
+        if (pb_dlg_infos[i].hwnd == hwnd) return pb_dlg_infos[i].pixel_units;
+    return 0;
+}
 static void pb_dlg_info_forget(void* hwnd) {
     int i;
     if (!hwnd) return;
@@ -17749,6 +17980,7 @@ static void pb_dlg_info_forget(void* hwnd) {
             pb_dlg_infos[i].font = 0;
             pb_dlg_infos[i].dlu_x = 0;
             pb_dlg_infos[i].dlu_y = 0;
+            pb_dlg_infos[i].pixel_units = 0;
             return;
         }
 }
@@ -17801,7 +18033,7 @@ void* pb_window_new(const char* title, int x, int y, int w, int h) {
     if (hwnd) {
         ShowWindow(hwnd, 5);
         UpdateWindow(hwnd);
-        pb_dlg_info_store(hwnd, pb_dialog_font_for(hwnd), dluX, dluY);
+        pb_dlg_info_store(hwnd, pb_dialog_font_for(hwnd), dluX, dluY, 0);
         /* the dialog font (DIALOG DEFAULT FONT if set, else MS Sans Serif
            -11, matching a PBWin dialog) - batch 241: controls inherit it,
            and without it the window and its children render in the system
@@ -17892,7 +18124,7 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
         0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
         pb_live_dialogs++;
-        pb_dlg_info_store(hwnd, pb_dialog_font_for(hwnd), dluX, dluY);
+        pb_dlg_info_store(hwnd, pb_dialog_font_for(hwnd), dluX, dluY, units ? 1 : 0);
         SendMessageA(hwnd, 0x0030 /* WM_SETFONT */,
                      (unsigned long long)(size_t)pb_dialog_font_for(hwnd), 1);
     }
@@ -19027,6 +19259,45 @@ int pb_show_modal_to(void* hDlg) {
 __declspec(dllimport) void* __stdcall CreateWindowExA(
     unsigned long, const char*, const char*, unsigned long,
     int, int, int, int, void*, void*, void*, void*);
+__declspec(dllimport) void* __stdcall CreateWindowExW(
+    unsigned long, const short*, const short*, unsigned long,
+    int, int, int, int, void*, void*, void*, void*);
+
+/* batch 401: create a control from UTF-16 text.  The class name is ASCII and
+   is widened here; text is already a UTF-16 BSTR payload.  Used by the *_w
+   entry points the code generator selects when the source expression is a
+   WSTRING (e.g. ScrollMon builds its textbox text into a LOCAL WSTRING). */
+static void* pb_ctl_create_w(const char* cls, const char* text,
+                             unsigned long style, unsigned long ex,
+                             int x, int y, int w, int h,
+                             void* parent, long id) {
+    short wcls[64];
+    MultiByteToWideChar(0 /* CP_ACP */, 0, cls, -1, wcls, 64);
+    return CreateWindowExW(ex, wcls, (const short*)text, style,
+                           x, y, w, h, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+}
+
+/* batch 401: one generic UTF-16 control creator for every DDT text-bearing
+   class.  The ANSI helpers below stay untouched for STRING expressions; when
+   codegen sees a WSTRING/FixedWString operand it calls this instead, so the
+   full UTF-16 payload reaches USER32 rather than being cut at the first byte.
+   The caller supplies the documented default or user style; WS_CHILD and
+   WS_VISIBLE are added here exactly like the ANSI helpers do. */
+void* pb_control_add_text_w(void* parent, long id, const char* text,
+                            int x, int y, int w, int h,
+                            const char* cls, long style, long exstyle, void* fn) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    unsigned long s = (unsigned long)style | 0x40000000u | 0x10000000u;
+    void* hw = pb_ctl_create_w(cls, text, s, (unsigned long)exstyle,
+                               x, y, w, h, parent, id);
+    if (hw) {
+        SendMessageA(hw, 0x0030 /* WM_SETFONT */,
+                    (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
+    return hw;
+}
 
 void* pb_control_add_button(void* parent, long id, const char* text,
                             int x, int y, int w, int h) {
@@ -19071,6 +19342,23 @@ void* pb_control_add_button_ex(void* parent, long id, const char* text,
     return hw;
 }
 
+/* batch 401: UTF-16 text variants.  Every one forwards to the generic
+   pb_control_add_text_w so the class, default style, exstyle and callback
+   semantics stay identical to the ANSI helper above. */
+void* pb_control_add_button_w(void* parent, long id, const char* text,
+                              int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x10000, 0, 0);
+}
+
+void* pb_control_add_button_ex_w(void* parent, long id, const char* text,
+                                 int x, int y, int w, int h,
+                                 long style, long exstyle, void* fn) {
+    long s = style ? style : 0x10000;
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
+}
+
 
 void* pb_control_add_editbox(void* parent, long id, const char* text,
                               int x, int y, int w, int h) {
@@ -19088,6 +19376,11 @@ void* pb_control_add_editbox(void* parent, long id, const char* text,
 __declspec(dllimport) int __stdcall GetWindowTextA(void*, char*, int);
 __declspec(dllimport) int __stdcall GetWindowTextLengthA(void*);
 __declspec(dllimport) int __stdcall SetWindowTextA(void*, const char*);
+/* batch 401: WSTRING destinations/sources use the Unicode entry points so no
+   ANSI round-trip can drop characters or turn them into mojibake. */
+__declspec(dllimport) int __stdcall GetWindowTextW(void*, short*, int);
+__declspec(dllimport) int __stdcall GetWindowTextLengthW(void*);
+__declspec(dllimport) int __stdcall SetWindowTextW(void*, const short*);
 __declspec(dllimport) int __stdcall EnableWindow(void*, int);
 __declspec(dllimport) void* __stdcall SetFocus(void*);
 
@@ -19227,8 +19520,35 @@ char* pb_control_get_text_by_id_bstr(void* hDlg, long id) {
     return pb_control_get_text_bstr(GetDlgItem(hDlg, id));
 }
 
+/* batch 401: UTF-16 variant.  The returned BSTR carries UTF-16 code units in
+   its payload and a byte length of 2*n, which is exactly what
+   pb_copy_wstr_to_wz / pb_copy_wstr_to_fixed expect. */
+char* pb_control_get_text_bstr_w(void* hctrl) {
+    int n;
+    short* tmp;
+    char* out;
+    if (!hctrl) return pb_bstr_alloc("", 0);
+    n = GetWindowTextLengthW(hctrl);
+    if (n < 0) n = 0;
+    tmp = (short*)malloc(((size_t)n + 1) * sizeof(short));
+    if (!tmp) return pb_bstr_alloc("", 0);
+    tmp[0] = 0;
+    GetWindowTextW(hctrl, tmp, n + 1);
+    out = pb_bstr_alloc((const char*)tmp, (unsigned int)(n * 2));
+    free(tmp);
+    return out;
+}
+
+char* pb_control_get_text_by_id_bstr_w(void* hDlg, long id) {
+    return pb_control_get_text_bstr_w(GetDlgItem(hDlg, id));
+}
+
 void pb_control_set_text(void* hctrl, const char* text) {
     SetWindowTextA(hctrl, text);
+}
+
+void pb_control_set_text_w(void* hctrl, const char* text) {
+    SetWindowTextW(hctrl, (const short*)text);
 }
 
 void pb_control_show(void* hctrl) { ShowWindow(hctrl, 5); }
@@ -19254,6 +19574,7 @@ void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h)
        also added WS_BORDER/WS_VSCROLL which PBWin does not.) */
     unsigned long style = 0x2 | 0x100 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
     void* hw = CreateWindowExA(ex, "COMBOBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -19264,9 +19585,14 @@ void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h)
 void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) {
     /* CHW control_add_listbox.htm: default style = %LBS_SORT(0x2) OR
        %LBS_NOTIFY(0x1) OR %WS_TABSTOP(0x10000) OR %WS_VSCROLL(0x200000);
-       default extended style = %WS_EX_CLIENTEDGE(0x200) OR %WS_EX_LEFT. */
+       default extended style = %WS_EX_CLIENTEDGE(0x200) OR %WS_EX_LEFT.
+       PBWin snaps a listbox to integral text rows: the original SYNCLIST
+       65-DLU list is 95 px high, 11 px below the raw DLU conversion. */
     unsigned long style = 0x1 | 0x2 | 0x200000 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    h -= 11;
+    if (h < 1) h = 1;
     void* hw = CreateWindowExA(ex, "LISTBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -19289,10 +19615,10 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
 void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long count,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
-    x = PB_DLU_X_TO_PX(x);
-    y = PB_DLU_Y_TO_PX(y);
-    w = PB_DLU_X_TO_PX(w);
-    int hpx = PB_DLU_Y_TO_PX(h) - 11;
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    h -= 11;  /* integral-row snap, measured from the original SYNCLIST */
+    if (h < 1) h = 1;
+    int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
     unsigned long s = style ? ((unsigned long)style | 0x1u)  /* + LBS_NOTIFY */
@@ -19328,6 +19654,39 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
     return hw;
 }
 
+/* batch 401: items$() is a WSTRING array, so every element is UTF-16. */
+void* pb_control_add_listbox_ex_w(void* parent, long id, void* items, long long count,
+                                  int x, int y, int w, int h,
+                                  long style, long exstyle, void* fn) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    h -= 11;
+    if (h < 1) h = 1;
+    int hpx = h;
+    unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
+                                                    : (unsigned long)exstyle;
+    unsigned long s = style ? ((unsigned long)style | 0x1u)
+                            : (0x1u | 0x2u | 0x200000u | 0x10000u);
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA(ex, "LISTBOX", "", s,
+                           x, y, w, hpx, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) {
+        SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
+        pb_set_winlong(hw, -16, (long long)s);
+        if (count > 0 && items) {
+            long long i;
+            for (i = 0; i < count; i++) {
+                void* p = ((void**)items)[i];
+                if (!p) continue;
+                SendMessageW(hw, 0x0180, 0, (long long)(size_t)p);
+            }
+        }
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
+    return hw;
+}
+
 /* CONTROL ADD COMBOBOX full official syntax (batch 248):
    CONTROL ADD COMBOBOX, hDlg, id&, [items$()], x, y, xx, yy
      [, [style&] [, [exstyle&]]] [[,] CALL callback]
@@ -19341,10 +19700,8 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
 void* pb_control_add_combobox_ex(void* parent, long id, void* items, long long count,
                                  int x, int y, int w, int h,
                                  long style, long exstyle, void* fn) {
-    x = PB_DLU_X_TO_PX(x);
-    y = PB_DLU_Y_TO_PX(y);
-    w = PB_DLU_X_TO_PX(w);
-    int hpx = PB_DLU_Y_TO_PX(h);
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
     unsigned long s;
@@ -19370,6 +19727,39 @@ void* pb_control_add_combobox_ex(void* parent, long id, void* items, long long c
                 if (!p) continue;
                 SendMessageA(hw, 0x0143 /* CB_ADDSTRING */, 0,
                              (long long)(size_t)p);
+            }
+        }
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
+    return hw;
+}
+
+void* pb_control_add_combobox_ex_w(void* parent, long id, void* items, long long count,
+                                   int x, int y, int w, int h,
+                                   long style, long exstyle, void* fn) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    int hpx = h;
+    unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
+                                                    : (unsigned long)exstyle;
+    unsigned long s;
+    if (style) {
+        s = (unsigned long)style;
+        if ((s & 0x3u) == 0) s |= 0x2u;
+    } else {
+        s = 0x2u | 0x100u | 0x10000u;
+    }
+    s |= 0x40000000u | 0x10000000u;
+    void* hw = CreateWindowExA(ex, "COMBOBOX", "", s,
+                           x, y, w, hpx, parent,
+                           (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hw) {
+        SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        if (count > 0 && items) {
+            long long i;
+            for (i = 0; i < count; i++) {
+                void* p = ((void**)items)[i];
+                if (!p) continue;
+                SendMessageW(hw, 0x0143, 0, (long long)(size_t)p);
             }
         }
         if (fn) pb_register_callback_hwnd(hw, fn);
@@ -19412,6 +19802,43 @@ void* pb_control_add_groupbox(void* parent, long id, const char* text,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     return hw;
+}
+
+void* pb_control_add_checkbox_w(void* parent, long id, const char* text,
+                                int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x3 | 0x100 | 0xC00 | 0x10000, 0, 0);
+}
+void* pb_control_add_checkbox_ex_w(void* parent, long id, const char* text,
+                                   int x, int y, int w, int h,
+                                   long style, long exstyle, void* fn) {
+    long s = style ? style : (0x3 | 0x100 | 0xC00 | 0x10000);
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
+}
+void* pb_control_add_radiobutton_w(void* parent, long id, const char* text,
+                                   int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x9 | 0x10000, 0, 0);
+}
+void* pb_control_add_radiobutton_ex_w(void* parent, long id, const char* text,
+                                      int x, int y, int w, int h,
+                                      long style, long exstyle, void* fn) {
+    long s = style ? style : (0x9 | 0x10000);
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
+}
+void* pb_control_add_groupbox_w(void* parent, long id, const char* text,
+                                int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x7, 0, 0);
+}
+void* pb_control_add_groupbox_ex_w(void* parent, long id, const char* text,
+                                   int x, int y, int w, int h,
+                                   long style, long exstyle, void* fn) {
+    long s = style ? style : 0x7;
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
 }
 
 /* === batch 177: the plain and static CONTROL family ==================
@@ -19462,6 +19889,43 @@ void* pb_control_add_frame(void* parent, long id, const char* text,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     return hw;
+}
+
+void* pb_control_add_option_w(void* parent, long id, const char* text,
+                              int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x9 | 0x100 | 0xC00 | 0x10000, 0, 0);
+}
+void* pb_control_add_option_ex_w(void* parent, long id, const char* text,
+                                 int x, int y, int w, int h,
+                                 long style, long exstyle, void* fn) {
+    long s = style ? style : (0x9 | 0x100 | 0xC00 | 0x10000);
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
+}
+void* pb_control_add_check3state_w(void* parent, long id, const char* text,
+                                   int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x6 | 0x100 | 0xC00 | 0x10000, 0, 0);
+}
+void* pb_control_add_check3state_ex_w(void* parent, long id, const char* text,
+                                      int x, int y, int w, int h,
+                                      long style, long exstyle, void* fn) {
+    long s = style ? style : (0x6 | 0x100 | 0xC00 | 0x10000);
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
+}
+void* pb_control_add_frame_w(void* parent, long id, const char* text,
+                             int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", 0x7 | 0x100 | 0x400, 0, 0);
+}
+void* pb_control_add_frame_ex_w(void* parent, long id, const char* text,
+                                int x, int y, int w, int h,
+                                long style, long exstyle, void* fn) {
+    long s = style ? style : (0x7 | 0x100 | 0x400);
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "BUTTON", s, exstyle, fn);
 }
 
 /* ---- the resource-image control family (batch 178) ---------------------
@@ -19601,17 +20065,40 @@ int pb_control_set_image(void* parent, long id, const char* name,
    txt$ may be empty. */
 void* pb_control_add_textbox(void* parent, long id, const char* text,
                              int x, int y, int w, int h) {
-    /* TEXTBOX: positions and width follow the dialog's DLU grid; the
-       height is truncated, matching PBWin's 19-px 12-DLU edit. */
-    int h_dlu = h;
+    /* TEXTBOX: the rectangle is converted edge-by-edge like every other
+       control (batch 401); do not round or crop the height a second time. */
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    int hpx = pb_dlu_h_trunc_for(parent, h_dlu);
     unsigned long style = 0x80 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
     void* hw = CreateWindowExA(ex, "EDIT", text, style,
-                           x, y, w, hpx, parent,
+                           x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+    return hw;
+}
+
+void* pb_control_add_textbox_w(void* parent, long id, const char* text,
+                               int x, int y, int w, int h) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    unsigned long style = 0x80 | 0x10000 | 0x40000000 | 0x10000000;
+    unsigned long ex = 0x200;
+    void* hw = pb_ctl_create_w("EDIT", text, style, ex, x, y, w, h, parent, id);
+    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+    return hw;
+}
+
+void* pb_control_add_textbox_ex_w(void* parent, long id, const char* text,
+                                  int x, int y, int w, int h,
+                                  long style, long exstyle, void* fn) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &h);
+    unsigned long s = style ? (unsigned long)style : 0x80u | 0x10000u | 0x800000u;
+    s |= 0x40000000u | 0x10000000u;
+    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
+    void* hw = pb_ctl_create_w("EDIT", text, s, ex, x, y, w, h, parent, id);
+    if (hw) {
+        SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        if (fn) pb_register_callback_hwnd(hw, fn);
+    }
     return hw;
 }
 
@@ -19630,6 +20117,20 @@ void* pb_control_add_line(void* parent, long id, const char* text,
     return hw;
 }
 
+void* pb_control_add_line_w(void* parent, long id, const char* text,
+                            int x, int y, int w, int h) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "STATIC", 0x12, 0, 0);
+}
+
+void* pb_control_add_line_ex_w(void* parent, long id, const char* text,
+                               int x, int y, int w, int h,
+                               long style, long exstyle, void* fn) {
+    long s = style ? style : 0x12;
+    return pb_control_add_text_w(parent, id, text, x, y, w, h,
+                                 "STATIC", s, exstyle, fn);
+}
+
 /* CONTROL SET OPTION hDlg, id&, minid&, maxid& -- CheckRadioButton() *is*
    this statement: it checks the button whose id is id& and clears the check
    state of every other button in the inclusive range minid&..maxid&. */
@@ -19644,6 +20145,7 @@ void pb_control_set_option(void* hDlg, long long id, long long minid, long long 
    automatically switched to %SBS_VERT(0x1), regardless of whether %SBS_HORZ
    is specified or not".  The old code hard-coded SBS_VERT + WS_TABSTOP. */
 void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int ht) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
     unsigned long sbs = (w < ht) ? 1u : 0u;
     unsigned long style = sbs | 0x40000000u | 0x10000000u;
     void* hbar = CreateWindowExA(0, "SCROLLBAR", "", style,
@@ -19670,14 +20172,25 @@ void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int h
 void* pb_control_add_label(void* parent, long id, const char* text, int x, int y, int w, int ht) {
     /* SS_LEFT=0, WS_CHILD=0x40000000, WS_VISIBLE=0x10000000 */
     unsigned long style = 0x40000000 | 0x10000000;
-    int ht_dlu = ht;
     pb_dlu_to_px_for(parent, &x,&y,&w,&ht);
-    ht = pb_dlu_h_ceil_for(parent, ht_dlu);
     void* h = CreateWindowExA(0, "STATIC", text, style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     return h;
+}
+
+void* pb_control_add_label_w(void* parent, long id, const char* text,
+                             int x, int y, int w, int ht) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, ht,
+                                 "STATIC", 0, 0, 0);
+}
+
+void* pb_control_add_label_ex_w(void* parent, long id, const char* text,
+                                int x, int y, int w, int ht,
+                                long style, long exstyle, void* fn) {
+    return pb_control_add_text_w(parent, id, text, x, y, w, ht,
+                                 "STATIC", style, exstyle, fn);
 }
 
 /* CONTROL ADD PROGRESSBAR */
@@ -19866,13 +20379,9 @@ void pb_control_set_check(void* hctrl, int state) {
  *
  * Units: the official help (dialog_get_size.htm / dialog_set_size.htm) says the
  * values are in DIALOG UNITS unless the dialog was created with the PIXELS
- * option.  DIALOG NEW converts its x/y/w/h through GetDialogBaseUnits() (see
- * pb_window_new above) and DIALOG PIXELS is still unimplemented, so every
- * dialog this compiler creates is a dialog-unit dialog: both statements apply
- * the same conversion, in the opposite direction for GET.  Because pb_dlg_units
- * reads exactly the base units pb_window_new uses, "DIALOG NEW ... w,h" followed
- * by "DIALOG GET SIZE" round-trips to w,h for any w divisible by 4 and any h
- * divisible by 8 (320x200 and 500x360 in the example). */
+ * option.  pb_window_new_dlg snapshots that option in pb_dlg_info_t, so the
+ * PIXELS branch below returns raw pixels; the dialog-unit branch applies the
+ * same base-unit conversion pb_window_new_dlg used. */
 static void pb_dlg_units(int* dlu_x, int* dlu_y) {
     /* batch 239: same base as pb_window_new - the dialog font (6x13 default,
        or the DIALOG DEFAULT FONT's metrics), NOT GetDialogBaseUnits(). */
@@ -19899,6 +20408,11 @@ void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
     int dx, dy;
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetWindowRect(hDlg, &rc);
+    if (pb_dlg_info_is_pixels(hDlg)) {
+        if (pw) *pw = (long long)(rc.right - rc.left);
+        if (ph) *ph = (long long)(rc.bottom - rc.top);
+        return;
+    }
     pb_dlg_units_for(hDlg, &dx, &dy);
     if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
     if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
@@ -19914,6 +20428,11 @@ void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
  * examples/batch175_test.bas asserts the position survives the resize. */
 void pb_dialog_set_size(void* hDlg, long long w, long long h) {
     int dx, dy;
+    if (pb_dlg_info_is_pixels(hDlg)) {
+        SetWindowPos(hDlg, 0, 0, 0, (int)w, (int)h,
+                     0x0002u | 0x0004u /* SWP_NOMOVE | SWP_NOZORDER */);
+        return;
+    }
     pb_dlg_units_for(hDlg, &dx, &dy);
     SetWindowPos(hDlg, 0, 0, 0, (int)((w * dx + 3) / 4), (int)((h * dy + 6) / 8),
                  0x0002u | 0x0004u /* SWP_NOMOVE | SWP_NOZORDER */);
@@ -19937,12 +20456,10 @@ void pb_dialog_set_size(void* hDlg, long long w, long long h) {
    Semantics follow the official help pages in
    C:\PBWin10\bin\PBWin_extracted\html\dialog_*.htm.
 
-   Units: DIALOG NEW does not implement the PIXELS option yet, so every
-   dialog this compiler creates is a dialog-unit dialog - the same
-   assumption DIALOG GET SIZE / SET SIZE already make.  The geometry
-   statements below convert through pb_dlg_units() (GetDialogBaseUnits),
-   which is exactly the base pb_window_new uses, so GET and SET
-   round-trip against DIALOG NEW.
+   Units: each dialog records whether DIALOG NEW used the PIXELS option.
+   The geometry statements below use the pixels branch for such a dialog and
+   otherwise convert through pb_dlg_units(), exactly the base
+   pb_window_new_dlg used, so GET and SET round-trip against DIALOG NEW.
    =================================================================== */
 
 __declspec(dllimport) int __stdcall RedrawWindow(void*, const void*, void*, unsigned long);
@@ -20132,17 +20649,7 @@ __declspec(dllimport) int __stdcall SetScrollInfo(void* hWnd, int nBar, const PB
 __declspec(dllimport) int __stdcall GetClassNameA(void* hWnd, char* lpClassName, int nMaxCount);
 long long pb_control_send(void* hDlg, long long id, long long msg, long long wp, long long lp) {    void* h = pb_pb_hwnd(hDlg, id);
     if (!h) return 0;
-    if ((unsigned long long)msg == 0x40Bull) {
-        char cls[128]; cls[0] = 0;
-        GetClassNameA(h, cls, 127);
-        fprintf(stderr, "SEND h=%p id=%lld msg=%llX lp=%llX cls=%s\n",
-                h, id, msg, lp, cls);
-        fflush(stderr);
-    }
     long long rv = (long long)SendMessageA(h, (unsigned int)msg, (pb_wparam_t)wp, (pb_lparam_t)lp);
-    if ((unsigned long long)msg == 0x40Bull) {
-        fprintf(stderr, "SEND done rv=%lld\n", rv); fflush(stderr);
-    }
     /* batch 245d: on our ListBoxes a WM_MOUSEWHEEL scroll moves the scrollbar
        position but leaves the internal top index stuck at 0 (the wheel goes
        through the scrollbar path, the ListBox's own top-index state is never
@@ -20255,6 +20762,11 @@ void pb_dialog_get_client(void* hDlg, long long* pw, long long* ph) {
     int dx, dy;
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetClientRect(hDlg, &rc);
+    if (pb_dlg_info_is_pixels(hDlg)) {
+        if (pw) *pw = (long long)(rc.right - rc.left);
+        if (ph) *ph = (long long)(rc.bottom - rc.top);
+        return;
+    }
     pb_dlg_units_for(hDlg, &dx, &dy);
     if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
     if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
@@ -20267,10 +20779,11 @@ void pb_dialog_set_client(void* hDlg, long long w, long long h) {
     pb_rect_t rc;
     int dx, dy, has_menu;
     unsigned long style, exstyle;
-    pb_dlg_units_for(hDlg, &dx, &dy);
+    int pixels = pb_dlg_info_is_pixels(hDlg);
+    if (!pixels) pb_dlg_units_for(hDlg, &dx, &dy);
     rc.left = 0; rc.top = 0;
-    rc.right = (long)((w * dx) / 4);
-    rc.bottom = (long)((h * dy) / 8);
+    rc.right = pixels ? (long)w : (long)((w * dx) / 4);
+    rc.bottom = pixels ? (long)h : (long)((h * dy) / 8);
     style = (unsigned long)pb_get_winlong(hDlg, -16 /* GWL_STYLE */);
     exstyle = (unsigned long)pb_get_winlong(hDlg, -20 /* GWL_EXSTYLE */);
     has_menu = GetMenu(hDlg) != 0;
@@ -20287,6 +20800,11 @@ void pb_dialog_get_loc(void* hDlg, long long* px, long long* py) {
     wr.left = 0; wr.top = 0; wr.right = 0; wr.bottom = 0;
     GetWindowRect(hDlg, &wr);
     pb_dlg_origin(hDlg, &org);
+    if (pb_dlg_info_is_pixels(hDlg)) {
+        if (px) *px = (long long)(wr.left - org.x);
+        if (py) *py = (long long)(wr.top - org.y);
+        return;
+    }
     pb_dlg_units_for(hDlg, &dx, &dy);
     if (px) *px = (long long)(((wr.left - org.x) * 4 + dx / 2) / dx);
     if (py) *py = (long long)(((wr.top - org.y) * 8 + dy / 2) / dy);
@@ -20296,8 +20814,13 @@ void pb_dialog_get_loc(void* hDlg, long long* px, long long* py) {
 void pb_dialog_set_loc(void* hDlg, long long x, long long y) {
     pb_point_t org;
     int dx, dy;
-    pb_dlg_units_for(hDlg, &dx, &dy);
     pb_dlg_origin(hDlg, &org);
+    if (pb_dlg_info_is_pixels(hDlg)) {
+        SetWindowPos(hDlg, 0, org.x + (int)x, org.y + (int)y,
+                     0, 0, 0x0001u | 0x0004u /* SWP_NOSIZE | SWP_NOZORDER */);
+        return;
+    }
+    pb_dlg_units_for(hDlg, &dx, &dy);
     SetWindowPos(hDlg, 0, org.x + (int)((x * dx + 3) / 4), org.y + (int)((y * dy + 6) / 8),
                  0, 0, 0x0001u | 0x0004u /* SWP_NOSIZE | SWP_NOZORDER */);
 }
@@ -21211,6 +21734,18 @@ long long pb_cblb_add(void* hDlg, long id, const char* text, int kind) {
     return r < 0 ? -1 : r + 1;
 }
 
+/* batch 401: UTF-16 item text.  The common controls accept the Unicode
+   messages even when the window itself was created through CreateWindowExA. */
+long long pb_cblb_add_w(void* hDlg, long id, const char* text, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long r;
+    if (!h) return -1;
+    r = (long long)(intptr_t)SendMessageW(h,
+            (unsigned int)(kind == PB_CBLB_LB ? PB_LB_ADDSTRING : PB_CB_ADDSTRING),
+            0, (pb_lparam_t)text);
+    return r < 0 ? -1 : r + 1;
+}
+
 long long pb_cblb_delete(void* hDlg, long id, int item, int kind) {
     void* h = pb_cblb_hwnd(hDlg, id);
     if (!h) return 0;
@@ -21242,6 +21777,27 @@ long long pb_cblb_find(void* hDlg, long id, int item, const char* text,
        wrapping, so it is reported as no match. */
     start = item - 1;
     r = (long long)(intptr_t)SendMessageA(h, m, (unsigned int)(item - 2),
+                                          (pb_lparam_t)text);
+    if (r < 0) return 0;
+    if (r < start) return 0;
+    return r + 1;
+}
+
+long long pb_cblb_find_w(void* hDlg, long id, int item, const char* text,
+                         int exact, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long r;
+    unsigned int m;
+    int start;
+    if (!h) return 0;
+    if (item < 1) item = 1;
+    if (kind == PB_CBLB_LB) {
+        m = (unsigned int)(exact ? PB_LB_FINDSTRINGEXACT : PB_LB_FINDSTRING);
+    } else {
+        m = (unsigned int)(exact ? PB_CB_FINDSTRINGEXACT : PB_CB_FINDSTRING);
+    }
+    start = item - 1;
+    r = (long long)(intptr_t)SendMessageW(h, m, (unsigned int)(item - 2),
                                           (pb_lparam_t)text);
     if (r < 0) return 0;
     if (r < start) return 0;
@@ -21363,6 +21919,32 @@ char* pb_cblb_get_text_bstr(void* hDlg, long id, int item, int kind) {
     return out;
 }
 
+char* pb_cblb_get_text_bstr_w(void* hDlg, long id, int item, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long idx = item;
+    long long n;
+    unsigned int lenmsg = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETTEXTLEN : PB_CB_GETLBTEXTLEN);
+    unsigned int m = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETTEXT : PB_CB_GETLBTEXT);
+    unsigned int cur = (unsigned int)(kind == PB_CBLB_LB ? PB_LB_GETCURSEL : PB_CB_GETCURSEL);
+    short* tmp;
+    char* out;
+    if (!h) return pb_bstr_alloc("", 0);
+    if (idx <= 0) {
+        idx = (long long)(intptr_t)SendMessageW(h, cur, 0, 0);
+        if (idx < 0) return pb_bstr_alloc("", 0);
+        idx += 1;
+    }
+    n = (long long)(intptr_t)SendMessageW(h, lenmsg, (unsigned int)(idx - 1), 0);
+    if (n < 0) return pb_bstr_alloc("", 0);
+    tmp = (short*)malloc(((size_t)n + 1) * sizeof(short));
+    if (!tmp) return pb_bstr_alloc("", 0);
+    tmp[0] = 0;
+    SendMessageW(h, m, (unsigned int)(idx - 1), (pb_lparam_t)tmp);
+    out = pb_bstr_alloc((const char*)tmp, (unsigned int)(n * 2));
+    free(tmp);
+    return out;
+}
+
 long long pb_cblb_get_user(void* hDlg, long id, int item, int kind) {
     void* h = pb_cblb_hwnd(hDlg, id);
     if (!h) return 0;
@@ -21376,6 +21958,16 @@ long long pb_cblb_insert(void* hDlg, long id, int item, const char* text, int ki
     long long r;
     if (!h) return -1;
     r = (long long)(intptr_t)SendMessageA(h,
+            (unsigned int)(kind == PB_CBLB_LB ? PB_LB_INSERTSTRING : PB_CB_INSERTSTRING),
+            (unsigned int)(item - 1), (pb_lparam_t)text);
+    return r < 0 ? -1 : r + 1;
+}
+
+long long pb_cblb_insert_w(void* hDlg, long id, int item, const char* text, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long r;
+    if (!h) return -1;
+    r = (long long)(intptr_t)SendMessageW(h,
             (unsigned int)(kind == PB_CBLB_LB ? PB_LB_INSERTSTRING : PB_CB_INSERTSTRING),
             (unsigned int)(item - 1), (pb_lparam_t)text);
     return r < 0 ? -1 : r + 1;
@@ -21406,6 +21998,19 @@ long long pb_cblb_set_text(void* hDlg, long id, int item, const char* text, int 
             (unsigned int)(kind == PB_CBLB_LB ? PB_LB_DELETESTRING : PB_CB_DELETESTRING),
             (unsigned int)(item - 1), 0);
     r = (long long)(intptr_t)SendMessageA(h,
+            (unsigned int)(kind == PB_CBLB_LB ? PB_LB_INSERTSTRING : PB_CB_INSERTSTRING),
+            (unsigned int)(item - 1), (pb_lparam_t)text);
+    return r < 0 ? -1 : r + 1;
+}
+
+long long pb_cblb_set_text_w(void* hDlg, long id, int item, const char* text, int kind) {
+    void* h = pb_cblb_hwnd(hDlg, id);
+    long long r;
+    if (!h) return -1;
+    SendMessageA(h,
+            (unsigned int)(kind == PB_CBLB_LB ? PB_LB_DELETESTRING : PB_CB_DELETESTRING),
+            (unsigned int)(item - 1), 0);
+    r = (long long)(intptr_t)SendMessageW(h,
             (unsigned int)(kind == PB_CBLB_LB ? PB_LB_INSERTSTRING : PB_CB_INSERTSTRING),
             (unsigned int)(item - 1), (pb_lparam_t)text);
     return r < 0 ? -1 : r + 1;
@@ -22880,14 +23485,12 @@ void* pb_control_add_frame_ex(void* parent, long id, const char* text,
 void* pb_control_add_textbox_ex(void* parent, long id, const char* text,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
-    int h_dlu = h;
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    int hpx = pb_dlu_h_trunc_for(parent, h_dlu);
     unsigned long s = style ? (unsigned long)style : 0x80u | 0x10000u | 0x800000u;
     s |= 0x40000000u | 0x10000000u;
     unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
     void* hw = CreateWindowExA(ex, "EDIT", text, s,
-                           x, y, w, hpx, parent,
+                           x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
               if (fn) pb_register_callback_hwnd(hw, fn); }
@@ -22909,12 +23512,9 @@ void* pb_control_add_line_ex(void* parent, long id, const char* text,
 void* pb_control_add_label_ex(void* parent, long id, const char* text,
                               int x, int y, int w, int ht,
                               long style, long exstyle, void* fn) {
-    int ht_dlu = ht;
     unsigned long s = style ? (unsigned long)style : 0u;
     s |= 0x40000000u | 0x10000000u;
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    ht = (s & 0x1u) ? pb_dlu_h_trunc_for(parent, ht_dlu)
-                    : pb_dlu_h_ceil_for(parent, ht_dlu);
     void* h = CreateWindowExA((unsigned long)exstyle, "STATIC", text, s,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -22925,6 +23525,7 @@ void* pb_control_add_label_ex(void* parent, long id, const char* text,
 void* pb_control_add_scrollbar_ex(void* parent, long id, const char* text,
                                   int x, int y, int w, int ht,
                                   long style, long exstyle, void* fn) {
+    pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
     unsigned long sbs = (w < ht) ? 1u : 0u;
     unsigned long s = style ? (unsigned long)style : sbs;
     s |= 0x40000000u | 0x10000000u;

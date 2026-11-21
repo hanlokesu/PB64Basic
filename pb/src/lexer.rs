@@ -889,6 +889,22 @@ impl Lexer {
                     "$"
                 }
             }
+            Some('?') => {
+                // PB numeric type suffix on a function/identifier:
+                // `?`=BYTE, `??`=WORD, `???`=DWORD, `????`=QUAD.
+                // `BITS???(-1)` is the common WinAPI spelling.
+                let mut n = 0;
+                while self.peek() == Some('?') && n < 4 {
+                    self.advance();
+                    n += 1;
+                }
+                match n {
+                    1 => "?",
+                    2 => "??",
+                    3 => "???",
+                    _ => "????",
+                }
+            }
             _ => "",
         };
 

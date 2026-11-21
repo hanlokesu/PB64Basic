@@ -105,10 +105,53 @@ pub struct Parser {
     /// Used only to attribute a misplaced `%CONSTANT` to its enclosing routine
     /// when an official header leaves a SUB unclosed.
     current_routine: Option<(String, usize)>,
+    /// Instance-field lists of already-parsed CLASS blocks, keyed by the
+    /// normalized class name.  `CLASS Derived INHERIT Base` prepends the base
+    /// list so the derived object layout physically contains the base fields.
+    class_fields: std::collections::HashMap<String, Vec<TypeField>>,
+    /// Direct base class of each CLASS, keyed by normalized class name.
+    /// Resolution happens after the whole file is parsed so a derived class
+    /// may appear before its base (the order PBWin accepts).
+    class_base_map: std::collections::HashMap<String, String>,
+    /// Every name that will be declared as a TYPE/UNION/CLASS anywhere in the
+    /// token stream, collected before parsing starts.  `parse_type` uses it to
+    /// keep the COM "I-prefixed name" heuristic from mistaking a forward
+    /// structure reference for an interface: the lexer uppercases identifiers,
+    /// so `InnerType` looks like `INNERTYPE` (I + uppercase), and without this
+    /// pre-scan `TYPE Outer ... Inner AS InnerType` silently became a pointer
+    /// field instead of Error 524 / an inline value (batch 401).
+    declared_types: std::collections::HashSet<String>,
+    /// Every SUB/FUNCTION name declared anywhere in the token stream.  PBCC's
+    /// `@Proc(args)` statement form is a normal procedure call with an
+    /// optional at-sign prefix; codegen only gets that right when the parser
+    /// recognises the simple-identifier form here.
+    declared_procs: std::collections::HashSet<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Located>) -> Self {
+        // Pre-scan every TYPE/UNION/CLASS declaration name so forward
+        // references inside a TYPE block are never mistaken for COM
+        // interfaces by the I-prefix heuristic in `parse_type`.
+        let mut declared_types = std::collections::HashSet::new();
+        let mut declared_procs = std::collections::HashSet::new();
+        let mut i = 0;
+        while i + 1 < tokens.len() {
+            let is_udt_keyword = matches!(tokens[i].token, Token::Type | Token::Union)
+                || matches!(&tokens[i].token, Token::Identifier(w) if w.eq_ignore_ascii_case("CLASS"));
+            if is_udt_keyword {
+                if let Token::Identifier(name) = &tokens[i + 1].token {
+                    declared_types.insert(name.to_uppercase());
+                }
+            }
+            // `SUB Name` / `FUNCTION Name`, including their DECLARE forms.
+            if matches!(tokens[i].token, Token::Sub | Token::Function) {
+                if let Token::Identifier(name) = &tokens[i + 1].token {
+                    declared_procs.insert(name.to_uppercase());
+                }
+            }
+            i += 1;
+        }
         let mut parser = Parser {
             tokens,
             pending: std::collections::VecDeque::new(),
@@ -123,6 +166,10 @@ impl Parser {
             percent_consts: std::collections::HashMap::new(),
             defined_enums: std::collections::HashSet::new(),
             current_routine: None,
+            class_fields: std::collections::HashMap::new(),
+            class_base_map: std::collections::HashMap::new(),
+            declared_types,
+            declared_procs,
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -179,6 +226,9 @@ impl Parser {
                 // make the member parser give up.
                 Token::Next => "NEXT",
                 Token::Function => "FUNCTION",
+                // PowerArray's IPowerArray interface exposes a `Dim` method;
+                // the reserved statement keyword must be usable after a dot.
+                Token::Dim => "DIM",
                 // `mod` is a legal parameter name in the official
                 // FreeLibraryWhenCallbackReturns declaration.
                 Token::Mod => "MOD",
@@ -474,7 +524,50 @@ impl Parser {
             }
         }
 
+        // Resolve INHERIT field layouts after the whole file is parsed.
+        // Base fields are physically first; the codegen method lookup chain
+        // already follows base_class at compile time.
+        let raw_fields = self.class_fields.clone();
+        let base_map = self.class_base_map.clone();
+        for item in &mut items {
+            if let TopLevel::TypeDecl(td) = item {
+                if td.is_class {
+                    let key = td.name.to_uppercase();
+                    let mut visiting = Vec::new();
+                    if let Some(merged) =
+                        Self::resolve_class_fields(&key, &raw_fields, &base_map, &mut visiting)
+                    {
+                        td.fields = merged;
+                    }
+                }
+            }
+        }
+
         Ok(Program { items })
+    }
+
+    fn resolve_class_fields(
+        name: &str,
+        raw_fields: &std::collections::HashMap<String, Vec<TypeField>>,
+        base_map: &std::collections::HashMap<String, String>,
+        visiting: &mut Vec<String>,
+    ) -> Option<Vec<TypeField>> {
+        let own = raw_fields.get(name)?.clone();
+        if visiting.iter().any(|v| v == name) {
+            // Cyclic INHERIT: stop the recursion; each class keeps its own
+            // fields rather than looping forever.
+            return Some(own);
+        }
+        let Some(base) = base_map.get(name) else {
+            return Some(own);
+        };
+        visiting.push(name.to_string());
+        let inherited =
+            Self::resolve_class_fields(base, raw_fields, base_map, visiting).unwrap_or_default();
+        visiting.pop();
+        let mut merged = inherited;
+        merged.extend(own);
+        Some(merged)
     }
 
     fn parse_top_level(&mut self) -> PbResult<Option<TopLevel>> {
@@ -654,6 +747,21 @@ impl Parser {
                 // GUID + COM flag for DllRegisterServer generation.
                 let mut com = false;
                 let mut guid: Option<String> = None;
+                // CLASS Derived INHERIT Base: record the base class.  The
+                // INHERIT IPowerThread form lives inside the class body and is
+                // a marker, not a base class, so it is excluded here.
+                let mut base_class: Option<String> = None;
+                for k in 0..12usize {
+                    if let Some(Token::Identifier(w)) = self.peek_at(k) {
+                        if w.eq_ignore_ascii_case("INHERIT") {
+                            if let Some(Token::Identifier(parent)) = self.peek_at(k + 1) {
+                                if !parent.eq_ignore_ascii_case("IPOWERTHREAD") {
+                                    base_class = Some(parent.to_uppercase());
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut k = 0usize;
                 while k < 12 {
                     match self.peek_at(k) {
@@ -938,6 +1046,14 @@ impl Parser {
                 if name.is_empty() {
                     Ok(None)
                 } else {
+                    // Record the raw instance fields and the base link now;
+                    // `parse()` merges them after the full file is known, so
+                    // a derived class may precede its base class.
+                    let key = name.to_uppercase();
+                    if let Some(base) = &base_class {
+                        self.class_base_map.insert(key.clone(), base.to_uppercase());
+                    }
+                    self.class_fields.insert(key, fields.clone());
                     Ok(Some(TopLevel::TypeDecl(TypeDecl {
                         name,
                         fields,
@@ -949,6 +1065,7 @@ impl Parser {
                         event_sources,
                         interfaces,
                         thread_method,
+                        base_class,
                         com,
                         guid,
                     })))
@@ -1289,7 +1406,10 @@ impl Parser {
         loop {
             let name = self.consume_identifier()?;
 
-            // Check for array declaration: Name() [AS Type]
+            // Check for array declaration: Name() [AS Type].
+            // `GLOBAL ga(1 TO 3)` is rejected by PBWin/PBCC (Error 414):
+            // fixed storage at module level uses `GLOBAL name()` plus a later
+            // `REDIM`, so only the empty descriptor form is accepted here.
             if self.peek() == &Token::LParen {
                 self.advance(); // (
                 self.expect(&Token::RParen)?; // )
@@ -1802,7 +1922,8 @@ impl Parser {
                                 .nth(1)
                                 .map(|c| c.is_uppercase())
                                 .unwrap_or(false)
-                            && !self.defined_types.contains(&upper);
+                            && !self.defined_types.contains(&upper)
+                            && !self.declared_types.contains(&upper);
                         if self.interface_names.contains(&upper) || implicit_iface {
                             Ok(PbType::Interface(upper))
                         } else if self.defined_enums.contains(&upper) {
@@ -2126,6 +2247,7 @@ impl Parser {
             event_sources: Vec::new(),
             interfaces: Vec::new(),
             thread_method: None,
+            base_class: None,
             com: false,
             guid: None,
         })
@@ -2260,6 +2382,7 @@ impl Parser {
             event_sources: Vec::new(),
             interfaces: Vec::new(),
             thread_method: None,
+            base_class: None,
             com: false,
             guid: None,
         })
@@ -4624,6 +4747,31 @@ impl Parser {
 
         match self.peek().clone() {
             Token::At => {
+                // PB/CC accepts `@Proc(args)` as an ordinary SUB/FUNCTION
+                // call with an optional at-sign prefix.  Distinguish it from
+                // `@ptr(args)` (pointer/array dereference) by requiring the
+                // name to be a declared procedure.
+                if let Token::Identifier(pname) = self.peek_at(1).cloned().unwrap_or(Token::Eof) {
+                    if self.declared_procs.contains(&pname.to_uppercase())
+                        && self.peek_at(2) == Some(&Token::LParen)
+                    {
+                        self.advance(); // @
+                        self.advance(); // name
+                        self.advance(); // (
+                        let args = if self.peek() == &Token::RParen {
+                            Vec::new()
+                        } else {
+                            self.parse_arg_list()?
+                        };
+                        self.expect(&Token::RParen)?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: pname,
+                            args,
+                            line,
+                        }));
+                    }
+                }
                 // `@ptr = expr` / `@ptr.member = expr` — dereference assignment
                 // (CHW @ operator, batch306).  Official WinAPI inline helpers
                 // use this form (WinNT.inc TP_* subs, WinSock2.inc FD_ZERO).
@@ -5283,6 +5431,13 @@ impl Parser {
                 // %CONSTANT = value inside a sub
                 self.consume_to_eol();
                 eprintln!("Error: %CONSTANT: defining a constant inside a SUB is not supported on line {} (inside {:?})", line, self.current_routine);
+                if self.first_error_message.is_none() {
+                    self.first_error_message = Some(
+                        "Error 543: Must be outside Sub/Function/Class... \
+                         (%CONSTANT inside a routine)"
+                            .to_string(),
+                    );
+                }
                 self.error_count += 1;
                 Ok(Statement::Noop("%CONSTANT".to_string(), line))
             }
@@ -6024,6 +6179,24 @@ impl Parser {
                             }));
                         }
                     }
+                    if gop == "FONT" {
+                        // Legacy PB/CC direct-font form: GRAPHIC FONT FontName$, size& [, style&].
+                        // PBWin replaced it with FONT NEW + GRAPHIC SET FONT, but PB/CC 6
+                        // samples (Cartesian.bas) still use it, so lower it to the same
+                        // runtime font constructor followed by a font selection.
+                        self.advance(); // consume FONT
+                        let mut args = vec![self.parse_expression()?];
+                        while self.peek() == &Token::Comma {
+                            self.advance();
+                            args.push(self.parse_expression()?);
+                        }
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "GRAPHIC_FONT".to_string(),
+                            args,
+                            line,
+                        }));
+                    }
                     if gop == "GET" {
                         // GRAPHIC GET CANVAS TO hbmp | GRAPHIC GET DC TO hdc | GRAPHIC GET MIX TO mix&
                         // GRAPHIC GET SIZE TO w,h | GRAPHIC GET TEXTALIGN TO align&
@@ -6670,28 +6843,41 @@ impl Parser {
                         }));
                     }
                     if gop == "POLYGON" {
-                        // GRAPHIC POLYGON (x1,y1)-(x2,y2)-... [, color&]
+                        // Two documented forms:
+                        //   GRAPHIC POLYGON (x1,y1)-(x2,y2)-... [, color& ...]
+                        //   GRAPHIC POLYGON pointsUDT [, color& ...]
+                        // The UDT form stores a LONG count followed by SINGLE
+                        // x/y pairs (CHW GRAPHIC_POLYGON_statement).
                         self.advance();
                         let mut args = Vec::new();
-                        loop {
-                            self.expect(&Token::LParen)?;
+                        let is_udt = !matches!(self.peek(), Token::LParen);
+                        if is_udt {
                             args.push(self.parse_expression()?);
-                            self.expect(&Token::Comma)?;
-                            args.push(self.parse_expression()?);
-                            self.expect(&Token::RParen)?;
-                            if self.peek() == &Token::Minus {
-                                self.advance();
-                            } else {
-                                break;
+                        } else {
+                            loop {
+                                self.expect(&Token::LParen)?;
+                                args.push(self.parse_expression()?);
+                                self.expect(&Token::Comma)?;
+                                args.push(self.parse_expression()?);
+                                self.expect(&Token::RParen)?;
+                                if self.peek() == &Token::Minus {
+                                    self.advance();
+                                } else {
+                                    break;
+                                }
                             }
                         }
-                        if self.peek() == &Token::Comma {
+                        while self.peek() == &Token::Comma {
                             self.advance();
                             args.push(self.parse_expression()?);
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
-                            name: "GRAPHIC_POLYGON".to_string(),
+                            name: if is_udt {
+                                "GRAPHIC_POLYGON_UDT".to_string()
+                            } else {
+                                "GRAPHIC_POLYGON".to_string()
+                            },
                             args,
                             line,
                         }));
@@ -6990,20 +7176,26 @@ impl Parser {
                     }
                     if gop == "POLYLINE" {
                         // GRAPHIC POLYLINE (x1,y1)-(x2,y2)-... [, color&]
+                        // or GRAPHIC POLYLINE pointsUDT [, color&]
                         self.advance();
                         let mut args = Vec::new();
-                        while matches!(self.peek(), Token::LParen) {
-                            self.advance();
+                        let is_udt = !matches!(self.peek(), Token::LParen);
+                        if is_udt {
                             args.push(self.parse_expression()?);
-                            if self.peek() == &Token::Comma {
+                        } else {
+                            while matches!(self.peek(), Token::LParen) {
                                 self.advance();
                                 args.push(self.parse_expression()?);
-                            }
-                            if matches!(self.peek(), Token::RParen) {
-                                self.advance();
-                            }
-                            if matches!(self.peek(), Token::Minus) {
-                                self.advance();
+                                if self.peek() == &Token::Comma {
+                                    self.advance();
+                                    args.push(self.parse_expression()?);
+                                }
+                                if matches!(self.peek(), Token::RParen) {
+                                    self.advance();
+                                }
+                                if matches!(self.peek(), Token::Minus) {
+                                    self.advance();
+                                }
                             }
                         }
                         while self.peek() == &Token::Comma {
@@ -7012,7 +7204,11 @@ impl Parser {
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
-                            name: "GRAPHIC_POLYLINE".to_string(),
+                            name: if is_udt {
+                                "GRAPHIC_POLYLINE_UDT".to_string()
+                            } else {
+                                "GRAPHIC_POLYLINE".to_string()
+                            },
                             args,
                             line,
                         }));
@@ -7045,7 +7241,17 @@ impl Parser {
                             line,
                         }));
                     }
-                    if gop == "LINE" {
+                    // GRAPHIC LINE INPUT must not be consumed by the drawing
+                    // form below: that branch returns unconditionally and
+                    // made the dedicated LINE INPUT block farther down
+                    // unreachable.  Peek one token past LINE and leave the
+                    // statement for the INPUT dispatch.
+                    let gr_line_is_input = matches!(self.peek_at(1), Some(Token::Input))
+                        || matches!(
+                            self.peek_at(1),
+                            Some(Token::Identifier(w)) if w.eq_ignore_ascii_case("INPUT")
+                        );
+                    if gop == "LINE" && !gr_line_is_input {
                         // GRAPHIC LINE [STEP] [(x1!,y1!)] - [STEP] (x2!,y2!) [, color&]
                         // PBWin10 lets the first point be omitted; the line then
                         // starts at the last POS.  STEP before the first point
@@ -7917,6 +8123,33 @@ impl Parser {
                     }
                     if xop == "LINE" {
                         self.advance();
+                        // PB/CC `XPRINT LINE STEP - (x,y)[, color]`: the
+                        // starting point is omitted, so the endpoint is
+                        // relative to the last printer position.  The generic
+                        // parse_xprint_pt would read `STEP` then choke on the
+                        // `-` because it expects a parenthesised group.
+                        if self.peek_plain_upper() == "STEP"
+                            && self.peek_at(1) == Some(&Token::Minus)
+                        {
+                            self.advance(); // STEP
+                            self.advance(); // -
+                            self.expect(&Token::LParen)?;
+                            let x = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let y = self.parse_expression()?;
+                            self.expect(&Token::RParen)?;
+                            let mut args = vec![x, y];
+                            while self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "XPRINT_LINE_REL".to_string(),
+                                args,
+                                line,
+                            }));
+                        }
                         // batch 234: official XPRINT LINE (x1,y1)-(x2,y2)
                         let mut args = self.parse_xprint_pt()?;
                         while self.peek() == &Token::Comma {
@@ -8956,11 +9189,15 @@ impl Parser {
 
                 // STDOUT expr [;] / STDERR expr [;] — legacy spellings of
                 // CON.STDOUT / CON.STDERR.  A trailing semicolon suppresses the
-                // newline; a redirectable stream interprets CR/LF.
+                // newline; a redirectable stream interprets CR/LF.  A bare
+                // `STDOUT` is a blank line (PB/CC official CGI samples use it
+                // to terminate the Content-type header).
                 if name_upper == "STDOUT" || name_upper == "STDERR" {
                     self.advance();
                     let mut newline = 1i64;
-                    let value = if self.peek() == &Token::LParen {
+                    let value = if self.at_eol_or_eof() {
+                        Expr::StringLit(String::new())
+                    } else if self.peek() == &Token::LParen {
                         self.advance();
                         let v = self.parse_expression()?;
                         self.expect(&Token::RParen)?;
@@ -9043,11 +9280,26 @@ impl Parser {
                 if name_upper == "COLOR" {
                     self.advance(); // consume COLOR
                     let mut args = Vec::new();
-                    if self.peek() != &Token::Eol {
+                    if self.peek() == &Token::Comma {
+                        // COLOR ,back — foreground omitted, background set.
+                        self.advance();
+                        args.push(Expr::Omitted);
+                        if !self.at_eol_or_eof() {
+                            args.push(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                args.push(self.parse_expression()?);
+                            }
+                        }
+                    } else if !self.at_eol_or_eof() {
                         args.push(self.parse_expression()?);
                         if self.peek() == &Token::Comma {
                             self.advance();
-                            args.push(self.parse_expression()?);
+                            if self.at_eol_or_eof() {
+                                args.push(Expr::Omitted);
+                            } else {
+                                args.push(self.parse_expression()?);
+                            }
                             if self.peek() == &Token::Comma {
                                 self.advance();
                                 args.push(self.parse_expression()?);
@@ -15241,6 +15493,14 @@ impl Parser {
                 if name_upper == "MOUSEPTR" {
                     return self.parse_mouseptr_statement(line);
                 }
+                // Legacy PB/CC console statement `MOUSE [ButtonCode,]
+                // [DOUBLE][,MOVE][,DOWN][,UP]` and `MOUSE ON|OFF`.
+                if name_upper == "MOUSE"
+                    && !matches!(self.peek_at(1), Some(Token::Eq) | Some(Token::Dot))
+                {
+                    self.advance(); // consume MOUSE
+                    return self.parse_con_object_statement("MOUSE".to_string(), line);
+                }
                 if name_upper == "UCODEPAGE" {
                     return self.parse_ucodepage_statement(line);
                 }
@@ -16288,6 +16548,26 @@ impl Parser {
         if self.peek() == &Token::Long {
             modifier = SelectModifier::Long;
             self.advance();
+        }
+        // PB/CC 6 samples use the same short form with CONST:
+        // `SELECT CASE CONST @pbInput` (PBCGI.inc).  Treat it exactly like
+        // `SELECT CASE AS CONST`, which the runtime already handles.
+        if let Token::Identifier(w) = self.peek() {
+            match w.to_uppercase().as_str() {
+                "CONST" => {
+                    modifier = SelectModifier::Const;
+                    self.advance();
+                }
+                "CONST$" => {
+                    modifier = SelectModifier::ConstDollar;
+                    self.advance();
+                }
+                "CONST$$" => {
+                    modifier = SelectModifier::ConstDollarDollar;
+                    self.advance();
+                }
+                _ => {}
+            }
         }
         let expr = self.parse_expression()?;
         self.consume_to_eol();
@@ -18331,8 +18611,21 @@ impl Parser {
             }
             "WAITKEY$" | "WAITKEY" => {
                 let args = self.parse_con_args(true)?;
-                let targets = self.parse_con_to_targets()?;
-                return self.con_to1_with_args("WAITKEY", args, targets, line);
+                if self.peek() == &Token::To {
+                    let targets = self.parse_con_to_targets()?;
+                    return self.con_to1_with_args("WAITKEY", args, targets, line);
+                }
+                // CHW TXT.WAITKEY$ / CON.WAITKEY$: the TO clause is optional.
+                // As a bare statement it simply waits for a key.
+                self.consume_to_eol();
+                return Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("WAITKEY".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
+                    line,
+                }));
             }
             "WAITSTAT" => {
                 let args = self.parse_con_args(true)?;
@@ -18347,8 +18640,97 @@ impl Parser {
                 }));
             }
             "MOUSE" => {
-                let args = self.parse_con_args(false)?;
+                // Bare `MOUSE ON` / `MOUSE OFF` are the legacy switches.
+                let onoff = match self.peek() {
+                    Token::On => Some(true),
+                    Token::Identifier(s) if s.eq_ignore_ascii_case("ON") => Some(true),
+                    Token::Identifier(s) if s.eq_ignore_ascii_case("OFF") => Some(false),
+                    _ => None,
+                };
+                if let Some(on) = onoff {
+                    let method = if on { "MOUSE_ON" } else { "MOUSE_OFF" };
+                    self.advance();
+                    self.consume_to_eol();
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![Expr::StringLit(method.to_string())],
+                        line,
+                    }));
+                }
+                // Legacy: MOUSE [ButtonCode,] [DOUBLE] [,MOVE] [,DOWN] [,UP]
+                // (PBCC CHM CONSOLE_pseudo-object.htm).  The event keywords
+                // are bare words, so parse them directly instead of treating
+                // DOUBLE as a type token.
+                let mut legacy = false;
+                let mut button: Option<Expr> = None;
+                let mut event_bits: i64 = 0;
+                let mut plain: Vec<Expr> = Vec::new();
+                loop {
+                    if self.at_eol_or_eof() {
+                        break;
+                    }
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        continue;
+                    }
+                    match self.peek().clone() {
+                        Token::Double => {
+                            self.advance();
+                            legacy = true;
+                            event_bits |= 2; // double-click
+                        }
+                        Token::Identifier(s) if s.eq_ignore_ascii_case("MOVE") => {
+                            self.advance();
+                            legacy = true;
+                            event_bits |= 1; // movement
+                        }
+                        Token::Identifier(s) if s.eq_ignore_ascii_case("DOWN") => {
+                            self.advance();
+                            legacy = true;
+                            event_bits |= 4; // button press
+                        }
+                        Token::Identifier(s) if s.eq_ignore_ascii_case("UP") => {
+                            self.advance();
+                            legacy = true;
+                            event_bits |= 8; // button release
+                        }
+                        _ => {
+                            let e = self.parse_expression()?;
+                            if legacy || button.is_none() {
+                                if button.is_none() {
+                                    button = Some(e);
+                                } else {
+                                    plain.push(e);
+                                }
+                            } else {
+                                plain.push(e);
+                            }
+                        }
+                    }
+                }
                 self.consume_to_eol();
+                if legacy {
+                    let button_expr = button.unwrap_or(Expr::IntegerLit(0));
+                    let event_expr = if event_bits != 0 {
+                        Expr::IntegerLit(event_bits)
+                    } else {
+                        Expr::IntegerLit(0)
+                    };
+                    return Ok(Statement::Call(CallStmt {
+                        name: "CON_CALL".to_string(),
+                        args: vec![
+                            Expr::StringLit("MOUSE".to_string()),
+                            event_expr,
+                            button_expr,
+                        ],
+                        line,
+                    }));
+                }
+                let mut args = Vec::new();
+                if let Some(b) = button {
+                    args.push(b);
+                }
+                args.extend(plain);
                 if args.len() != 2 {
                     return Err(PbError::parser(
                         "CON.MOUSE requires two arguments (event mask, button mask)",
@@ -18393,7 +18775,8 @@ impl Parser {
                 return self.con_to1("STDIN_LINE", targets, line);
             }
             "STDOUT" | "STDERR" => {
-                // CON.STDOUT(expr [;]) / CON.STDERR(expr [;])
+                // CON.STDOUT(expr [;]) / CON.STDERR(expr [;]); a bare
+                // CON.STDOUT writes a newline.
                 let mut newline = 1i64;
                 let mut args = self.parse_con_args(false)?;
                 if self.peek() == &Token::Semicolon {
@@ -18401,13 +18784,18 @@ impl Parser {
                     self.advance();
                 }
                 self.consume_to_eol();
-                if args.len() != 1 {
+                if args.len() > 1 {
                     return Err(PbError::parser(
-                        "CON.STDOUT / CON.STDERR require exactly one expression",
+                        "CON.STDOUT / CON.STDERR accept at most one expression",
                         self.current_file(),
                         line,
                     ));
                 }
+                let value = if args.is_empty() {
+                    Expr::StringLit(String::new())
+                } else {
+                    args.remove(0)
+                };
                 return Ok(Statement::Call(CallStmt {
                     name: "CON_CALL".to_string(),
                     args: vec![
@@ -18416,7 +18804,7 @@ impl Parser {
                         } else {
                             "STDERR".to_string()
                         }),
-                        args.remove(0),
+                        value,
                         Expr::IntegerLit(newline),
                     ],
                     line,
@@ -18489,6 +18877,26 @@ impl Parser {
                 Ok(Statement::Call(CallStmt {
                     name: "CON_CALL".to_string(),
                     args: vec![Expr::StringLit("CAPTION_SET".to_string()), value],
+                    line,
+                }))
+            }
+            "SCREEN" => {
+                // CONSOLE SCREEN rows, cols — PB/CC spelling of CON.SCREEN.
+                let args = self.parse_con_args(false)?;
+                self.consume_to_eol();
+                if args.len() != 2 {
+                    return Err(PbError::parser(
+                        "CONSOLE SCREEN requires rows and columns",
+                        self.current_file(),
+                        line,
+                    ));
+                }
+                Ok(Statement::Call(CallStmt {
+                    name: "CON_CALL".to_string(),
+                    args: vec![Expr::StringLit("SCREEN_SET".to_string())]
+                        .into_iter()
+                        .chain(args)
+                        .collect(),
                     line,
                 }))
             }
@@ -19781,9 +20189,13 @@ impl Parser {
                 }
             }
             Token::Identifier(name) if name.eq_ignore_ascii_case("DIR$") => {
-                // DIR$(NEXT) or DIR$(mask [, ONLY attr]) — NEXT is a keyword token
+                // DIR$(NEXT), DIR$(mask [, ONLY attr]), or the legacy bare
+                // `DIR$` which continues the current enumeration.
                 self.advance();
-                self.expect(&Token::LParen)?;
+                if self.peek() != &Token::LParen {
+                    return Ok(Expr::FunctionCall("DIR$".to_string(), Vec::new()));
+                }
+                self.advance();
                 let mut args = Vec::new();
                 if self.peek() == &Token::Next {
                     self.advance();
@@ -20244,6 +20656,52 @@ impl Parser {
                     // SIZE, so OPTION EXPLICIT must not see it.
                     if name.eq_ignore_ascii_case("GRAPHIC")
                         && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("TEXT"))
+                        && matches!(self.peek_at(1), Some(Token::Dot))
+                        && matches!(self.peek_at(2), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("SIZE"))
+                        && matches!(self.peek_at(3), Some(Token::Dot))
+                        && matches!(self.peek_at(4), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("X") || k.eq_ignore_ascii_case("Y"))
+                        && matches!(self.peek_at(5), Some(Token::Comma))
+                    {
+                        // GRAPHIC(TEXT.SIZE.X, msg$) / GRAPHIC(TEXT.SIZE.Y, msg$)
+                        // returns the rendered width/height of msg$ in the
+                        // current graphic font (PB/CC Means.bas CPrint).
+                        self.advance(); // TEXT
+                        self.advance(); // .
+                        self.advance(); // SIZE
+                        self.advance(); // .
+                        let axis = match self.peek() {
+                            Token::Identifier(k) => k.to_uppercase(),
+                            _ => "X".to_string(),
+                        };
+                        self.advance(); // X / Y
+                        self.expect(&Token::Comma)?;
+                        let text = self.parse_expression()?;
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall(format!("GRAPHIC_TEXT_SIZE_{}", axis), vec![text])
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("POS"))
+                        && matches!(self.peek_at(1), Some(Token::Dot))
+                        && matches!(self.peek_at(2), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("X") || k.eq_ignore_ascii_case("Y"))
+                        && matches!(self.peek_at(3), Some(Token::RParen))
+                    {
+                        // GRAPHIC(POS.X) / GRAPHIC(POS.Y) — current graphic
+                        // cursor position (PB/CC Means.bas).
+                        self.advance(); // POS
+                        self.advance(); // .
+                        let axis = match self.peek() {
+                            Token::Identifier(k) => k.to_uppercase(),
+                            _ => "X".to_string(),
+                        };
+                        self.advance(); // X / Y
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall(format!("GRAPHIC_POS_{}", axis), Vec::new())
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
                                     if k.eq_ignore_ascii_case("SIZE"))
                         && matches!(self.peek_at(1), Some(Token::Dot))
                         && matches!(self.peek_at(2), Some(Token::Identifier(k))
@@ -20260,20 +20718,40 @@ impl Parser {
                         self.expect(&Token::RParen)?;
                         Expr::FunctionCall(format!("GRAPHIC_SIZE_{}", axis), Vec::new())
                     } else if name.eq_ignore_ascii_case("CHR$") && self.peek() != &Token::RParen {
-                        let first = self.parse_expression()?;
-                        if self.peek() == &Token::To {
-                            self.advance();
-                            let last = self.parse_expression()?;
-                            self.expect(&Token::RParen)?;
-                            Expr::FunctionCall("CHR$RANGE".to_string(), vec![first, last])
-                        } else {
-                            let mut args = vec![first];
-                            while self.peek() == &Token::Comma {
+                        // CHR$(...) supports both plain code arguments and
+                        // `a TO b` range arguments, mixed freely:
+                        //   CHR$(0 TO 47, 58 TO 64, 91 TO 96, 123 TO 255)
+                        // Encode each range as CHR$RANGE and the whole list as
+                        // CHR$MULTI so codegen can concatenate the pieces.
+                        let mut items: Vec<Expr> = Vec::new();
+                        loop {
+                            let first = self.parse_expression()?;
+                            if self.peek() == &Token::To {
                                 self.advance();
-                                args.push(self.parse_expression()?);
+                                let last = self.parse_expression()?;
+                                items.push(Expr::FunctionCall(
+                                    "CHR$RANGE".to_string(),
+                                    vec![first, last],
+                                ));
+                            } else {
+                                items.push(first);
                             }
-                            self.expect(&Token::RParen)?;
-                            Expr::FunctionCall(name, args)
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                continue;
+                            }
+                            break;
+                        }
+                        self.expect(&Token::RParen)?;
+                        if items.len() == 1
+                            && !matches!(
+                                &items[0],
+                                Expr::FunctionCall(n, _) if n == "CHR$RANGE"
+                            )
+                        {
+                            Expr::FunctionCall(name, items)
+                        } else {
+                            Expr::FunctionCall("CHR$MULTI".to_string(), items)
                         }
                     } else if name.eq_ignore_ascii_case("MID$") && self.peek() != &Token::RParen {
                         // MID$(StringVar, Start [, Count])  — comma form (unchanged).
@@ -20324,7 +20802,22 @@ impl Parser {
                         } else {
                             args
                         };
-                        Expr::FunctionCall(name, args)
+                        // `BITS???(-1)` is BITS(DWORD, -1); the `?` suffix
+                        // selects the result width (?, ??, ???, ????).
+                        let mut call_name = name;
+                        let mut call_args = args;
+                        let bits_dt = match call_name.to_uppercase().as_str() {
+                            "BITS?" => Some(0),
+                            "BITS??" => Some(1),
+                            "BITS???" => Some(2),
+                            "BITS????" => Some(4),
+                            _ => None,
+                        };
+                        if let Some(dt) = bits_dt {
+                            call_args.insert(0, Expr::IntegerLit(dt));
+                            call_name = "BITS".to_string();
+                        }
+                        Expr::FunctionCall(call_name, call_args)
                     }
                 } else if name.eq_ignore_ascii_case("DATACOUNT")
                     || name.eq_ignore_ascii_case("THREADCOUNT")
@@ -20586,7 +21079,9 @@ impl Parser {
             // Convert the keyword to a sentinel string so codegen can reorder the
             // arguments; EXTRACT$ uses the same sentinel.
             if matches!(self.peek(), Token::Identifier(ref s) if s.eq_ignore_ascii_case("ANY"))
-                && matches!(self.peek_at(1), Some(Token::StringLiteral(_)))
+                && (matches!(self.peek_at(1), Some(Token::StringLiteral(_)))
+                    || matches!(self.peek_at(1), Some(Token::Identifier(_)))
+                    || matches!(self.peek_at(1), Some(Token::LParen)))
             {
                 self.advance();
                 args.push(Expr::StringLit("__ANY__".to_string()));

@@ -124,6 +124,27 @@ impl SymbolTable {
             .or_else(|| self.global_arrays.get(name))
     }
 
+    /// An `a()` declaration with no compile-time bounds is held as a
+    /// zero-element static array until a REDIM is seen.  When such a variable
+    /// is passed to a `BYREF a() AS T` parameter the callee may REDIM it, so
+    /// the slot must be promoted to a runtime descriptor and every later
+    /// access in this procedure must go through `pb_dynamic_array_data`.
+    pub fn promote_array_to_dynamic(&mut self, name: &str) -> bool {
+        let info = self
+            .local_arrays
+            .get_mut(name)
+            .or_else(|| self.global_arrays.get_mut(name));
+        if let Some(info) = info {
+            info.dynamic = true;
+            info.indirect_base = false;
+            info.dims.clear();
+            info.total_elements = 0;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn clear_locals(&mut self) {
         self.locals.clear();
         self.local_arrays.clear();

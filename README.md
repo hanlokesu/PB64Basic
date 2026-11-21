@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 400 (v0.2.188). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 401 (v0.2.189). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 401 (v0.2.189) - Closed the batch 401 array-parameter, dynamic DLL and PB/CC sample gaps: static arrays passed through `BYREF` now follow callee `REDIM`; `DECLARE ... LIB` uses runtime loading; `#EXPORT` controls the export table; 56/56 PB/CC samples build on both targets. PBWin10 sample results remain 152/159 on both targets, with the seven rejects invalid in PBWin10 itself. Android runtime and the 20-demo APK suite were rebuilt at v0.2.189.
 > batch 400 (v0.2.188) - Replaced four index-based codegen argument loops with iterator loops to satisfy Rust 1.100.0 `clippy::needless_range_loop`. Argument order and bounds are unchanged; there is no compiler behavior change.
 > batch 399 (v0.2.187) - WINMAIN and legacy MAIN entry points now compile only the reachable function/sub closure, matching the existing PBMAIN path; this lets standard Win32 SDK window samples build against large header sets that declare unused BYREF array helpers. `ARRAY REDIM INCR`/`DECR` now updates the live one-dimensional bound and zeros the regrown tail, so `UBOUND` and element access agree after grow/shrink cycles. `batch399_test.bas` and `batch378_redim.bas` pass on x86_64, and Discussion #5's `Window.bas` builds and displays its window with both the José Roca WINAPI_III_107 and stock PBWin10 include sets.
 > batch 398 (v0.2.186) - Windows sample conformance: target-aware import libraries, 32-bit stdcall callbacks and CODEPTR thunks, architecture-aware dialog callback signatures, fixed-width GLOBAL strings, synthetic WINMAIN hInstance, pointer-width conversion, GET TEXT fixed buffers and pre-body dynamic global array descriptors. 152 of 159 PBWin10 samples build on x64 and x86; the other 7 are invalid in PBWin10. 64 GUI candidates, 10 include wrappers, 7 resource scripts and 6 resource-embedding samples verified.
@@ -1070,6 +1071,34 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.189 (2026-11-21)
+
+Array-parameter, dynamic DLL and PB/CC sample closure batch 401.
+
+- Static arrays passed to a `BYREF` array parameter now become dynamic descriptors at their declaration site. If the callee executes `REDIM`, the caller observes the new bounds. Temporary static-array descriptors are released after each call. Borrowed descriptors detach before grow, resize or erase. A static two-dimensional array that receives `set_dim` now reports the full dimension count, so `UBOUND` of the second dimension is correct. Promotion is limited to array arguments of user `SUB`/`FUNCTION` parameters declared with `()`, so built-in statements such as `ACCEL ATTACH` keep their static-array storage.
+- Local arrays above 65,536 elements or 1 MB backing storage now use a heap descriptor instead of one LLVM `alloca`. This avoids an LLVM 19 instruction-selection crash and a default 1 MB Windows stack overflow on the 200,000-element STRING array in the PB/CC `PBSort.bas` sample on both x64 and i686.
+- `DECLARE ... LIB "x.dll"` now follows PBWin runtime loading semantics: no import library is generated, and a cached `LoadLibraryA` / `GetProcAddress` thunk resolves the procedure on first call. `#EXPORT` names are emitted in the COFF export table; procedures not listed remain hidden.
+- Name normalization for `?`, `$`, `&`, `#`, `%`, `!` and `@` suffixes is restored, so `IIF&`, `NUL$`, `LEFT$`, `MID$`, `PI`, `$SPC` and `CURDIR$` resolve again.
+- PB/CC syntax and runtime closure: `GRAPHIC FONT`, `SELECT CASE CONST` short forms, COM property chains such as `AgentCtrlEx.Characters.Load`, the built-in `PowerBounds` UDT, `CON.WAITKEY`, the `CHRTOOEM$` / `OEMTOCHR$` aliases, single-argument `GRAPHIC PRINT TAB()`, and the `GRAPHIC(TEXT.SIZE.X/Y)` and `GRAPHIC(POS.X/Y)` pseudo-object forms.
+- New probes: `batch401_test.bas` covers arrays, `BYVAL STRING` and `?` numeric suffixes; `batch401_export.bas` checks the export table; `batch401_line_input.bas` is a compile probe; `batch401_tcp_notify.bas` exercises a live TCP `NOTIFY` callback.
+- The Android runtime was rebuilt for both ABIs with the array-descriptor and `GRAPHIC PRINT TAB` changes. The 20-demo APK suite was rebuilt at v0.2.189.
+
+Validation:
+
+- `run_examples.py --compile-all`: 478 compiled / 0 failed.
+- `run_examples.py --all-headless`: 322 compiled / 0 compile failures; 318 runnable samples executed / 0 run failures / 0 timeouts.
+- Negative probes: 34 probes / 0 BAD. Link smoke: 0 failures on x86_64 and i686. Coverage: 35 checks / 0 FAIL.
+- PBWin10 samples: x64 152/159 and i686 152/159. The seven rejects are invalid in PBWin10 itself: `Hello(0)`, `Hello(2)`, `Hello(7)`, `Hello(7)(0)`, `Hello(7)(2)`, `Hello(7)(3)` and `probe_coexist`.
+- PB/CC samples: 56/56 builds on x86_64 and 56/56 on i686.
+- GUI: 64/64 builds. Runtime observation: 59 windows, 4 windowless samples that exit 0, and one DLL-only sample skipped.
+- Android: 20/20 APKs pass package, ABI, zipalign and signature verification; device smoke passes 20/20 on the x86_64 emulator. ARM64 remains build and static verification only.
+- TCP `NOTIFY` live output: `msg= 1024 wparam= 400 lparam= 8`, `accept= 2 err= 0`, `count= 1`.
+
+Boundaries:
+
+- PB/CC and PBWin10 sample results are build/runtime results from this project. There is no PB/CC compiler on this host, so PB/CC results are not a differential comparison against the official compiler.
+- `XMLENCODEBASE64` still depends on `VARIANT` array assignment and MSXML COM; the verified `AfxByteArrayToString` result does not cover it.
+
 ### v0.2.188 (2026-11-21)
 
 CI lint maintenance batch 400. No compiler behavior change.
@@ -1101,7 +1130,7 @@ Validation:
 - `run_examples.py --compile-all`: 474 compiled / 0 failed.
 - `run_examples.py --all-headless`: 317 examples exit 0 / 0 failed / 0 timed out.
 - GitHub Discussion #5: `Window.bas` builds and shows its `Main dialog` window with both José Roca's WINAPI_III_107 include set and the stock PBWin10 WinAPI include set.
-- Remaining boundary: BYREF array-parameter wrappers such as `AfxByteArrayToString` and `XMLENCODEBASE64` still report codegen errors when a program actually calls them; they are outside the Discussion #5 sample path.
+- Boundary at the time: BYREF array-parameter wrappers such as `AfxByteArrayToString` and `XMLENCODEBASE64` still reported codegen errors when a program actually called them; they were outside the Discussion #5 sample path. `AfxByteArrayToString` with a `BYREF rgbyte() AS BYTE` parameter and `MEMORY COPY` was verified in v0.2.189; `XMLENCODEBASE64` still depends on `VARIANT` array assignment and MSXML COM and is not claimed as verified.
 
 ### v0.2.186 (2026-11-21)
 

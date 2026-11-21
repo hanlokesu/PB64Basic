@@ -262,6 +262,9 @@ pub struct CompileOptions {
     /// `#COM NAME "ProgID", version` — ProgID registered by DllRegisterServer.
     /// Falls back to the COM CLASS name when the source omits it.
     pub com_progid: Option<String>,
+    /// `#EXPORT name [, name ...]` — procedures that receive the DLL export
+    /// attribute even without the EXPORT keyword (CHW #EXPORT).
+    pub export_names: Vec<String>,
 }
 
 /// Resolve the final EXE/DLL output path from the #COMPILE directive.
@@ -331,6 +334,11 @@ pub fn compile(
     compiler.pp_constants = pp_constants.clone();
     compiler.console_mode = opts.console_mode == Some(true);
     compiler.com_progid = opts.com_progid.clone();
+    compiler.export_names = opts
+        .export_names
+        .iter()
+        .map(|n| normalize_name(n))
+        .collect();
     compiler.compile_program(program)?;
     // Report statements that were silently dropped (no code generated)
     if !compiler.warnings.is_empty() {
@@ -1474,6 +1482,16 @@ struct Compiler {
     // GLOBAL arr() AS TYPE awaiting DIM with bounds
     pending_global_arrays: HashMap<String, PbType>,
 
+    /// Array names that are ever passed to a procedure call as an array
+    /// argument (`foo(a())`).  PBWin's `REDIM` inside the callee changes the
+    /// caller's live bounds (measured: static y(1 TO 3), callee REDIM to
+    /// 1 TO 5 => caller UBOUND(y)=5), so these arrays must be lowered as
+    /// heap-backed descriptors from their declaration onward instead of a
+    /// fixed `[N x T]` alloca.  Promoting at the call site is not enough:
+    /// a local array slot is recreated on every invocation, so a descriptor
+    /// stored into it by one call would be stale on the next.
+    call_arg_array_names: HashSet<String>,
+
     // `CLASS Name GUID$("...") AS COM` classes in a DLL build.  Codegen
     // emits PBWin-compatible DllRegisterServer/DllUnregisterServer exports.
     com_classes: Vec<(String, String)>,
@@ -1592,6 +1610,11 @@ struct Compiler {
     /// never be called from source; the dotted-call lowering consults this map
     /// to reject such a call (batch 371).
     thread_methods: std::collections::HashMap<String, String>,
+    /// CLASS name (uppercase) -> base CLASS name (uppercase) for
+    /// `CLASS Derived INHERIT Base`.  Inherited fields are merged into the
+    /// derived layout by the parser; this map lets METHOD/PROPERTY lookup walk
+    /// the base chain when the derived class does not define the name.
+    class_bases: std::collections::HashMap<String, String>,
 
     // String variables bound via FIELD dyn$ — their assignments must copy
     // into a fresh mutable buffer (a plain store would point at a read-only
@@ -1617,6 +1640,10 @@ struct Compiler {
     // non-Result context); compile_program turns these into a PbError after
     // the layout pass. Used for bit-field Error 534.
     fatal_errors: Vec<String>,
+
+    /// Names supplied by `#EXPORT`, normalized.  Applied when FunctionInfo is
+    /// built so the LLVM definition gets `dllexport` (CHW #EXPORT).
+    export_names: Vec<String>,
 }
 
 /// Tracks a global variable or array that will become a session struct field.
@@ -1672,6 +1699,10 @@ struct ParamInfo {
     ir_type: IrType,
     is_byval: bool,
     is_optional: bool,
+    /// `BYREF a() AS T` parameter.  The LLVM argument carries a runtime
+    /// `pb_dyn_array` descriptor pointer, so the body can use LBOUND/UBOUND,
+    /// REDIM, and element access without a compile-time shape.
+    is_array: bool,
 }
 
 /// Deferred DECLARE signature.  Header sets contain thousands of DECAREs;
@@ -1689,6 +1720,10 @@ struct ExternalDecl {
     /// `dllimport` declaration.  `htmlhelp.lib` is a static library, so
     /// `__declspec(dllimport) HtmlHelpA` cannot be resolved from it.
     plain_link: bool,
+    /// PB `DECLARE ... LIB "x.dll"`: the DLL is loaded at run time with
+    /// LoadLibrary/GetProcAddress (PBWin semantics), not through an import
+    /// library.  The pair is (library, exported procedure name).
+    dyn_lib: Option<(String, String)>,
 }
 
 struct LoopInfo {
@@ -1712,6 +1747,10 @@ struct TypeLayout {
     /// (batch 278; previously LEN on a TYPE variable crashed by passing the
     /// whole struct by value to the string `pb_str_len`).
     size: u32,
+    /// Natural alignment of the finished struct (max member alignment for
+    /// NATIVE, otherwise the declared BYTE/WORD/DWORD/QWORD boundary).  Used
+    /// when this TYPE is embedded as a field of another NATIVE struct.
+    align: u32,
 }
 
 #[allow(dead_code)]
@@ -1737,6 +1776,22 @@ struct FieldInfo {
 // THREADED array pre-scan: name -> observed (dims, total) shapes; each dim is
 // (lower bound, element count).
 type ThreadedShapeMap = HashMap<String, Vec<(Vec<(i64, i64)>, usize)>>;
+
+/// Compiled argument list plus temporary static-array descriptors that must be
+/// released after the call returns.  Dynamic-array descriptors belong to the
+/// caller and are never listed here.
+struct CompiledCallArgs {
+    vals: Vec<Val>,
+    temps: Vec<Val>,
+}
+
+impl CompiledCallArgs {
+    fn release_temps(&self, fb: &mut FunctionBuilder) {
+        for temp in &self.temps {
+            fb.call_void("pb_static_array_desc_free", std::slice::from_ref(temp));
+        }
+    }
+}
 
 impl Compiler {
     /// Returns true if the DLL is stubbed in pb_runtime.c (not available at link time).
@@ -1802,6 +1857,7 @@ impl Compiler {
             current_fn_retval_ptr: None,
             loop_stack: Vec::new(),
             pending_global_arrays: HashMap::new(),
+            call_arg_array_names: HashSet::new(),
             com_classes: Vec::new(),
             com_progid: None,
             threaded_declared: std::collections::HashSet::new(),
@@ -1836,11 +1892,13 @@ impl Compiler {
             class_ids: std::collections::HashMap::new(),
             class_ifaces: std::collections::HashMap::new(),
             thread_methods: std::collections::HashMap::new(),
+            class_bases: std::collections::HashMap::new(),
             current_fn_params: None,
             field_bound_strings: std::collections::HashSet::new(),
             link_files: Vec::new(),
             extern_ptr_vars: std::collections::HashSet::new(),
             fatal_errors: Vec::new(),
+            export_names: Vec::new(),
             console_mode: false,
         }
     }
@@ -1889,8 +1947,14 @@ impl Compiler {
     }
 
     /// Byte size of an IR type using the selected target's pointer width.
+    /// Named structs resolve through the type-layout table; the generic
+    /// helper cannot know them, so it must not silently answer 4.
     fn ir_size_bytes(&self, ir: &IrType) -> u32 {
-        Self::ir_size_bytes_arch(ir, self.pointer_width() as u32)
+        match ir {
+            IrType::Struct(name) => self.type_layouts.get(name).map(|l| l.size).unwrap_or(0),
+            IrType::Array(n, elem) => (*n as u32) * self.ir_size_bytes(elem),
+            _ => Self::ir_size_bytes_arch(ir, self.pointer_width() as u32),
+        }
     }
 
     /// Natural alignment of an IR type.  Used by `TYPE ... NATIVE` to place
@@ -1906,6 +1970,37 @@ impl Compiler {
             IrType::Ptr => ptr_width.min(8),
             IrType::Array(_, elem) => Self::ir_align_bytes_arch(elem, ptr_width).min(8),
             _ => 4,
+        }
+    }
+
+    /// Layout-aware size helper for `TYPE ... NATIVE`: an embedded named
+    /// struct must contribute its real byte size, not a generic 4 bytes.
+    fn ir_size_bytes_with_layouts(
+        ir: &IrType,
+        ptr_width: u32,
+        layouts: &HashMap<String, TypeLayout>,
+    ) -> u32 {
+        match ir {
+            IrType::Struct(name) => layouts.get(name).map(|l| l.size).unwrap_or(0),
+            IrType::Array(n, elem) => {
+                (*n as u32) * Self::ir_size_bytes_with_layouts(elem, ptr_width, layouts)
+            }
+            _ => Self::ir_size_bytes_arch(ir, ptr_width),
+        }
+    }
+
+    /// Layout-aware natural alignment for `TYPE ... NATIVE`.
+    fn ir_align_bytes_with_layouts(
+        ir: &IrType,
+        ptr_width: u32,
+        layouts: &HashMap<String, TypeLayout>,
+    ) -> u32 {
+        match ir {
+            IrType::Struct(name) => layouts.get(name).map(|l| l.align).unwrap_or(1).max(1),
+            IrType::Array(_, elem) => {
+                Self::ir_align_bytes_with_layouts(elem, ptr_width, layouts).min(8)
+            }
+            _ => Self::ir_align_bytes_arch(ir, ptr_width),
         }
     }
 
@@ -1925,8 +2020,9 @@ impl Compiler {
             PbType::FixedWString(n, _) => (*n as i32) * 2,
             PbType::String | PbType::WString | PbType::Pointer(_) | PbType::Interface(_) => ptr_w,
             PbType::Field => 16,
-            // Variant/UDT: caller resolves; default to pointer width.
-            PbType::Variant => ptr_w,
+            // PB VARIANT is a fixed 16-byte container (vt/reserved/value), not
+            // a pointer; PBWin10 SIZEOF(v) returns 16 on both 32/64-bit.
+            PbType::Variant => 16,
             PbType::UserDefined(_) => ptr_w,
             // BitField is a layout-only member, never sized as a scalar.
             PbType::BitField { .. } => 0,
@@ -1964,12 +2060,13 @@ impl Compiler {
         is_fill: bool,
         is_fixed_str: bool,
         ptr_width: u32,
+        layouts: &HashMap<String, TypeLayout>,
     ) -> u32 {
         // struct_align == 0 is the NATIVE sentinel: every field uses its own
         // natural boundary, capped at 8.  A truthy value is the explicit
         // BYTE/WORD/DWORD/QWORD boundary declared after the TYPE name.
         let a = if struct_align == 0 {
-            Self::ir_align_bytes_arch(field_ir, ptr_width).max(1)
+            Self::ir_align_bytes_with_layouts(field_ir, ptr_width, layouts).max(1)
         } else {
             struct_align.max(1)
         };
@@ -1985,7 +2082,7 @@ impl Compiler {
         if gap == 0 {
             return 0;
         }
-        let field_size = Self::ir_size_bytes_arch(field_ir, ptr_width);
+        let field_size = Self::ir_size_bytes_with_layouts(field_ir, ptr_width, layouts);
         if field_size <= gap {
             0 // rule 1: fits entirely into the gap
         } else {
@@ -2012,6 +2109,13 @@ impl Compiler {
     /// IR type for a struct field → FixedString becomes [N x i8] instead of ptr
     fn ir_type_for_field(pb_type: &PbType) -> IrType {
         match pb_type {
+            // PBWin embeds a TYPE field inline (`Inner AS InnerType` is the
+            // whole InnerType value at that offset, not a pointer).  The old
+            // generic lowering used `ir_type_for`, which maps UserDefined to
+            // a pointer; that made `TYPE Outer` 16 bytes on x64 where PBWin
+            // produces 12, and every member after the embedded field was at
+            // the wrong offset.
+            PbType::UserDefined(name) => IrType::Struct(normalize_name(name)),
             PbType::FixedString(n) | PbType::AsciiZ(n) => IrType::Array(*n, Box::new(IrType::I8)),
             // WSTRING * N: inline UTF-16LE buffer of N code units.  Keeping the
             // capacity in the IR type (instead of a bare pointer) is required
@@ -3556,6 +3660,106 @@ impl Compiler {
             ],
             false,
         );
+        // batch 401: wide-text variants (CreateWindowExW) for WSTRING sources.
+        self.module.declare_function(
+            "pb_control_add_textbox_w",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_textbox_ex_w",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        // batch 401: generic UTF-16 creator shared by LABEL/BUTTON/CHECKBOX/
+        // RADIOBUTTON/GROUPBOX/OPTION/CHECK3STATE/FRAME/TEXTBOX.  cls is the
+        // ANSI class name, style/exstyle the already-resolved control styles.
+        self.module.declare_function(
+            "pb_control_add_text_w",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        for (name, ex) in [
+            ("pb_control_add_button_w", true),
+            ("pb_control_add_button_ex_w", false),
+            ("pb_control_add_label_w", true),
+            ("pb_control_add_label_ex_w", false),
+            ("pb_control_add_checkbox_w", true),
+            ("pb_control_add_checkbox_ex_w", false),
+            ("pb_control_add_radiobutton_w", true),
+            ("pb_control_add_radiobutton_ex_w", false),
+            ("pb_control_add_groupbox_w", true),
+            ("pb_control_add_groupbox_ex_w", false),
+            ("pb_control_add_option_w", true),
+            ("pb_control_add_option_ex_w", false),
+            ("pb_control_add_check3state_w", true),
+            ("pb_control_add_check3state_ex_w", false),
+            ("pb_control_add_frame_w", true),
+            ("pb_control_add_frame_ex_w", false),
+            ("pb_control_add_line_w", true),
+            ("pb_control_add_line_ex_w", false),
+        ] {
+            let params = if ex {
+                vec![
+                    IrType::Ptr,
+                    IrType::I32,
+                    IrType::Ptr,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                ]
+            } else {
+                vec![
+                    IrType::Ptr,
+                    IrType::I32,
+                    IrType::Ptr,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::I32,
+                    IrType::Ptr,
+                ]
+            };
+            self.module
+                .declare_function(name, &IrType::Ptr, &params, false);
+        }
         self.module.declare_function(
             "pb_control_add_line_ex",
             &IrType::Ptr,
@@ -3660,7 +3864,43 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_add_listbox_ex_w",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_add_combobox_ex",
+            &IrType::Ptr,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I64,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_add_combobox_ex_w",
             &IrType::Ptr,
             &[
                 IrType::Ptr,
@@ -3717,6 +3957,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_get_text_by_id_bstr_w",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_get_text",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr, IrType::I32],
@@ -3729,7 +3975,19 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_control_get_text_bstr_w",
+            &IrType::Ptr,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_control_set_text",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_control_set_text_w",
             &IrType::Void,
             &[IrType::Ptr, IrType::Ptr],
             false,
@@ -4468,6 +4726,12 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I32],
             false,
         );
+        self.module.declare_function(
+            "pb_cblb_add_w",
+            &IrType::I64,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I32],
+            false,
+        );
 
         self.module.declare_function(
             "pb_cblb_delete",
@@ -4478,6 +4742,19 @@ impl Compiler {
 
         self.module.declare_function(
             "pb_cblb_find",
+            &IrType::I64,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cblb_find_w",
             &IrType::I64,
             &[
                 IrType::Ptr,
@@ -4537,6 +4814,12 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
             false,
         );
+        self.module.declare_function(
+            "pb_cblb_get_text_bstr_w",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32, IrType::I32],
+            false,
+        );
 
         self.module.declare_function(
             "pb_cblb_get_user",
@@ -4547,6 +4830,18 @@ impl Compiler {
 
         self.module.declare_function(
             "pb_cblb_insert",
+            &IrType::I64,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cblb_insert_w",
             &IrType::I64,
             &[
                 IrType::Ptr,
@@ -4574,6 +4869,18 @@ impl Compiler {
 
         self.module.declare_function(
             "pb_cblb_set_text",
+            &IrType::I64,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_cblb_set_text_w",
             &IrType::I64,
             &[
                 IrType::Ptr,
@@ -5991,13 +6298,13 @@ impl Compiler {
         self.module.declare_function(
             "pb_tcp_notify",
             &IrType::I32,
-            &[IrType::I32, IrType::I32],
+            &[IrType::I32, IrType::I64, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_udp_notify",
             &IrType::I32,
-            &[IrType::I32, IrType::I32],
+            &[IrType::I32, IrType::I64, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
@@ -6591,6 +6898,24 @@ impl Compiler {
         self.module
             .declare_function("pb_dynamic_array_data", &IrType::Ptr, &[IrType::Ptr], false);
         self.module.declare_function(
+            "pb_static_array_to_desc",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I64, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_static_array_desc_free",
+            &IrType::Void,
+            &[IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_dyn_proc",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_dynamic_array_erase",
             &IrType::Void,
             &[IrType::Ptr],
@@ -6779,6 +7104,8 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_graphic_print_str", &IrType::I32, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_graphic_print_tab", &IrType::I32, &[IrType::I32], false);
         self.module.declare_function(
             "pb_graphic_get_pixel",
             &IrType::I32,
@@ -8311,6 +8638,7 @@ impl Compiler {
         // emit them as scalars when we see GLOBAL name (without parens) first.
         // Also scan function/sub bodies since common PB pattern puts DIM inside SetupDims().
         let mut future_arrays: HashSet<String> = HashSet::new();
+        let mut array_param_positions: HashMap<String, Vec<usize>> = HashMap::new();
         for item in &program.items {
             match item {
                 TopLevel::DimDecl(dim) => {
@@ -8326,14 +8654,55 @@ impl Compiler {
                     }
                 }
                 TopLevel::SubDecl(sd) => {
+                    let positions: Vec<usize> = sd
+                        .params
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, param)| param.is_array)
+                        .map(|(index, _)| index)
+                        .collect();
+                    if !positions.is_empty() {
+                        array_param_positions.insert(normalize_name(&sd.name), positions);
+                    }
                     Self::scan_body_for_array_names(&sd.body, &mut future_arrays);
                 }
                 TopLevel::FunctionDecl(fd) => {
+                    let positions: Vec<usize> = fd
+                        .params
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, param)| param.is_array)
+                        .map(|(index, _)| index)
+                        .collect();
+                    if !positions.is_empty() {
+                        array_param_positions.insert(normalize_name(&fd.name), positions);
+                    }
                     Self::scan_body_for_array_names(&fd.body, &mut future_arrays);
                 }
                 _ => {}
             }
         }
+        let mut call_arg_arrays: HashSet<String> = HashSet::new();
+        for item in &program.items {
+            match item {
+                TopLevel::SubDecl(sd) => {
+                    Self::scan_body_for_call_arg_arrays(
+                        &sd.body,
+                        &array_param_positions,
+                        &mut call_arg_arrays,
+                    );
+                }
+                TopLevel::FunctionDecl(fd) => {
+                    Self::scan_body_for_call_arg_arrays(
+                        &fd.body,
+                        &array_param_positions,
+                        &mut call_arg_arrays,
+                    );
+                }
+                _ => {}
+            }
+        }
+        self.call_arg_array_names = call_arg_arrays;
 
         for item in &program.items {
             if let TopLevel::TypeDecl(td) = item {
@@ -8342,6 +8711,10 @@ impl Compiler {
                         let progid = self.com_progid.clone().unwrap_or_else(|| td.name.clone());
                         self.com_classes.push((guid.clone(), progid));
                     }
+                }
+                if let Some(base) = &td.base_class {
+                    self.class_bases
+                        .insert(normalize_name(&td.name), normalize_name(base));
                 }
                 self.register_type(td);
             }
@@ -8381,6 +8754,49 @@ impl Compiler {
                     field_map,
                     is_union: false,
                     size: 8,
+                    align: 4,
+                },
+            );
+        }
+        // PBWin/PBCC compiler-built-in PowerBounds UDT (Built-in_User_Defined_Types):
+        // eight LONGs, ElementsN/LowBoundN for dimensions 1..4.  PB/CC's
+        // PowerArray sample Means.bas declares `LOCAL Bounds AS PowerBounds`
+        // without any include, so the compiler must supply the layout.
+        if !self.type_layouts.contains_key("POWERBOUNDS") {
+            let names = [
+                "ELEMENTS1",
+                "LOWBOUND1",
+                "ELEMENTS2",
+                "LOWBOUND2",
+                "ELEMENTS3",
+                "LOWBOUND3",
+                "ELEMENTS4",
+                "LOWBOUND4",
+            ];
+            self.module
+                .define_struct_type("POWERBOUNDS", &vec![IrType::I32; 8]);
+            let mut fields = Vec::with_capacity(8);
+            let mut field_map = HashMap::new();
+            for (i, name) in names.iter().enumerate() {
+                field_map.insert((*name).to_string(), i);
+                fields.push(FieldInfo {
+                    name: (*name).to_string(),
+                    pb_type: PbType::Long,
+                    ir_type: IrType::I32,
+                    dims: Vec::new(),
+                    gep_idx: i,
+                    bit: None,
+                });
+            }
+            self.type_layouts.insert(
+                "POWERBOUNDS".to_string(),
+                TypeLayout {
+                    ir_name: "POWERBOUNDS".to_string(),
+                    fields,
+                    field_map,
+                    is_union: false,
+                    size: 32,
+                    align: 4,
                 },
             );
         }
@@ -8833,6 +9249,10 @@ impl Compiler {
             if fi.is_external
                 && !self.defined_ir.contains(&fi.ir_name)
                 && self.used_externals.contains(&fi.ir_name)
+                && self
+                    .external_decls
+                    .get(&fi.ir_name)
+                    .is_none_or(|d| d.dyn_lib.is_none())
             {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
                 if fi.is_stdcall {
@@ -8848,6 +9268,10 @@ impl Compiler {
             if fi.is_external
                 && !self.defined_ir.contains(&fi.ir_name)
                 && self.used_externals.contains(&fi.ir_name)
+                && self
+                    .external_decls
+                    .get(&fi.ir_name)
+                    .is_none_or(|d| d.dyn_lib.is_none())
             {
                 let params: Vec<IrType> = fi.params.iter().map(|p| p.ir_type.clone()).collect();
                 if fi.is_stdcall {
@@ -8904,6 +9328,10 @@ impl Compiler {
                         }
                         continue;
                     }
+                    self.fatal_errors.push(format!(
+                        "Error 524: Undefined TYPE {} embedded in {} (line {})",
+                        nested_name, td.name, td.line
+                    ));
                 }
                 let elem_ir = Self::ir_type_for_field(&field.pb_type);
                 let ir_type = if let Some(n) = field.array_dim {
@@ -8966,7 +9394,8 @@ impl Compiler {
             // so emit only the first definition while the layout map keeps
             // being updated to the latest (batch306).
             if !self.type_layouts.contains_key(&name) {
-                self.module.define_struct_type(&name, &[single]);
+                self.module
+                    .define_struct_type(&name, std::slice::from_ref(&single));
             }
             self.type_layouts.insert(
                 name.clone(),
@@ -8976,6 +9405,11 @@ impl Compiler {
                     field_map,
                     is_union: true,
                     size: union_size,
+                    align: Self::ir_align_bytes_arch(
+                        &single,
+                        if self.module.is_32bit() { 4 } else { 8 },
+                    )
+                    .max(1),
                 },
             );
             return;
@@ -9015,6 +9449,7 @@ impl Compiler {
                 is_fill,
                 fixed_str,
                 ptr_width,
+                &self.type_layouts,
             );
             if pad > 0 {
                 ir_types.push(IrType::Array(pad as usize, Box::new(IrType::I8)));
@@ -9132,10 +9567,18 @@ impl Compiler {
                 let sub = match self.type_layouts.get(nested_name) {
                     Some(s) => s,
                     None => {
-                        // Forward reference (embedded type defined later).
-                        // Not supported yet: keep the structure registrable by
-                        // treating the embed as an opaque LONG field so the
-                        // layout does not silently shrink.
+                        // PBWin 10 and PB/CC 6.03 both reject a nested TYPE
+                        // that is declared later with Error 524 "Undefined
+                        // TYPE".  The old fallback silently laid the member
+                        // out as a LONG, producing a wrong structure size and
+                        // corrupted field offsets while the build appeared to
+                        // succeed.  Keep the placeholder only so the rest of
+                        // the module can be type-checked, but make the build
+                        // fail with the same diagnostic.
+                        self.fatal_errors.push(format!(
+                            "Error 524: Undefined TYPE {} embedded in {} (line {})",
+                            nested_name, td.name, td.line
+                        ));
                         emit_pad(
                             &mut ir_types,
                             &mut idx,
@@ -9233,8 +9676,27 @@ impl Compiler {
                 let win64_ptr_field = !self.module.is_32bit()
                     && matches!(field.pb_type, PbType::Long | PbType::Dword)
                     && Self::is_win64_pointer_field_name(&field_name);
+                // An inline UDT field needs its layout before it can be sized.
+                // PBWin/PBCC reject a forward reference with Error 524; fail
+                // loudly instead of emitting a zero-sized or pointer field.
+                let undefined_udt = if let PbType::UserDefined(t) = &field.pb_type {
+                    let tn = normalize_name(t);
+                    if !self.type_layouts.contains_key(&tn) {
+                        self.fatal_errors.push(format!(
+                            "Error 524: Undefined TYPE {} used by member {}.{} (line {})",
+                            tn, td.name, field.name, td.line
+                        ));
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
                 let elem_ir = if win64_ptr_field {
                     IrType::I64
+                } else if undefined_udt {
+                    IrType::I32
                 } else {
                     Self::ir_type_for_field(&field.pb_type)
                 };
@@ -9271,7 +9733,7 @@ impl Compiler {
         // out, capped at 8; an empty structure still uses 1.
         let natural_align = fields
             .iter()
-            .map(|f| Self::ir_align_bytes_arch(&f.ir_type, ptr_width))
+            .map(|f| Self::ir_align_bytes_with_layouts(&f.ir_type, ptr_width, &self.type_layouts))
             .max()
             .unwrap_or(1)
             .max(1);
@@ -9296,6 +9758,11 @@ impl Compiler {
                 field_map,
                 is_union: false,
                 size: cur_offset,
+                // Store the struct's *natural* member alignment.  A plain
+                // `TYPE` keeps BYTE packing internally, but when it is
+                // embedded in a `TYPE ... NATIVE` host the host must place it
+                // on its natural boundary (C/WinAPI compatibility).
+                align: natural_align.max(1),
             },
         );
 
@@ -9486,6 +9953,7 @@ impl Compiler {
                     ir_type: IrType::Ptr,
                     is_byval: false,
                     is_optional: false,
+                    is_array: false,
                 }];
                 for (n, ty) in extra {
                     pinfo.push(ParamInfo {
@@ -9494,6 +9962,7 @@ impl Compiler {
                         ir_type: ty.clone(),
                         is_byval: true,
                         is_optional: false,
+                        is_array: false,
                     });
                 }
                 cg.functions.insert(
@@ -9843,6 +10312,7 @@ impl Compiler {
                     ir_type,
                     is_byval: p.is_byval,
                     is_optional: p.is_optional,
+                    is_array: p.is_array,
                 }
             })
             .collect();
@@ -9853,7 +10323,7 @@ impl Compiler {
                 ir_name,
                 ret_type,
                 params,
-                export: fd.export,
+                export: fd.export || self.export_names.contains(&name),
                 is_external: false,
                 is_stdcall: self.procedure_is_stdcall(fd.call_conv)
                     || (fd.is_callback && self.module.is_32bit()),
@@ -9880,6 +10350,7 @@ impl Compiler {
                     ir_type,
                     is_byval: p.is_byval,
                     is_optional: p.is_optional,
+                    is_array: p.is_array,
                 }
             })
             .collect();
@@ -9890,7 +10361,7 @@ impl Compiler {
                 ir_name,
                 ret_type: IrType::Void,
                 params,
-                export: sd.export,
+                export: sd.export || self.export_names.contains(&name),
                 is_external: false,
                 is_stdcall: self.procedure_is_stdcall(sd.call_conv)
                     || (sd.is_callback && self.module.is_32bit()),
@@ -10099,6 +10570,7 @@ impl Compiler {
                     ir_type,
                     is_byval: p.is_byval,
                     is_optional: p.is_optional,
+                    is_array: p.is_array,
                 }
             })
             .collect();
@@ -10198,6 +10670,7 @@ impl Compiler {
                     ir_type,
                     is_byval: p.is_byval,
                     is_optional: p.is_optional,
+                    is_array: p.is_array,
                 }
             })
             .collect();
@@ -10219,7 +10692,19 @@ impl Compiler {
         // only added to the link line when reachable code references the
         // DECLARE, so unused header wrappers never pull a missing .lib.
         let plain_link = lib_name == "HHCTRL.OCX" || lib_name == "HTMLHELP";
-        let import_lib = if ds.lib.is_some()
+        let dyn_lib = if ds.lib.is_some()
+            && !is_stubbed
+            && !plain_link
+            && !Self::is_win32_stdcall_dll(&lib_name)
+        {
+            let raw = ds.lib.as_deref().unwrap_or("").trim().to_string();
+            let proc_name = ds.alias.clone().unwrap_or_else(|| ds.name.clone());
+            Some((raw, proc_name))
+        } else {
+            None
+        };
+        let import_lib = if dyn_lib.is_none()
+            && ds.lib.is_some()
             && !is_stubbed
             && !plain_link
             && !Self::is_win32_stdcall_dll(&lib_name)
@@ -10251,6 +10736,7 @@ impl Compiler {
                     is_stubbed,
                     import_lib: import_lib.clone(),
                     plain_link,
+                    dyn_lib: dyn_lib.clone(),
                 },
             );
             self.functions.insert(
@@ -10275,6 +10761,7 @@ impl Compiler {
                     is_stubbed,
                     import_lib: import_lib.clone(),
                     plain_link,
+                    dyn_lib: dyn_lib.clone(),
                 },
             );
             self.subs.insert(
@@ -10733,6 +11220,26 @@ impl Compiler {
 
     /// Record a reference from reachable code.  Local procedures are queued
     /// for body compilation; external DECLAREs are emitted on first use.
+    fn class_proc_lookup(&self, class: &str, suffix: &str) -> Option<(String, FuncInfo)> {
+        let mut cur = normalize_name(class);
+        for _ in 0..32 {
+            let qualified = format!("{}_{}", cur, suffix);
+            if let Some(info) = self
+                .functions
+                .get(&qualified)
+                .cloned()
+                .or_else(|| self.subs.get(&qualified).cloned())
+            {
+                return Some((qualified, info));
+            }
+            let base = self.class_bases.get(&cur)?;
+            cur = base.clone();
+        }
+        None
+    }
+
+    /// Record a reference from reachable code.  Local procedures are queued
+    /// for body compilation; external DECLAREs are emitted on first use.
     fn note_reference(&mut self, name: &str, info: &FuncInfo) {
         if info.is_external {
             self.emit_external_decl(&info.ir_name);
@@ -10751,6 +11258,58 @@ impl Compiler {
         let Some(decl) = self.external_decls.get(ir_name).cloned() else {
             return;
         };
+        if let Some((dll, proc_name)) = decl.dyn_lib.clone() {
+            // PBWin `DECLARE ... LIB "x.dll"` is a run-time import: the DLL
+            // need not exist at build time and no import library is required.
+            // Emit an internal thunk with the declared ABI that resolves the
+            // export through pb_dyn_proc (a cached LoadLibrary/GetProcAddress)
+            // and indirect-calls it.
+            let (lib_const, _) = self.module.add_string_constant(&dll);
+            let (proc_const, _) = self.module.add_string_constant(&proc_name);
+            let params: Vec<(String, IrType)> = decl
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| (format!("a{}", i), ty.clone()))
+                .collect();
+            let is32 = self.module.is_32bit();
+            let mut fb = self.module.create_function_builder_ex_cc(
+                ir_name,
+                &decl.ret_type,
+                &params,
+                false,
+                decl.is_stdcall,
+            );
+            let target = fb.call(
+                &IrType::Ptr,
+                "pb_dyn_proc",
+                &[
+                    Val::new(lib_const, IrType::Ptr),
+                    Val::new(proc_const, IrType::Ptr),
+                ],
+            );
+            let args: Vec<Val> = params
+                .iter()
+                .map(|(n, ty)| Val::new(format!("%{}", n), ty.clone()))
+                .collect();
+            if decl.ret_type == IrType::Void {
+                if is32 && decl.is_stdcall {
+                    fb.call_indirect_void_stdcall(&target, &args);
+                } else {
+                    fb.call_indirect_void(&target, &args);
+                }
+                fb.ret_void();
+            } else {
+                let rc = if is32 && decl.is_stdcall {
+                    fb.call_indirect_stdcall(&decl.ret_type, &target, &args)
+                } else {
+                    fb.call_indirect(&decl.ret_type, &target, &args)
+                };
+                fb.ret(&rc);
+            }
+            self.module.add_function_body(fb.finish());
+            return;
+        }
         if let Some(lib) = &decl.import_lib {
             if !self.dll_import_libs.contains(lib) {
                 self.dll_import_libs.push(lib.clone());
@@ -11048,6 +11607,29 @@ impl Compiler {
 
     fn bind_params(&mut self, fb: &mut FunctionBuilder, params: &[ParamInfo]) {
         for p in params {
+            if p.is_array {
+                // `BYREF a() AS T`: the caller passes a pb_dyn_array
+                // descriptor.  Keep it in a local slot so REDIM can store an
+                // ensured descriptor and element access always reloads the
+                // data pointer after a realloc.
+                let slot = fb.alloca(&IrType::Ptr);
+                fb.store(&Val::new(format!("%{}", p.name), IrType::Ptr), &slot);
+                let elem_ir = Self::array_elem_ir(&p.pb_type);
+                self.symbols.insert_local_array(
+                    p.name.clone(),
+                    ArrayInfo {
+                        ptr_name: slot.name.clone(),
+                        array_ir_type: IrType::Array(0, Box::new(elem_ir.clone())),
+                        elem_ir_type: elem_ir,
+                        pb_type: p.pb_type.clone(),
+                        dims: Vec::new(),
+                        total_elements: 0,
+                        indirect_base: false,
+                        dynamic: true,
+                    },
+                );
+                continue;
+            }
             if p.is_byval {
                 // Allocate local storage and copy.  Use the possibly widened
                 // ParamInfo IR type (Win64 handle parameters) instead of
@@ -12422,10 +13004,11 @@ impl Compiler {
                     call_args.push(assign.value.clone());
                     let compiled = self.compile_call_args(fb, &call_args, &set_info)?;
                     if set_info.is_stdcall {
-                        fb.call_void_stdcall(&set_info.ir_name, &compiled);
+                        fb.call_void_stdcall(&set_info.ir_name, &compiled.vals);
                     } else {
-                        fb.call_void(&set_info.ir_name, &compiled);
+                        fb.call_void(&set_info.ir_name, &compiled.vals);
                     }
+                    compiled.release_temps(fb);
                     return Ok(());
                 }
                 // No <Class>_<Prop>_Set procedure was compiled: this is an
@@ -13042,8 +13625,18 @@ impl Compiler {
                     _ => None,
                 }
             }
+            Expr::MethodCall { base, .. } if self.receiver_is_interface(base) => {
+                self.struct_type_of_expr(base)
+            }
             Expr::TypeMember(base, member) => {
                 let t = self.struct_type_of_expr(base)?;
+                // A COM interface property (`AgentCtrlEx.Characters`) returns
+                // another interface object; there is no PB TYPE layout to look
+                // it up in, so keep the receiver's interface name as the
+                // shape marker and let the call path go late-bound.
+                if self.receiver_is_interface(base) {
+                    return Some(t);
+                }
                 let layout = self.type_layouts.get(&t)?;
                 let idx = *layout.field_map.get(&normalize_name(member))?;
                 match &layout.fields[idx].pb_type {
@@ -13252,7 +13845,22 @@ impl Compiler {
                 }
                 false
             }
+            Expr::MethodCall { base, .. } => {
+                // Chained COM property/method results keep the interface shape
+                // (`AgentCtrlEx.Characters.Character("Merlin").SHOW`).  The
+                // concrete return interface is not declared, so the receiver
+                // name of the preceding link is the best available marker and
+                // the call site goes late-bound.
+                self.receiver_is_interface(base)
+            }
             Expr::TypeMember(base, member) => {
+                // A COM interface property chain (`AgentCtrlEx.Characters.Load`)
+                // yields another interface object, not a PB TYPE field.  Treat
+                // it as interface-shaped so the caller takes the late-bound
+                // IDispatch path instead of failing "receiver is not a TYPE".
+                if self.receiver_is_interface(base) {
+                    return true;
+                }
                 if let Some(t) = self.struct_type_of_expr(base) {
                     if let Some(layout) = self.type_layouts.get(&t) {
                         if let Some(idx) = layout.field_map.get(&normalize_name(member)) {
@@ -13283,7 +13891,11 @@ impl Compiler {
                 // result a temporary slot so lvalue-only callers (VARIANT$$)
                 // can still consume it.
                 let val = self.compile_com_late_call(fb, base, member, &[])?;
-                let slot = fb.alloca(&IrType::I32);
+                // Keep the runtime width of the property result: on x64 an
+                // IDispatch* is 64-bit, so an I32 slot would truncate the
+                // chained receiver returned by `AgentCtrlEx.Characters`.
+                let slot_ty = val.ty.clone();
+                let slot = fb.alloca(&slot_ty);
                 fb.store(&val, &slot);
                 Ok((slot, PbType::Long))
             }
@@ -14404,7 +15016,10 @@ impl Compiler {
                 .unwrap_or(false);
             let pending_global =
                 dim.scope == DimScope::Global && self.pending_global_arrays.contains_key(&name);
-            if runtime_bound && !already_dynamic && !pending_global {
+            if (runtime_bound || self.call_arg_array_names.contains(&name))
+                && !already_dynamic
+                && !pending_global
+            {
                 let pb_type = if dim.explicit_type || name_has_type_suffix(&dim.name) {
                     dim.pb_type.clone()
                 } else {
@@ -14424,6 +15039,7 @@ impl Compiler {
                 fb.store(&desc, &slot);
                 let mut total = fb.const_i64(1);
                 let mut dims = Vec::new();
+                let mut live_dims: Vec<(Val, Val)> = Vec::new();
                 for bound in &dim.bounds {
                     let lo_expr = self.compile_expr(fb, &bound.lower)?;
                     let lo = self.to_i64(fb, &lo_expr);
@@ -14439,6 +15055,7 @@ impl Compiler {
                     let extra = fb.select(&lo_pos, &lo, &zero);
                     let count = fb.add(&base_count, &extra);
                     total = fb.mul(&total, &count);
+                    live_dims.push((lo, base_count));
                     match (
                         Self::eval_const_expr(&bound.lower),
                         Self::eval_const_expr(&bound.upper),
@@ -14452,12 +15069,27 @@ impl Compiler {
                 fb.call_void(
                     "pb_dynamic_array_resize",
                     &[
-                        desc,
-                        total,
+                        desc.clone(),
+                        total.clone(),
                         fb.const_i32(elem_size as i32),
                         fb.const_i32(preserve),
                     ],
                 );
+                fb.call_void(
+                    "pb_dynamic_array_set_shape",
+                    &[desc.clone(), fb.const_i32(live_dims.len() as i32), total],
+                );
+                for (i, (lo, count)) in live_dims.iter().enumerate() {
+                    fb.call_void(
+                        "pb_dynamic_array_set_dim",
+                        &[
+                            desc.clone(),
+                            fb.const_i32((i + 1) as i32),
+                            lo.clone(),
+                            count.clone(),
+                        ],
+                    );
+                }
                 let array_ir = IrType::Array(0, Box::new(elem_ir.clone()));
                 self.symbols.insert_local_array(
                     name.clone(),
@@ -14651,6 +15283,59 @@ impl Compiler {
                 total *= count;
             }
             let array_ir = IrType::Array(total, Box::new(elem_ir.clone()));
+            let elem_size = self.array_elem_size_arch(&elem_ir) as usize;
+            // Large local arrays must not live in a single LLVM `alloca`: a
+            // 200,000-element STRING array (PB/CC `PBSort.bas`) produces a
+            // 1.6 MB x64 / 0.8 MB i686 stack frame and an aggregate
+            // `store [200000 x ptr] zeroinitializer`, which crashes LLVM 19
+            // instruction selection at `-O0/-O2`.  It would also overflow or
+            // nearly exhaust the default 1 MB Windows stack at run time.
+            // Heap-back by element count as well as byte size, because the
+            // i686 pointer array stays below 1 MB yet still triggers the
+            // aggregate-store crash.  Keep the normal descriptor metadata so
+            // indexing / UBOUND / ARRAY SORT all follow the dynamic path.
+            if total > 65_536 || total.saturating_mul(elem_size) > 1_048_576 {
+                let slot = fb.alloca(&IrType::Ptr);
+                let desc = fb.call(
+                    &IrType::Ptr,
+                    "pb_dynamic_array_new",
+                    &[fb.const_i32(elem_size as i32), fb.const_i64(total as i64)],
+                );
+                fb.store(&desc, &slot);
+                fb.call_void(
+                    "pb_dynamic_array_set_shape",
+                    &[
+                        desc.clone(),
+                        fb.const_i32(dims.len() as i32),
+                        fb.const_i64(total as i64),
+                    ],
+                );
+                for (i, (lower, count)) in dims.iter().enumerate() {
+                    fb.call_void(
+                        "pb_dynamic_array_set_dim",
+                        &[
+                            desc.clone(),
+                            fb.const_i32((i + 1) as i32),
+                            fb.const_i64(*lower),
+                            fb.const_i64(*count),
+                        ],
+                    );
+                }
+                self.symbols.insert_local_array(
+                    name,
+                    ArrayInfo {
+                        ptr_name: slot.name,
+                        array_ir_type: IrType::Array(0, Box::new(elem_ir.clone())),
+                        elem_ir_type: elem_ir,
+                        pb_type: arr_pb_type,
+                        dims,
+                        total_elements: total,
+                        indirect_base: false,
+                        dynamic: true,
+                    },
+                );
+                return Ok(());
+            }
             let ptr = fb.alloca(&array_ir);
             fb.store(&Val::new("zeroinitializer", array_ir.clone()), &ptr);
             self.symbols.insert_local_array(
@@ -15247,12 +15932,20 @@ impl Compiler {
             "COLOR" => {
                 // args: [fore], [back], [count] — defaults -1 (keep current)
                 let fore = if let Some(a0) = call.args.first() {
-                    self.compile_expr(fb, a0)?
+                    if matches!(a0, Expr::Omitted) {
+                        fb.const_i32(-1)
+                    } else {
+                        self.compile_expr(fb, a0)?
+                    }
                 } else {
                     fb.const_i32(-1)
                 };
                 let back = if let Some(a1) = call.args.get(1) {
-                    self.compile_expr(fb, a1)?
+                    if matches!(a1, Expr::Omitted) {
+                        fb.const_i32(-1)
+                    } else {
+                        self.compile_expr(fb, a1)?
+                    }
                 } else {
                     fb.const_i32(-1)
                 };
@@ -15617,7 +16310,39 @@ impl Compiler {
             "XPRINT_FORMFEED" => {
                 fb.call_void("pb_xprint_formfeed", &[]);
             }
+            "XPRINT_LINE_REL" => {
+                if call.args.len() < 2 {
+                    return Err(PbError::parser(
+                        "XPRINT LINE STEP - expects an endpoint",
+                        None,
+                        call.line,
+                    ));
+                }
+                if let Some(color) = call.args.get(2) {
+                    let cv = self.compile_expr(fb, color)?;
+                    let ci = self.convert_value(fb, &cv, &IrType::I32, &PbType::Long);
+                    fb.call_void("pb_xprint_set_color", &[ci]);
+                }
+                let mut ia = Vec::new();
+                for arg in call.args.iter().take(2) {
+                    let v = self.compile_expr(fb, arg)?;
+                    ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
+                }
+                fb.call_void("pb_xprint_line_rel", &[ia[0].clone(), ia[1].clone()]);
+            }
             "XPRINT_LINE" => {
+                if call.args.len() < 4 {
+                    return Err(PbError::parser(
+                        "XPRINT LINE expects two coordinate pairs",
+                        None,
+                        call.line,
+                    ));
+                }
+                if let Some(color) = call.args.get(4) {
+                    let cv = self.compile_expr(fb, color)?;
+                    let ci = self.convert_value(fb, &cv, &IrType::I32, &PbType::Long);
+                    fb.call_void("pb_xprint_set_color", &[ci]);
+                }
                 let mut ia = Vec::new();
                 for arg in call.args.iter().take(4) {
                     let v = self.compile_expr(fb, arg)?;
@@ -16181,7 +16906,7 @@ impl Compiler {
                     let s3 = self.compile_expr(fb, &call.args[3])?;
                     let i3 = self.convert_value(fb, &s3, &IrType::I32, &PbType::Long);
                     // runtime order: (filenum, hwnd, wmsg, eventmask)
-                    fb.call_void("pb_tcp_notify", &[i0, i2, i3, i1]);
+                    let _ = fb.call(&IrType::I32, "pb_tcp_notify", &[i0, i2, i3, i1]);
                 } else {
                     // Legacy two-argument form: no window is named, so the event
                     // mask can only be stored - it cannot be delivered.
@@ -16195,7 +16920,7 @@ impl Compiler {
                     let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
                     let z64 = fb.const_i64(0);
                     let z32 = fb.const_i32(0);
-                    fb.call_void("pb_tcp_notify", &[i0, z64, z32, i1]);
+                    let _ = fb.call(&IrType::I32, "pb_tcp_notify", &[i0, z64, z32, i1]);
                 }
             }
             "UDP_NOTIFY" => {
@@ -16209,7 +16934,7 @@ impl Compiler {
                     let s3 = self.compile_expr(fb, &call.args[3])?;
                     let i3 = self.convert_value(fb, &s3, &IrType::I32, &PbType::Long);
                     // runtime order: (filenum, hwnd, wmsg, eventmask)
-                    fb.call_void("pb_udp_notify", &[i0, i2, i3, i1]);
+                    let _ = fb.call(&IrType::I32, "pb_udp_notify", &[i0, i2, i3, i1]);
                 } else {
                     self.warnings.push(format!(
                         "line {}: UDP NOTIFY without TO hWnd AS wMsg has no effect (the event mask is stored, never delivered)",
@@ -16221,7 +16946,7 @@ impl Compiler {
                     let i1 = self.convert_value(fb, &s1, &IrType::I32, &PbType::Long);
                     let z64 = fb.const_i64(0);
                     let z32 = fb.const_i32(0);
-                    fb.call_void("pb_udp_notify", &[i0, z64, z32, i1]);
+                    let _ = fb.call(&IrType::I32, "pb_udp_notify", &[i0, z64, z32, i1]);
                 }
             }
             // The "PROGRESSBAR" (4-arg legacy form) and "HEADER_CTRL" arms were
@@ -16859,6 +17584,42 @@ impl Compiler {
                 let h64 = self.convert_value(fb, &h0, &IrType::I64, &PbType::Quad);
                 fb.call_void("pb_graphic_set_font", &[h64]);
             }
+            "GRAPHIC_FONT" => {
+                // Legacy `GRAPHIC FONT FontName$, size& [, style&]` (PB/CC 6,
+                // e.g. Cartesian.bas).  PBWin removed it in favour of
+                // FONT NEW + GRAPHIC SET FONT, so build the same font handle
+                // through pb_font_new and select it immediately.
+                let name_v = self.compile_expr(fb, &call.args[0])?;
+                let points = if let Some(a) = call.args.get(1) {
+                    let p = self.compile_expr(fb, a)?;
+                    self.convert_value(fb, &p, &IrType::Float, &PbType::Single)
+                } else {
+                    fb.const_f32(8.0)
+                };
+                let style = if let Some(a) = call.args.get(2) {
+                    let s = self.compile_expr(fb, a)?;
+                    self.convert_value(fb, &s, &IrType::I32, &PbType::Long)
+                } else {
+                    fb.const_i32(0)
+                };
+                let zero_charset = fb.const_i32(0);
+                let zero_pitch = fb.const_i32(0);
+                let zero_escapement = fb.const_i32(0);
+                let h = fb.call(
+                    &IrType::I32,
+                    "pb_font_new",
+                    &[
+                        name_v,
+                        points,
+                        style,
+                        zero_charset,
+                        zero_pitch,
+                        zero_escapement,
+                    ],
+                );
+                let h64 = self.convert_value(fb, &h, &IrType::I64, &PbType::Quad);
+                fb.call_void("pb_graphic_set_font", &[h64]);
+            }
             "GRAPHIC_SET_WORDWRAP" => {
                 // GRAPHIC SET WORDWRAP n&  (batch 65)
                 if call.args.len() == 1 {
@@ -17273,6 +18034,78 @@ impl Compiler {
                     fb.call_void("pb_graphic_polygon", &[ptr, fb.const_i32(npts as i32), col]);
                 }
             }
+            "GRAPHIC_POLYGON_UDT" => {
+                // CHW: the first member is a LONG vertex count followed by
+                // SINGLE x/y pairs.  The UDT may use a scalar list or an array
+                // of POINT-like UDTs; both have the same packed 4+8*n layout.
+                let (ptr, _, pb_type) = match self.lvalue_ptr(fb, &call.args[0]) {
+                    Some(lv) => lv,
+                    None => {
+                        return Err(PbError::parser(
+                            "GRAPHIC POLYGON requires a variable of a user-defined type",
+                            None,
+                            call.line,
+                        ))
+                    }
+                };
+                if !matches!(pb_type, PbType::UserDefined(_)) {
+                    return Err(PbError::parser(
+                        "GRAPHIC POLYGON points must be a user-defined type with a LONG count followed by SINGLE coordinates",
+                        None,
+                        call.line,
+                    ));
+                }
+                let mut colors = Vec::new();
+                for i in 1..=4 {
+                    let v = if let Some(arg) = call.args.get(i) {
+                        let e = self.compile_expr(fb, arg)?;
+                        self.convert_value(fb, &e, &IrType::I32, &PbType::Long)
+                    } else {
+                        fb.const_i32(match i {
+                            1 => -1, // edge: current foreground
+                            2 => -2, // fill: no fill
+                            _ => 0,
+                        })
+                    };
+                    colors.push(v);
+                }
+                fb.call_void(
+                    "pb_graphic_polygon_udt",
+                    &[
+                        ptr,
+                        colors[0].clone(),
+                        colors[1].clone(),
+                        colors[2].clone(),
+                        colors[3].clone(),
+                    ],
+                );
+            }
+            "GRAPHIC_POLYLINE_UDT" => {
+                let (ptr, _, pb_type) = match self.lvalue_ptr(fb, &call.args[0]) {
+                    Some(lv) => lv,
+                    None => {
+                        return Err(PbError::parser(
+                            "GRAPHIC POLYLINE requires a variable of a user-defined type",
+                            None,
+                            call.line,
+                        ))
+                    }
+                };
+                if !matches!(pb_type, PbType::UserDefined(_)) {
+                    return Err(PbError::parser(
+                        "GRAPHIC POLYLINE points must be a user-defined type with a LONG count followed by SINGLE coordinates",
+                        None,
+                        call.line,
+                    ));
+                }
+                let edge = if let Some(arg) = call.args.get(1) {
+                    let e = self.compile_expr(fb, arg)?;
+                    self.convert_value(fb, &e, &IrType::I32, &PbType::Long)
+                } else {
+                    fb.const_i32(-1)
+                };
+                fb.call_void("pb_graphic_polyline_udt", &[ptr, edge]);
+            }
             "GRAPHIC_POLYLINE" => {
                 // args: x1,y1,x2,y2,... [, color&]
                 let ncoords = call.args.len() - if call.args.len() % 2 == 1 { 1 } else { 0 };
@@ -17527,6 +18360,19 @@ impl Compiler {
                     );
                 } else {
                     for arg in &call.args {
+                        // TAB(n) in GRAPHIC PRINT moves the text cursor to
+                        // column n; it is a positioning directive, not a
+                        // string expression (PB/CC Means.bas).
+                        if let Expr::FunctionCall(tab_name, tab_args) = arg {
+                            if tab_name.trim_end_matches('$').eq_ignore_ascii_case("TAB")
+                                && tab_args.len() == 1
+                            {
+                                let v = self.compile_expr(fb, &tab_args[0])?;
+                                let col = self.to_i32(fb, &v);
+                                fb.call_void("pb_graphic_print_tab", &[col]);
+                                continue;
+                            }
+                        }
                         let v = self.compile_expr(fb, arg)?;
                         let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
                         fb.call_void("pb_graphic_print_str", &[s]);
@@ -18286,7 +19132,8 @@ impl Compiler {
                             .get(&normalize_name(t))
                             .map(|l| l.size as i64)
                             .unwrap_or(0),
-                        _ => 0, // Variant / UDT: raw size not fixed
+                        PbType::Variant => 16, // PB VARIANT: vt(4) + reserved(4) + 8-byte value
+                        _ => 0,
                     };
                     if size > 0 {
                         fb.call_void(
@@ -18309,11 +19156,13 @@ impl Compiler {
                             fb.call_void("pb_put_str", &[filenum, pos_val, sv]);
                         }
                     } else {
-                        // batch 220: a Variant / UDT record target used to
-                        // compile into a silent no-op (size 0 skipped the call). Report it.
+                        // Reached only when the record variable has no fixed
+                        // layout (array/Object/Interface or an incomplete TYPE
+                        // declaration).  Variant (16) and complete UDT layouts
+                        // are handled above.
                         return Err(PbError::parser(
                             format!(
-                                "{} # with a variable-size variable (Variant/UDT) is not supported; use {} # filenum& , ... for string I/O",
+                                "{} # cannot determine a fixed record size for this variable type (array/Object/Interface or incomplete TYPE); use {} # filenum& , ... for string I/O",
                                 call.name,
                                 if call.name == "GET" { "GET$" } else { "PUT$" }
                             ),
@@ -18557,6 +19406,7 @@ impl Compiler {
                         hwnd = fb.inttoptr(&hwnd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
@@ -18569,18 +19419,24 @@ impl Compiler {
                         call.args.get(10).cloned()
                     };
                     let hctrl = if call.args.len() == 8 {
-                        fb.call(
-                            &IrType::Ptr,
-                            "pb_control_add_button",
-                            &[hwnd, id, text, x, y, w, h],
-                        )
+                        let fname = if text_is_wide {
+                            "pb_control_add_button_w"
+                        } else {
+                            "pb_control_add_button"
+                        };
+                        fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h])
                     } else {
                         let style = self.compile_expr(fb, &call.args[7])?;
                         let exstyle = self.compile_expr(fb, &call.args[8])?;
                         let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        let fname = if text_is_wide {
+                            "pb_control_add_button_ex_w"
+                        } else {
+                            "pb_control_add_button_ex"
+                        };
                         fb.call(
                             &IrType::Ptr,
-                            "pb_control_add_button_ex",
+                            fname,
                             &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
@@ -18668,6 +19524,14 @@ impl Compiler {
                     hwnd = fb.inttoptr(&hwnd);
                 }
                 let id = self.compile_expr(fb, &call.args[1])?;
+                let items_is_wide = match call.args.get(2) {
+                    Some(Expr::FunctionCall(arr_name, args)) if args.is_empty() => self
+                        .array_elem_pb_type(arr_name)
+                        .map(|t| matches!(t, PbType::WString | PbType::FixedWString(_, _)))
+                        .unwrap_or(false),
+                    Some(e) => self.expr_is_wstring(e),
+                    None => false,
+                };
                 // items slot: full-array reference sArray() → pass base pointer +
                 // element count so the runtime can CB_ADDSTRING each item.
                 let (items, item_count) =
@@ -18693,9 +19557,14 @@ impl Compiler {
                 let style = self.compile_expr(fb, &call.args[7])?;
                 let exstyle = self.compile_expr(fb, &call.args[8])?;
                 let cb = self.compile_control_callback(fb, &call.args[9])?;
+                let add_fn = if items_is_wide {
+                    "pb_control_add_combobox_ex_w"
+                } else {
+                    "pb_control_add_combobox_ex"
+                };
                 let hc = fb.call(
                     &IrType::Ptr,
-                    "pb_control_add_combobox_ex",
+                    add_fn,
                     &[
                         hwnd,
                         id,
@@ -18736,11 +19605,13 @@ impl Compiler {
                         IrType::Ptr => hdlg,
                         _ => fb.inttoptr(&hdlg),
                     };
-                    let bstr = fb.call(
-                        &IrType::Ptr,
-                        "pb_control_get_text_by_id_bstr",
-                        &[hdlg64, cid],
-                    );
+                    let wide = self.expr_is_wstring(&call.args[2]);
+                    let fetch = if wide {
+                        "pb_control_get_text_by_id_bstr_w"
+                    } else {
+                        "pb_control_get_text_by_id_bstr"
+                    };
+                    let bstr = fb.call(&IrType::Ptr, fetch, &[hdlg64, cid]);
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
                         fb.store(&bstr, &ptr);
                     }
@@ -18750,7 +19621,13 @@ impl Compiler {
             "CONTROL_GET_TEXT" => {
                 if let (Some(hc), Some(tgt)) = (call.args.first(), call.args.get(1)) {
                     let hcv = self.compile_expr(fb, hc)?;
-                    let bstr = fb.call(&IrType::Ptr, "pb_control_get_text_bstr", &[hcv]);
+                    let wide = self.expr_is_wstring(tgt);
+                    let fetch = if wide {
+                        "pb_control_get_text_bstr_w"
+                    } else {
+                        "pb_control_get_text_bstr"
+                    };
+                    let bstr = fb.call(&IrType::Ptr, fetch, &[hcv]);
                     self.store_string_result(fb, &bstr, tgt);
                 }
                 return Ok(());
@@ -18758,8 +19635,14 @@ impl Compiler {
             "CONTROL_SET_TEXT" => {
                 if let (Some(hc), Some(tx)) = (call.args.first(), call.args.get(1)) {
                     let hcv = self.compile_expr(fb, hc)?;
+                    let wide = self.expr_is_wstring(tx);
                     let cstr = self.compile_str_payload(fb, tx)?;
-                    fb.call_void("pb_control_set_text", &[hcv, cstr]);
+                    let setter = if wide {
+                        "pb_control_set_text_w"
+                    } else {
+                        "pb_control_set_text"
+                    };
+                    fb.call_void(setter, &[hcv, cstr]);
                 }
                 return Ok(());
             }
@@ -18781,8 +19664,14 @@ impl Compiler {
                 let id = self.compile_expr(fb, &call.args[1])?;
                 let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
                 let hctl = fb.call(&IrType::Ptr, "pb_control_handle", &[hdlg64, id64]);
+                let wide = self.expr_is_wstring(&call.args[2]);
                 let cstr = self.compile_str_payload(fb, &call.args[2])?;
-                fb.call_void("pb_control_set_text", &[hctl, cstr]);
+                let setter = if wide {
+                    "pb_control_set_text_w"
+                } else {
+                    "pb_control_set_text"
+                };
+                fb.call_void(setter, &[hctl, cstr]);
                 return Ok(());
             }
             "CONTROL_SHOW" => {
@@ -19705,8 +20594,10 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_str_payload(fb, &call.args[2])?;
-                    let v = fb.call(&IrType::I64, "pb_cblb_add", &[h, id, text, fb.const_i64(0)]);
+                    let add = if wide { "pb_cblb_add_w" } else { "pb_cblb_add" };
+                    let v = fb.call(&IrType::I64, add, &[h, id, text, fb.const_i64(0)]);
                     if call.args.len() >= 4 {
                         if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[3]) {
                             let cv = self.convert_value(fb, &v, &ty, &pty);
@@ -19765,10 +20656,16 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
+                    let find = if wide {
+                        "pb_cblb_find_w"
+                    } else {
+                        "pb_cblb_find"
+                    };
                     let v = fb.call(
                         &IrType::I64,
-                        "pb_cblb_find",
+                        find,
                         &[h, id, item, text, fb.const_i64(0), fb.const_i64(0)],
                     );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
@@ -19796,10 +20693,16 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
+                    let find = if wide {
+                        "pb_cblb_find_w"
+                    } else {
+                        "pb_cblb_find"
+                    };
                     let v = fb.call(
                         &IrType::I64,
-                        "pb_cblb_find",
+                        find,
                         &[h, id, item, text, fb.const_i64(1), fb.const_i64(0)],
                     );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
@@ -19930,11 +20833,13 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
-                    let bstr = fb.call(
-                        &IrType::Ptr,
-                        "pb_cblb_get_text_bstr",
-                        &[h, id, item, fb.const_i32(0)],
-                    );
+                    let wide = self.expr_is_wstring(&call.args[3]);
+                    let get = if wide {
+                        "pb_cblb_get_text_bstr_w"
+                    } else {
+                        "pb_cblb_get_text_bstr"
+                    };
+                    let bstr = fb.call(&IrType::Ptr, get, &[h, id, item, fb.const_i32(0)]);
                     self.store_string_result(fb, &bstr, &call.args[3]);
                 } else if call.args.len() == 3 {
                     let mut h = self.compile_expr(fb, &call.args[0])?;
@@ -19942,9 +20847,15 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let wide = self.expr_is_wstring(&call.args[2]);
+                    let get = if wide {
+                        "pb_cblb_get_text_bstr_w"
+                    } else {
+                        "pb_cblb_get_text_bstr"
+                    };
                     let bstr = fb.call(
                         &IrType::Ptr,
-                        "pb_cblb_get_text_bstr",
+                        get,
                         &[h, id, fb.const_i32(0), fb.const_i32(0)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
@@ -20001,12 +20912,14 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
-                    let v = fb.call(
-                        &IrType::I64,
-                        "pb_cblb_insert",
-                        &[h, id, item, text, fb.const_i64(0)],
-                    );
+                    let insert = if wide {
+                        "pb_cblb_insert_w"
+                    } else {
+                        "pb_cblb_insert"
+                    };
+                    let v = fb.call(&IrType::I64, insert, &[h, id, item, text, fb.const_i64(0)]);
                     if call.args.len() >= 5 {
                         if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
                             let cv = self.convert_value(fb, &v, &ty, &pty);
@@ -20081,12 +20994,14 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
-                    fb.call(
-                        &IrType::I64,
-                        "pb_cblb_set_text",
-                        &[h, id, item, text, fb.const_i64(0)],
-                    );
+                    let set = if wide {
+                        "pb_cblb_set_text_w"
+                    } else {
+                        "pb_cblb_set_text"
+                    };
+                    fb.call(&IrType::I64, set, &[h, id, item, text, fb.const_i64(0)]);
                 }
                 return Ok(());
             }
@@ -20150,8 +21065,10 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_str_payload(fb, &call.args[2])?;
-                    let v = fb.call(&IrType::I64, "pb_cblb_add", &[h, id, text, fb.const_i64(1)]);
+                    let add = if wide { "pb_cblb_add_w" } else { "pb_cblb_add" };
+                    let v = fb.call(&IrType::I64, add, &[h, id, text, fb.const_i64(1)]);
                     if call.args.len() >= 4 {
                         if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[3]) {
                             let cv = self.convert_value(fb, &v, &ty, &pty);
@@ -20210,10 +21127,16 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
+                    let find = if wide {
+                        "pb_cblb_find_w"
+                    } else {
+                        "pb_cblb_find"
+                    };
                     let v = fb.call(
                         &IrType::I64,
-                        "pb_cblb_find",
+                        find,
                         &[h, id, item, text, fb.const_i64(0), fb.const_i64(1)],
                     );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
@@ -20241,10 +21164,16 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
+                    let find = if wide {
+                        "pb_cblb_find_w"
+                    } else {
+                        "pb_cblb_find"
+                    };
                     let v = fb.call(
                         &IrType::I64,
-                        "pb_cblb_find",
+                        find,
                         &[h, id, item, text, fb.const_i64(1), fb.const_i64(1)],
                     );
                     if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
@@ -20381,11 +21310,13 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
-                    let bstr = fb.call(
-                        &IrType::Ptr,
-                        "pb_cblb_get_text_bstr",
-                        &[h, id, item, fb.const_i32(1)],
-                    );
+                    let wide = self.expr_is_wstring(&call.args[3]);
+                    let get = if wide {
+                        "pb_cblb_get_text_bstr_w"
+                    } else {
+                        "pb_cblb_get_text_bstr"
+                    };
+                    let bstr = fb.call(&IrType::Ptr, get, &[h, id, item, fb.const_i32(1)]);
                     self.store_string_result(fb, &bstr, &call.args[3]);
                 } else if call.args.len() == 3 {
                     let mut h = self.compile_expr(fb, &call.args[0])?;
@@ -20393,9 +21324,15 @@ impl Compiler {
                         h = fb.inttoptr(&h);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let wide = self.expr_is_wstring(&call.args[2]);
+                    let get = if wide {
+                        "pb_cblb_get_text_bstr_w"
+                    } else {
+                        "pb_cblb_get_text_bstr"
+                    };
                     let bstr = fb.call(
                         &IrType::Ptr,
-                        "pb_cblb_get_text_bstr",
+                        get,
                         &[h, id, fb.const_i32(0), fb.const_i32(1)],
                     );
                     if let Some((ptr, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
@@ -20452,12 +21389,14 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
-                    let v = fb.call(
-                        &IrType::I64,
-                        "pb_cblb_insert",
-                        &[h, id, item, text, fb.const_i64(1)],
-                    );
+                    let insert = if wide {
+                        "pb_cblb_insert_w"
+                    } else {
+                        "pb_cblb_insert"
+                    };
+                    let v = fb.call(&IrType::I64, insert, &[h, id, item, text, fb.const_i64(1)]);
                     if call.args.len() >= 5 {
                         if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[4]) {
                             let cv = self.convert_value(fb, &v, &ty, &pty);
@@ -20532,12 +21471,14 @@ impl Compiler {
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let item = self.compile_expr(fb, &call.args[2])?;
+                    let wide = self.expr_is_wstring(&call.args[3]);
                     let text = self.compile_str_payload(fb, &call.args[3])?;
-                    fb.call(
-                        &IrType::I64,
-                        "pb_cblb_set_text",
-                        &[h, id, item, text, fb.const_i64(1)],
-                    );
+                    let set = if wide {
+                        "pb_cblb_set_text_w"
+                    } else {
+                        "pb_cblb_set_text"
+                    };
+                    fb.call(&IrType::I64, set, &[h, id, item, text, fb.const_i64(1)]);
                 }
                 return Ok(());
             }
@@ -20748,6 +21689,7 @@ impl Compiler {
                 if call.args.len() >= 8 {
                     let parent = self.compile_expr(fb, &call.args[0])?;
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
@@ -20760,18 +21702,24 @@ impl Compiler {
                         call.args.get(10).cloned()
                     };
                     let hctrl = if call.args.len() == 8 {
-                        fb.call(
-                            &IrType::Ptr,
-                            "pb_control_add_label",
-                            &[parent, id, text, x, y, w, h],
-                        )
+                        let fname = if text_is_wide {
+                            "pb_control_add_label_w"
+                        } else {
+                            "pb_control_add_label"
+                        };
+                        fb.call(&IrType::Ptr, fname, &[parent, id, text, x, y, w, h])
                     } else {
                         let style = self.compile_expr(fb, &call.args[7])?;
                         let exstyle = self.compile_expr(fb, &call.args[8])?;
                         let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        let fname = if text_is_wide {
+                            "pb_control_add_label_ex_w"
+                        } else {
+                            "pb_control_add_label_ex"
+                        };
                         fb.call(
                             &IrType::Ptr,
-                            "pb_control_add_label_ex",
+                            fname,
                             &[parent, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
@@ -23525,17 +24473,23 @@ impl Compiler {
                 return Ok(());
             }
             "DIALOG_SHOW_STATE_TO" => {
-                // DIALOG SHOW STATE hDlg, state [TO result]
-                if call.args.len() >= 3 {
-                    let hd = self.compile_expr(fb, &call.args[0])?;
-                    let st = self.compile_expr(fb, &call.args[1])?;
-                    let hdlg64 = self.value_as_ptr(fb, &hd);
-                    let st32 = self.to_i32(fb, &st);
-                    let res = fb.call(&IrType::I32, "pb_dialog_show_state_to", &[hdlg64, st32]);
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        let cv = self.convert_value(fb, &res, &ty, &pty);
-                        fb.store(&cv, &ptr);
-                    }
+                // DIALOG SHOW STATE hDlg, state TO result
+                if call.args.len() < 3 {
+                    return Err(pb::error::PbError::parser(
+                        "DIALOG_SHOW_STATE_TO requires hDlg, state and a TO result target"
+                            .to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let hd = self.compile_expr(fb, &call.args[0])?;
+                let st = self.compile_expr(fb, &call.args[1])?;
+                let hdlg64 = self.value_as_ptr(fb, &hd);
+                let st32 = self.to_i32(fb, &st);
+                let res = fb.call(&IrType::I32, "pb_dialog_show_state_to", &[hdlg64, st32]);
+                if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[2]) {
+                    let cv = self.convert_value(fb, &res, &ty, &pty);
+                    fb.store(&cv, &ptr);
                 }
                 return Ok(());
             }
@@ -24212,6 +25166,14 @@ impl Compiler {
                     hwnd = fb.inttoptr(&hwnd);
                 }
                 let id = self.compile_expr(fb, &call.args[1])?;
+                let items_is_wide = match call.args.get(2) {
+                    Some(Expr::FunctionCall(arr_name, args)) if args.is_empty() => self
+                        .array_elem_pb_type(arr_name)
+                        .map(|t| matches!(t, PbType::WString | PbType::FixedWString(_, _)))
+                        .unwrap_or(false),
+                    Some(e) => self.expr_is_wstring(e),
+                    None => false,
+                };
                 // items slot: full-array reference sArray() → pass base pointer +
                 // element count so the runtime can LB_ADDSTRING each item.
                 // (compile_expr would load only the first element, which is wrong.)
@@ -24238,9 +25200,14 @@ impl Compiler {
                 let style = self.compile_expr(fb, &call.args[7])?;
                 let exstyle = self.compile_expr(fb, &call.args[8])?;
                 let cb = self.compile_control_callback(fb, &call.args[9])?;
+                let add_fn = if items_is_wide {
+                    "pb_control_add_listbox_ex_w"
+                } else {
+                    "pb_control_add_listbox_ex"
+                };
                 let hc = fb.call(
                     &IrType::Ptr,
-                    "pb_control_add_listbox_ex",
+                    add_fn,
                     &[
                         hwnd,
                         id,
@@ -24280,6 +25247,7 @@ impl Compiler {
                         hwnd = fb.inttoptr(&hwnd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
@@ -24292,18 +25260,24 @@ impl Compiler {
                         call.args.get(10).cloned()
                     };
                     let hctrl = if call.args.len() == 8 {
-                        fb.call(
-                            &IrType::Ptr,
-                            "pb_control_add_checkbox",
-                            &[hwnd, id, text, x, y, w, h],
-                        )
+                        let fname = if text_is_wide {
+                            "pb_control_add_checkbox_w"
+                        } else {
+                            "pb_control_add_checkbox"
+                        };
+                        fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h])
                     } else {
                         let style = self.compile_expr(fb, &call.args[7])?;
                         let exstyle = self.compile_expr(fb, &call.args[8])?;
                         let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        let fname = if text_is_wide {
+                            "pb_control_add_checkbox_ex_w"
+                        } else {
+                            "pb_control_add_checkbox_ex"
+                        };
                         fb.call(
                             &IrType::Ptr,
-                            "pb_control_add_checkbox_ex",
+                            fname,
                             &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
@@ -24333,6 +25307,7 @@ impl Compiler {
                         hwnd = fb.inttoptr(&hwnd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
@@ -24345,18 +25320,24 @@ impl Compiler {
                         call.args.get(10).cloned()
                     };
                     let hctrl = if call.args.len() == 8 {
-                        fb.call(
-                            &IrType::Ptr,
-                            "pb_control_add_radiobutton",
-                            &[hwnd, id, text, x, y, w, h],
-                        )
+                        let fname = if text_is_wide {
+                            "pb_control_add_radiobutton_w"
+                        } else {
+                            "pb_control_add_radiobutton"
+                        };
+                        fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h])
                     } else {
                         let style = self.compile_expr(fb, &call.args[7])?;
                         let exstyle = self.compile_expr(fb, &call.args[8])?;
                         let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        let fname = if text_is_wide {
+                            "pb_control_add_radiobutton_ex_w"
+                        } else {
+                            "pb_control_add_radiobutton_ex"
+                        };
                         fb.call(
                             &IrType::Ptr,
-                            "pb_control_add_radiobutton_ex",
+                            fname,
                             &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
@@ -24385,24 +25366,48 @@ impl Compiler {
                         hwnd = fb.inttoptr(&hwnd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
                     let w = self.compile_expr(fb, &call.args[5])?;
                     let h = self.compile_expr(fb, &call.args[6])?;
                     let (fname, fname_ex) = if call.name == "CONTROL_ADD_OPTION" {
-                        ("pb_control_add_option", "pb_control_add_option_ex")
+                        if text_is_wide {
+                            ("pb_control_add_option_w", "pb_control_add_option_ex_w")
+                        } else {
+                            ("pb_control_add_option", "pb_control_add_option_ex")
+                        }
                     } else if call.name == "CONTROL_ADD_CHECK3STATE" {
-                        (
-                            "pb_control_add_check3state",
-                            "pb_control_add_check3state_ex",
-                        )
+                        if text_is_wide {
+                            (
+                                "pb_control_add_check3state_w",
+                                "pb_control_add_check3state_ex_w",
+                            )
+                        } else {
+                            (
+                                "pb_control_add_check3state",
+                                "pb_control_add_check3state_ex",
+                            )
+                        }
                     } else if call.name == "CONTROL_ADD_FRAME" {
-                        ("pb_control_add_frame", "pb_control_add_frame_ex")
+                        if text_is_wide {
+                            ("pb_control_add_frame_w", "pb_control_add_frame_ex_w")
+                        } else {
+                            ("pb_control_add_frame", "pb_control_add_frame_ex")
+                        }
                     } else if call.name == "CONTROL_ADD_TEXTBOX" {
-                        ("pb_control_add_textbox", "pb_control_add_textbox_ex")
+                        if text_is_wide {
+                            ("pb_control_add_textbox_w", "pb_control_add_textbox_ex_w")
+                        } else {
+                            ("pb_control_add_textbox", "pb_control_add_textbox_ex")
+                        }
                     } else {
-                        ("pb_control_add_line", "pb_control_add_line_ex")
+                        if text_is_wide {
+                            ("pb_control_add_line_w", "pb_control_add_line_ex_w")
+                        } else {
+                            ("pb_control_add_line", "pb_control_add_line_ex")
+                        }
                     };
                     let target = if call.args.len() == 8 {
                         Some(call.args[7].clone())
@@ -24561,6 +25566,7 @@ impl Compiler {
                         hwnd = fb.inttoptr(&hwnd);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
+                    let text_is_wide = self.expr_is_wstring(&call.args[2]);
                     let text = self.compile_expr(fb, &call.args[2])?;
                     let x = self.compile_expr(fb, &call.args[3])?;
                     let y = self.compile_expr(fb, &call.args[4])?;
@@ -24573,18 +25579,24 @@ impl Compiler {
                         call.args.get(10).cloned()
                     };
                     let hctrl = if call.args.len() == 8 {
-                        fb.call(
-                            &IrType::Ptr,
-                            "pb_control_add_groupbox",
-                            &[hwnd, id, text, x, y, w, h],
-                        )
+                        let fname = if text_is_wide {
+                            "pb_control_add_groupbox_w"
+                        } else {
+                            "pb_control_add_groupbox"
+                        };
+                        fb.call(&IrType::Ptr, fname, &[hwnd, id, text, x, y, w, h])
                     } else {
                         let style = self.compile_expr(fb, &call.args[7])?;
                         let exstyle = self.compile_expr(fb, &call.args[8])?;
                         let cb = self.compile_control_callback(fb, &call.args[9])?;
+                        let fname = if text_is_wide {
+                            "pb_control_add_groupbox_ex_w"
+                        } else {
+                            "pb_control_add_groupbox_ex"
+                        };
                         fb.call(
                             &IrType::Ptr,
-                            "pb_control_add_groupbox_ex",
+                            fname,
                             &[hwnd, id, text, x, y, w, h, style, exstyle, cb],
                         )
                     };
@@ -26463,6 +27475,7 @@ impl Compiler {
                         call.args.len().saturating_sub(1)
                     };
                     let mut callee_args: Vec<Val> = Vec::new();
+                    let mut callee_temps: Vec<Val> = Vec::new();
                     let mut use_stdcall = false;
                     for arg in call.args.iter().skip(1).take(call_count) {
                         // `CALL DWORD p USING zProto(args)` names the PB
@@ -26484,7 +27497,8 @@ impl Compiler {
                             if let Some(info) = self.functions.get(&pn).cloned() {
                                 use_stdcall = info.is_stdcall;
                                 let vals = self.compile_call_args(fb, inner_args, &info)?;
-                                callee_args.extend(vals);
+                                callee_args.extend(vals.vals);
+                                callee_temps.extend(vals.temps);
                                 continue;
                             }
                             for inner in inner_args {
@@ -26518,6 +27532,9 @@ impl Compiler {
                         fb.call_indirect_void_stdcall(&tptr, &callee_args);
                     } else {
                         fb.call_indirect_void(&tptr, &callee_args);
+                    }
+                    for temp in &callee_temps {
+                        fb.call_void("pb_static_array_desc_free", std::slice::from_ref(temp));
                     }
                 }
                 return Ok(());
@@ -26671,13 +27688,8 @@ impl Compiler {
                         let class = c;
                         self.reject_thread_method_call(&class, method, call.line)?;
                         let qualified = format!("{}_{}", class, method);
-                        let info = self
-                            .functions
-                            .get(&qualified)
-                            .cloned()
-                            .or_else(|| self.subs.get(&qualified).cloned());
-                        if let Some(info) = info {
-                            self.note_reference(&qualified, &info);
+                        if let Some((resolved, info)) = self.class_proc_lookup(&class, method) {
+                            self.note_reference(&resolved, &info);
                             // Interface-typed receiver → BYVAL (see the
                             // expression-form method call, batch 264).
                             let mut m_args: Vec<Expr> = Vec::with_capacity(call.args.len());
@@ -26691,15 +27703,16 @@ impl Compiler {
                             let margs = self.compile_call_args(fb, &m_args, &info)?;
                             if info.ret_type == IrType::Void {
                                 if info.is_stdcall {
-                                    fb.call_void_stdcall(&info.ir_name, &margs);
+                                    fb.call_void_stdcall(&info.ir_name, &margs.vals);
                                 } else {
-                                    fb.call_void(&info.ir_name, &margs);
+                                    fb.call_void(&info.ir_name, &margs.vals);
                                 }
                             } else if info.is_stdcall {
-                                fb.call_stdcall(&info.ret_type, &info.ir_name, &margs);
+                                fb.call_stdcall(&info.ret_type, &info.ir_name, &margs.vals);
                             } else {
-                                fb.call(&info.ret_type, &info.ir_name, &margs);
+                                fb.call(&info.ret_type, &info.ir_name, &margs.vals);
                             }
+                            margs.release_temps(fb);
                             return Ok(());
                         }
                         if !self
@@ -26738,20 +27751,22 @@ impl Compiler {
             self.note_reference(&name, &info);
             let args = self.compile_call_args(fb, &call.args, &info)?;
             if info.is_stdcall {
-                fb.call_stdcall(&info.ret_type, &info.ir_name, &args);
+                fb.call_stdcall(&info.ret_type, &info.ir_name, &args.vals);
             } else {
-                fb.call(&info.ret_type, &info.ir_name, &args);
+                fb.call(&info.ret_type, &info.ir_name, &args.vals);
             }
+            args.release_temps(fb);
             return Ok(());
         }
         if let Some(info) = self.subs.get(&name).cloned() {
             self.note_reference(&name, &info);
             let args = self.compile_call_args(fb, &call.args, &info)?;
             if info.is_stdcall {
-                fb.call_void_stdcall(&info.ir_name, &args);
+                fb.call_void_stdcall(&info.ir_name, &args.vals);
             } else {
-                fb.call_void(&info.ir_name, &args);
+                fb.call_void(&info.ir_name, &args.vals);
             }
+            args.release_temps(fb);
             return Ok(());
         }
 
@@ -26771,8 +27786,9 @@ impl Compiler {
         fb: &mut FunctionBuilder,
         args: &[Expr],
         func_info: &FuncInfo,
-    ) -> PbResult<Vec<Val>> {
+    ) -> PbResult<CompiledCallArgs> {
         let mut compiled = Vec::new();
+        let mut temps = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             if i < func_info.params.len() {
                 let param = &func_info.params[i];
@@ -26781,6 +27797,83 @@ impl Compiler {
                     Expr::ByvalOverride(inner) => (true, inner.as_ref()),
                     _ => (false, arg),
                 };
+                if param.is_array {
+                    // `BYREF a() AS T` receives a pb_dyn_array descriptor.
+                    // A dynamic caller array already owns one.  A fixed-size
+                    // static array gets a temporary descriptor that borrows the
+                    // caller's element block, so element writes performed by the
+                    // callee are visible to the caller and shape queries see the
+                    // real bounds.  A callee REDIM/ERASE detaches a private copy.
+                    // The temporary descriptor is freed after the call returns.
+                    let arr_name = match inner_arg {
+                        Expr::ArrayAccess(n, _) | Expr::Variable(n) => normalize_name(n),
+                        Expr::FunctionCall(n, a) if a.is_empty() => normalize_name(n),
+                        _ => String::new(),
+                    };
+                    let info = if arr_name.is_empty() {
+                        None
+                    } else {
+                        self.symbols.lookup_array(&arr_name)
+                    };
+                    let Some(info) = info else {
+                        return Err(PbError::parser(
+                            format!(
+                                "{}: array parameter `{}` requires an array argument",
+                                func_info.ir_name, param.name
+                            ),
+                            None,
+                            0,
+                        ));
+                    };
+                    if info.dynamic {
+                        let desc = self.dynamic_desc(fb, info);
+                        compiled.push(desc);
+                    } else if info.dims.is_empty() && info.total_elements == 0 {
+                        // `LOCAL/DIM a()` without compile-time bounds: the
+                        // slot currently holds no data pointer.  Promote it to
+                        // a descriptor so the callee's REDIM is visible to the
+                        // caller and later accesses use the descriptor path.
+                        let raw = Val::new(info.ptr_name.clone(), IrType::Ptr);
+                        let loaded = fb.load(&IrType::Ptr, &raw);
+                        let elem_size = fb.const_i32(self.array_elem_size_arch(&info.elem_ir_type));
+                        let desc = fb.call(
+                            &IrType::Ptr,
+                            "pb_dynamic_array_ensure",
+                            &[loaded, elem_size],
+                        );
+                        fb.store(&desc, &raw);
+                        self.symbols.promote_array_to_dynamic(&arr_name);
+                        compiled.push(desc);
+                    } else {
+                        // A fixed-size static array that was NOT declared as a
+                        // call argument still needs a descriptor.  Borrow its
+                        // element block for the duration of the call; a callee
+                        // REDIM detaches a private copy.  Arrays that really do
+                        // receive a callee REDIM are lowered dynamic at their
+                        // declaration (`call_arg_array_names`), so their live
+                        // bounds survive the call.
+                        let data = self.array_base(fb, info);
+                        let total = fb.const_i64(info.total_elements as i64);
+                        let elem_size = fb.const_i32(self.array_elem_size_arch(&info.elem_ir_type));
+                        let desc = fb.call(
+                            &IrType::Ptr,
+                            "pb_static_array_to_desc",
+                            &[data, total, elem_size],
+                        );
+                        for (dim, (lower, count)) in info.dims.iter().enumerate() {
+                            let dim_no = fb.const_i32((dim + 1) as i32);
+                            let lower_v = fb.const_i64(*lower);
+                            let count_v = fb.const_i64(*count);
+                            fb.call_void(
+                                "pb_dynamic_array_set_dim",
+                                &[desc.clone(), dim_no, lower_v, count_v],
+                            );
+                        }
+                        temps.push(desc.clone());
+                        compiled.push(desc);
+                    }
+                    continue;
+                }
                 if !param.is_byval && !is_byval_override && matches!(param.pb_type, PbType::WString)
                 {
                     // Bare WSTRINGZ parameters are represented as WSTRING
@@ -27070,7 +28163,10 @@ impl Compiler {
             }
         }
 
-        Ok(compiled)
+        Ok(CompiledCallArgs {
+            vals: compiled,
+            temps,
+        })
     }
 
     // ========== IF ==========
@@ -27841,6 +28937,13 @@ impl Compiler {
                 fb.call_void("pb_con_key_set", &[n, s]);
             }
             "WAITSTAT" => fb.call_void("pb_con_waitstat", &[]),
+            "WAITKEY" => {
+                // Bare `CON.WAITKEY$` statement (PB/CC 6, martini.bas):
+                // wait for one keystroke and discard the returned string.
+                let mask = self.con_str_arg(fb, args, 0)?;
+                let timeout = self.con_i32_arg(fb, args, 1, -1)?;
+                fb.call(&IrType::Ptr, "pb_con_waitkey", &[mask, timeout]);
+            }
             "STDOUT" | "STDERR" => {
                 let s = self.con_str_arg(fb, args, 0)?;
                 let nl = self.con_i32_arg(fb, args, 1, 1)?;
@@ -29372,10 +30475,11 @@ impl Compiler {
                 self.note_reference(&cname, &info);
                 let args = self.compile_call_args(fb, &t.args, &info)?;
                 let ret = if info.is_stdcall {
-                    fb.call_stdcall(&info.ret_type, &info.ir_name, &args)
+                    fb.call_stdcall(&info.ret_type, &info.ir_name, &args.vals)
                 } else {
-                    fb.call(&info.ret_type, &info.ir_name, &args)
+                    fb.call(&info.ret_type, &info.ir_name, &args.vals)
                 };
+                args.release_temps(fb);
                 if let Some(rv) = &t.ret_var {
                     if let Some((ptr, ty, pbty)) = self.lvalue_ptr(fb, &Expr::Variable(rv.clone()))
                     {
@@ -29387,10 +30491,11 @@ impl Compiler {
                 self.note_reference(&cname, &info);
                 let args = self.compile_call_args(fb, &t.args, &info)?;
                 if info.is_stdcall {
-                    fb.call_void_stdcall(&info.ir_name, &args);
+                    fb.call_void_stdcall(&info.ir_name, &args.vals);
                 } else {
-                    fb.call_void(&info.ir_name, &args);
+                    fb.call_void(&info.ir_name, &args.vals);
                 }
+                args.release_temps(fb);
             } else {
                 self.warnings.push(format!(
                     "ON CALL target `{}` is not a declared SUB/FUNCTION - skipped",
@@ -29604,15 +30709,18 @@ impl Compiler {
             // the pre-batch305 lowering.
             let fname = format!("{}_{}", impls[0], mn);
             return if want.ret_type == IrType::Void {
-                fb.call_void(&fname, &compiled);
+                fb.call_void(&fname, &compiled.vals);
+                compiled.release_temps(fb);
                 Ok(Val::new("void".to_string(), IrType::Void))
             } else {
-                Ok(fb.call(&want.ret_type, &fname, &compiled))
+                let result = fb.call(&want.ret_type, &fname, &compiled.vals);
+                compiled.release_temps(fb);
+                Ok(result)
             };
         }
 
         // Multi-implementer: dispatch on the object header class id.
-        let obj = compiled[0].clone();
+        let obj = compiled.vals[0].clone();
         let id_reg = fb.next_reg();
         fb.raw_line(&format!("  {} = load i64, ptr {}", id_reg, obj.name));
         let sel = fb.next_label("vsel");
@@ -29665,10 +30773,13 @@ impl Compiler {
         ));
         let target = Val::new(fn_reg, IrType::Ptr);
         if want.ret_type == IrType::Void {
-            fb.call_indirect_void(&target, &compiled);
+            fb.call_indirect_void(&target, &compiled.vals);
+            compiled.release_temps(fb);
             Ok(Val::new("void".to_string(), IrType::Void))
         } else {
-            Ok(fb.call_indirect(&want.ret_type, &target, &compiled))
+            let result = fb.call_indirect(&want.ret_type, &target, &compiled.vals);
+            compiled.release_temps(fb);
+            Ok(result)
         }
     }
 
@@ -29929,6 +31040,37 @@ impl Compiler {
                     };
                     return Ok(fb.call(&IrType::I32, f, &[]));
                 }
+                if raw_upper == "GRAPHIC_POS_X" || raw_upper == "GRAPHIC_POS_Y" {
+                    // GRAPHIC(POS.X) / GRAPHIC(POS.Y): pb_graphic_get_pos
+                    // writes both coordinates through pointers.
+                    let x_slot = fb.alloca(&IrType::I32);
+                    let y_slot = fb.alloca(&IrType::I32);
+                    fb.call_void("pb_graphic_get_pos", &[x_slot.clone(), y_slot.clone()]);
+                    let slot = if raw_upper == "GRAPHIC_POS_X" {
+                        x_slot
+                    } else {
+                        y_slot
+                    };
+                    return Ok(fb.load(&IrType::I32, &slot));
+                }
+                if raw_upper == "GRAPHIC_TEXT_SIZE_X" || raw_upper == "GRAPHIC_TEXT_SIZE_Y" {
+                    // GRAPHIC(TEXT.SIZE.X, msg$) / (TEXT.SIZE.Y, msg$):
+                    // pb_graphic_text_size returns both extents through
+                    // pointers, so materialise both and load the requested axis.
+                    let sp = self.compile_str_payload(fb, &args[0])?;
+                    let w_slot = fb.alloca(&IrType::I32);
+                    let h_slot = fb.alloca(&IrType::I32);
+                    fb.call_void(
+                        "pb_graphic_text_size",
+                        &[sp, w_slot.clone(), h_slot.clone()],
+                    );
+                    let slot = if raw_upper == "GRAPHIC_TEXT_SIZE_X" {
+                        w_slot
+                    } else {
+                        h_slot
+                    };
+                    return Ok(fb.load(&IrType::I32, &slot));
+                }
                 // VERSION$() is the string function.  normalize_name strips the
                 // trailing $, so an unsuffixed VERSION() call would otherwise
                 // land on the same builtin and return a BSTR pointer with no
@@ -30169,11 +31311,13 @@ impl Compiler {
                 } else if let Some(info) = self.functions.get(&name).cloned() {
                     self.note_reference(&name, &info);
                     let compiled_args = self.compile_call_args(fb, args, &info)?;
-                    if info.is_stdcall {
-                        Ok(fb.call_stdcall(&info.ret_type, &info.ir_name, &compiled_args))
+                    let result = if info.is_stdcall {
+                        fb.call_stdcall(&info.ret_type, &info.ir_name, &compiled_args.vals)
                     } else {
-                        Ok(fb.call(&info.ret_type, &info.ir_name, &compiled_args))
-                    }
+                        fb.call(&info.ret_type, &info.ir_name, &compiled_args.vals)
+                    };
+                    compiled_args.release_temps(fb);
+                    Ok(result)
                 } else {
                     // Implicit external reference (PB semantics, batch 277):
                     // calling a function that is neither a builtin nor locally
@@ -30493,17 +31637,26 @@ impl Compiler {
                 let mut qualified = format!("{}_{}", class, normalize_name(name));
                 self.reject_thread_method_call(&class, name, self.current_line)?;
                 if !self.functions.contains_key(&qualified) {
-                    // batch298: PROPERTY GET — a bare `o.Prop` / `o.Prop(i)`
-                    // resolves to the <Class>_<Prop>_Get procedure when no
-                    // METHOD of that name exists (syntax-directed access,
-                    // CHW PROPERTY/END PROPERTY).
-                    let get_name = format!("{}_{}_GET", class, normalize_name(name));
-                    if self.functions.contains_key(&get_name) {
-                        qualified = get_name;
+                    // `CLASS Derived INHERIT Base`: a METHOD the derived class
+                    // does not redeclare resolves to the base implementation.
+                    // The receiver layout starts with the base fields, so the
+                    // compiled base method can be called with the derived ptr.
+                    if let Some((resolved, _)) =
+                        self.class_proc_lookup(&class, &normalize_name(name))
+                    {
+                        qualified = resolved;
+                    } else if let Some((resolved, _)) =
+                        self.class_proc_lookup(&class, &format!("{}_GET", normalize_name(name)))
+                    {
+                        // batch298: PROPERTY GET — a bare `o.Prop` /
+                        // `o.Prop(i)` resolves to <Class>_<Prop>_Get when no
+                        // METHOD of that name exists.
+                        qualified = resolved;
                     } else if !self
                         .defined_ir
                         .iter()
                         .any(|k| k.starts_with(&format!("{}_", class)))
+                        && !self.class_bases.contains_key(&class)
                     {
                         // `LOCAL o AS IUNKNOWNIFACE` — PB resolves COM
                         // interfaces from the registered type library, so no
@@ -31741,8 +32894,8 @@ impl Compiler {
             "GETATTR" => Some(self.builtin_getattr(fb, args)),
             "DISKFREE" => Some(self.builtin_disk(fb, args, "pb_diskfree")),
             "DISKSIZE" => Some(self.builtin_disk(fb, args, "pb_disksize")),
-            "CHRTOOEM" => Some(self.builtin_conv1(fb, args, "pb_chr_to_oem")),
-            "OEMTOCHR" => Some(self.builtin_oem_to_chr(fb, args)),
+            "CHRTOOEM" | "OEM" => Some(self.builtin_conv1(fb, args, "pb_chr_to_oem")),
+            "OEMTOCHR" | "ANSI" => Some(self.builtin_oem_to_chr(fb, args)),
             "CHRTOUTF8" => Some(self.builtin_conv1(fb, args, "pb_chr_to_utf8")),
             "UTF8TOCHR" => Some(self.builtin_conv1(fb, args, "pb_utf8_to_chr")),
             "CLIP" => Some(self.builtin_clip(fb, args)),
@@ -31984,6 +33137,7 @@ impl Compiler {
             "LEN" => Some(self.builtin_len(fb, args)),
             "CHR" => Some(self.builtin_chr(fb, args)),
             "CHR$RANGE" => Some(self.builtin_chr_range(fb, args)),
+            "CHR$MULTI" => Some(self.builtin_chr_multi(fb, args)),
             "ASC" => Some(self.builtin_asc(fb, args)),
             "STR" => Some(self.builtin_str(fb, args)),
             "HEX" => Some(self.builtin_hex(fb, args)),
@@ -32418,6 +33572,10 @@ impl Compiler {
             "DIR" => {
                 // DIR$(mask [, ONLY attr]) or DIR$(NEXT) — returns BSTR filename
                 // (parser emits FunctionCall "DIR$"; normalize_name strips the $)
+                if args.is_empty() {
+                    // Legacy bare `DIR$` continues the current enumeration.
+                    return Some(Ok(fb.call(&IrType::Ptr, "pb_dir_next", &[])));
+                }
                 if args.len() == 1 {
                     if let Expr::StringLit(s) = &args[0] {
                         if s == "\u{0}DIRNEXT" {
@@ -32543,6 +33701,7 @@ impl Compiler {
                                             .unwrap_or(0);
                                     }
                                     PbType::Field => size = 16,
+                                    PbType::Variant => size = 16,
                                     _ => size = ptrw,
                                 }
                             } else if let Some(layout) = self.type_layouts.get(&norm) {
@@ -33366,12 +34525,12 @@ impl Compiler {
                 &[meta, dim64, fb.const_i64(if upper { 1 } else { 0 })],
             ));
         }
-        if info.dims.is_empty() {
-            return Ok(fb.const_i64(if upper { -1 } else { 0 }));
-        }
         if info.dynamic {
             // Lower bound and live count come from the descriptor, which is
-            // shape-aware after a multi-dimensional REDIM (Boltcalc).
+            // shape-aware after a multi-dimensional REDIM (Boltcalc) and for
+            // `BYREF a() AS T` parameters whose shape is only known at run
+            // time.  This must precede the `dims.is_empty()` fallback: a
+            // descriptor-backed array has no compile-time shape at all.
             let dim_expr: Option<&Expr> = match bracket_dim.as_ref() {
                 Some(d) => Some(d),
                 None if args.len() >= 2 => Some(&args[1]),
@@ -33389,6 +34548,9 @@ impl Compiler {
                 "pb_dynamic_array_bound",
                 &[desc, dim32, fb.const_i32(if upper { 1 } else { 0 })],
             ));
+        }
+        if info.dims.is_empty() {
+            return Ok(fb.const_i64(if upper { -1 } else { 0 }));
         }
         // Resolve the dimension expression: bracket form a(d) takes precedence,
         // then the second argument a, d; otherwise dimension 1 by default.
@@ -35350,6 +36512,33 @@ impl Compiler {
         Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[buf, count]))
     }
 
+    fn builtin_chr_multi(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        // CHR$(a, b TO c, d) — concatenate each plain code and each range.
+        let mut acc: Option<Val> = None;
+        for arg in args {
+            let part = if let Expr::FunctionCall(n, rargs) = arg {
+                if n == "CHR$RANGE" {
+                    self.builtin_chr_range(fb, rargs)?
+                } else {
+                    self.builtin_chr(fb, std::slice::from_ref(arg))?
+                }
+            } else {
+                self.builtin_chr(fb, std::slice::from_ref(arg))?
+            };
+            acc = Some(match acc {
+                None => part,
+                Some(prev) => fb.call(&IrType::Ptr, "pb_str_concat", &[prev, part]),
+            });
+        }
+        if let Some(v) = acc {
+            Ok(v)
+        } else {
+            let tmp = fb.alloca(&IrType::I8);
+            let zero = fb.const_i32(0);
+            Ok(fb.call(&IrType::Ptr, "pb_bstr_alloc", &[tmp, zero]))
+        }
+    }
+
     fn builtin_chr(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         if args.is_empty() {
             let tmp = fb.alloca(&IrType::I8);
@@ -37087,6 +38276,171 @@ impl Compiler {
 
     // ========== Utility ==========
 
+    /// Record every array-shaped argument (`a()` / bare `a`) that appears in a
+    /// call expression anywhere in a procedure body.  Any such array must be
+    /// declared as a dynamic descriptor so a callee `REDIM a(...)` through a
+    /// BYREF array parameter can really change the caller's bounds (PBWin10
+    /// measurement, batch401).
+    fn scan_body_for_call_arg_arrays(
+        body: &[Statement],
+        array_params: &HashMap<String, Vec<usize>>,
+        out: &mut HashSet<String>,
+    ) {
+        for stmt in body {
+            match stmt {
+                Statement::Call(call) => {
+                    Self::record_call_array_args(&call.name, &call.args, array_params, out);
+                    for arg in &call.args {
+                        Self::scan_expr_for_call_arg_arrays(arg, array_params, out);
+                    }
+                }
+                Statement::Assign(a) => {
+                    Self::scan_expr_for_call_arg_arrays(&a.value, array_params, out);
+                }
+                Statement::If(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.condition, array_params, out);
+                    Self::scan_body_for_call_arg_arrays(&s.then_body, array_params, out);
+                    for clause in &s.elseif_clauses {
+                        Self::scan_expr_for_call_arg_arrays(&clause.condition, array_params, out);
+                        Self::scan_body_for_call_arg_arrays(&clause.body, array_params, out);
+                    }
+                    Self::scan_body_for_call_arg_arrays(&s.else_body, array_params, out);
+                }
+                Statement::For(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.start, array_params, out);
+                    Self::scan_expr_for_call_arg_arrays(&s.end, array_params, out);
+                    if let Some(step) = &s.step {
+                        Self::scan_expr_for_call_arg_arrays(step, array_params, out);
+                    }
+                    Self::scan_body_for_call_arg_arrays(&s.body, array_params, out);
+                }
+                Statement::ForEach(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.collection, array_params, out);
+                    Self::scan_body_for_call_arg_arrays(&s.body, array_params, out);
+                }
+                Statement::DoLoop(s) => {
+                    if let Some(cond) = &s.condition {
+                        Self::scan_expr_for_call_arg_arrays(cond, array_params, out);
+                    }
+                    if let Some(cond) = &s.post_condition {
+                        Self::scan_expr_for_call_arg_arrays(cond, array_params, out);
+                    }
+                    Self::scan_body_for_call_arg_arrays(&s.body, array_params, out);
+                }
+                Statement::WhileWend(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.condition, array_params, out);
+                    Self::scan_body_for_call_arg_arrays(&s.body, array_params, out);
+                }
+                Statement::SelectCase(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.expr, array_params, out);
+                    for case in &s.cases {
+                        Self::scan_body_for_call_arg_arrays(&case.body, array_params, out);
+                    }
+                    Self::scan_body_for_call_arg_arrays(&s.else_body, array_params, out);
+                }
+                Statement::Try(s) => {
+                    Self::scan_body_for_call_arg_arrays(&s.body, array_params, out);
+                    Self::scan_body_for_call_arg_arrays(&s.catch, array_params, out);
+                    Self::scan_body_for_call_arg_arrays(&s.finally, array_params, out);
+                }
+                Statement::Print(s) => {
+                    for arg in &s.args {
+                        Self::scan_expr_for_call_arg_arrays(arg, array_params, out);
+                    }
+                    if let Some((row, col)) = &s.at {
+                        Self::scan_expr_for_call_arg_arrays(row, array_params, out);
+                        Self::scan_expr_for_call_arg_arrays(col, array_params, out);
+                    }
+                }
+                Statement::TxtPrint(s) => {
+                    for arg in &s.args {
+                        Self::scan_expr_for_call_arg_arrays(arg, array_params, out);
+                    }
+                }
+                Statement::FunctionReturn(s) => {
+                    Self::scan_expr_for_call_arg_arrays(&s.value, array_params, out);
+                }
+                Statement::Block(stmts) => {
+                    Self::scan_body_for_call_arg_arrays(stmts, array_params, out)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn record_call_array_args(
+        name: &str,
+        args: &[Expr],
+        array_params: &HashMap<String, Vec<usize>>,
+        out: &mut HashSet<String>,
+    ) {
+        let Some(positions) = array_params.get(&normalize_name(name)) else {
+            return;
+        };
+        for index in positions {
+            if let Some(arg) = args.get(*index) {
+                Self::record_array_arg(arg, out);
+            }
+        }
+    }
+
+    fn record_array_arg(expr: &Expr, out: &mut HashSet<String>) {
+        match expr {
+            Expr::FunctionCall(name, inner) if inner.is_empty() => {
+                out.insert(normalize_name(name));
+            }
+            Expr::ArrayAccess(name, indices) if indices.is_empty() => {
+                out.insert(normalize_name(name));
+            }
+            Expr::Variable(name) => {
+                out.insert(normalize_name(name));
+            }
+            Expr::ByvalOverride(inner) => Self::record_array_arg(inner, out),
+            _ => {}
+        }
+    }
+
+    fn scan_expr_for_call_arg_arrays(
+        expr: &Expr,
+        array_params: &HashMap<String, Vec<usize>>,
+        out: &mut HashSet<String>,
+    ) {
+        match expr {
+            Expr::FunctionCall(name, args) => {
+                Self::record_call_array_args(name, args, array_params, out);
+                for arg in args {
+                    Self::scan_expr_for_call_arg_arrays(arg, array_params, out);
+                }
+            }
+            Expr::MethodCall { base, args, .. } => {
+                Self::scan_expr_for_call_arg_arrays(base, array_params, out);
+                for arg in args {
+                    Self::scan_expr_for_call_arg_arrays(arg, array_params, out);
+                }
+            }
+            Expr::ArrayAccess(_, indices) => {
+                for index in indices {
+                    Self::scan_expr_for_call_arg_arrays(index, array_params, out);
+                }
+            }
+            Expr::TypeMember(base, _) => {
+                Self::scan_expr_for_call_arg_arrays(base, array_params, out)
+            }
+            Expr::Deref(inner)
+            | Expr::UnaryOp(_, inner)
+            | Expr::Negate(inner)
+            | Expr::Varptr(inner)
+            | Expr::ByvalOverride(inner) => {
+                Self::scan_expr_for_call_arg_arrays(inner, array_params, out)
+            }
+            Expr::BinaryOp(_, left, right) => {
+                Self::scan_expr_for_call_arg_arrays(left, array_params, out);
+                Self::scan_expr_for_call_arg_arrays(right, array_params, out);
+            }
+            _ => {}
+        }
+    }
+
     /// Scan a function/sub body for DIM statements with bounds (array declarations).
     fn scan_body_for_array_names(body: &[Statement], out: &mut HashSet<String>) {
         for stmt in body {
@@ -37253,8 +38607,14 @@ fn normalize_name(name: &str) -> String {
         }
     }
     let last = bytes[len - 1];
-    if matches!(last, b'#' | b'&' | b'%' | b'!' | b'@' | b'$') {
-        return upper[..len - 1].to_string();
+    if matches!(last, b'#' | b'&' | b'%' | b'!' | b'@' | b'$' | b'?') {
+        let mut end = len - 1;
+        if last == b'?' {
+            while end > 0 && bytes[end - 1] == b'?' {
+                end -= 1;
+            }
+        }
+        return upper[..end].to_string();
     }
     upper
 }

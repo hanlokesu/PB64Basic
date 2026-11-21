@@ -263,6 +263,10 @@ pub struct Preprocessor {
     /// #RESOURCE MANIFEST, id, "file.xml" — embedded as RT_MANIFEST so the
     /// EXE gets comctl32 v6 visual styles (flat buttons) like a PBWin build.
     pub manifests: Vec<(u32, PathBuf)>,
+    /// `#EXPORT name [, name ...]` — names that must receive the DLL export
+    /// attribute even though the procedure itself omits the EXPORT keyword.
+    /// CHW #EXPORT adds the attribute to a Sub/Function declared elsewhere.
+    pub export_names: Vec<String>,
     pub version_info: VersionInfo,
     /// Official PB: `#DIM ALL` == `OPTION EXPLICIT` (every variable must be
     /// declared). Recorded here so main.rs can enforce it at codegen time.
@@ -335,6 +339,7 @@ impl Preprocessor {
             collect_included: HashSet::new(),
             canonical_paths: HashMap::new(),
             collect_only: false,
+            export_names: Vec::new(),
             defined_this_pass: HashSet::from([
                 "%WIN32_WINNT".to_string(),
                 "%WINVER".to_string(),
@@ -746,8 +751,20 @@ impl Preprocessor {
                 continue;
             }
 
-            // #COMPILE / #COMPILER — skip entirely
-            if upper_full.starts_with("#COMPILE") || upper_full.starts_with("#COMPILER") {
+            // #COMPILE / #COMPILER — the compiler-family selector also fixes
+            // the meaning of the `?` shorthand: PB/CC treats it as CON.PRINT,
+            // PB/Win treats it as MSGBOX.  Respect the declared family before
+            // skipping the directive itself.
+            if upper_full.starts_with("#COMPILER") {
+                if upper_full.contains("PBCC") {
+                    self.console_mode = Some(true);
+                } else if upper_full.contains("PBWIN") {
+                    self.console_mode = Some(false);
+                }
+                i += 1;
+                continue;
+            }
+            if upper_full.starts_with("#COMPILE") {
                 i += 1;
                 continue;
             }
@@ -818,13 +835,35 @@ impl Preprocessor {
                 continue;
             }
 
-            // #ALIGN / #BLOAT / #COM / #EXPORT / #PAGE / #UNIQUE — CHW
+            // #EXPORT name [, name ...] — CHW _EXPORT_metastatement.htm:
+            // add the EXPORT attribute to a Sub/Function declared elsewhere.
+            // Collect the names and let codegen mark their IR definitions
+            // `dllexport`; unlike the ASM-only directives below this has a
+            // real link-time effect for DLL output.
+            if upper_full.starts_with("#EXPORT") {
+                if !self.collect_only {
+                    let rest = trimmed_full
+                        .split_once(' ')
+                        .map(|(_, r)| r)
+                        .unwrap_or("")
+                        .trim();
+                    let rest = rest.split('\'').next().unwrap_or(rest);
+                    for name in rest.split(',') {
+                        let n = name.trim();
+                        if !n.is_empty() {
+                            self.export_names.push(n.to_uppercase());
+                        }
+                    }
+                }
+                i += 1;
+                continue;
+            }
+
+            // #ALIGN / #BLOAT / #COM / #PAGE / #UNIQUE — CHW
             // metastatements with no 64-bit fork semantics:
             //   #ALIGN  NOP-pads instruction boundaries (assembler-level)
             //   #BLOAT  inflates the disk image (running size unaffected)
             //   #COM    COM type-library info (CLASS/DOC/HELP/NAME/GUID/TLIB)
-            //   #EXPORT adds the EXPORT attribute to Sub/Functions defined
-            //           elsewhere (DLL/SLL interop; fork links statically)
             //   #PAGE   IDE print pagination — CHW: "no effect on your
             //           compiled code"
             //   #UNIQUE VAR [ON|OFF] — unique-name check (default OFF)
@@ -834,7 +873,6 @@ impl Preprocessor {
             if upper_full.starts_with("#ALIGN")
                 || upper_full.starts_with("#BLOAT")
                 || upper_full.starts_with("#COM")
-                || upper_full.starts_with("#EXPORT")
                 || upper_full.starts_with("#PAGE")
                 || upper_full.starts_with("#UNIQUE")
             {
@@ -1718,9 +1756,31 @@ impl Preprocessor {
         let mut out = String::new();
         let mut changed = false;
         let mut i = 0usize;
+        let mut in_string = false;
         while i < bytes.len() {
             let c = bytes[i] as char;
-            if c.is_ascii_alphabetic() || c == b'_' as char {
+            // Macro names occurring inside string literals are data, not
+            // references.  Official headers define e.g.
+            //   MACRO Document () = ENVIRON$("DOCUMENT")
+            // and expanding that self-reference turned the body into an
+            // exponentially growing string until the preprocessor appeared to
+            // hang.  Comments are likewise opaque.
+            if c == '"' {
+                out.push(c);
+                i += 1;
+                if in_string && i < bytes.len() && bytes[i] == b'"' {
+                    out.push('"');
+                    i += 1;
+                } else {
+                    in_string = !in_string;
+                }
+                continue;
+            }
+            if c == '\'' && !in_string {
+                out.push_str(&result[i..]);
+                break;
+            }
+            if !in_string && (c.is_ascii_alphabetic() || c == b'_' as char) {
                 let start = i;
                 while i < bytes.len()
                     && ((bytes[i] as char).is_ascii_alphanumeric()
