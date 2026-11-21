@@ -23,6 +23,10 @@
 %JKCOMP_PB64CHM = %IDC_Userbase + 27   ' open PB64Basic.chm via hh.exe (HAN 2026-11-19)
 %JKCOMP_PB64X86 = %IDC_Userbase + 28   ' compile - PB64Basic 32-bit (i686)
 %JKCOMP_RUN_PB64X86 = %IDC_Userbase + 29   ' compile then run - PB64Basic 32-bit
+%JKCOMP_ANDROID_ARM64 = %IDC_Userbase + 30   ' Android APK - arm64-v8a (real phones)
+%JKCOMP_ANDROID_X86   = %IDC_Userbase + 31   ' Android APK - x86_64 (Windows emulator)
+%JKCOMP_ANDROID_BOTH  = %IDC_Userbase + 32   ' Android APK - arm64-v8a + x86_64 in one APK
+%JKCOMP_RUN_ANDROID   = %IDC_Userbase + 33   ' Android APK - build x86_64, install and launch
 %JKIDE_Open     = 101                  ' WM_COPYDATA dwData: (re)open file in JK-IDE (VCS protocol)
 %JKIDE_Close    = 102                  ' WM_COPYDATA dwData: close file in JK-IDE (VCS protocol, HAN 2026-11-06)
 %JKIDE_Save     = 103                  ' WM_COPYDATA dwData: save active file in JK-IDE (VCS protocol, HAN 2026-11-01)
@@ -363,6 +367,10 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
   LOCAL cnt_err AS LONG
   LOCAL last_ln AS LONG
   LOCAL prepath AS STRING
+  LOCAL isAndroid AS LONG
+  LOCAL abi AS STRING, androidScript AS STRING
+  LOCAL androidSdk AS STRING, androidNdk AS STRING, androidJdk AS STRING
+  LOCAL androidGradle AS STRING, androidBaseline AS STRING, androidPb64 AS STRING
   f = JK_ActiveFile$()
   IF LEN(f) = 0 THEN
     JK_SendOutput "Compilers: no active file with a full path. Save the file first, then retry.", &H00C040
@@ -370,6 +378,7 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
     EXIT FUNCTION
   END IF
   JK_ClearAnnotations
+  isAndroid = 0
   SELECT CASE which
     CASE %JKCOMP_PBWIN10
       ' Delegate to JK-IDE's own compile pipeline (F9 / IDM_COMPILE=1501): the IDE
@@ -415,6 +424,51 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
         EXIT FUNCTION
       END IF
       args = "--gui -O3 -o " + CHR$(34) + LEFT$(f, LEN(f) - 4) + ".exe" + CHR$(34) + " " + CHR$(34) + f + CHR$(34)
+    CASE %JKCOMP_ANDROID_ARM64, %JKCOMP_ANDROID_X86, %JKCOMP_ANDROID_BOTH, %JKCOMP_RUN_ANDROID
+      compname = "Android APK"
+      isAndroid = 1
+      androidScript = JK_IniValue$("Compilers", "AndroidBuildScript")
+      IF LEN(androidScript) = 0 THEN
+        JK_SendOutput "Compilers: key AndroidBuildScript missing in " + JK_IniFile$() + ". Run setup.bat again or edit JKIDE.ini, then restart JK-IDE.", &HFF
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      IF ISFALSE ISFILE(androidScript) THEN
+        JK_SendOutput "Compilers: Android build script not found: " + androidScript + ". Check AndroidBuildScript in JKIDE.ini.", &HFF
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      IF which = %JKCOMP_ANDROID_ARM64 THEN
+        abi = "arm64-v8a"
+      ELSEIF which = %JKCOMP_ANDROID_X86 OR which = %JKCOMP_RUN_ANDROID THEN
+        abi = "x86_64"
+      ELSE
+        abi = "both"
+      END IF
+      exe = ENVIRON$("SystemRoot") + "\System32\WindowsPowerShell\v1.0\powershell.exe"
+      IF ISFALSE ISFILE(exe) THEN
+        JK_SendOutput "Compilers: Windows PowerShell not found: " + exe, &HFF
+        FUNCTION = -1
+        EXIT FUNCTION
+      END IF
+      wd = PATHNAME$(PATH, androidScript)
+      compname = "Android APK (" + abi + ")"
+      args = "-NoProfile -ExecutionPolicy Bypass -File " + CHR$(34) + androidScript + CHR$(34)
+      args = args + " -Source " + CHR$(34) + f + CHR$(34) + " -Abi " + abi
+      androidPb64 = JK_IniValue$("Compilers", "AndroidPb64Exe")
+      IF LEN(androidPb64) = 0 THEN androidPb64 = JK_IniValue$("Compilers", "Pb64Exe")
+      IF LEN(androidPb64) > 0 THEN args = args + " -PB64Basic " + CHR$(34) + androidPb64 + CHR$(34)
+      androidNdk = JK_IniValue$("Compilers", "AndroidNdk")
+      IF LEN(androidNdk) > 0 THEN args = args + " -Ndk " + CHR$(34) + androidNdk + CHR$(34)
+      androidGradle = JK_IniValue$("Compilers", "AndroidGradle")
+      IF LEN(androidGradle) > 0 THEN args = args + " -Gradle " + CHR$(34) + androidGradle + CHR$(34)
+      androidJdk = JK_IniValue$("Compilers", "AndroidJdk")
+      IF LEN(androidJdk) > 0 THEN args = args + " -JavaHome " + CHR$(34) + androidJdk + CHR$(34)
+      androidSdk = JK_IniValue$("Compilers", "AndroidSdk")
+      IF LEN(androidSdk) > 0 THEN args = args + " -AndroidSdk " + CHR$(34) + androidSdk + CHR$(34)
+      androidBaseline = JK_IniValue$("Compilers", "AndroidBaseline")
+      IF LEN(androidBaseline) > 0 THEN args = args + " -RuntimeCache " + CHR$(34) + androidBaseline + CHR$(34)
+      IF which = %JKCOMP_RUN_ANDROID THEN args = args + " -Install -Run"
     CASE ELSE
       FUNCTION = 0
       EXIT FUNCTION
@@ -461,6 +515,20 @@ FUNCTION JK_RunCompiler(BYVAL which AS LONG) AS LONG
       IF MID$(jlogtxt, j, 2) = $CRLF THEN i = j + 2 ELSE i = j + 1
     END IF
     IF LEN(outline) = 0 THEN ITERATE DO
+
+    IF isAndroid THEN
+      ' PowerShell / Gradle output is not a PB compiler log: keep every line
+      ' visible but do not fake PB line annotations or count "error" words as
+      ' compiler diagnostics. The exit code from the wrapper is the verdict.
+      IF INSTR(outline, "warning") > 0 OR INSTR(outline, "Warning") > 0 THEN
+        JK_SendOutput outline, &H0096C8
+      ELSEIF INSTR(outline, "error") > 0 OR INSTR(outline, "Error") > 0 THEN
+        JK_SendOutput outline, &HFF
+      ELSE
+        JK_SendOutput outline, &H808080
+      END IF
+      ITERATE DO
+    END IF
 
     IF INSTR(outline, "Error") > 0 OR INSTR(outline, "error") > 0 THEN
       IF INSTR(outline, "warning") > 0 OR INSTR(outline, "Warning") > 0 THEN
@@ -818,6 +886,13 @@ FUNCTION JK_CompileAndRun(BYVAL which AS LONG) AS LONG
       ELSE
         JK_DeleteStaleExe exePath, stem
         JK_SendOutput "PB64Basic (32bit) compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
+      END IF
+    CASE %JKCOMP_RUN_ANDROID
+      ' build_apk.ps1 appends -Install -Run for this command; the script
+      ' installs the x86_64 APK and starts it on the running emulator.
+      rc = JK_RunCompiler(%JKCOMP_RUN_ANDROID)
+      IF rc <> 0 THEN
+        JK_SendOutput "Android build/install failed - not launched (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
       END IF
     CASE %JKCOMP_RUN_PBXB64
       exePath = LEFT$(f, LEN(f) - 4) + ".exe"

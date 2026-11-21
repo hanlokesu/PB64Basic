@@ -52,7 +52,7 @@ echo ==================================================
 echo   Optional: JK-IDE integration (Compilers menu)
 echo ==================================================
 echo This installs the PB64Basic Compilers menu into JK-IDE so you can
-echo compile the active file with PBWin 10 / PB64Basic / PBXB64.
+echo compile the active file with PBWin 10 / PB64Basic / PBXB64 / Android APK.
 echo Type Y to install, anything else to skip.
 set /p "JKDO=Install JK-IDE integration? (Y/N): "
 if /I not "%JKDO%"=="Y" goto :skip_jk
@@ -248,6 +248,41 @@ if exist "%~dp0jkide\PB64Basic.chm" (
   echo [OK] PBWin.chm/.chw and PB.chm/.chw copied to %JKIDE_DIR%
 )
 if not exist "%~dp0jkide\PB64Basic.chm" if not defined PBWIN_BIN echo [WARN] PBWin not found - skipped copying help files
+rem Android toolchain: probe D:\AndroidToolchain, the per-user fallback and
+rem every drive's software folders, then append the discovered paths to
+rem JKIDE.ini.  find_android.ps1 also keeps the previous values when a re-run
+rem cannot find the toolchain, so a transient miss never blanks the menu.
+set "ANDROID_TMP=%TEMP%\pb64_android_ini.txt"
+if exist "%ANDROID_TMP%" del "%ANDROID_TMP%" >nul 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\find_android.ps1" -RepoRoot "%~dp0" -ExistingIni "%JKIDE_DIR%\JKIDE.ini" > "%ANDROID_TMP%" 2>nul
+set "ANDROID_SIZE=0"
+if exist "%ANDROID_TMP%" for %%A in ("%ANDROID_TMP%") do set "ANDROID_SIZE=%%~zA"
+if "%ANDROID_SIZE%"=="0" (
+    echo AndroidRoot=> "%ANDROID_TMP%"
+    echo AndroidBuildScript=>> "%ANDROID_TMP%"
+    echo AndroidSdk=>> "%ANDROID_TMP%"
+    echo AndroidNdk=>> "%ANDROID_TMP%"
+    echo AndroidJdk=>> "%ANDROID_TMP%"
+    echo AndroidGradle=>> "%ANDROID_TMP%"
+    echo AndroidBaseline=>> "%ANDROID_TMP%"
+    echo AndroidPb64Exe=>> "%ANDROID_TMP%"
+)
+set "ANDROID_ROOT="
+set "ANDROID_BUILD="
+for /f "usebackq tokens=1,* delims==" %%A in ("%ANDROID_TMP%") do (
+    if /i "%%A"=="AndroidRoot" set "ANDROID_ROOT=%%B"
+    if /i "%%A"=="AndroidBuildScript" set "ANDROID_BUILD=%%B"
+)
+if defined ANDROID_ROOT (
+    echo [OK] Android toolchain: %ANDROID_ROOT%
+) else (
+    echo [WARN] Android toolchain not found - Android APK menu will need JKIDE.ini paths.
+)
+if defined ANDROID_BUILD (
+    echo [OK] Android APK builder: %ANDROID_BUILD%
+) else (
+    echo [WARN] Android APK builder not found - install PB64Basic-Android or set AndroidBuildScript in JKIDE.ini.
+)
 > "%JKIDE_DIR%\JKIDE.ini" (
     echo [Compilers]
     echo ; JK-IDE Compilers menu configuration.
@@ -263,6 +298,7 @@ if not exist "%~dp0jkide\PB64Basic.chm" if not defined PBWIN_BIN echo [WARN] PBW
     echo Pbxb64Exe=%PBXB64%
     if defined PBXB64 echo Pbxb64Cwd=%PBXB64DIR%
     if not defined PBXB64 echo Pbxb64Cwd=
+    type "%ANDROID_TMP%"
     rem PBWin.chm is the native PBWin 10 help and the safe target. install_help
     rem rewrites PbHelpFile only after a successful copy; if a locked file blocks
     rem the copy, the previous usable value stays instead of pointing at a file

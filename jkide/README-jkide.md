@@ -2,8 +2,8 @@
 
 PB64Basic Enhanced ships with a ready-made JK-IDE addon that adds a
 **Compilers** menu to the JK-IDE menu bar. From that menu you can compile
-the active file with **PBWin 10**, **PB64Basic (64bit)**, **PB64Basic (32bit)** or **PBXB64** without
-leaving the IDE.
+the active file with **PBWin 10**, **PB64Basic (64bit)**, **PB64Basic (32bit)**,
+**PBXB64**, or build an **Android APK** without leaving the IDE.
 
 ## What is in this folder
 
@@ -12,9 +12,11 @@ leaving the IDE.
 | `Setup.bat` (zip root) | one-shot installer: finds JK-IDE (auto-downloads it if missing), copies the addon, writes `JKIDE.ini`, enables the addon |
 | `User_Setup.bas` | addon source - installs the Compilers menu at IDE startup |
 | `User_Code.bas` | addon source - reads `JKIDE.ini` and runs the requested compiler |
-| `User_Command.bas`, `User_Menu.bas`, `Userdll.bas` | addon build files (do not edit) |
-| `userdll.dll` | pre-built addon (PBWin 10 compiled, 114688 bytes) |
+| `User_Command.bas` | addon source - dispatches the Compilers menu command IDs |
+| `User_Menu.bas` / `Userdll.bas` | addon build files (keep the stock menu template; `Userdll.bas` is the build entry) |
+| `userdll.dll` | pre-built addon (PBWin 10 compiled, 120832 bytes) |
 | `JKIDE.ini` | configuration template - all compiler paths live here |
+| `find_jkide.ps1` / `find_android.ps1` | setup helpers: locate JK-IDE and the Android toolchain |
 | `enable_userdll.ps1` | helper used by Setup.bat to set `Userdll=1` in the IDE's own `JK-IDE.ini` |
 
 ## How to install
@@ -44,6 +46,26 @@ The `Compilers` menu appears between `Options` and `Tools`. Its items:
 * **PB64Basic (32bit)** - this project's i686 compiler (same `PB64Basic.exe`, target `i686-pc-windows-msvc`, runtime `pb_runtime_x86.obj`). The 32-bit output is named `<source>_x86.exe` so it does not overwrite the 64-bit `<source>.exe`.
 * **PBXB64** - PowerBASIC 64-bit fork (optional, detected if installed)
 * **Compile (default)** - JK-IDE's own default compile action
+* **Android APK** - builds an APK from the active `.bas` with
+  `PB64Basic-Android\tools\build_apk.ps1`. Its submenu has three build
+  targets and one install/run action:
+  * `Compile (arm64-v8a / phone)` - 64-bit ARM, for a real phone.
+  * `Compile (x86_64 / emulator)` - 64-bit x86, for the Windows emulator.
+  * `Compile (both)` - one APK containing both `arm64-v8a` and `x86_64`
+    native libraries. `both` is not a third ABI; it is the two ABIs in one
+    APK.
+  * `Build + Install (x86_64)` - builds x86_64, runs `adb install -r`, then
+    starts the activity. An emulator or device must already be running.
+
+  32-bit Android ABIs (`armeabi-v7a`, `x86`) are **not** supported by the
+  current builder or runtime baseline, so the menu does not offer them.
+
+  The Android submenu needs a separate `PB64Basic-Android` checkout that
+  provides `tools\build_apk.ps1`, the `PBApp` template and the Android
+  support sources. That project is not part of the Windows release zip.
+  `setup.bat` fills `AndroidBuildScript` when it can find the builder; when
+  the builder is absent the menu reports a clear error instead of starting
+  a build. Set `AndroidBuildScript` manually if the checkout is elsewhere.
 
 ### Updating an existing JK-IDE install (important)
 
@@ -128,6 +150,18 @@ Notes about the package:
 | `PbwinExe` / `PbwinCwd` / `PbwinInc` | PBWin executable, its working dir, its WINAPI include dir (no trailing space; `/I` path must be space-free) |
 | `Pb64Exe` / `Pb64Cwd` / `Pb64Runtime` / `Pb64RuntimeX86` | PB64Basic executable (shared by both targets), working dir, 64-bit runtime object, 32-bit runtime object |
 | `Pbxb64Exe` / `Pbxb64Cwd` | PBXB64 executable and working dir |
+| `AndroidRoot` / `AndroidBuildScript` | Android toolchain root and the `build_apk.ps1` used by the Android menu |
+| `AndroidSdk` / `AndroidNdk` / `AndroidJdk` / `AndroidGradle` | SDK, NDK, JDK and `gradle.bat`; each is passed only when non-empty |
+| `AndroidBaseline` / `AndroidPb64Exe` | runtime-object cache and the PB64Basic executable used for Android builds |
+
+`Setup.bat` runs `jkide\find_android.ps1` before it writes `JKIDE.ini`. The
+finder checks an explicit value, `PB64_ANDROID_HOME`, the per-user fallback,
+and `AndroidToolchain` / `Android` / `Software\AndroidToolchain` /
+`Software\Android` / `Tools\AndroidToolchain` / `Tools\Android` under each
+local drive. A candidate must contain `Sdk` and `Ndk` and match at least
+three of JDK, Gradle, SDK and NDK. When a re-run cannot find a toolchain, the
+finder keeps the previous keys whose paths still exist, so a transient miss
+does not blank the menu.
 
 Leave a key empty if that compiler is not installed - the menu then shows a
 clear message instead of running. Paths with spaces are allowed in the

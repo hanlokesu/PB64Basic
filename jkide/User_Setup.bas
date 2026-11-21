@@ -16,7 +16,7 @@
   ' ===== Compilers submenu (HAN 2026-10-27, startup install) =====
   ' Each compiler entry is now a popup submenu holding "Compile" and "Run"
   ' (HAN 2026-11-01): clicking the entry opens { Compile, Run }.
-  LOCAL hcomp AS DWORD, hsub1 AS DWORD, hsub2 AS DWORD, hsub3 AS DWORD, hsub4 AS DWORD, hsub5 AS DWORD
+  LOCAL hcomp AS DWORD, hsub1 AS DWORD, hsub2 AS DWORD, hsub3 AS DWORD, hsub4 AS DWORD, hsub5 AS DWORD, hsub6 AS DWORD
   STATIC did AS LONG
   IF did = 0 THEN
     hcomp = CreatePopupMenu()
@@ -36,11 +36,18 @@
       hsub5 = CreatePopupMenu()                       ' Compile (default)
       AppendMenu hsub5, %MF_STRING, %IDM_COMPILE, "Compile"
       AppendMenu hsub5, %MF_STRING, %JKCOMP_RUN_DEFAULT, "Run"
+      hsub6 = CreatePopupMenu()                       ' Android APK
+      AppendMenu hsub6, %MF_STRING, %JKCOMP_ANDROID_ARM64, "Compile (arm64-v8a / phone)"
+      AppendMenu hsub6, %MF_STRING, %JKCOMP_ANDROID_X86, "Compile (x86_64 / emulator)"
+      AppendMenu hsub6, %MF_STRING, %JKCOMP_ANDROID_BOTH, "Compile (both)"
+      AppendMenu hsub6, %MF_SEPARATOR, 0, ""
+      AppendMenu hsub6, %MF_STRING, %JKCOMP_RUN_ANDROID, "Build + Install (x86_64)"
       AppendMenu hcomp, %MF_POPUP, hsub1, "PBWin 10"
       AppendMenu hcomp, %MF_POPUP, hsub2, "PB64Basic (64bit)"
       AppendMenu hcomp, %MF_POPUP, hsub3, "PB64Basic (32bit)"
       AppendMenu hcomp, %MF_POPUP, hsub4, "PBXB64"
       AppendMenu hcomp, %MF_POPUP, hsub5, "Compile (default)"
+      AppendMenu hcomp, %MF_POPUP, hsub6, "Android APK"
       AppendMenu hcomp, %MF_SEPARATOR, 0, ""
       AppendMenu hcomp, %MF_STRING, %JKCOMP_PBHELP, "Open PB Help"
       AppendMenu hcomp, %MF_STRING, %JKCOMP_PB64CHM, "PB64BASIC.CHM"

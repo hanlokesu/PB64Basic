@@ -15,9 +15,9 @@ This repository is an enhanced branch that fixes an upstream bug and adds severa
 
 ## JK-IDE Integration and PB64Basic Help
 
-JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. The **Compilers** menu lists `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and `Compile (default)`, followed by `Open PB Help`, `PB64BASIC.CHM` and `JKIDE.INI`. Both PB64Basic entries drive the same `PB64Basic.exe`: the 64-bit entry builds `<source>.exe` with the x86_64 runtime, while the 32-bit entry builds `<source>_x86.exe` with the i686 runtime, so one target never overwrites the other.
+JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. The **Compilers** menu lists `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and `Compile (default)`, followed by an **Android APK** submenu, `Open PB Help`, `PB64BASIC.CHM` and `JKIDE.INI`. Both PB64Basic entries drive the same `PB64Basic.exe`: the 64-bit entry builds `<source>.exe` with the x86_64 runtime, while the 32-bit entry builds `<source>_x86.exe` with the i686 runtime, so one target never overwrites the other. The Android submenu builds `arm64-v8a`, `x86_64`, or both ABIs in one APK from the active source; it requires the separate `PB64Basic-Android` build project.
 
-This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (952 topics plus an index); when JK-IDE integration is selected, `setup.bat` installs it as `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **PB64BASIC.CHM** menu. The original PBWin 10 help is preserved once as `PB.chm.pbwin-bak` / `PB.chw.pbwin-bak` and republished as `PBWin.chm`/`PBWin.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. If you prefer to browse, open the fork help from **PB64BASIC.CHM**, the original help from **Open PB Help**, or either file by double-clicking it, and use its contents, index, and full-text search.
+This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (958 topic pages plus an index); when JK-IDE integration is selected, `setup.bat` installs it as `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **PB64BASIC.CHM** menu. The original PBWin 10 help is preserved once as `PB.chm.pbwin-bak` / `PB.chw.pbwin-bak` and republished as `PBWin.chm`/`PBWin.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. If you prefer to browse, open the fork help from **PB64BASIC.CHM**, the original help from **Open PB Help**, or either file by double-clicking it, and use its contents and keyword index. This CHM is built with `Full-text search=No`, so it has no full-text search tab; the `HHC6003 Itircl.dll` line in the build log is expected for that setting.
 
 ### Right-click context menu (editor tabs and editor area)
 
@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 402 (v0.2.191). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 402 (v0.2.192). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 402 packaging follow-up (v0.2.192) - Rebuilt the 958-page CHM, fixed the full-text-search claim, added the JK-IDE Android APK menu and setup-time Android toolchain probe, and refreshed the add-on DLL. Compiler behavior is unchanged. See the v0.2.192 changelog entry.
 > batch 402 packaging (v0.2.191) - Added the optional Android toolchain installer and a 958-page CHM with a complete Android demo APK guide; compiler behavior is unchanged. See the v0.2.191 changelog entry.
 > batch 402 (v0.2.190) - Closed the GRAPHIC text-metric, font-selection, BYVAL floating-argument, WSTRING storage and XMLENCODEBASE64 Variant gaps: Page Unit printing, documented CELL/CHR/CELL-position forms, real GDI cursor movement, exact 14-cell comma zones, correct FONT NEW argument bounds and BSTR SafeArray ownership. 479 examples compile, 319 headless samples run with 0 failures, and the 20-demo Android APK suite is rebuilt at v0.2.190.
 > batch 401 (v0.2.189) - Closed the batch 401 array-parameter, dynamic DLL and PB/CC sample gaps: static arrays passed through `BYREF` now follow callee `REDIM`; `DECLARE ... LIB` uses runtime loading; `#EXPORT` controls the export table; 56/56 PB/CC samples build on both targets. PBWin10 sample results remain 152/159 on both targets, with the seven rejects invalid in PBWin10 itself. Android runtime and the 20-demo APK suite were rebuilt at v0.2.189.
@@ -1084,6 +1085,25 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.192 (2026-11-21)
+
+Packaging and JK-IDE integration update for batch 402. No compiler behavior change.
+
+- Rebuilt the bundled CHM with 958 topic pages. Page verification reports 28 checks / 0 FAIL, and 958 source pages map 1:1 to 958 unpacked `.htm` files with 0 empty files.
+- Corrected the help documentation: the CHM is built with `Full-text search=No`, so it has contents and a keyword index but no full-text search tab. The previous README wording implied full-text search. The `HHC6003 Itircl.dll` line in the build log is expected for this setting, not a missing-content failure.
+- Added the **Android APK** submenu to the JK-IDE **Compilers** menu: `Compile (arm64-v8a / phone)` (55030), `Compile (x86_64 / emulator)` (55031), `Compile (both)` (55032), and `Build + Install (x86_64)` (55033). `both` is one APK with both native ABIs, not a third ABI; 32-bit Android ABIs remain unsupported.
+- Updated `userdll.dll` to 120,832 bytes. The live IDE shows all 17 Compilers items and all five Android submenu items with the expected command IDs. The Android builder produced a 53,053-byte x86_64 APK and a 120,143-byte both-ABI APK whose badging reports `arm64-v8a` and `x86_64`.
+- `setup.bat` now runs `jkide\find_android.ps1` before writing `JKIDE.ini`, then appends eight Android keys: `AndroidRoot`, `AndroidBuildScript`, `AndroidSdk`, `AndroidNdk`, `AndroidJdk`, `AndroidGradle`, `AndroidBaseline`, and `AndroidPb64Exe`. The finder requires SDK and NDK, scores JDK/Gradle/SDK/NDK, and preserves existing keys whose paths still exist when a re-run finds nothing. An empty result writes blank keys instead of stale paths.
+- The Windows release package does not include the separate `PB64Basic-Android` project. Without `tools\build_apk.ps1`, `AndroidBuildScript` stays blank and the Android menu reports a clear error; `setup.bat` prints a warning. This keeps the Windows package focused on the compiler and JK-IDE add-on.
+- `examples/batch402_test.bas` passes on x86_64 and i686. `Build + Install` and the phone-only `arm64-v8a` menu path were not run because this host has no emulator or device; the APK artifacts were checked with `aapt2 dump badging`.
+
+Validation:
+
+- CHM: 958/958 pages, 28 checks / 0 FAIL, 0 empty files.
+- JK-IDE: 17 Compilers items, 5 Android submenu items, IDs 55030-55033.
+- Android: x86_64 APK 53,053 bytes; both-ABI APK 120,143 bytes with `arm64-v8a` and `x86_64` native code.
+- Release zip: full package and independent zip verification.
+
 ### v0.2.191 (2026-11-21)
 
 Packaging and help update for batch 402. No compiler behavior change.
