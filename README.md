@@ -435,7 +435,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 401 (v0.2.189). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 402 (v0.2.190). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 402 (v0.2.190) - Closed the GRAPHIC text-metric, font-selection, BYVAL floating-argument, WSTRING storage and XMLENCODEBASE64 Variant gaps: Page Unit printing, documented CELL/CHR/CELL-position forms, real GDI cursor movement, exact 14-cell comma zones, correct FONT NEW argument bounds and BSTR SafeArray ownership. 479 examples compile, 319 headless samples run with 0 failures, and the 20-demo Android APK suite is rebuilt at v0.2.190.
 > batch 401 (v0.2.189) - Closed the batch 401 array-parameter, dynamic DLL and PB/CC sample gaps: static arrays passed through `BYREF` now follow callee `REDIM`; `DECLARE ... LIB` uses runtime loading; `#EXPORT` controls the export table; 56/56 PB/CC samples build on both targets. PBWin10 sample results remain 152/159 on both targets, with the seven rejects invalid in PBWin10 itself. Android runtime and the 20-demo APK suite were rebuilt at v0.2.189.
 > batch 400 (v0.2.188) - Replaced four index-based codegen argument loops with iterator loops to satisfy Rust 1.100.0 `clippy::needless_range_loop`. Argument order and bounds are unchanged; there is no compiler behavior change.
 > batch 399 (v0.2.187) - WINMAIN and legacy MAIN entry points now compile only the reachable function/sub closure, matching the existing PBMAIN path; this lets standard Win32 SDK window samples build against large header sets that declare unused BYREF array helpers. `ARRAY REDIM INCR`/`DECR` now updates the live one-dimensional bound and zeros the regrown tail, so `UBOUND` and element access agree after grow/shrink cycles. `batch399_test.bas` and `batch378_redim.bas` pass on x86_64, and Discussion #5's `Window.bas` builds and displays its window with both the José Roca WINAPI_III_107 and stock PBWin10 include sets.
@@ -1071,6 +1072,39 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.190 (2026-11-21)
+
+GRAPHIC text metrics, Variant array and call-ABI closure batch 402.
+
+- `GRAPHIC PRINT` now advances in Page Units under `GRAPHIC SCALE`. `LEN`, `SPC`, `TAB`, newline and comma zones convert GDI cell metrics through the current page scale instead of using device pixels. Scaled output now matches PBWin10 exactly: `ab=28`, `spc=40`, `pos=64`, `comma=154` for the reference probe. Comma zones are exactly 14 average character cells, with no variable-pitch rounding.
+- `GRAPHIC CELL SIZE` and `GRAPHIC CHR SIZE` now support the documented no-argument forms and the `GRAPHIC(CELL.SIZE.X/Y)` and `GRAPHIC(CHR.SIZE.X/Y)` pseudo-functions. `CELL SIZE` reports the average cell including external leading; `CHR SIZE` reports the average cell without external leading. Both return Page Units under a graphic scale. The previous `CHR SIZE` path stored a raw integer into a floating slot, producing denormal values.
+- `GRAPHIC CELL =`, `GRAPHIC CELL TO`, `GRAPHIC COL TO` and `GRAPHIC ROW TO` now move and read the real GDI current position with one-based row and column values. `GRAPHIC(COL)` and `GRAPHIC(ROW)` return the same position. Previously these statements only updated bookkeeping globals and never moved the output cursor.
+- `FONT NEW` no longer treats the trailing `TO hFont` target as an optional charset argument. A second or third `FONT NEW` call previously passed the previous font handle as the charset, which changed font selection and produced wrong cell and comma metrics. Optional numeric arguments now also convert to the declared `Long` parameters instead of being passed as raw `i64` values.
+- User procedures declared with `BYVAL SINGLE` or `BYVAL DOUBLE` now convert integer actual arguments to floating values before the call. The old path passed an integer as a pointer-sized value into a floating register, so `CheckFont(..., 12, ...)` saw a denormal instead of `12.0`.
+- Assignments of ANSI string constants to `WSTRING` array elements, `WSTRING` `TYPE` fields and indexed `TYPE` arrays now convert through `pb_ansi_to_wide` before storage. A `WSTRING` array stored in a `Variant` previously received ANSI bytes and returned corrupt `LEN` and `ASC` values.
+- `LEN` of a `WSTRINGZ * N` fixed buffer now returns the NUL-terminated content length rather than the declared capacity.
+- `XMLENCODEBASE64` and `XmlDecodeBase64` are verified end to end. `MOVEMEMORY` accepts the optional parenthesized form and per-argument `BYVAL`; `VARIANT` uses the 24-byte layout; whole `WSTRING` arrays convert to `VT_BSTR` SafeArrays with independent `SysAllocString` ownership; array lower bounds survive the round trip. The probe reports `hr=0 dec=[ABC] DECODE-OK` on both targets.
+- The compiler now locates the default runtime library next to the executable, under the repository root and in the current directory when `--runtime-lib` is not supplied.
+- `examples/batch402_test.bas` covers the GRAPHIC metrics, cursor, font, ABI and Variant cases. It passes with `FAILURES: 0` on x86_64 and i686.
+- The Android runtime and all 20 demo APKs were rebuilt at v0.2.190.
+
+Validation:
+
+- `run_examples.py --compile-all`: 479 compiled / 0 failed.
+- `run_examples.py --all-headless`: 323 compiled / 319 ran / 0 failed / 0 timed out.
+- Negative probes: 34 probes / 0 BAD. Link smoke: 0 failures on x86_64 and i686. Coverage: 35 checks / 0 FAIL.
+- PBWin10 samples: 159 attempted per target, 152 build (141 EXE + 11 DLL); the seven rejects are invalid in PBWin10 itself.
+- PB/CC samples: 56/56 build on x86_64 and 56/56 on i686.
+- GUI runtime survey: 64 candidates build; 59 open a window, 4 exit 0 without a window, and one DLL-only sample is skipped.
+- `cargo +1.100.0 fmt -- --check` and `cargo +1.100.0 clippy --release -p pbcompiler -- -D warnings` both pass.
+- Android: 20/20 APKs pass package, ABI, zipalign and signature verification; device smoke passes 20/20 on the x86_64 emulator.
+
+Boundaries:
+
+- ARM64 APKs remain build and static-verification only; no ARM64 device or emulator was used.
+- There is no PB/CC compiler on this host, so PB/CC results are project build and runtime results, not a differential comparison against the official compiler.
+- GDI text metrics depend on the fonts installed on the host. The PBWin10 comparisons were run on the same host with the same font set.
+
 ### v0.2.189 (2026-11-21)
 
 Array-parameter, dynamic DLL and PB/CC sample closure batch 401.

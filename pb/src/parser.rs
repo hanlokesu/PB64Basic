@@ -6799,6 +6799,20 @@ impl Parser {
                         if sub == "SIZE" {
                             self.advance();
                         }
+                        if sub == "SIZE" && self.peek() == &Token::To {
+                            // Official GRAPHIC CELL SIZE TO w!, h! form (CHW):
+                            // no row/column arguments, returns the font cell.
+                            self.advance();
+                            let o0 = self.parse_expression()?;
+                            self.expect(&Token::Comma)?;
+                            let o1 = self.parse_expression()?;
+                            self.consume_to_eol();
+                            return Ok(Statement::Call(CallStmt {
+                                name: "GRAPHIC_CELL_SIZE_FONT".to_string(),
+                                args: vec![o0, o1],
+                                line,
+                            }));
+                        }
                         self.expect(&Token::LParen)?;
                         let a0 = self.parse_expression()?;
                         self.expect(&Token::Comma)?;
@@ -6817,6 +6831,30 @@ impl Parser {
                         return Ok(Statement::Call(CallStmt {
                             name,
                             args: vec![a0, a1, o0, o1],
+                            line,
+                        }));
+                    }
+                    if gop == "COL" {
+                        // GRAPHIC COL TO ColVar& (CHW); function: GRAPHIC(COL)
+                        self.advance();
+                        self.expect(&Token::To)?;
+                        let c = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "GRAPHIC_GET_COL".to_string(),
+                            args: vec![c],
+                            line,
+                        }));
+                    }
+                    if gop == "ROW" {
+                        // GRAPHIC ROW TO RowVar& (CHW); function: GRAPHIC(ROW)
+                        self.advance();
+                        self.expect(&Token::To)?;
+                        let r = self.parse_expression()?;
+                        self.consume_to_eol();
+                        return Ok(Statement::Call(CallStmt {
+                            name: "GRAPHIC_GET_ROW".to_string(),
+                            args: vec![r],
                             line,
                         }));
                     }
@@ -6999,8 +7037,20 @@ impl Parser {
                             && self.peek() != &Token::Eof
                             && self.peek() != &Token::Colon
                         {
-                            if self.peek() == &Token::Comma || self.peek() == &Token::Semicolon {
+                            if self.peek() == &Token::Comma {
                                 self.advance();
+                                pargs.push(Expr::FunctionCall(
+                                    "__GRAPHIC_PRINT_SEP".to_string(),
+                                    vec![Expr::IntegerLit(1)],
+                                ));
+                                continue;
+                            }
+                            if self.peek() == &Token::Semicolon {
+                                self.advance();
+                                pargs.push(Expr::FunctionCall(
+                                    "__GRAPHIC_PRINT_SEP".to_string(),
+                                    vec![Expr::IntegerLit(0)],
+                                ));
                                 continue;
                             }
                             pargs.push(self.parse_expression()?);
@@ -9339,6 +9389,44 @@ impl Parser {
                     return Ok(Statement::Call(CallStmt {
                         name: "LOCATE".to_string(),
                         args: vec![row, col],
+                        line,
+                    }));
+                }
+
+                // MoveMemory BYVAL src, BYVAL dst, count — WinAPI-style
+                // statement spelling used by the shipped MSXML.inc
+                // (XmlEncodeBase64).  It is the same operation as
+                // MEMORY COPY and accepts optional BYVAL/BYCOPY prefixes
+                // on each argument.
+                if name_upper == "MOVEMEMORY" {
+                    self.advance(); // consume MOVEMEMORY
+                                    // WinAPI samples spell the call as `MoveMemory (BYVAL dst,
+                                    // BYVAL src, BYVAL n)`, with a parenthesised argument list;
+                                    // the MSXML.inc statement form omits the parentheses.
+                    let parenthesised = matches!(self.peek(), Token::LParen);
+                    if parenthesised {
+                        self.advance();
+                    }
+                    let mut args = Vec::new();
+                    for i in 0..3 {
+                        if i > 0 {
+                            self.expect(&Token::Comma)?;
+                        }
+                        if matches!(self.peek(), Token::Byval) {
+                            self.advance();
+                            args.push(Expr::ByvalOverride(Box::new(self.parse_expression()?)));
+                        } else {
+                            args.push(self.parse_expression()?);
+                        }
+                    }
+                    if parenthesised {
+                        self.expect(&Token::RParen)?;
+                    }
+                    return Ok(Statement::Call(CallStmt {
+                        name: "MEMORY_COPY".to_string(),
+                        // MoveMemory is Destination, Source, Length; MEMORY COPY
+                        // is Source, Destination, Count.  Swap the first two.
+                        args: vec![args[1].clone(), args[0].clone(), args[2].clone()],
                         line,
                     }));
                 }
@@ -20681,6 +20769,72 @@ impl Parser {
                         let text = self.parse_expression()?;
                         self.expect(&Token::RParen)?;
                         Expr::FunctionCall(format!("GRAPHIC_TEXT_SIZE_{}", axis), vec![text])
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("COL"))
+                        && matches!(self.peek_at(1), Some(Token::RParen))
+                    {
+                        // GRAPHIC(COL) — current print column (CHW).
+                        self.advance(); // COL
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall("GRAPHIC_COL".to_string(), Vec::new())
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("ROW"))
+                        && matches!(self.peek_at(1), Some(Token::RParen))
+                    {
+                        // GRAPHIC(ROW) — current print row (CHW).
+                        self.advance(); // ROW
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall("GRAPHIC_ROW".to_string(), Vec::new())
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("CHR"))
+                        && matches!(self.peek_at(1), Some(Token::Dot))
+                        && matches!(self.peek_at(2), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("SIZE"))
+                        && matches!(self.peek_at(3), Some(Token::Dot))
+                        && matches!(self.peek_at(4), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("X") || k.eq_ignore_ascii_case("Y"))
+                        && matches!(self.peek_at(5), Some(Token::RParen))
+                    {
+                        // GRAPHIC(CHR.SIZE.X) / GRAPHIC(CHR.SIZE.Y) — function
+                        // forms of GRAPHIC CHR SIZE (CHW).
+                        self.advance(); // CHR
+                        self.advance(); // .
+                        self.advance(); // SIZE
+                        self.advance(); // .
+                        let axis = match self.peek() {
+                            Token::Identifier(k) => k.to_uppercase(),
+                            _ => "X".to_string(),
+                        };
+                        self.advance(); // X / Y
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall(format!("GRAPHIC_CHR_SIZE_{}", axis), Vec::new())
+                    } else if name.eq_ignore_ascii_case("GRAPHIC")
+                        && matches!(self.peek(), Token::Identifier(k)
+                                    if k.eq_ignore_ascii_case("CELL"))
+                        && matches!(self.peek_at(1), Some(Token::Dot))
+                        && matches!(self.peek_at(2), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("SIZE"))
+                        && matches!(self.peek_at(3), Some(Token::Dot))
+                        && matches!(self.peek_at(4), Some(Token::Identifier(k))
+                                    if k.eq_ignore_ascii_case("X") || k.eq_ignore_ascii_case("Y"))
+                        && matches!(self.peek_at(5), Some(Token::RParen))
+                    {
+                        // GRAPHIC(CELL.SIZE.X) / GRAPHIC(CELL.SIZE.Y) — the
+                        // function forms of the no-argument CELL SIZE statement.
+                        self.advance(); // CELL
+                        self.advance(); // .
+                        self.advance(); // SIZE
+                        self.advance(); // .
+                        let axis = match self.peek() {
+                            Token::Identifier(k) => k.to_uppercase(),
+                            _ => "X".to_string(),
+                        };
+                        self.advance(); // X / Y
+                        self.expect(&Token::RParen)?;
+                        Expr::FunctionCall(format!("GRAPHIC_CELL_SIZE_{}", axis), Vec::new())
                     } else if name.eq_ignore_ascii_case("GRAPHIC")
                         && matches!(self.peek(), Token::Identifier(k)
                                     if k.eq_ignore_ascii_case("POS"))

@@ -248,6 +248,8 @@ fn real_main() {
     // Runtime library: an explicit --runtime-lib wins; otherwise a bare
     // positional ".obj" collected above is used. Two different runtime objects
     // is a hard error rather than a silent choice.
+    let target =
+        get_flag_value(&args, "--target").unwrap_or_else(|| codegen::DEFAULT_TARGET.to_string());
     let runtime_lib = match (get_flag_value(&args, "--runtime-lib"), positional_obj) {
         (Some(flag), Some(bare)) if flag != bare => {
             eprintln!(
@@ -257,10 +259,21 @@ fn real_main() {
             process::exit(2);
         }
         (Some(flag), _) => Some(flag),
+        (None, None) => {
+            let auto = default_runtime_lib(&target);
+            if let Some(path) = &auto {
+                if exe_mode || dll_mode {
+                    eprintln!("[PB64Basic] Auto runtime library: {}", path);
+                }
+            } else if exe_mode {
+                eprintln!(
+                    "[PB64Basic] Warning: --runtime-lib not given and no default runtime object was found next to the compiler; linking may fail."
+                );
+            }
+            auto
+        }
         (None, bare) => bare,
     };
-    let target =
-        get_flag_value(&args, "--target").unwrap_or_else(|| codegen::DEFAULT_TARGET.to_string());
     let lib_dir = get_flag_value(&args, "--lib-dir").or_else(|| {
         let d = detect_sdk_lib_dir(&target);
         match &d {
@@ -338,6 +351,40 @@ fn get_flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .position(|a| a == flag)
         .and_then(|pos| args.get(pos + 1).cloned())
+}
+
+/// Locate the runtime object when `--runtime-lib` is omitted.  The packaged
+/// layout keeps `pb_runtime_x64.obj` / `pb_runtime_x86.obj` beside the
+/// compiler; a source checkout keeps them at the repository root (two levels
+/// above `target/release`).  Selecting by target avoids linking the wrong
+/// architecture, which produced a long list of unresolved `_pb_*` symbols.
+fn default_runtime_lib(target: &str) -> Option<String> {
+    let names: &[&str] = if target.contains("x86_64") {
+        &["pb_runtime_x64.obj"]
+    } else {
+        &["pb_runtime_x86.obj", "pb_runtime.obj"]
+    };
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+            dirs.push(dir.join("../.."));
+            dirs.push(dir.join("../../pbcompiler/runtime"));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd);
+    }
+    for dir in dirs {
+        for name in names {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                let resolved = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+                return Some(resolved.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
 }
 
 /// True for the PB-style include-directory switch `/I`, either attached

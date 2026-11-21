@@ -182,10 +182,27 @@ unsigned long WaitForSingleObject(void* h, unsigned long ms);
 #if defined(_WIN32) || defined(__ANDROID__)
 /* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
 __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, unsigned int len);
+__declspec(dllimport) wchar_t* __stdcall SysAllocString(const wchar_t* psz);
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
 __declspec(dllimport) wchar_t* __stdcall SysAllocStringLen(const wchar_t* psz, unsigned int len);
 __declspec(dllimport) unsigned long __stdcall SysStringByteLen(const char* bstr);
 __declspec(dllimport) unsigned int __stdcall SysStringLen(const wchar_t* bstr);
+#if defined(_WIN32)
+/* batch 402: minimal SafeArray surface for Variant array assignment.
+   The runtime deliberately avoids including windows.h, so the opaque
+   SAFEARRAY type and the four oleaut32 entry points are declared here. */
+typedef struct _SAFEARRAY SAFEARRAY;
+typedef unsigned short VARTYPE;
+typedef wchar_t* BSTR;
+#define VT_BSTR 8
+#define VT_ARRAY 0x2000
+__declspec(dllimport) SAFEARRAY* __stdcall SafeArrayCreateVector(VARTYPE vt, long lLbound, unsigned long cElements);
+__declspec(dllimport) long __stdcall SafeArrayAccessData(SAFEARRAY* psa, void** ppvData);
+__declspec(dllimport) long __stdcall SafeArrayUnaccessData(SAFEARRAY* psa);
+__declspec(dllimport) long __stdcall SafeArrayDestroy(SAFEARRAY* psa);
+__declspec(dllimport) long __stdcall SafeArrayGetLBound(SAFEARRAY* psa, unsigned int nDim, long* plLbound);
+__declspec(dllimport) long __stdcall SafeArrayGetUBound(SAFEARRAY* psa, unsigned int nDim, long* plUbound);
+#endif
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char* lpFileName);
 __declspec(dllimport) int __stdcall MoveFileExA(const char* lpExisting, const char* lpNew, unsigned long dwFlags);
 __declspec(dllimport) unsigned long __stdcall GetLastError(void);
@@ -4654,6 +4671,19 @@ char* pb_fixed_to_bstr(const char* buf, long long n) {
    LEN = 10.  LEN must therefore be runtime content length for ASCIIZ, not the
    declared capacity. */
 int pb_asciiz_len(const char* buf, long long n) {
+    long long len = 0;
+    if (!buf) return 0;
+    if (n < 0) n = 0;
+    while (len < n && buf[len] != 0) len++;
+    return (int)len;
+}
+
+/* WSTRINGZ*n logical length: count UTF-16 code units up to the first NUL or
+   the declared capacity.  A fixed WSTRINGZ is a raw inline [n x i16] buffer
+   with no BSTR prefix, so pb_wstr_len (which reads the BSTR byte-length
+   prefix) cannot be used on it.  PBWin 10 measured 2026-11-21: a fixed
+   WSTRINGZ * 300 holding "Alpha" gives LEN = 5, not 300. */
+int pb_wstringz_len(const unsigned short* buf, long long n) {
     long long len = 0;
     if (!buf) return 0;
     if (n < 0) n = 0;
@@ -13080,6 +13110,10 @@ int pb_graphic_get_textalign(long* align) {
 
 /* GRAPHIC GET BITS / SET BITS / GET SCALE / SCALE / SET AUTOSIZE (batch 64) */
 static long g_gr_scale_x1 = 0, g_gr_scale_y1 = 0, g_gr_scale_x2 = 0, g_gr_scale_y2 = 0;
+/* Page units per device pixel.  GRAPHIC SCALE defines a world coordinate
+   system, so GRAPHIC TEXT SIZE must report the text extent in those page
+   units rather than raw device pixels (CHW GRAPHIC_TEXT_SIZE). */
+static double g_gr_page_x = 1.0, g_gr_page_y = 1.0;
 static long g_gr_autosize_w = 0, g_gr_autosize_h = 0;
 #define PB_MM_TEXT 1
 #define PB_MM_ANISOTROPIC 10
@@ -13156,6 +13190,9 @@ int pb_graphic_scale(float x1, float y1, float x2, float y2) {
     g_gr_scale_x2 = (long)x2; g_gr_scale_y2 = (long)y2;
     int w = 0, h = 0;
     if (g_gr_bmp) gr_bmp_dim(g_gr_bmp, &w, &h);
+    else { w = (int)g_gr_ctl_w; h = (int)g_gr_ctl_h; }
+    g_gr_page_x = (w > 0) ? fabs((double)(x2 - x1) / (double)w) : 1.0;
+    g_gr_page_y = (h > 0) ? fabs((double)(y2 - y1) / (double)h) : 1.0;
     SetMapMode(g_gr_dc, PB_MM_ANISOTROPIC);
     SetWindowExtEx(g_gr_dc, w, h, NULL);
     SetViewportExtEx(g_gr_dc, (int)(x2 - x1), (int)(y2 - y1), NULL);
@@ -13167,6 +13204,7 @@ int pb_graphic_scale_pixels(void) {
     if (!g_gr_dc) return 0;
     SetMapMode(g_gr_dc, PB_MM_TEXT);
     g_gr_scale_x1 = 0; g_gr_scale_y1 = 0; g_gr_scale_x2 = 0; g_gr_scale_y2 = 0;
+    g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     return 1;
 }
 
@@ -13267,13 +13305,16 @@ int pb_graphic_set_pos(int x, int y) {
     MoveToEx(g_gr_dc, x, y, 0);
     return 1;
 }
-int pb_graphic_text_size(char* txt, int* w, int* h) {
+int pb_graphic_text_size(char* txt, float* w, float* h) {
     if (!g_gr_dc) return 0;
     long sz[2];
     sz[0] = 0; sz[1] = 0;
     if (!GetTextExtentPoint32A(g_gr_dc, txt, pb_str_len(txt), (void*)sz)) return 0;
-    *w = (int)sz[0];
-    *h = (int)sz[1];
+    /* GDI returns device pixels; CHW reports Page Units as SINGLE.  Keep the
+       fractional part: official PBWin 10 returns 19.5/6.5 for a 1.5x/0.5x
+       scale, so rounding to an integer would be wrong. */
+    *w = (float)((double)sz[0] * g_gr_page_x);
+    *h = (float)((double)sz[1] * g_gr_page_y);
     return 1;
 }
 int pb_graphic_get_stretchmode(long* m) {
@@ -13417,18 +13458,38 @@ void* pb_graphic_bitmap_load_ex(char* fname, int nw, int nh) {
     return h;
 }
 
-static long g_gr_cell_row = 0;
-static long g_gr_cell_col = 0;
+static int pb_graphic_cell_metrics(int* cw, int* ch);
+static int pb_graphic_chr_metrics(int* cw, int* ch);
+
+/* GRAPHIC CELL = row&, col& — move the print position to a 1-based text
+   cell.  A zero argument leaves that axis unchanged (CHW). */
 int pb_graphic_set_cell(long row, long col) {
-    g_gr_cell_row = row;
-    g_gr_cell_col = col;
-    return 1;
+    if (!g_gr_dc) return 0;
+    pb_gw_touch();
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    int x = (col > 0) ? (int)((col - 1) * cw) : pt.x;
+    int y = (row > 0) ? (int)((row - 1) * ch) : pt.y;
+    return MoveToEx(g_gr_dc, x, y, 0) ? 1 : 0;
 }
+
+/* GRAPHIC CELL TO row&, col& — retrieve the 1-based text cell containing
+   the current print position. */
 int pb_graphic_get_cell(long* row, long* col) {
-    if (row) *row = g_gr_cell_row;
-    if (col) *col = g_gr_cell_col;
+    if (!g_gr_dc) { if (row) *row = 0; if (col) *col = 0; return 0; }
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    if (row) *row = (ch > 0) ? (pt.y / ch) + 1 : 1;
+    if (col) *col = (cw > 0) ? (pt.x / cw) + 1 : 1;
     return 1;
 }
+
+int pb_graphic_get_col(long* col) { return pb_graphic_get_cell(0, col); }
+int pb_graphic_get_row(long* row) { return pb_graphic_get_cell(row, 0); }
 
 /* GRAPHIC COPY hbmpSource, id, ... TO (x,y) */
 static void pb_graphic_present_ctl(void);
@@ -13485,19 +13546,17 @@ static int gr_char_h(void) {
     int h = sz[4] | (sz[5] << 8) | (sz[6] << 16) | (sz[7] << 24);
     return h > 0 ? h : 16;
 }
+static int pb_graphic_cell_metrics(int* cw, int* ch);
+static int pb_graphic_chr_metrics(int* cw, int* ch);
 int pb_graphic_chr_size(char* text, long* w, long* h) {
-    /* GRAPHIC CHR SIZE returns the cell size of ONE character in the font
-       currently selected into the graphic target.  The old implementation
-       measured whatever string the caller happened to pass (usually an
-       empty one), so Calendar got 0x0 and GRAPHIC SET SIZE became a no-op.
-       Measure a representative wide glyph instead, as PBWin does. */
+    /* GRAPHIC CHR SIZE returns the average character cell for the current
+       font in Page Units; the height excludes external leading (CHW). */
     (void)text;
     if (!g_gr_dc) { if (w) *w = 0; if (h) *h = 0; return 0; }
-    unsigned char sz[8];
-    for (int i = 0; i < 8; i++) sz[i] = 0;
-    GetTextExtentPoint32A(g_gr_dc, "W", 1, (void*)sz);
-    if (w) *w = sz[0] | (sz[1] << 8) | (sz[2] << 16) | (sz[3] << 24);
-    if (h) *h = sz[4] | (sz[5] << 8) | (sz[6] << 16) | (sz[7] << 24);
+    int cw = 8, ch = 16;
+    pb_graphic_chr_metrics(&cw, &ch);
+    if (w) *w = cw;
+    if (h) *h = ch;
     return 1;
 }
 int pb_graphic_cell_size(long rows, long cols, long* w, long* h) {
@@ -13687,8 +13746,102 @@ int pb_graphic_split_word(const char* src, int fieldw, char** out1, char** out2)
     return 1;
 }
 
+/* Character-cell metrics in PAGE UNITS.  GRAPHIC CELL SIZE reports the
+   average character width and the cell height including external leading
+   (CHW GRAPHIC_CELL_SIZE).  Using the extent of "A" was wrong: it is the
+   advance of one glyph, not the average cell, and it ignored GRAPHIC SCALE. */
+static int pb_graphic_cell_metrics(int* cw, int* ch) {
+    if (cw) *cw = (int)(8 * g_gr_page_x + 0.5);
+    if (ch) *ch = (int)(16 * g_gr_page_y + 0.5);
+    if (!g_gr_dc) return 0;
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    typedef struct {
+        long tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+        long tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang;
+        long tmDigitizedAspectX, tmDigitizedAspectY;
+        unsigned short tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+        unsigned char tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+    } pb_textmetrica_t;
+    __declspec(dllimport) int __stdcall GetTextMetricsA(void*, void*);
+    pb_textmetrica_t tm;
+    memset(&tm, 0, sizeof(tm));
+    if (GetTextMetricsA(g_gr_dc, &tm)) {
+        if (cw && tm.tmAveCharWidth > 0)
+            *cw = (int)(tm.tmAveCharWidth * g_gr_page_x + 0.5);
+        if (ch && tm.tmHeight > 0)
+            *ch = (int)((tm.tmHeight + tm.tmExternalLeading) * g_gr_page_y + 0.5);
+    }
+    return 1;
+}
+
+/* GRAPHIC(Chr.Size.X/Y) — average character cell in page units. */
+int pb_graphic_chr_size_font(float* w, float* h) {
+    int cw = 8, ch = 16;
+    pb_graphic_chr_metrics(&cw, &ch);
+    if (w) *w = (float)cw;
+    if (h) *h = (float)ch;
+    return 1;
+}
+
+/* Average character cell in page units, excluding external leading. */
+static int pb_graphic_chr_metrics(int* cw, int* ch) {
+    if (cw) *cw = (int)(8 * g_gr_page_x + 0.5);
+    if (ch) *ch = (int)(13 * g_gr_page_y + 0.5);
+    if (!g_gr_dc) return 0;
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    typedef struct {
+        long tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+        long tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang;
+        long tmDigitizedAspectX, tmDigitizedAspectY;
+        unsigned short tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+        unsigned char tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+    } pb_textmetrica_t;
+    __declspec(dllimport) int __stdcall GetTextMetricsA(void*, void*);
+    pb_textmetrica_t tm;
+    memset(&tm, 0, sizeof(tm));
+    if (GetTextMetricsA(g_gr_dc, &tm)) {
+        if (cw && tm.tmAveCharWidth > 0)
+            *cw = (int)(tm.tmAveCharWidth * g_gr_page_x + 0.5);
+        if (ch && tm.tmHeight > 0)
+            *ch = (int)(tm.tmHeight * g_gr_page_y + 0.5);
+    }
+    return 1;
+}
+
+/* GRAPHIC CELL SIZE TO w!, h! — average cell in page units. */
+int pb_graphic_cell_size_font(float* w, float* h) {
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    if (w) *w = (float)cw;
+    if (h) *h = (float)ch;
+    return 1;
+}
+
+/* Advance width of one text run in page units. */
+static int pb_graphic_text_width(const char* s, int len) {
+    if (!g_gr_dc || !s || len <= 0) return 0;
+    long sz[2]; sz[0] = 0; sz[1] = 0;
+    if (!GetTextExtentPoint32A(g_gr_dc, s, len, (void*)sz)) return 0;
+    return (int)((double)sz[0] * g_gr_page_x + 0.5);
+}
+
+/* Width of one space in page units (SPC(n) is n spaces, not n cells). */
+static int pb_graphic_space_width(void) {
+    return pb_graphic_text_width(" ", 1);
+}
+
+/* GRAPHIC PRINT comma zone width in page units.  PBWin starts a new zone
+   every 14 average character cells; the width is exactly 14 cells with no
+   font-dependent rounding (verified against PBWin 10 for the default GUI
+   font, Arial, Times New Roman, Courier New, Tahoma and Segoe UI). */
+static int pb_graphic_zone_width(int cw) {
+    return 14 * cw;
+}
+
 static int pb_graphic_print_len(const char* s, int len) {
-    /* GRAPHIC PRINT - draw text on the attached graphic bitmap DC (batch 118) */
+    /* GRAPHIC PRINT - draw text on the attached graphic bitmap DC (batch 118).
+       The statement-level newline is emitted separately, so a trailing `;`
+       or `,` can keep the POS on the current line. */
     if (!g_gr_dc) return 0;
     pb_gw_touch();
     if (!s) return 0;
@@ -13698,10 +13851,8 @@ static int pb_graphic_print_len(const char* s, int len) {
     pb_pt pt; pt.x = 0; pt.y = 0;
     GetCurrentPositionEx(g_gr_dc, (void*)&pt);
     int ok = TextOutA(g_gr_dc, pt.x, pt.y, s, len);
-    long sz[2]; sz[0] = 0; sz[1] = 0;
-    if (GetTextExtentPoint32A(g_gr_dc, s, len, (void*)sz)) {
-        MoveToEx(g_gr_dc, 0, pt.y + sz[1], 0);   /* GRAPHIC PRINT ends with CRLF */
-    }
+    int w = pb_graphic_text_width(s, len);
+    if (len > 0 && w > 0) MoveToEx(g_gr_dc, pt.x + w, pt.y, 0);
     return ok ? 1 : 0;
 }
 
@@ -13710,19 +13861,63 @@ int pb_graphic_print_str(const char* s) {
     return pb_graphic_print_len(s, pb_str_len(s));
 }
 
+int pb_graphic_print_newline(void) {
+    if (!g_gr_dc) return 0;
+    pb_gw_touch();
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    return MoveToEx(g_gr_dc, 0, pt.y + ch, 0) ? 1 : 0;
+}
+
+int pb_graphic_print_spc(int n) {
+    if (!g_gr_dc || n < 1) return 0;
+    pb_gw_touch();
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    int sp = pb_graphic_space_width();
+    return MoveToEx(g_gr_dc, pt.x + n * sp, pt.y, 0) ? 1 : 0;
+}
+
+/* GRAPHIC PRINT POS(n): set the horizontal page unit, keep the vertical POS. */
+int pb_graphic_print_pos(int n) {
+    if (!g_gr_dc) return 0;
+    pb_gw_touch();
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    return MoveToEx(g_gr_dc, n, pt.y, 0) ? 1 : 0;
+}
+
+/* GRAPHIC PRINT comma: advance to the next 14-column print zone. */
+int pb_graphic_print_zone(void) {
+    if (!g_gr_dc) return 0;
+    pb_gw_touch();
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    pb_pt pt; pt.x = 0; pt.y = 0;
+    GetCurrentPositionEx(g_gr_dc, (void*)&pt);
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    int zone = pb_graphic_zone_width(cw);
+    if (zone <= 0) zone = 1;
+    int target = (pt.x >= 0) ? ((pt.x / zone) + 1) * zone : zone;
+    return MoveToEx(g_gr_dc, target, pt.y, 0) ? 1 : 0;
+}
+
 /* GRAPHIC PRINT TAB(n): move the text cursor to column n on the current
    line.  PB measures the column in average character cells, so one cell is
-   the extent of a representative glyph in the selected font.  Means.bas
-   uses this to align its score column. */
+   the average character width in page units (not the width of "A"). */
 int pb_graphic_print_tab(int col) {
     if (!g_gr_dc || col < 1) return 0;
     pb_gw_touch();
     if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
     pb_pt pt; pt.x = 0; pt.y = 0;
     GetCurrentPositionEx(g_gr_dc, (void*)&pt);
-    long sz[2]; sz[0] = 8; sz[1] = 0;
-    if (!GetTextExtentPoint32A(g_gr_dc, "0", 1, (void*)sz) || sz[0] <= 0) sz[0] = 8;
-    return MoveToEx(g_gr_dc, (col - 1) * sz[0], pt.y, 0) ? 1 : 0;
+    int cw = 8, ch = 16;
+    pb_graphic_cell_metrics(&cw, &ch);
+    return MoveToEx(g_gr_dc, (col - 1) * cw, pt.y, 0) ? 1 : 0;
 }
 
 int pb_graphic_get_pixel(int x, int y, unsigned long* out) {
@@ -13885,11 +14080,18 @@ int pb_graphic_attach(long long h) {
     g_gr_dc = CreateCompatibleDC(0);
     if (!g_gr_dc) return 0;
     SelectObject(g_gr_dc, g_gr_bmp);
+    /* PBWin gives a fresh graphic target the default GUI font.  Without a
+       selected font GetTextExtentPoint32 returns 0x0, so GRAPHIC TEXT SIZE
+       reported 0,0 on a bitmap target (measured 2026-11-21). */
+    if (!g_gr_font) g_gr_font = GetStockObject(17); /* DEFAULT_GUI_FONT */
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     return 1;
 }
 int pb_graphic_detach(void) {
     pb_graphic_release_dc();
     g_gr_bmp = 0;
+    g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     return 1;
 }
 /* Batch 179 - a GRAPHIC target may be a control, not only a memory bitmap.
@@ -13929,7 +14131,14 @@ static void pb_graphic_release_dc(void) {
 
 int pb_graphic_attach_ctl(void* hDlg, long long id) {
     void* h = pb_pb_hwnd(hDlg, id);
-    if (!h || !IsWindow(h)) return 0;
+    if (!h || !IsWindow(h)) {
+        /* `GRAPHIC ATTACH hBmp, 0` is the two-operand bitmap form: the first
+           operand is a memory bitmap, not a dialog.  The old code insisted on
+           a window and silently failed, so every bitmap attach with the
+           optional 0 id left GRAPHIC TEXT SIZE reporting 0x0. */
+        if (id == 0) return pb_graphic_attach((long long)(intptr_t)hDlg);
+        return 0;
+    }
     pb_graphic_release_dc();
     unsigned char rc[16];
     for (int i = 0; i < 16; i++) rc[i] = 0;
@@ -13949,6 +14158,9 @@ int pb_graphic_attach_ctl(void* hDlg, long long id) {
     g_gr_bmp = 0;
     g_gr_dc = g_gr_ctl_dc;
     g_gr_dc_win = h;
+    if (!g_gr_font) g_gr_font = GetStockObject(17); /* DEFAULT_GUI_FONT */
+    if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
+    g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     g_gr_old_proc = (void*)(size_t)pb_set_winlong(h, -4 /* GWLP_WNDPROC */,
                         (long long)(size_t)pb_graphic_ctl_proc);
     return 1;
@@ -15306,6 +15518,56 @@ void pb_static_array_desc_free(void* v) {
     free(d);
 }
 
+/* batch 402: assign a whole array to a PB VARIANT as a SAFEARRAY.
+   CHW LET (with Variants) allows `v = rgData()`; COM then sees
+   VT_ARRAY | element-VT.  MSXML XmlEncodeBase64 uses this to move a
+   BYTE array into nodeTypedValue.  Only one-dimensional arrays are
+   representable by SafeArrayCreateVector; multi-dimensional arrays
+   report VT_EMPTY rather than silently flattening the wrong shape. */
+void pb_variant_from_array(void* v, int elem_vt, void* out) {
+#if defined(__ANDROID__)
+    (void)v; (void)elem_vt;
+    if (out) *(unsigned short*)out = 0;   /* VT_EMPTY */
+#else
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    SAFEARRAY* psa;
+    void* pdata;
+    if (!out) return;
+    *(unsigned short*)out = 0;                  /* VT_EMPTY */
+    *(void**)((char*)out + 8) = NULL;
+    if (!d || d->count <= 0 || d->ndims != 1 || elem_vt <= 0) return;
+    psa = SafeArrayCreateVector((VARTYPE)elem_vt, (long)d->lower[0],
+                                (unsigned long)d->count);
+    if (!psa) return;
+    if ((long)SafeArrayAccessData(psa, &pdata) < 0) {
+        SafeArrayDestroy(psa);
+        return;
+    }
+    if (elem_vt == VT_BSTR) {
+        /* A WSTRING array holds BSTR pointers.  Copying the pointers would
+           leave the SAFEARRAY and the PB array sharing ownership, so the
+           variant would free strings the PB array still references.  Give
+           the SafeArray its own BSTR for every element. */
+        BSTR* dst = (BSTR*)pdata;
+        BSTR* src = (BSTR*)d->data;
+        long long i;
+        for (i = 0; i < d->count; ++i) {
+            dst[i] = src[i] ? SysAllocString(src[i]) : NULL;
+            if (src[i] && !dst[i]) {
+                SafeArrayUnaccessData(psa);
+                SafeArrayDestroy(psa);   /* frees the BSTRs copied so far */
+                return;
+            }
+        }
+    } else {
+        memcpy(pdata, d->data, (size_t)d->count * (size_t)d->elem_size);
+    }
+    SafeArrayUnaccessData(psa);
+    *(unsigned short*)out = (unsigned short)(VT_ARRAY | elem_vt);
+    *(void**)((char*)out + 8) = psa;
+#endif
+}
+
 long long pb_dynamic_array_total(void* v) {
     pb_dyn_array* d = (pb_dyn_array*)v;
     return d ? d->count : 0;
@@ -15371,6 +15633,73 @@ void pb_dynamic_array_set_dim(void* v, int dim, long long lower, long long dim_c
     if (d->ndims < dim) d->ndims = dim;
     d->lower[dim - 1] = lower;
     d->dim_count[dim - 1] = dim_count;
+}
+
+long long pb_dynamic_array_resize(void* v, long long count, int elem_size, int preserve);
+
+/* batch 402: assign a VT_ARRAY Variant back to a whole PB array
+   (`rgData() = vData`).  MSXML XmlDecodeBase64 uses this after reading
+   nodeTypedValue.  The destination descriptor is resized to the SAFEARRAY
+   bounds and the element block is copied; a borrowed static descriptor only
+   receives up to its fixed capacity. */
+int pb_variant_to_array(void* v, void* variant, int elem_vt) {
+#if defined(__ANDROID__)
+    (void)v; (void)variant; (void)elem_vt;
+    return 0;
+#else
+    pb_dyn_array* d = (pb_dyn_array*)v;
+    SAFEARRAY* psa;
+    long lb = 0, ub = -1;
+    long long count;
+    void* src = NULL;
+    unsigned short vt;
+    int owned;
+    if (!variant || !d) return 0;
+    vt = *(unsigned short*)variant;
+    psa = (SAFEARRAY*)*(void**)((char*)variant + 8);
+    if ((int)vt != (VT_ARRAY | elem_vt) || !psa) return 0;
+    if (SafeArrayGetLBound(psa, 1, &lb) < 0) return 0;
+    if (SafeArrayGetUBound(psa, 1, &ub) < 0) return 0;
+    count = ub >= lb ? (long long)(ub - lb + 1) : 0;
+    owned = d->owns_data;
+    if (elem_vt == VT_BSTR && owned && d->data) {
+        /* The destination is a dynamic WSTRING array; its old BSTRs would
+           leak when resize replaces the element block. */
+        BSTR* old = (BSTR*)d->data;
+        long long i;
+        for (i = 0; i < d->count; ++i) SysFreeString((char*)old[i]);
+    }
+    if (owned) {
+        pb_dynamic_array_resize(v, count, d->elem_size, 0);
+        pb_dynamic_array_set_shape(v, 1, count);
+        pb_dynamic_array_set_dim(v, 1, lb, count);
+    } else if (count > d->count) {
+        count = d->count;
+    }
+    if (count <= 0) return 1;
+    if (SafeArrayAccessData(psa, &src) < 0 || !src) return 0;
+    if (elem_vt == VT_BSTR) {
+        /* Symmetric with pb_variant_from_array: the PB array and the
+           SAFEARRAY must not share BSTR ownership. */
+        BSTR* dst = (BSTR*)d->data;
+        BSTR* s = (BSTR*)src;
+        long long i;
+        if (!owned) {
+            for (i = 0; i < count; ++i) SysFreeString((char*)dst[i]);
+        }
+        for (i = 0; i < count; ++i) {
+            dst[i] = s[i] ? SysAllocString(s[i]) : NULL;
+            if (s[i] && !dst[i]) {
+                SafeArrayUnaccessData(psa);
+                return 0;
+            }
+        }
+    } else {
+        memcpy(d->data, src, (size_t)count * (size_t)d->elem_size);
+    }
+    SafeArrayUnaccessData(psa);
+    return 1;
+#endif
 }
 
 /* INCR/DECR: preserve the prefix, realloc only when growing past capacity.
@@ -16053,6 +16382,7 @@ typedef struct _PB_VARIANT {
         short boolVal;            /* VT_BOOL  */
         long long cyVal;          /* VT_CY    */
         void* pVal;               /* VT_BSTR / VT_DISPATCH / VT_UNKNOWN */
+        void* parray;             /* VT_ARRAY | element VT */
         /* Real VARIANT reserves 16 bytes on Win64 for DECIMAL/IUnknown pairs.
            A 16-byte PB_VARIANT would let IDispatch::Invoke read past the
            argument array and return garbage (PowerTime properties on x64). */

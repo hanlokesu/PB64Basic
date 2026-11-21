@@ -1924,10 +1924,11 @@ impl Compiler {
             // X PTR — typed pointer, 8 bytes on x64 (batch306).  The pointed-to
             // type is kept so @ptr.member can resolve member layouts.
             PbType::Pointer(_) => IrType::Ptr,
-            // batch293: PB Variant variables are 16-byte containers
-            // (word VT code at +0, 8-byte value union at +8), matching the
-            // runtime PB_VARIANT layout used by COM marshalling.
-            PbType::Variant => IrType::Array(16, Box::new(IrType::I8)),
+            // batch293/402: PB Variant variables match the runtime PB_VARIANT
+            // container (word VT at +0, 16-byte union at +8 = 24 bytes).  A
+            // 16-byte slot made `pb_com_coerce_result` write past its own
+            // alloca and corrupted the `nodeTypedValue` array result.
+            PbType::Variant => IrType::Array(24, Box::new(IrType::I8)),
             // BitField is layout-only; ir_type_for_field handles its container.
             PbType::BitField { .. } => IrType::I32,
         }
@@ -2020,9 +2021,9 @@ impl Compiler {
             PbType::FixedWString(n, _) => (*n as i32) * 2,
             PbType::String | PbType::WString | PbType::Pointer(_) | PbType::Interface(_) => ptr_w,
             PbType::Field => 16,
-            // PB VARIANT is a fixed 16-byte container (vt/reserved/value), not
-            // a pointer; PBWin10 SIZEOF(v) returns 16 on both 32/64-bit.
-            PbType::Variant => 16,
+            // Internal PB_VARIANT is 24 bytes (vt/reserved + 16-byte union),
+            // matching the runtime container and COM VARIANTARG on x64.
+            PbType::Variant => 24,
             PbType::UserDefined(_) => ptr_w,
             // BitField is a layout-only member, never sized as a scalar.
             PbType::BitField { .. } => 0,
@@ -6816,6 +6817,13 @@ impl Compiler {
             &[IrType::Ptr, IrType::I64],
             false,
         );
+        // Fixed WSTRINGZ*n logical length (stops at the first NUL; PBWin LEN).
+        self.module.declare_function(
+            "pb_wstringz_len",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::I64],
+            false,
+        );
         // batch304: ISMISSING / omitted optional VARIANT parameters - a
         // Variant is "missing" when it holds VT_ERROR + DISP_E_PARAMNOTFOUND
         // (0x80020004); the call side initialises that marker for an omitted
@@ -6897,6 +6905,18 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_dynamic_array_data", &IrType::Ptr, &[IrType::Ptr], false);
+        self.module.declare_function(
+            "pb_variant_from_array",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_variant_to_array",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr, IrType::I32],
+            false,
+        );
         self.module.declare_function(
             "pb_static_array_to_desc",
             &IrType::Ptr,
@@ -7106,6 +7126,14 @@ impl Compiler {
             .declare_function("pb_graphic_print_str", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_graphic_print_tab", &IrType::I32, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_graphic_print_spc", &IrType::I32, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_graphic_print_pos", &IrType::I32, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_graphic_print_zone", &IrType::I32, &[], false);
+        self.module
+            .declare_function("pb_graphic_print_newline", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_graphic_get_pixel",
             &IrType::I32,
@@ -7482,11 +7510,27 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_graphic_chr_size_font",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_graphic_cell_size_font",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_graphic_cell_size",
             &IrType::I32,
             &[IrType::I32, IrType::I32, IrType::Ptr, IrType::Ptr],
             false,
         );
+        self.module
+            .declare_function("pb_graphic_get_col", &IrType::I32, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_graphic_get_row", &IrType::I32, &[IrType::Ptr], false);
         self.module.declare_function(
             "pb_graphic_cell",
             &IrType::I32,
@@ -13014,6 +13058,46 @@ impl Compiler {
                 // No <Class>_<Prop>_Set procedure was compiled: this is an
                 // ordinary TYPE field write, not a CLASS property — fall
                 // through to the storage path below.
+            } else if self.receiver_is_interface(base) {
+                // batch 402: a bare COM property write on a dispatch-only
+                // interface (`pXmlElement.nodeTypedValue = vData`).  There is
+                // no PB CLASS implementation to lower through, so use the
+                // late-bound DISPATCH_PROPERTYPUT path with the value appended.
+                let mut vals = args;
+                vals.push(assign.value.clone());
+                let _ = self.compile_com_late_set(fb, base, name, &vals)?;
+                return Ok(());
+            }
+        }
+        // batch 402: assigning a dispatch-only COM call/property to an
+        // interface variable must marshal the result as VT_DISPATCH.  The
+        // generic expression path asked for a LONG, so createElement's
+        // interface pointer was coerced to 0 and every later property call
+        // ran on NULL (`XmlEncodeBase64` returned an empty string).
+        if let Expr::Variable(orig_name) = &assign.target {
+            let tname = normalize_name(orig_name);
+            let iface_slot = self.symbols.lookup(&tname).and_then(|info| {
+                if matches!(info.pb_type, PbType::Interface(_)) {
+                    Some(info.ptr_name.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(ptr_name) = iface_slot {
+                let object_val = match &assign.value {
+                    Expr::MethodCall { base, name, args } if self.receiver_is_interface(base) => {
+                        Some(self.compile_com_late_object_call(fb, base, name, args)?)
+                    }
+                    Expr::TypeMember(base, name) if self.receiver_is_interface(base) => {
+                        Some(self.compile_com_late_object_call(fb, base, name, &[])?)
+                    }
+                    _ => None,
+                };
+                if let Some(v) = object_val {
+                    let slot = Val::new(ptr_name, IrType::Ptr);
+                    fb.store(&v, &slot);
+                    return Ok(());
+                }
             }
         }
         // CHW LET (with Variants): `v = EMPTY` sets a Variant to VT_EMPTY
@@ -13032,6 +13116,132 @@ impl Compiler {
                         return Ok(());
                     }
                 }
+            }
+        }
+        // batch 402: a dispatch property assigned to a Variant must request a
+        // VT_VARIANT result.  `vData = pXmlElement.nodeTypedValue` used to ask
+        // for a LONG, so the SAFEARRAY payload was never seen.
+        if let Expr::Variable(orig_name) = &assign.target {
+            let tname = normalize_name(orig_name);
+            let variant_slot = self.symbols.lookup(&tname).and_then(|info| {
+                if matches!(info.pb_type, PbType::Variant) {
+                    Some(info.ptr_name.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(ptr_name) = variant_slot {
+                let variant_val = match &assign.value {
+                    Expr::TypeMember(base, name) if self.receiver_is_interface(base) => Some(
+                        self.compile_com_late_invoke_typed(fb, base, name, &[], 2, Some(10))?,
+                    ),
+                    Expr::MethodCall { base, name, args } if self.receiver_is_interface(base) => {
+                        Some(self.compile_com_late_invoke_typed(
+                            fb,
+                            base,
+                            name,
+                            args,
+                            0,
+                            Some(10),
+                        )?)
+                    }
+                    _ => None,
+                };
+                if let Some(v) = variant_val {
+                    let slot = Val::new(ptr_name, IrType::Ptr);
+                    fb.store(&v, &slot);
+                    return Ok(());
+                }
+            }
+        }
+        let whole_array_target = matches!(
+            &assign.target,
+            Expr::FunctionCall(_, idxs) | Expr::ArrayAccess(_, idxs) if idxs.is_empty()
+        );
+        if whole_array_target && matches!(self.expr_pb_type(&assign.value), Some(PbType::Variant)) {
+            if let Some(arr_info) = self.whole_array_expr_info(&assign.target) {
+                let Some(vt) = Self::variant_array_elem_vt(&arr_info.pb_type) else {
+                    return Err(PbError::parser(
+                        format!(
+                            "Variant array assignment does not support element type `{}`",
+                            arr_info.pb_type.suffix()
+                        ),
+                        None,
+                        self.current_line,
+                    ));
+                };
+                let (desc, free_after) = if arr_info.dynamic {
+                    (self.dynamic_desc(fb, &arr_info), false)
+                } else {
+                    /* PBWin re-dimensions the destination array from the
+                    SAFEARRAY bounds (`DIM rgData(0)` becomes UBOUND 2 after
+                    `rgData() = vData`).  A fixed stack block cannot grow, so
+                    replace the symbol with a heap descriptor for every later
+                    reference in this procedure. */
+                    let target_name = match &assign.target {
+                        Expr::FunctionCall(n, idxs) | Expr::ArrayAccess(n, idxs)
+                            if idxs.is_empty() =>
+                        {
+                            Some(normalize_name(n))
+                        }
+                        Expr::Variable(n) => Some(normalize_name(n)),
+                        _ => None,
+                    };
+                    if let Some(name) = target_name {
+                        let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
+                        let slot = fb.alloca(&IrType::Ptr);
+                        let d = fb.call(
+                            &IrType::Ptr,
+                            "pb_dynamic_array_new",
+                            &[fb.const_i32(elem_size), fb.const_i64(0)],
+                        );
+                        fb.store(&d, &slot);
+                        let (variant_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
+                        fb.call_void(
+                            "pb_variant_to_array",
+                            &[d.clone(), variant_ptr, fb.const_i32(vt)],
+                        );
+                        let next = ArrayInfo {
+                            ptr_name: slot.name,
+                            array_ir_type: IrType::Array(
+                                0,
+                                Box::new(arr_info.elem_ir_type.clone()),
+                            ),
+                            elem_ir_type: arr_info.elem_ir_type.clone(),
+                            pb_type: arr_info.pb_type.clone(),
+                            dims: Vec::new(),
+                            total_elements: 0,
+                            indirect_base: false,
+                            dynamic: true,
+                        };
+                        self.symbols.insert_local_array(name, next);
+                        return Ok(());
+                    }
+                    let base = self.array_base(fb, &arr_info);
+                    let total = self.array_total(fb, &arr_info);
+                    let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
+                    let d = fb.call(
+                        &IrType::Ptr,
+                        "pb_static_array_to_desc",
+                        &[base, total, fb.const_i32(elem_size)],
+                    );
+                    let lower = fb.const_i64(arr_info.dims.first().map(|(l, _)| *l).unwrap_or(0));
+                    let count = fb.const_i64(arr_info.dims.first().map(|(_, c)| *c).unwrap_or(0));
+                    fb.call_void(
+                        "pb_dynamic_array_set_dim",
+                        &[d.clone(), fb.const_i32(1), lower, count],
+                    );
+                    (d, true)
+                };
+                let (variant_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
+                fb.call_void(
+                    "pb_variant_to_array",
+                    &[desc.clone(), variant_ptr, fb.const_i32(vt)],
+                );
+                if free_after {
+                    fb.call_void("pb_static_array_desc_free", std::slice::from_ref(&desc));
+                }
+                return Ok(());
             }
         }
         let value = self.compile_expr(fb, &assign.value)?;
@@ -13067,22 +13277,29 @@ impl Compiler {
                     // 421 numeric-to-string check below.
                     if matches!(target_pb, PbType::String) {
                         if let Some(udt) = self.struct_type_of_expr(&assign.value) {
-                            let (src_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
-                            let size = match self.type_layouts.get(&udt) {
-                                Some(layout) => fb.const_i32(layout.size as i32),
-                                None => {
-                                    return Err(PbError::parser(
-                                        format!("unknown TYPE layout for `{}`", udt),
-                                        None,
-                                        self.current_line,
-                                    ));
-                                }
-                            };
-                            let bstr =
-                                fb.call(&IrType::Ptr, "pb_bstr_from_bytes", &[src_ptr, size]);
-                            let slot = Val::new(ptr_name, IrType::Ptr);
-                            fb.store(&bstr, &slot);
-                            return Ok(());
+                            // A chained COM property (`pXmlElement.Text`) reports
+                            // its interface name as a shape marker; it is not a
+                            // PB UDT and must go through the late-bound read.
+                            if self.expr_is_com_member(&assign.value) {
+                                // fall through to the ordinary string conversion
+                            } else {
+                                let (src_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
+                                let size = match self.type_layouts.get(&udt) {
+                                    Some(layout) => fb.const_i32(layout.size as i32),
+                                    None => {
+                                        return Err(PbError::parser(
+                                            format!("unknown TYPE layout for `{}`", udt),
+                                            None,
+                                            self.current_line,
+                                        ));
+                                    }
+                                };
+                                let bstr =
+                                    fb.call(&IrType::Ptr, "pb_bstr_from_bytes", &[src_ptr, size]);
+                                let slot = Val::new(ptr_name, IrType::Ptr);
+                                fb.store(&bstr, &slot);
+                                return Ok(());
+                            }
                         }
                     }
                     // PBWin10 Error 421 (String operand expected): assigning a
@@ -13163,7 +13380,54 @@ impl Compiler {
                             // (the old path re-read the number as R8 and always
                             // rewrote vt to 5, losing VT_I4 etc.).
                             let (src_ptr, _) = self.compile_lvalue_ptr(fb, &assign.value)?;
-                            fb.call(&IrType::Ptr, "memcpy", &[dst, src_ptr, fb.const_i32(16)]);
+                            fb.call(&IrType::Ptr, "memcpy", &[dst, src_ptr, fb.const_i32(24)]);
+                        } else if let Some(arr_info) = self.whole_array_expr_info(&assign.value) {
+                            // batch 402: `v = rgData()` where rgData is a whole
+                            // array.  A Variant holding an array must be a
+                            // SAFEARRAY (VT_ARRAY | element VT), not element 0
+                            // and not a BSTR pointer.  MSXML's XmlEncodeBase64
+                            // depends on this path.
+                            let Some(vt) = Self::variant_array_elem_vt(&arr_info.pb_type) else {
+                                return Err(PbError::parser(
+                                    format!(
+                                        "Variant array assignment does not support element type `{}`",
+                                        arr_info.pb_type.suffix()
+                                    ),
+                                    None,
+                                    self.current_line,
+                                ));
+                            };
+                            let (desc, free_after) = if arr_info.dynamic {
+                                (self.dynamic_desc(fb, &arr_info), false)
+                            } else {
+                                let base = self.array_base(fb, &arr_info);
+                                let total = self.array_total(fb, &arr_info);
+                                let elem_size = self.array_elem_size_arch(&arr_info.elem_ir_type);
+                                let d = fb.call(
+                                    &IrType::Ptr,
+                                    "pb_static_array_to_desc",
+                                    &[base, total, fb.const_i32(elem_size)],
+                                );
+                                let lower = fb
+                                    .const_i64(arr_info.dims.first().map(|(l, _)| *l).unwrap_or(0));
+                                let count = fb
+                                    .const_i64(arr_info.dims.first().map(|(_, c)| *c).unwrap_or(0));
+                                fb.call_void(
+                                    "pb_dynamic_array_set_dim",
+                                    &[d.clone(), fb.const_i32(1), lower, count],
+                                );
+                                (d, true)
+                            };
+                            fb.call_void(
+                                "pb_variant_from_array",
+                                &[desc.clone(), fb.const_i32(vt), dst.clone()],
+                            );
+                            if free_after {
+                                fb.call_void(
+                                    "pb_static_array_desc_free",
+                                    std::slice::from_ref(&desc),
+                                );
+                            }
                         } else {
                             self.emit_variant_store(fb, &dst, &value);
                         }
@@ -13212,6 +13476,17 @@ impl Compiler {
                             } else {
                                 fb.call_void("pb_copy_wstr_to_fixed", &[field_ptr, wsrc, n64]);
                             }
+                        } else if matches!(field_pb, PbType::WString) {
+                            let wsrc = if self.expr_is_wstring(&assign.value) {
+                                value
+                            } else {
+                                fb.call(
+                                    &IrType::Ptr,
+                                    "pb_ansi_to_wide",
+                                    std::slice::from_ref(&value),
+                                )
+                            };
+                            fb.store(&wsrc, &field_ptr);
                         } else {
                             let field_ir = self
                                 .member_field_ir_type(&member_expr)
@@ -13407,6 +13682,21 @@ impl Compiler {
                         } else {
                             fb.call_void("pb_copy_wstr_to_fixed", &[elem_ptr, wsrc, n64]);
                         }
+                    } else if matches!(arr_info.pb_type, PbType::WString)
+                        && value.ty == IrType::Ptr
+                        && !self.expr_is_wstring(&assign.value)
+                    {
+                        // WSTRING array element: an ANSI literal/variable must be
+                        // converted to UTF-16 before it is stored in the element
+                        // slot.  Storing the ANSI BSTR pointer made every later
+                        // LEN/ASC/compare and Variant BSTR conversion read the
+                        // bytes as UTF-16 (batch402).
+                        let wide = fb.call(
+                            &IrType::Ptr,
+                            "pb_ansi_to_wide",
+                            std::slice::from_ref(&value),
+                        );
+                        fb.store(&wide, &elem_ptr);
                     } else {
                         let converted = self.convert_value(
                             fb,
@@ -13445,6 +13735,19 @@ impl Compiler {
                     } else {
                         fb.call_void("pb_copy_wstr_to_fixed", &[field_ptr, wsrc, n64]);
                     }
+                } else if let PbType::WString = &field_pb {
+                    // Dynamic WSTRING TYPE member: convert an ANSI source to
+                    // UTF-16 before storing the BSTR pointer (batch402).
+                    let wsrc = if self.expr_is_wstring(&assign.value) {
+                        value
+                    } else {
+                        fb.call(
+                            &IrType::Ptr,
+                            "pb_ansi_to_wide",
+                            std::slice::from_ref(&value),
+                        )
+                    };
+                    fb.store(&wsrc, &field_ptr);
                 } else if let Some((bit_off, width, _signed)) = self.member_bit_info(&assign.target)
                 {
                     // Bit-field write: read-modify-write the whole container.
@@ -13527,7 +13830,18 @@ impl Compiler {
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
-                            let converted = self.convert_value(fb, &value, &elem, &field_pb);
+                            let converted = if matches!(field_pb, PbType::WString)
+                                && value.ty == IrType::Ptr
+                                && !self.expr_is_wstring(&assign.value)
+                            {
+                                fb.call(
+                                    &IrType::Ptr,
+                                    "pb_ansi_to_wide",
+                                    std::slice::from_ref(&value),
+                                )
+                            } else {
+                                self.convert_value(fb, &value, &elem, &field_pb)
+                            };
                             fb.store(&converted, &ptr);
                         } else {
                             return Err(PbError::runtime(format!(
@@ -13591,6 +13905,19 @@ impl Compiler {
             return Some(layout.fields[idx].ir_type.clone());
         }
         None
+    }
+
+    /// True when the expression is a property/method read on a dispatch
+    /// interface.  Such a node deliberately reports the interface name from
+    /// `struct_type_of_expr` to support chained COM receivers, but it is not a
+    /// PB UDT value and must not take the TYPE-to-string byte-copy path.
+    fn expr_is_com_member(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::TypeMember(base, _) | Expr::MethodCall { base, .. } => {
+                self.receiver_is_interface(base)
+            }
+            _ => false,
+        }
     }
 
     fn struct_type_of_expr(&self, expr: &Expr) -> Option<String> {
@@ -13713,7 +14040,32 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> PbResult<Val> {
-        self.compile_com_late_invoke(fb, base, name, args, 0)
+        self.compile_com_late_invoke_typed(fb, base, name, args, 0, None)
+    }
+
+    /// A late-bound property get (DISPATCH_PROPERTYGET).  A bare member read
+    /// such as `pXmlElement.Text` is a property, not a method; invoking it with
+    /// DISPATCH_METHOD (0) returns DISP_E_MEMBERNOTFOUND from MSXML.
+    fn compile_com_late_get(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        base: &Expr,
+        name: &str,
+    ) -> PbResult<Val> {
+        self.compile_com_late_invoke_typed(fb, base, name, &[], 2, None)
+    }
+
+    /// A late-bound call whose result is an IDispatch object (VT_DISPATCH).
+    /// `pXmlElement = pXmlDocument.createElement("b64")` used to request a
+    /// LONG result, coercing the interface pointer to 0 and losing the element.
+    fn compile_com_late_object_call(
+        &mut self,
+        fb: &mut FunctionBuilder,
+        base: &Expr,
+        name: &str,
+        args: &[Expr],
+    ) -> PbResult<Val> {
+        self.compile_com_late_invoke_typed(fb, base, name, args, 0, Some(11))
     }
 
     fn compile_com_late_set(
@@ -13723,16 +14075,17 @@ impl Compiler {
         name: &str,
         args: &[Expr],
     ) -> PbResult<Val> {
-        self.compile_com_late_invoke(fb, base, name, args, 4)
+        self.compile_com_late_invoke_typed(fb, base, name, args, 4, None)
     }
 
-    fn compile_com_late_invoke(
+    fn compile_com_late_invoke_typed(
         &mut self,
         fb: &mut FunctionBuilder,
         base: &Expr,
         name: &str,
         args: &[Expr],
         wflags: i32,
+        rtype_override: Option<i32>,
     ) -> PbResult<Val> {
         let disp = self.compile_expr(fb, base)?;
         let n = args.len();
@@ -13780,9 +14133,19 @@ impl Compiler {
                 | "TIMESTRING"
                 | "TIMESTRING24"
                 | "TIMESTRINGFULL"
+                | "TEXT"
         );
         let is_quad_result = norm == "FILETIME";
-        let (rtype, result_ir) = if is_string_result {
+        let (rtype, result_ir) = if let Some(rt) = rtype_override {
+            let ir = if rt == 2 || rt == 11 {
+                IrType::Ptr
+            } else if rt == 10 {
+                IrType::Array(24, Box::new(IrType::I8))
+            } else {
+                IrType::I32
+            };
+            (rt, ir)
+        } else if is_string_result {
             (2, IrType::Ptr)
         } else if is_quad_result {
             (7, IrType::I64)
@@ -15761,9 +16124,13 @@ impl Compiler {
                 let mut charset = fb.const_i32(0);
                 let mut pitch = fb.const_i32(0);
                 let mut escapement = fb.const_i32(0);
-                let mut to_var: Option<String> = None;
+                let to_var: Option<String> = match call.args.last() {
+                    Some(Expr::Variable(tv)) => Some(tv.clone()),
+                    _ => None,
+                };
+                let arg_end = call.args.len() - usize::from(to_var.is_some());
                 let mut i = 1;
-                while i < call.args.len() {
+                while i < arg_end {
                     match i {
                         1 => {
                             let p = self.compile_expr(fb, &call.args[i])?;
@@ -15773,15 +16140,21 @@ impl Compiler {
                             let s = self.compile_expr(fb, &call.args[i])?;
                             style = self.convert_value(fb, &s, &IrType::I32, &PbType::Long);
                         }
-                        3 => charset = self.compile_expr(fb, &call.args[i])?,
-                        4 => pitch = self.compile_expr(fb, &call.args[i])?,
-                        5 => escapement = self.compile_expr(fb, &call.args[i])?,
+                        3 => {
+                            let c = self.compile_expr(fb, &call.args[i])?;
+                            charset = self.convert_value(fb, &c, &IrType::I32, &PbType::Long);
+                        }
+                        4 => {
+                            let p = self.compile_expr(fb, &call.args[i])?;
+                            pitch = self.convert_value(fb, &p, &IrType::I32, &PbType::Long);
+                        }
+                        5 => {
+                            let e = self.compile_expr(fb, &call.args[i])?;
+                            escapement = self.convert_value(fb, &e, &IrType::I32, &PbType::Long);
+                        }
                         _ => {}
                     }
                     i += 1;
-                }
-                if let Some(Expr::Variable(tv)) = call.args.last() {
-                    to_var = Some(tv.clone());
                 }
                 let h = fb.call(
                     &IrType::I32,
@@ -17659,9 +18032,20 @@ impl Compiler {
                 return Ok(());
             }
             "GRAPHIC_GET_POS" => {
-                if let Some((xp, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
-                    if let Some((yp, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                        fb.call_void("pb_graphic_get_pos", &[xp, yp]);
+                if let Some((xp, x_ir, x_pb)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    if let Some((yp, y_ir, y_pb)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        /* CHW returns Page Units as SINGLE; the runtime
+                        measures pixels internally.  Convert instead of
+                        storing the raw integer bit pattern. */
+                        let tx = fb.alloca(&IrType::I32);
+                        let ty = fb.alloca(&IrType::I32);
+                        fb.call_void("pb_graphic_get_pos", &[tx.clone(), ty.clone()]);
+                        let vx = fb.load(&IrType::I32, &tx);
+                        let vy = fb.load(&IrType::I32, &ty);
+                        let cx = self.convert_value(fb, &vx, &x_ir, &x_pb);
+                        let cy = self.convert_value(fb, &vy, &y_ir, &y_pb);
+                        fb.store(&cx, &xp);
+                        fb.store(&cy, &yp);
                     }
                 }
             }
@@ -17710,9 +18094,20 @@ impl Compiler {
             }
             "GRAPHIC_TEXT_SIZE" => {
                 let sp = self.compile_str_payload(fb, &call.args[0])?;
-                if let Some((wp, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                    if let Some((hp, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        fb.call_void("pb_graphic_text_size", &[sp, wp, hp]);
+                if let Some((wp, w_ir, w_pb)) = self.lvalue_ptr(fb, &call.args[1]) {
+                    if let Some((hp, h_ir, h_pb)) = self.lvalue_ptr(fb, &call.args[2]) {
+                        /* CHW returns Page Units as SINGLE; the runtime
+                        reports the scaled extent as a float.  Keep the
+                        fraction (official 1.5x height is 19.5). */
+                        let tw = fb.alloca(&IrType::Float);
+                        let th = fb.alloca(&IrType::Float);
+                        fb.call_void("pb_graphic_text_size", &[sp, tw.clone(), th.clone()]);
+                        let vw = fb.load(&IrType::Float, &tw);
+                        let vh = fb.load(&IrType::Float, &th);
+                        let cw = self.convert_value(fb, &vw, &w_ir, &w_pb);
+                        let ch = self.convert_value(fb, &vh, &h_ir, &h_pb);
+                        fb.store(&cw, &wp);
+                        fb.store(&ch, &hp);
                     }
                 }
             }
@@ -17970,12 +18365,40 @@ impl Compiler {
                     }
                 }
             }
+            "GRAPHIC_GET_COL" => {
+                if let Some((cp, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    fb.call_void("pb_graphic_get_col", &[cp]);
+                }
+            }
+            "GRAPHIC_GET_ROW" => {
+                if let Some((rp, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    fb.call_void("pb_graphic_get_row", &[rp]);
+                }
+            }
             "GRAPHIC_CHR_SIZE" => {
-                // args: text$, w&, h& (out)
-                let txt = self.compile_expr(fb, &call.args[0])?;
-                if let Some((wp, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
-                    if let Some((hp, _, _)) = self.lvalue_ptr(fb, &call.args[2]) {
-                        fb.call_void("pb_graphic_chr_size", &[txt, wp, hp]);
+                // args: text$, w!, h! (out).  CHW returns Page Units as
+                // SINGLE; the legacy text argument is accepted but ignored.
+                let _txt = self.compile_expr(fb, &call.args[0])?;
+                if let Some((wp, w_ir, w_pb)) = self.lvalue_ptr(fb, &call.args[1]) {
+                    if let Some((hp, h_ir, h_pb)) = self.lvalue_ptr(fb, &call.args[2]) {
+                        let tw = fb.alloca(&IrType::Float);
+                        let th = fb.alloca(&IrType::Float);
+                        fb.call_void("pb_graphic_chr_size_font", &[tw.clone(), th.clone()]);
+                        let vw = fb.load(&IrType::Float, &tw);
+                        let vh = fb.load(&IrType::Float, &th);
+                        let cw = self.convert_value(fb, &vw, &w_ir, &w_pb);
+                        let ch = self.convert_value(fb, &vh, &h_ir, &h_pb);
+                        fb.store(&cw, &wp);
+                        fb.store(&ch, &hp);
+                    }
+                }
+            }
+            "GRAPHIC_CELL_SIZE_FONT" => {
+                // GRAPHIC CELL SIZE TO w!, h! — no row/column arguments;
+                // returns the average cell size in page units.
+                if let Some((wp, _, _)) = self.lvalue_ptr(fb, &call.args[0]) {
+                    if let Some((hp, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
+                        fb.call_void("pb_graphic_cell_size_font", &[wp, hp]);
                     }
                 }
             }
@@ -18353,30 +18776,51 @@ impl Compiler {
                 }
             }
             "GRAPHIC_PRINT" => {
-                if call.args.is_empty() {
-                    fb.call_void(
-                        "pb_graphic_print_str",
-                        &[Val::new(self.empty_string_name.clone(), IrType::Ptr)],
-                    );
-                } else {
-                    for arg in &call.args {
-                        // TAB(n) in GRAPHIC PRINT moves the text cursor to
-                        // column n; it is a positioning directive, not a
-                        // string expression (PB/CC Means.bas).
-                        if let Expr::FunctionCall(tab_name, tab_args) = arg {
-                            if tab_name.trim_end_matches('$').eq_ignore_ascii_case("TAB")
-                                && tab_args.len() == 1
-                            {
-                                let v = self.compile_expr(fb, &tab_args[0])?;
-                                let col = self.to_i32(fb, &v);
-                                fb.call_void("pb_graphic_print_tab", &[col]);
-                                continue;
+                let is_sep = |e: &Expr| -> Option<bool> {
+                    if let Expr::FunctionCall(n, a) = e {
+                        if n == "__GRAPHIC_PRINT_SEP" && a.len() == 1 {
+                            if let Expr::IntegerLit(v) = a[0] {
+                                return Some(v != 0);
                             }
                         }
-                        let v = self.compile_expr(fb, arg)?;
-                        let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
-                        fb.call_void("pb_graphic_print_str", &[s]);
                     }
+                    None
+                };
+                let trailing_sep = call.args.last().and_then(is_sep).is_some();
+                for arg in &call.args {
+                    if let Some(is_comma) = is_sep(arg) {
+                        /* Semicolon joins the next item at the current POS;
+                        comma advances to the next 14-column print zone. */
+                        if is_comma {
+                            fb.call_void("pb_graphic_print_zone", &[]);
+                        }
+                        continue;
+                    }
+                    if let Expr::FunctionCall(name, fargs) = arg {
+                        let base = name.trim_end_matches('$');
+                        if fargs.len() == 1
+                            && (base.eq_ignore_ascii_case("POS")
+                                || base.eq_ignore_ascii_case("SPC")
+                                || base.eq_ignore_ascii_case("TAB"))
+                        {
+                            let v = self.compile_expr(fb, &fargs[0])?;
+                            let n = self.to_i32(fb, &v);
+                            if base.eq_ignore_ascii_case("POS") {
+                                fb.call_void("pb_graphic_print_pos", &[n]);
+                            } else if base.eq_ignore_ascii_case("SPC") {
+                                fb.call_void("pb_graphic_print_spc", &[n]);
+                            } else {
+                                fb.call_void("pb_graphic_print_tab", &[n]);
+                            }
+                            continue;
+                        }
+                    }
+                    let v = self.compile_expr(fb, arg)?;
+                    let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
+                    fb.call_void("pb_graphic_print_str", &[s]);
+                }
+                if call.args.is_empty() || !trailing_sep {
+                    fb.call_void("pb_graphic_print_newline", &[]);
                 }
                 return Ok(());
             }
@@ -19132,7 +19576,7 @@ impl Compiler {
                             .get(&normalize_name(t))
                             .map(|l| l.size as i64)
                             .unwrap_or(0),
-                        PbType::Variant => 16, // PB VARIANT: vt(4) + reserved(4) + 8-byte value
+                        PbType::Variant => 24, // PB_VARIANT: vt/reserved + 16-byte union
                         _ => 0,
                     };
                     if size > 0 {
@@ -28046,6 +28490,14 @@ impl Compiler {
                         // integer (PBNote2 x86 CreateWindow got a garbage
                         // position and returned NULL).
                         self.convert_value(fb, &val, &target_ir, &param.pb_type)
+                    } else if val.ty.is_int() && target_ir.is_float() {
+                        // A user procedure's BYVAL SINGLE/DOUBLE parameter can
+                        // receive an integer literal or integer expression.  The
+                        // generic BYVAL tail below inttoptr's every i32 for the
+                        // x64 register-slot convention, which handed the callee
+                        // a pointer instead of a float (batch402: FONT NEW
+                        // through a BYVAL SINGLE helper produced a 1x2 font).
+                        self.convert_value(fb, &val, &target_ir, &param.pb_type)
                     } else if val.ty == IrType::I1 {
                         self.to_i32(fb, &val)
                     } else if self.module.is_32bit()
@@ -31053,13 +31505,58 @@ impl Compiler {
                     };
                     return Ok(fb.load(&IrType::I32, &slot));
                 }
+                if raw_upper == "GRAPHIC_COL" || raw_upper == "GRAPHIC_ROW" {
+                    // GRAPHIC(COL) / GRAPHIC(ROW): 1-based text cell at the
+                    // current print position (CHW function forms).
+                    let r_slot = fb.alloca(&IrType::I32);
+                    let c_slot = fb.alloca(&IrType::I32);
+                    fb.call_void("pb_graphic_get_cell", &[r_slot.clone(), c_slot.clone()]);
+                    let slot = if raw_upper == "GRAPHIC_COL" {
+                        c_slot
+                    } else {
+                        r_slot
+                    };
+                    return Ok(fb.load(&IrType::I32, &slot));
+                }
+                if raw_upper == "GRAPHIC_CHR_SIZE_X" || raw_upper == "GRAPHIC_CHR_SIZE_Y" {
+                    // GRAPHIC(CHR.SIZE.X/Y): no argument; average character
+                    // cell in page units, height excludes external leading.
+                    let w_slot = fb.alloca(&IrType::Float);
+                    let h_slot = fb.alloca(&IrType::Float);
+                    fb.call_void(
+                        "pb_graphic_chr_size_font",
+                        &[w_slot.clone(), h_slot.clone()],
+                    );
+                    let slot = if raw_upper == "GRAPHIC_CHR_SIZE_X" {
+                        w_slot
+                    } else {
+                        h_slot
+                    };
+                    return Ok(fb.load(&IrType::Float, &slot));
+                }
+                if raw_upper == "GRAPHIC_CELL_SIZE_X" || raw_upper == "GRAPHIC_CELL_SIZE_Y" {
+                    // GRAPHIC(CELL.SIZE.X/Y): no argument; pb_graphic_cell_size_font
+                    // writes both axes as SINGLE.
+                    let w_slot = fb.alloca(&IrType::Float);
+                    let h_slot = fb.alloca(&IrType::Float);
+                    fb.call_void(
+                        "pb_graphic_cell_size_font",
+                        &[w_slot.clone(), h_slot.clone()],
+                    );
+                    let slot = if raw_upper == "GRAPHIC_CELL_SIZE_X" {
+                        w_slot
+                    } else {
+                        h_slot
+                    };
+                    return Ok(fb.load(&IrType::Float, &slot));
+                }
                 if raw_upper == "GRAPHIC_TEXT_SIZE_X" || raw_upper == "GRAPHIC_TEXT_SIZE_Y" {
                     // GRAPHIC(TEXT.SIZE.X, msg$) / (TEXT.SIZE.Y, msg$):
                     // pb_graphic_text_size returns both extents through
                     // pointers, so materialise both and load the requested axis.
                     let sp = self.compile_str_payload(fb, &args[0])?;
-                    let w_slot = fb.alloca(&IrType::I32);
-                    let h_slot = fb.alloca(&IrType::I32);
+                    let w_slot = fb.alloca(&IrType::Float);
+                    let h_slot = fb.alloca(&IrType::Float);
                     fb.call_void(
                         "pb_graphic_text_size",
                         &[sp, w_slot.clone(), h_slot.clone()],
@@ -31069,7 +31566,7 @@ impl Compiler {
                     } else {
                         h_slot
                     };
-                    return Ok(fb.load(&IrType::I32, &slot));
+                    return Ok(fb.load(&IrType::Float, &slot));
                 }
                 // VERSION$() is the string function.  normalize_name strips the
                 // trailing $, so an unsuffixed VERSION() call would otherwise
@@ -31749,7 +32246,7 @@ impl Compiler {
                     }
                     // No local property getter: COM late-bound property read
                     // (PowerCollection `.Count`, PowerTime `.Day`).
-                    return self.compile_com_late_call(fb, base_expr, member, &[]);
+                    return self.compile_com_late_get(fb, base_expr, member);
                 }
                 if let Some(class) = self.struct_type_of_expr(base_expr) {
                     let mn = normalize_name(member);
@@ -32535,6 +33032,44 @@ impl Compiler {
             }
             IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
             _ => val.clone(),
+        }
+    }
+
+    /// batch 402: recognise a whole-array reference (`rgData()` / `rgData` /
+    /// `rgData()` with no subscript).  The ordinary expression path would
+    /// otherwise load element 0, so Variant assignment needs this identity
+    /// before `emit_variant_store` runs.
+    fn whole_array_expr_info(&self, expr: &Expr) -> Option<ArrayInfo> {
+        let name = match expr {
+            Expr::FunctionCall(n, args) if args.is_empty() => n,
+            Expr::ArrayAccess(n, args) if args.is_empty() => n,
+            Expr::Variable(n) => n,
+            _ => return None,
+        };
+        self.symbols
+            .lookup_array(name)
+            .or_else(|| self.symbols.lookup_array(&normalize_name(name)))
+            .cloned()
+    }
+
+    /// SAFEARRAY element type for a scalar PB array element.  Fixed-length
+    /// strings and Variant arrays need per-element marshalling and are
+    /// deliberately left out until a sample requires them; a dynamic
+    /// `WSTRING` array is an array of BSTR pointers and maps to VT_BSTR
+    /// (the Excel sample assigns `DIM a(...) AS WSTRING` to a Variant).
+    fn variant_array_elem_vt(pb: &PbType) -> Option<i32> {
+        match pb {
+            PbType::Byte => Some(17),                // VT_UI1
+            PbType::Integer => Some(2),              // VT_I2
+            PbType::Word => Some(18),                // VT_UI2
+            PbType::Long => Some(3),                 // VT_I4
+            PbType::Dword => Some(19),               // VT_UI4
+            PbType::Quad => Some(20),                // VT_I8
+            PbType::Single => Some(4),               // VT_R4
+            PbType::Double | PbType::Ext => Some(5), // VT_R8
+            PbType::Cur | PbType::CurX => Some(6),   // VT_CY
+            PbType::WString => Some(8),              // VT_BSTR
+            _ => None,
         }
     }
 
@@ -33701,7 +34236,7 @@ impl Compiler {
                                             .unwrap_or(0);
                                     }
                                     PbType::Field => size = 16,
-                                    PbType::Variant => size = 16,
+                                    PbType::Variant => size = 24,
                                     _ => size = ptrw,
                                 }
                             } else if let Some(layout) = self.type_layouts.get(&norm) {
@@ -36257,7 +36792,25 @@ impl Compiler {
                     }
                     // WSTRING*n: LEN is the declared character capacity, not
                     // the byte size of the inline [n x i16] buffer (batch 363).
-                    PbType::FixedWString(n, _) => return Ok(fb.const_i32(*n as i32)),
+                    // WSTRINGZ*n is NUL-terminated, so LEN is the content
+                    // length up to the first NUL (PBWin measured 2026-11-21:
+                    // "Alpha" in WSTRINGZ * 300 -> 5, not 300).
+                    PbType::FixedWString(n, zterm) => {
+                        if *zterm
+                            && matches!(
+                                &args[0],
+                                Expr::Variable(_)
+                                    | Expr::TypeMember(_, _)
+                                    | Expr::ArrayAccess(_, _)
+                                    | Expr::Deref(_)
+                            )
+                        {
+                            let (ptr, _) = self.compile_lvalue_ptr(fb, &args[0])?;
+                            let n64 = fb.const_i64(*n as i64);
+                            return Ok(fb.call(&IrType::I32, "pb_wstringz_len", &[ptr, n64]));
+                        }
+                        return Ok(fb.const_i32(*n as i32));
+                    }
                     // LEN of a UDT variable = the structure size in memory
                     // (CHW LEN, batch 278; previously crashed passing the whole
                     // struct by value to pb_str_len).
