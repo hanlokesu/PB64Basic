@@ -1081,7 +1081,7 @@ Array-parameter, dynamic DLL and PB/CC sample closure batch 401.
 - Name normalization for `?`, `$`, `&`, `#`, `%`, `!` and `@` suffixes is restored, so `IIF&`, `NUL$`, `LEFT$`, `MID$`, `PI`, `$SPC` and `CURDIR$` resolve again.
 - PB/CC syntax and runtime closure: `GRAPHIC FONT`, `SELECT CASE CONST` short forms, COM property chains such as `AgentCtrlEx.Characters.Load`, the built-in `PowerBounds` UDT, `CON.WAITKEY`, the `CHRTOOEM$` / `OEMTOCHR$` aliases, single-argument `GRAPHIC PRINT TAB()`, and the `GRAPHIC(TEXT.SIZE.X/Y)` and `GRAPHIC(POS.X/Y)` pseudo-object forms.
 - New probes: `batch401_test.bas` covers arrays, `BYVAL STRING` and `?` numeric suffixes; `batch401_export.bas` checks the export table; `batch401_line_input.bas` is a compile probe; `batch401_tcp_notify.bas` exercises a live TCP `NOTIFY` callback.
-- The Android runtime was rebuilt for both ABIs with the array-descriptor and `GRAPHIC PRINT TAB` changes. The 20-demo APK suite was rebuilt at v0.2.189.
+- The Android runtime was rebuilt for both ABIs with the array-descriptor and `GRAPHIC PRINT TAB` changes. The 20-demo APK suite was rebuilt at v0.2.189 before the final heap-descriptor guard; no demo declares an array above that guard's threshold, so its generated code is unchanged by that guard.
 
 Validation:
 
