@@ -13,6 +13,7 @@ echo   2. LLVM / Clang         (if missing, ~500 MB download)
 echo   3. Windows SDK          (if missing)
 echo   4. Checks for PowerBASIC WinAPI includes (optional)
 echo   5. Builds pb_runtime_x64.obj / pb_runtime_x86.obj and PB64Basic.exe
+echo   6. Android build toolchain (optional, ~1.3 GB download)
 echo.
 echo Optional: pass a PowerBASIC install root or WinAPI folder as the first argument,
 echo for example: setup.bat "C:\PBWin10" or setup.bat "C:\PBWin10\WINAPI"
@@ -22,10 +23,29 @@ echo NOTE: If a Windows UAC prompt appears, click YES to
 echo allow the installers to run.
 echo.
 pause
+set "ANDROIDDO=N"
+echo.
+echo ==================================================
+echo   Optional: Android build toolchain
+echo ==================================================
+echo This installs JDK 17, Gradle 8.14.3, Android command-line tools,
+echo platform-tools, platforms/build-tools 34/35 and NDK r27c.
+echo It downloads about 1.3 GB and needs about 3 GB of disk space.
+echo Android Studio, the emulator and system images are NOT installed.
+echo Type Y to install, anything else to skip.
+set /p "ANDROIDDO=Install Android build toolchain? (Y/N): "
 if defined PB64_INCLUDE (
-  "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -IncludeDir "%PB64_INCLUDE%"
+  if /I "%ANDROIDDO%"=="Y" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -IncludeDir "%PB64_INCLUDE%" -Android
+  ) else (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -IncludeDir "%PB64_INCLUDE%"
+  )
 ) else (
-  "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
+  if /I "%ANDROIDDO%"=="Y" (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1" -Android
+  ) else (
+    "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup.ps1"
+  )
 )
 echo.
 echo ==================================================

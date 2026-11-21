@@ -9,13 +9,20 @@
 #   5. pb_runtime_x64.obj / pb_runtime_x86.obj (from pbcompiler/runtime/pb_runtime.c)
 #   6. PB64Basic.exe        (release build via cargo)
 #
+# Optional (with -Android):
+#   7. JDK 17, Gradle 8.14.3, Android SDK packages and NDK r27c
+#      (delegated to setup-android.ps1; ~1.3 GB download)
+#
 # Run from setup.bat (double-click), or:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -IncludeDir "C:\PBWin10\WINAPI"
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -IncludeDir "C:\PBWin10"
+#   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1 -Android
 
 param(
-    [string]$IncludeDir = ""
+    [string]$IncludeDir = "",
+    [switch]$Android,
+    [string]$AndroidRoot = ""
 )
 
 $ErrorActionPreference = 'Continue'
@@ -326,7 +333,30 @@ cargo build --release -p pbcompiler
 if ($LASTEXITCODE -eq 0) { Write-Ok "pbcompiler built." }
 else { Write-Fail "PB64Basic build failed. Rust toolchain is required (step 1)." }
 
-# ---------- 7. Summary ----------
+# ---------- 7. Android build toolchain (optional) ----------
+$AndroidSetupOk = $false
+if ($Android) {
+    Write-Step "Android build toolchain (JDK 17 / Gradle 8.14.3 / SDK / NDK r27c)"
+    $androidScript = Join-Path $ScriptDir "setup-android.ps1"
+    if (Test-Path -LiteralPath $androidScript) {
+        $psExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $androidArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $androidScript)
+        if (-not [string]::IsNullOrWhiteSpace($AndroidRoot)) {
+            $androidArgs += @("-Root", $AndroidRoot)
+        }
+        & $psExe @androidArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "Android toolchain setup failed (exit $LASTEXITCODE). APK builds will not work until it is fixed."
+        } else {
+            Write-Ok "Android build toolchain is ready."
+            $AndroidSetupOk = $true
+        }
+    } else {
+        Write-Warn "setup-android.ps1 not found: $androidScript"
+    }
+}
+
+# ---------- 8. Summary ----------
 Write-Step "Setup summary"
 $pb = Join-Path $ScriptDir "target\release\PB64Basic.exe"
 if (Test-Path $pb) {
@@ -335,6 +365,13 @@ if (Test-Path $pb) {
         Write-Host "   WinAPI includes: $($pbInc.Dir) (not redistributed)" -ForegroundColor Gray
     } else {
         Write-Host "   WinAPI includes: not found (Windows API examples will not compile)" -ForegroundColor Yellow
+    }
+    if ($Android) {
+        if ($AndroidSetupOk) {
+            Write-Ok "Android build toolchain: ready (open a new terminal before building APKs)"
+        } else {
+            Write-Warn "Android build toolchain: not ready (see step 7 above)"
+        }
     }
     Write-Host ""
     Write-Host "Try it (from this folder):" -ForegroundColor White

@@ -180,6 +180,17 @@ compile.bat          :: builds examples\hello.bas -> examples\hello.exe
    release package. For a custom copy, pass the PowerBASIC root or WinAPI folder
    as the first argument, for example `setup.bat "C:\PBWin10"`, or use
    `--include-dir` when compiling.
+   **Android build toolchain (optional).** Answer `Y` to the Android prompt in
+   `setup.bat`, or run
+   `powershell -NoProfile -ExecutionPolicy Bypass -File setup-android.ps1`.
+   This installs four top-level components, not three: Eclipse Temurin JDK
+   `17.0.21+9`, Gradle `8.14.3`, the Android SDK (command-line tools `15859902`
+   plus `platform-tools`, platforms `android-34`/`android-35` and build-tools
+   `34.0.0`/`35.0.0`), and Android NDK `r27c` (`27.2.12479018`). The download is
+   about 1.3 GB and the installed tree is about 3 GB. Android Studio, the
+   emulator and system images are deliberately not installed: `adb` and a
+   physical device or a separately installed emulator are enough to build and
+   install APKs.
 2. **Compile your first program:**
 
    ```bash
@@ -435,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 402 (v0.2.190). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 402 (v0.2.191). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 402 packaging (v0.2.191) - Added the optional Android toolchain installer and a 958-page CHM with a complete Android demo APK guide; compiler behavior is unchanged. See the v0.2.191 changelog entry.
 > batch 402 (v0.2.190) - Closed the GRAPHIC text-metric, font-selection, BYVAL floating-argument, WSTRING storage and XMLENCODEBASE64 Variant gaps: Page Unit printing, documented CELL/CHR/CELL-position forms, real GDI cursor movement, exact 14-cell comma zones, correct FONT NEW argument bounds and BSTR SafeArray ownership. 479 examples compile, 319 headless samples run with 0 failures, and the 20-demo Android APK suite is rebuilt at v0.2.190.
 > batch 401 (v0.2.189) - Closed the batch 401 array-parameter, dynamic DLL and PB/CC sample gaps: static arrays passed through `BYREF` now follow callee `REDIM`; `DECLARE ... LIB` uses runtime loading; `#EXPORT` controls the export table; 56/56 PB/CC samples build on both targets. PBWin10 sample results remain 152/159 on both targets, with the seven rejects invalid in PBWin10 itself. Android runtime and the 20-demo APK suite were rebuilt at v0.2.189.
 > batch 400 (v0.2.188) - Replaced four index-based codegen argument loops with iterator loops to satisfy Rust 1.100.0 `clippy::needless_range_loop`. Argument order and bounds are unchanged; there is no compiler behavior change.
@@ -1072,6 +1084,28 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.191 (2026-11-21)
+
+Packaging and help update for batch 402. No compiler behavior change.
+
+- `setup.bat` now offers an optional Android build toolchain and forwards `-Android` to `setup.ps1`.
+- Added `setup-android.ps1`, which installs four top-level components: Eclipse Temurin JDK `17.0.21+9`, Gradle `8.14.3`, the Android SDK (command-line tools `15859902`, `platform-tools`, platforms `android-34`/`android-35`, build-tools `34.0.0`/`35.0.0`), and Android NDK `r27c` (`27.2.12479018`). It is four components, not three.
+- Default install root is `D:\AndroidToolchain`, with `%LOCALAPPDATA%\PB64Basic\AndroidToolchain` when no D: drive exists. `-Root`, `-CheckOnly`, `-NoEnv`, `-Force`, `-SkipSdkPackages` and `-SkipNdk` are supported.
+- The installer downloads about 1.3 GB and uses about 3.3 GB after extraction. It does not install Android Studio, the emulator or system images.
+- Downloads are version-pinned and checksum-verified: SHA-256 for the JDK, Gradle and command-line tools; SHA-1 for the NDK.
+- A clean install in an isolated directory completed with `JDK, Gradle, Android SDK and NDK all validate`. The same new toolchain built `Welcome Hello.bas` for `x86_64`; `zipalign -c` and `apksigner verify` passed.
+- `build_apk.ps1` now resolves the toolchain from `PB64_ANDROID_HOME`, `GRADLE_HOME` and the default install root, so the `setup.bat` layout works without manual path edits.
+- The CHM was rebuilt with 958 topic pages. A new **Android demo APKs** page documents requirements, package contents, single and batch `adb install`, first run, Input/Line/Key/Send behavior, the 20 demo package ids, file-sandbox and network notes, `sha256sum -c` verification, and the ARM64 static-only and GUI/COM/GDI/printer/serial limits.
+- The Android APK suite itself is unchanged and remains published as **android-demos-v0.2.190**: 20 dual-ABI APKs, 20/20 package, ABI, zipalign and signature checks, 20/20 x86_64 emulator smoke tests.
+
+Validation:
+
+- `verify_full.py`: 28 checks / 0 FAIL on the 958-page CHM.
+- Example compilation: 956 compiled / 0 failed.
+- Isolated Android toolchain install: all four components validated; the test APK built, aligned and signed.
+
+The Android demo APK suite is at https://github.com/hanlokesu/PB64Basic/releases/tag/android-demos-v0.2.190.
+
 ### v0.2.190 (2026-11-21)
 
 GRAPHIC text metrics, Variant array and call-ABI closure batch 402.
