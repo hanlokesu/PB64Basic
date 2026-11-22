@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 404 (v0.2.194). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 405 (v0.2.195). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 405 (v0.2.195) - Closed the APK / PB/CC / GUI residual set: GRAPHIC BOX negative-corner, omitted-corner and aspect semantics now match PBWin pixel for pixel, GRAPHIC COPY and the POLYGON/POLYLINE/XPRINT declarations were corrected, user procedures whose names start with GRAPHIC_/MENU_/XPRINT_ are no longer swallowed, the Android MSGBOX link guard was fixed, and the 20-APK suite was rebuilt and passed 20/20 emulator probes. All Windows source gates are clean.
 > batch 404 (v0.2.194) - Fixed the two defects behind Discussion #5 with the José Roca WINAPI headers: POINT/POINTAPI are registered before any TYPE layout (a user-declared POINT still wins), and #INCLUDE accepts a quoted path with no closing quote at EOL. Window.bas builds and shows its main dialog with both the José Roca and stock PBWin10 header sets on x86_64 and i686; 488 compilable examples, 331 headless examples, 34 negative probes and the x86_64/i686 link smoke are clean. See the v0.2.194 changelog entry.
 > batch 403 (v0.2.193) - Closed the six headless regressions and the runtime semantics behind them. TEXTBOX controls now keep WS_BORDER clear, matching PBWin10's real style 0x50010080 with the frame drawn by WS_EX_CLIENTEDGE; the earlier "+WS_BORDER" conclusion was disproved and its false-positive test corrected; GRAPHIC CONTROL preserves a supplied style instead of replacing it with SS_OWNERDRAW; FONT NEW handles are no longer mistaken for raw HFONTs; GRAPHIC WINDOW and GRAPHIC WINDOW TEXT report POWERGRAPH and POWERTEXT respectively; GRAPHIC BOX optional-argument parsing was corrected in the regression programs; and the x86-only QUAD declarations that truncated 32-bit WinAPI returns were narrowed to the x64 branch. Also closed the batch 403 parser, GDI-lifecycle, dialog-unit, capture, GET$ ASCIIZ, missing-DLL, ListView-width and focus-restore items. All examples compile; headless, negative, link, fmt and clippy gates are clean. See the v0.2.193 changelog entry.
 > batch 402 packaging follow-up (v0.2.192) - Rebuilt the 958-page CHM, fixed the full-text-search claim, added the JK-IDE Android APK menu and setup-time Android toolchain probe, and refreshed the add-on DLL. Compiler behavior is unchanged. See the v0.2.192 changelog entry.
@@ -1087,6 +1088,42 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.195 (2026-11-22)
+
+Batch 405 closes the APK, PB/CC and GUI residual set. Every item below was reproduced, fixed at the source and re-tested on the shipped compiler and runtime.
+
+Highlights:
+
+- `GRAPHIC BOX` negative corners now follow PBWin: any negative corner is treated as 100 percent rounding, then clamped to 0..100. An omitted corner stays square: the parser encodes the omitted first optional slot with a distinct sentinel, codegen emits 0, and the runtime maps only INT_MIN to 0; PBWin omitted/0/-1 probes read green/green/white at x=12/112/212, and TextRotate moved from 0.802 percent near to identical. A 620x200 PBWin baseline and the PB64 render differ by 0 of 124,000 pixels. A 900x300 aspect probe with 160x80 and 80x160 rectangles at corners 0, 25, 100, 200, -10 and -200 differs by 0 of 270,000 pixels. `examples/batch405_graphic_box.bas` asserts the geometry on x86_64 and i686.
+- `GRAPHIC COPY` now declares and returns `I32` at both call sites; the previous `Void` declaration discarded the runtime result.
+- `pb_graphic_polygon_udt`, `pb_graphic_polyline_udt` and `pb_xprint_line_rel` are declared in codegen. The PB/CC `PowerBASIC Chart` sample previously failed with `use of undefined value '@pb_graphic_polygon_udt'`; all 56 PB/CC samples now build on x86_64 and i686.
+- A user procedure whose name starts with `GRAPHIC_`, `MENU_` or `XPRINT_` is no longer consumed by the built-in family guard. A procedure body is emitted and called even when the name shares the family prefix. `examples/batch405_prefix_test.bas` covers five such procedures on both targets.
+- `examples/batch405_graphic_multi.bas` covers three independent GRAPHIC controls, destruction of the middle control, `GRAPHIC COPY hwnd, 0` against a child control, a stale handle, and `GRAPHIC ATTACH hDlg, 0`. All pixel assertions pass on x86_64 and i686.
+- The Android runtime no longer calls `IsWindow` inside `pb_msgbox_impl` under `__ANDROID__`; the linked ARM64 `libpbapp.so` has 82 undefined libc/Android symbols and no `IsWindow` or `MessageBoxA` import; the standalone object still lists unused `IsWindow`/`IsWindowEnabled` entries in discarded sections, so object-level `llvm-nm -u` is not used as the link criterion. Both ABI baselines were rebuilt and all 20 demo APKs were rebuilt at `v0.2.195`, with manifest verification 20 of 20. Verified APK names retain the `-debug` suffix because they are debug-signed; the manifest and package `versionName` are `v0.2.195`.
+- The 20-APK build refreshes the shared dual-ABI runtime cache after a stale-runtime compile and reuses it for the remaining APKs. The final build logged 2 full runtime compiles and 38 prebuilt hits, down from up to 40 runtime compiles.
+- The APK smoke harness now reads `logcat -d -t 20000` instead of 1200 lines. The earlier Path failure was a truncated-log false negative, not a runtime failure. The rebuilt suite passes 20 of 20 emulator probes on the x86_64 Android 15 emulator.
+
+Validation:
+
+- `run_examples.py --compile-all`: 493 compiled, 0 failed.
+- `run_examples.py --all-headless`: 334 classified headless, 334 compiled, 0 compile failures; 330 ran, 0 run failures and 0 timeouts; 4 DLL examples have no `.exe` entry and are reported as `no-exe`, not as failures.
+- `check_negative_probes.py`: 34 probes, 0 BAD.
+- `link_smoke_32.py --examples --targets x86_64,i686`: 0 link failures.
+- PB/CC sample matrix: 56 of 56 build on x86_64, 56 of 56 on i686, 0 failures.
+- PBWin10 dual-compile matrix: 98 samples classified, 34 identical, 28 near, 1 dynamic-clock diff (same-second captures of the client area are 0.000 percent); 35 samples are not pixel-comparable (17 skipped runs, 11 DLL-only, 7 sources PBWin10 cannot compile, six of which PB64 also rejects).
+- APK suite: 20 of 20 manifests verified, 20 of 20 emulator probes passed; ARM64 APKs remain static/link verified only on this machine.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --release` are clean; 9 tests pass.
+- The capture harness now sends `WM_MOUSELEAVE` to every direct child of the top-level window before each capture, clearing a stale toolbar hot state that had falsely marked the Print button blue in PB64; seven former 1-pixel `near` samples became `identical` (HelloDDT, TabControl, ENTERMOV, Martini, Prime1, Prime2, Say) and Toolbar dropped from 0.662 to 0.136 percent. `dual_compare.py` defaults to this repository, prints the compiler and runtime SHA-256 it is about to use, fails when an input is missing, and can rebuild all 98 per-sample results with `--report-only` without re-running them.
+
+Boundaries:
+
+- GUI `near` differences are DWM/theme rendering, title bars, button theming and edit-control borders; statement behaviour and layout are compared separately.
+- The single `diff` sample (`Digital`) captures a live clock at different seconds. Same-second captures of the 120x20 client area are 0.000 percent.
+- No PB/CC compiler is installed on this host, so PB/CC results use CHW review plus the Windows console matrix, not a live PB/CC differential run.
+- Android GUI/COM/GDI/menu/printer/serial and `TCP NOTIFY` dispatch remain outside the Android runtime; ARM64 APKs have not run on an ARM64 device or image.
+- Dynamic-string rewrite keeps the documented pointer-safety trade-off: a previous destination that may point at a codegen constant is not freed. This avoids heap corruption; it is not a data-corruption path.
+- The demo APKs are debug-signed for local testing; distribution requires a release keystore.
+
 ### v0.2.194 (2026-11-22)
 
 Batch 404 fixes two compatibility defects exposed by the José Roca WINAPI_III_107 headers in Discussion #5. The stock PBWin10 path already worked and is unchanged.
@@ -5716,57 +5753,50 @@ Regression: 14/14 official tests pass, `cargo clippy --all-targets -- -D warning
 
 ---
 
-## Roadmap / Known Limitations
+## Known Limitations and Platform Boundaries
 
-- **Tier 2 (done):** `REPLACE`, `LSET`, `RSET`, `ERASE`, `WRITE #`, `SEEK`,
-  `LOCK/UNLOCK`, `RESET`, `FLUSH`, and `NAME` are implemented and verified.
-  Still open: `ON ERROR GOTO` - parsed and reported in
-  `*.unimplemented.log` (not silently dropped), but produces no code yet;
-  a real implementation needs a runtime error-handling mechanism
-  (an error latch + a check after every failing call + a branch to the
-  error handler), a structural change to codegen, and is deferred.
-- **Tier 3 (future, large):** the DDT GUI framework — `DIALOG`, `CONTROL`,
-  `MENU`, `TOOLBAR`, `STATUSBAR`, `COMBOBOX`, `LISTBOX`, `TREEVIEW`,
-  `LISTVIEW`, `XPRINT` — effectively a rewrite of the entire windowing
-  framework.
+The statement catalogue in `docs/statement-coverage.csv` is the current source of
+truth: 952 rows.  Of the 920 official PB/Win keywords, 918 are **Implemented**
+and 2 are **Established** (documented PB behaviour that has no separate runtime
+path); the remaining 32 rows are fork extensions.  No official PB/Win statement
+or function-class keyword listed in that catalogue is still deferred, and no row
+is **Not implemented**.  In particular, `ON ERROR GOTO`, the DDT GUI
+family (`DIALOG`/`CONTROL`/`MENU`/`TOOLBAR`/`STATUSBAR`/`COMBOBOX`/`LISTBOX`/
+`TREEVIEW`/`LISTVIEW`/`XPRINT`), `LBOUND`/`UBOUND`, `FRAC`, `NUL$`, `TAB$`,
+`COMMAND$`, `ENVIRON$`, `THREADID`, `MCASE$`, `FORMAT$`, `USING$`, `CALLSTK$`,
+`FUNCNAME$`, `INPUTBOX$`, `GUID$`/`GUIDTXT$`, `CLSID$`/`PROGID$`, `ARRAYATTR`,
+`ENUM`, `UNION`, `FASTPROC`, `PROPERTY`, `FOR EACH`, and the `OBJ*` family are
+implemented and covered by examples or batch probes.
 
-### Pending function-class keywords (found in PBWin.chm, not yet implemented)
+Remaining boundaries are platform / environment constraints, not missing
+statements:
 
-Identified by cross-referencing the official PBWin.chm documentation against
-the current implementation. Sorted by estimated difficulty.
-
-**Easy (next batch candidates):**
-- `LBOUND` / `UBOUND` — array lower/upper bounds
-- `FRAC` — fractional part of a number
-- `NUL$` — null string constant
-- `TAB$` — tab character string
-- `COMMAND$` — command-line arguments
-- `ENVIRON$` — read environment variable (function form)
-- `THREADID` — current thread ID
-- `MCASE$` — case conversion helper
-
-**Medium:**
-- `FORMAT$` — formatted string (like USING but returns string)
-- `USING$` — formatted output string
-- `CALLSTK$` / `CALLSTKCOUNT` — call stack inspection
-- `FUNCNAME$` — name of current function
-- `INPUTBOX$` — modal input dialog
-- `GUID$` / `GUIDTXT$` — generate GUID
-- `ISINTERFACE` / `ISOBJECT` / `ISNOTHING` / `ISNULL` / `ISNOTNULL` — OOP type checks
-- `UCODE$` — ANSI to Unicode conversion
-- `ARRAYATTR` — array attribute query
-- `ENUM` / `END ENUM` — enumeration type
-- `UNION` / `END UNION` — union type
-- `CLSID$` / `PROGID$` — COM class identifiers
-- `PRINTER$` — printer info
-- `READ$` / `RESOURCE$` — resource reading
-- `VARIANT$` / `VARIANTVT` — VARIANT type helpers
-
-**Hard (deferred):**
-- `FASTPROC` / `END FASTPROC` — fast procedure calling convention
-- `PROPERTY` / `END PROPERTY` — class properties
-- `FOR EACH` / `NEXT` — collection enumeration
-- `OBJACTIVE` / `OBJEQUAL` / `OBJPTR` / `OBJRESULT` / `OBJRESULT$` — COM object helpers
+- **Android ARM64 execution**: both `arm64-v8a` and `x86_64` APKs are built and
+  statically verified, but this machine has only an x86_64 Android 15 emulator.
+  ARM64 APKs have not been run on a real ARM64 device or image.  Android also
+  has no GUI/COM/GDI/menu/printer/serial implementation, no 32-bit
+  (`armeabi-v7a`/`x86`) runtime baseline, and `TCP NOTIFY` has no window message
+  pump on Android.
+- **PB/CC differential testing**: the 381-row PB/CC subset is 379 Implemented +
+  2 Established, and the Windows console matrix passes on both x64 and i686.
+  No PB/CC compiler is installed on this machine, so PB/CC results are validated
+  against the CHW documentation and this project's own console regression,
+  not by a live PB/CC side-by-side run.
+- **GUI pixel comparison**: the 98-sample PBWin10 dual-compile matrix is used for
+  visual regression.  Remaining differences are limited to DWM/theme rendering
+  (title bars, button theming, edit-control borders); statement-level behaviour,
+  layout, graphics, and menu structure are compared separately.  Pixel identity
+  is not claimed for OS-themed non-client areas.
+- **Runtime string ownership**: dynamic-string assignment follows PB pointer
+  semantics.  Rewrite helpers that assign a fresh BSTR (`GET$`/`GET$$`,
+  `LSET`/`RSET`, `CSET`, and the other dynamic-assignment paths) intentionally
+  do not free a previous destination that may point at a codegen string
+  constant or a malloc-backed buffer.  Pathological loops that repeatedly
+  overwrite the same destination can therefore retain memory.  This is a
+  deliberate safety trade-off (freeing a constant or foreign allocation would
+  corrupt the heap); it is not a data-corruption path.
+- **Debug APKs**: the Android demo suite is debug-signed for local testing.
+  Distribution requires a release keystore.
 
 ---
 

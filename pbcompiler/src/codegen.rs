@@ -6490,6 +6490,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_xprint_line_rel",
+            &IrType::I32,
+            &[IrType::I32, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_xprint_box",
             &IrType::I32,
             &[IrType::I32, IrType::I32, IrType::I32, IrType::I32],
@@ -7689,6 +7695,24 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_graphic_polygon_udt",
+            &IrType::I32,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+            ],
+            false,
+        );
+        self.module.declare_function(
+            "pb_graphic_polyline_udt",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_graphic_get_client",
             &IrType::I32,
             &[IrType::Ptr, IrType::Ptr],
@@ -7885,13 +7909,13 @@ impl Compiler {
         );
         self.module.declare_function(
             "pb_graphic_copy_bmp",
-            &IrType::Void,
+            &IrType::I32,
             &[IrType::I64, IrType::I32, IrType::I32, IrType::I32],
             false,
         );
         self.module.declare_function(
             "pb_graphic_copy_bmp_rect",
-            &IrType::Void,
+            &IrType::I32,
             &[
                 IrType::I64,
                 IrType::I32,
@@ -19117,7 +19141,11 @@ impl Compiler {
                 let xv = self.convert_value(fb, &x, &IrType::I32, &PbType::Long);
                 let y = self.compile_expr(fb, &call.args[3])?;
                 let yv = self.convert_value(fb, &y, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_graphic_copy_bmp", &[srcv, idv, xv, yv]);
+                // pb_graphic_copy_bmp returns int (1 on success, 0 when the
+                // source is not a live bitmap/control).  The statement form
+                // discards the result, but the IR declaration must match the
+                // runtime ABI exactly.
+                let _ = fb.call(&IrType::I32, "pb_graphic_copy_bmp", &[srcv, idv, xv, yv]);
             }
             "GRAPHIC_COPY_BMP_RECT" => {
                 // args: hbmp, id&, sx1, sy1, sx2, sy2, dx, dy
@@ -19130,7 +19158,7 @@ impl Compiler {
                     let e = self.compile_expr(fb, arg)?;
                     v.push(self.convert_value(fb, &e, &IrType::I32, &PbType::Long));
                 }
-                fb.call_void("pb_graphic_copy_bmp_rect", &v);
+                let _ = fb.call(&IrType::I32, "pb_graphic_copy_bmp_rect", &v);
             }
             "GRAPHIC_SET_CELL" | "GRAPHIC_GET_CELL" => {
                 let a0 = self.compile_expr(fb, &call.args[0])?;
@@ -19712,11 +19740,26 @@ impl Compiler {
                     fb.const_i32(0)
                 };
                 let corner = if call.name == "GRAPHIC_BOX" {
-                    if let Some(a) = call.args.get(4) {
-                        let v = self.compile_expr(fb, a)?;
-                        self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
-                    } else {
-                        fb.const_i32(0)
+                    match call.args.get(4) {
+                        // The parser uses i32::MIN for an omitted corner slot
+                        // (`GRAPHIC BOX ...,,RGB()`).  It must stay a sharp
+                        // rectangle.  Explicit negatives (including -1) are
+                        // a different case and PBWin rounds them to 100%.
+                        Some(Expr::IntegerLit(v)) if *v == i32::MIN as i64 => fb.const_i32(0),
+                        Some(a) => {
+                            let v = self.compile_expr(fb, a)?;
+                            let v = self.convert_value(fb, &v, &IrType::I32, &PbType::Long);
+                            // PBWin maps any negative corner to a fully rounded box
+                            // (100%), not to its absolute value.  Verified with a
+                            // PBWin pixel probe covering -1/-10/-50/-200.
+                            // Normalise here so the behaviour is independent of which
+                            // runtime object is linked.
+                            let zero = fb.const_i32(0);
+                            let full = fb.const_i32(100);
+                            let is_neg = fb.icmp("slt", &v, &zero);
+                            fb.select(&is_neg, &full, &v)
+                        }
+                        None => fb.const_i32(0),
                     }
                 } else {
                     fb.const_i32(0)
@@ -28919,7 +28962,12 @@ impl Compiler {
         // Parser sometimes emits family names with spaces ("FONT NEW",
         // "GRAPHIC SET FIXED"); normalize before the handled-family guard.
         let fam = name.replace(' ', "_");
-        if fam.starts_with("GRAPHIC_")
+        // A user SUB/FUNCTION may legitimately live in a builtin family namespace
+        // (GRAPHIC_PROBE, MENU_PROBE, XPRINT_PROBE). Resolve it first; only an
+        // unresolved family name is a handled builtin that may fall through here.
+        let user_proc = self.functions.contains_key(&name) || self.subs.contains_key(&name);
+        if !user_proc
+            && (fam.starts_with("GRAPHIC_")
             || fam.starts_with("MENU_")
             || fam.starts_with("XPRINT_")
             // Only the five built-in DISPLAY common-dialog statements are
@@ -28955,7 +29003,7 @@ impl Compiler {
             || fam == "UDP_NOTIFY"
             || fam == "ACCEL_ATTACH"
             || fam == "LET_PTR"
-            || fam == "DEF_FN"
+            || fam == "DEF_FN")
         {
             return Ok(());
         }

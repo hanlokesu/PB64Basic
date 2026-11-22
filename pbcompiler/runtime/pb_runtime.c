@@ -14287,13 +14287,23 @@ int pb_graphic_box(int x1, int y1, int x2, int y2, int color, int fillcolor, int
     else if (fillstyle >= 1 && fillstyle <= 6) br = CreateHatchBrush(fillstyle - 1, (unsigned long)(unsigned int)fillcolor);
     else br = CreateSolidBrush((unsigned long)(unsigned int)(fillcolor == -1 ? color : fillcolor));
     void* oldb = SelectObject(g_gr_dc, br);
-    /* corner is a percentage of roundness (0..100), not a pixel radius. */
+    /* corner is a percentage of roundness (0..100), not a pixel radius.
+       PBWin maps any negative corner to a fully rounded box (100%), not to
+       its absolute value; verified with a PBWin pixel probe covering
+       -1/-10/-50/-200. */
     int radius = 0;
-    if (corner > 0) {
+    if (corner != 0) {
         int w = x2 - x1, h = y2 - y1;
+        /* i32::MIN is the compiler's sentinel for an omitted corner slot
+           (`GRAPHIC BOX ...,,RGB()`), which must stay a sharp rectangle.
+           Any other negative value is an explicit PBWin corner and means
+           100%, not its absolute value. */
+        if (corner == (-2147483647 - 1)) corner = 0;
+        else if (corner < 0) corner = 100;
         if (w < 0) w = -w; if (h < 0) h = -h;
         int m = w < h ? w : h;
-        radius = (m * (corner > 100 ? 100 : corner)) / 100;
+        if (corner > 100) corner = 100;
+        radius = (m * corner) / 100;
         if (radius < 1) radius = 1;
     }
     int ok = radius > 0
@@ -20254,8 +20264,15 @@ int pb_msgbox_impl(void* text, void* title, unsigned int style) {
     /* PBWin owns a MSGBOX shown from a dialog callback by that dialog.
        Passing NULL made agentwin's "MS Agent is not installed" box an
        unowned top-level window, so the comparison harness kept the larger
-       main dialog and never saw the error. */
+       main dialog and never saw the error.
+       Android has no Win32 window stack: the JNI AlertDialog ignores the
+       owner, and IsWindow is not available there.  Keep the owner lookup
+       Windows-only so the Android runtime links. */
+#if defined(__ANDROID__)
+    void* owner = 0;
+#else
     void* owner = (cb_hwnd && IsWindow(cb_hwnd)) ? cb_hwnd : 0;
+#endif
     return MessageBoxA(owner, (const char*)text, (const char*)title, style);
 }
 

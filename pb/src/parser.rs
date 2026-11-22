@@ -7369,14 +7369,28 @@ impl Parser {
                                 self.advance();
                             }
                         }
+                        let mut opt_slot = 0usize;
                         while self.peek() == &Token::Comma {
                             self.advance();
                             // Omitted optional slots are legal: `,,RGB(...)`.
                             if matches!(self.peek(), Token::Comma | Token::Eol | Token::Eof) {
-                                args.push(Expr::IntegerLit(-1));
+                                // BOX's first optional slot is the corner.  A
+                                // bare `-1` placeholder cannot be distinguished
+                                // from an explicit negative corner (-1 is legal
+                                // and PBWin rounds it to 100%).  Use i32::MIN
+                                // for the omitted corner so codegen can keep
+                                // "omitted" (sharp rectangle) separate from
+                                // "explicit negative" (fully rounded).
+                                let omitted = if gop == "BOX" && opt_slot == 0 {
+                                    i32::MIN as i64
+                                } else {
+                                    -1
+                                };
+                                args.push(Expr::IntegerLit(omitted));
                             } else {
                                 args.push(self.parse_expression()?);
                             }
+                            opt_slot += 1;
                         }
                         self.consume_to_eol();
                         return Ok(Statement::Call(CallStmt {
