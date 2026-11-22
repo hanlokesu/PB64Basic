@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 405 (v0.2.195). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 406 (v0.2.196). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 406 (v0.2.196) - Rebuilt and revalidated the 958-page CHM against the v0.2.195 compiler and Android demo suite. The GRAPHIC BOX page now documents an omitted corner as square; the Android demo page records v0.2.195 and archive SHA-256 78449CE57241F6E15440B52C4FDB9BA7474FA803AA5E3EE490F1D0D854EE4F7D; the CHM and CHW copies under jkide and the installed JK-IDE help slot are byte-identical. Page verification is 28 checks / 0 FAIL and F1 verification is 2148 checks / 0 FAIL. Compiler and runtime behavior are unchanged.
 > batch 405 (v0.2.195) - Closed the APK / PB/CC / GUI residual set: GRAPHIC BOX negative-corner, omitted-corner and aspect semantics now match PBWin pixel for pixel, GRAPHIC COPY and the POLYGON/POLYLINE/XPRINT declarations were corrected, user procedures whose names start with GRAPHIC_/MENU_/XPRINT_ are no longer swallowed, the Android MSGBOX link guard was fixed, and the 20-APK suite was rebuilt and passed 20/20 emulator probes. All Windows source gates are clean.
 > batch 404 (v0.2.194) - Fixed the two defects behind Discussion #5 with the José Roca WINAPI headers: POINT/POINTAPI are registered before any TYPE layout (a user-declared POINT still wins), and #INCLUDE accepts a quoted path with no closing quote at EOL. Window.bas builds and shows its main dialog with both the José Roca and stock PBWin10 header sets on x86_64 and i686; 488 compilable examples, 331 headless examples, 34 negative probes and the x86_64/i686 link smoke are clean. See the v0.2.194 changelog entry.
 > batch 403 (v0.2.193) - Closed the six headless regressions and the runtime semantics behind them. TEXTBOX controls now keep WS_BORDER clear, matching PBWin10's real style 0x50010080 with the frame drawn by WS_EX_CLIENTEDGE; the earlier "+WS_BORDER" conclusion was disproved and its false-positive test corrected; GRAPHIC CONTROL preserves a supplied style instead of replacing it with SS_OWNERDRAW; FONT NEW handles are no longer mistaken for raw HFONTs; GRAPHIC WINDOW and GRAPHIC WINDOW TEXT report POWERGRAPH and POWERTEXT respectively; GRAPHIC BOX optional-argument parsing was corrected in the regression programs; and the x86-only QUAD declarations that truncated 32-bit WinAPI returns were narrowed to the x64 branch. Also closed the batch 403 parser, GDI-lifecycle, dialog-unit, capture, GET$ ASCIIZ, missing-DLL, ListView-width and focus-restore items. All examples compile; headless, negative, link, fmt and clippy gates are clean. See the v0.2.193 changelog entry.
@@ -1088,6 +1089,28 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.196 (2026-11-23)
+
+Batch 406 is a help-system rebuild for the shipped v0.2.195 compiler and runtime. There are no compiler or runtime changes.
+
+Highlights:
+
+- Rebuilt the full help project at `v0.2.195`: 958 topics (index + 952 catalog pages + 4 pseudo-object pages + Android demo page).
+- `GRAPHIC BOX` now states that an omitted `corner&` defaults to 0 (square corners), matching the parser sentinel and runtime behavior shipped in v0.2.195.
+- The Android demo page records the `v0.2.195` APK suite and archive SHA-256 `78449CE57241F6E15440B52C4FDB9BA7474FA803AA5E3EE490F1D0D854EE4F7D`.
+- Refreshed `jkide\PB64Basic.chm` and `jkide\PB64Basic.chw`, and the installed `D:\JK-IDE` copies, to the same 1,563,021-byte file with SHA-256 `11A9ABAFFF1BA58DD4893850B80E7C372E85607550F98EAB542AC4CAA156F709`.
+
+Validation:
+
+- `verify_full.py --chm --decompiled --report`: 28 checks, 0 FAIL.
+- `verify_f1_full.py --chm --map --report`: 2148 checks, 0 FAIL (1066 contexts and 1066 keywords).
+- CHM decompile: 958 HTML topics plus `style.css`; the GRAPHIC BOX omitted-corner sentence is present; the Android page carries v0.2.195 and the new archive hash.
+- `fc /b` reports no differences between the `.chm` and `.chw` copies in the help project, `jkide`, and `D:\JK-IDE`.
+
+Boundaries:
+
+- `hhc.exe` still prints `HHC6003: Itircl.dll has not been registered correctly` on this host. The compiler produced a complete CHM and the full page/F1 gates pass; the warning is environmental and does not indicate missing topics.
+
 ### v0.2.195 (2026-11-22)
 
 Batch 405 closes the APK, PB/CC and GUI residual set. Every item below was reproduced, fixed at the source and re-tested on the shipped compiler and runtime.

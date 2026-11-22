@@ -1,0 +1,10 @@
+#COMPILE EXE
+FUNCTION PBMAIN () AS LONG
+    IF VERSION$ <> "v0.2.196" THEN
+        PRINT "FAIL version="; VERSION$
+        FUNCTION = 1
+        EXIT FUNCTION
+    END IF
+    PRINT "batch406 version ok"
+    FUNCTION = 0
+END FUNCTION
