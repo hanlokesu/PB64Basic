@@ -13136,6 +13136,25 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // Official CONTROL ADD LISTVIEW carries an optional
+                    // style& (and exstyle&) after the geometry.  The fork
+                    // used to discard everything up to EOL, so every
+                    // ListView was created with the runtime's LVS_REPORT
+                    // default regardless of %LVS_ICON / %LVS_LIST.
+                    let mut style: Option<Expr> = None;
+                    let mut exstyle: Option<Expr> = None;
+                    if self.peek() == &Token::Comma {
+                        self.advance();
+                        if self.peek() != &Token::To && self.peek() != &Token::Eol {
+                            style = Some(self.parse_expression()?);
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                if self.peek() != &Token::To && self.peek() != &Token::Eol {
+                                    exstyle = Some(self.parse_expression()?);
+                                }
+                            }
+                        }
+                    }
                     let target = if self.peek() == &Token::To {
                         self.advance();
                         self.parse_expression()?
@@ -13145,7 +13164,17 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_LISTVIEW".to_string(),
-                        args: vec![hwnd, id, x, y, w, h, target],
+                        args: vec![
+                            hwnd,
+                            id,
+                            x,
+                            y,
+                            w,
+                            h,
+                            style.unwrap_or(Expr::IntegerLit(0)),
+                            exstyle.unwrap_or(Expr::IntegerLit(0)),
+                            target,
+                        ],
                         line,
                     }));
                 }
@@ -19927,7 +19956,12 @@ impl Parser {
     }
 
     fn parse_add_sub(&mut self) -> PbResult<Expr> {
-        let mut left = self.parse_mul_div()?;
+        // PBWin precedence (high to low):
+        //   ^  >  unary +/-  >  * /  >  \  >  MOD  >  + -
+        // `30 * minute \ 60` must parse as `(30 * minute) \ 60`; the old
+        // chain made `\` bind tighter than `*` and evaluated it as
+        // `30 * (minute \ 60)` (PWRCLOCK hour hand lost its minute offset).
+        let mut left = self.parse_mod_expr()?;
         loop {
             let op = match self.peek() {
                 Token::Plus => BinaryOp::Add,
@@ -19935,14 +19969,34 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_mul_div()?;
+            let right = self.parse_mod_expr()?;
             left = Expr::BinaryOp(op, Box::new(left), Box::new(right));
         }
         Ok(left)
     }
 
-    fn parse_mul_div(&mut self) -> PbResult<Expr> {
+    fn parse_mod_expr(&mut self) -> PbResult<Expr> {
         let mut left = self.parse_int_div()?;
+        while self.peek() == &Token::Mod {
+            self.advance();
+            let right = self.parse_int_div()?;
+            left = Expr::BinaryOp(BinaryOp::Mod, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_int_div(&mut self) -> PbResult<Expr> {
+        let mut left = self.parse_mul_div()?;
+        while self.peek() == &Token::Backslash {
+            self.advance();
+            let right = self.parse_mul_div()?;
+            left = Expr::BinaryOp(BinaryOp::IntDiv, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+
+    fn parse_mul_div(&mut self) -> PbResult<Expr> {
+        let mut left = self.parse_power()?;
         loop {
             let op = match self.peek() {
                 Token::Star => BinaryOp::Mul,
@@ -19950,40 +20004,59 @@ impl Parser {
                 _ => break,
             };
             self.advance();
-            let right = self.parse_int_div()?;
+            let right = self.parse_power()?;
             left = Expr::BinaryOp(op, Box::new(left), Box::new(right));
         }
         Ok(left)
     }
 
-    fn parse_int_div(&mut self) -> PbResult<Expr> {
-        let mut left = self.parse_mod_expr()?;
-        while self.peek() == &Token::Backslash {
-            self.advance();
-            let right = self.parse_mod_expr()?;
-            left = Expr::BinaryOp(BinaryOp::IntDiv, Box::new(left), Box::new(right));
-        }
-        Ok(left)
-    }
-
-    fn parse_mod_expr(&mut self) -> PbResult<Expr> {
-        let mut left = self.parse_power()?;
-        while self.peek() == &Token::Mod {
-            self.advance();
-            let right = self.parse_power()?;
-            left = Expr::BinaryOp(BinaryOp::Mod, Box::new(left), Box::new(right));
-        }
-        Ok(left)
-    }
-
     fn parse_power(&mut self) -> PbResult<Expr> {
-        let base = self.parse_unary()?;
-        if self.peek() == &Token::Caret {
+        // `@ptr` dereference must remain reachable from every expression
+        // level after the multiplicative precedence reorder; otherwise
+        // CommCtrl.inc / WinSock2.inc FD_SET and FD_CLR macros fail.
+        // Unary sign is looser than `^`: `-2 ^ 2` = -(2 ^ 2) = -4, while
+        // `2 ^ -3` still parses as 2 ^ (-3).  Placing the sign here (rather
+        // than in parse_unary) keeps it reachable at the atom level after
+        // the multiplicative precedence reorder.
+        if self.peek() == &Token::Minus {
             self.advance();
-            let exp = self.parse_unary()?;
-            return Ok(Expr::BinaryOp(BinaryOp::Pow, Box::new(base), Box::new(exp)));
+            let expr = self.parse_power()?;
+            return Ok(Expr::Negate(Box::new(expr)));
+        }
+        if self.peek() == &Token::Plus {
+            self.advance();
+            return self.parse_power();
+        }
+        // `@ptr` dereference is an atom, so it must still accept a following
+        // `^` and remain left-associative with the rest of the power chain.
+        let mut base = if self.peek() == &Token::At {
+            self.advance();
+            self.parse_deref_path()?
+        } else {
+            self.parse_primary()?
+        };
+        // `^` is left-associative in PBWin: `2 ^ 3 ^ 2` = (2 ^ 3) ^ 2 = 64.
+        while self.peek() == &Token::Caret {
+            self.advance();
+            let exp = self.parse_power_operand()?;
+            base = Expr::BinaryOp(BinaryOp::Pow, Box::new(base), Box::new(exp));
         }
         Ok(base)
+    }
+
+    /// Operand of `^`: a primary atom, optionally signed (`2 ^ -3`).  It must
+    /// not recurse through parse_power, otherwise `2 ^ 3 ^ 2` becomes
+    /// right-associative (512) while PBWin yields 64.
+    fn parse_power_operand(&mut self) -> PbResult<Expr> {
+        if self.peek() == &Token::Minus {
+            self.advance();
+            let expr = self.parse_primary()?;
+            return Ok(Expr::Negate(Box::new(expr)));
+        }
+        if self.peek() == &Token::Plus {
+            self.advance();
+        }
+        self.parse_primary()
     }
 
     /// Parse the path after a consumed `@`: `ptr`, `ptr.member`,
@@ -20088,16 +20161,9 @@ impl Parser {
             self.advance();
             return self.parse_deref_path();
         }
-        if self.peek() == &Token::Minus {
-            self.advance();
-            let expr = self.parse_primary()?;
-            return Ok(Expr::Negate(Box::new(expr)));
-        }
-        if self.peek() == &Token::Plus {
-            self.advance();
-            return self.parse_primary();
-        }
-        self.parse_primary()
+        // Unary +/- and `^` both live in parse_power so that `-2 ^ 2`
+        // evaluates to -4 without breaking `2 ^ -3`.
+        self.parse_power()
     }
 
     fn parse_primary(&mut self) -> PbResult<Expr> {

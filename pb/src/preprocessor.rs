@@ -492,7 +492,12 @@ impl Preprocessor {
             .map_err(|e| PbError::io(format!("Cannot read {}: {}", canonical.display(), e)))?;
         let content = match String::from_utf8(bytes.clone()) {
             Ok(s) => s,
-            Err(_) => String::from_utf8_lossy(&bytes).into_owned(),
+            // PBWin source files are ANSI/GBK.  Decode each byte to the
+            // matching Latin-1 code point so the original bytes survive a
+            // round-trip through the compiler; UTF-8 lossy decoding turned
+            // every non-ASCII literal (for example the "º" in Address.bas)
+            // into U+FFFD and printed mojibake at run time.
+            Err(_) => bytes.iter().map(|&b| char::from(b)).collect(),
         };
 
         self.process_source(&content, &canonical)

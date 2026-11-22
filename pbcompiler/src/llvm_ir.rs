@@ -332,8 +332,9 @@ impl ModuleBuilder {
     pub fn add_string_constant(&mut self, value: &str) -> (String, usize) {
         let name = format!(".str.{}", self.str_counter);
         self.str_counter += 1;
-        let n = value.len(); // payload byte count (no terminator)
-        let escaped = llvm_escape_string(value);
+        let bytes = ansi_bytes(value);
+        let n = bytes.len(); // payload byte count (no terminator)
+        let escaped = llvm_escape_bytes(&bytes);
         let n0 = n & 0xFF;
         let n1 = (n >> 8) & 0xFF;
         let n2 = (n >> 16) & 0xFF;
@@ -690,13 +691,29 @@ impl FunctionBuilder {
         }
     }
 
-    /// `%r = inttoptr i32 %val to ptr` (32-bit target)
+    /// Convert an integer to a pointer.  Windows x64 USER/GDI handles are
+    /// 32-bit values whose upper half is the sign extension of bit 31
+    /// (measured: `BeginPaint` returns 0xFFFFFFFFD6011371).  LLVM's
+    /// `inttoptr i32` zero-extends, which turns such a handle into an
+    /// unrelated 0x00000000D6011371 value: `WindowFromDC` then returns 0
+    /// and the window background is never painted (HelloWin white client).
+    /// Sign-extend first so the handle round-trips exactly.  Genuine 32-bit
+    /// addresses below 2 GB are unchanged; x64 user addresses that need bit
+    /// 31 are never represented by an `i32` in this compiler.
     pub fn inttoptr(&mut self, val: &Val) -> Val {
+        let src = match &val.ty {
+            IrType::I32 | IrType::I16 | IrType::I8 => {
+                let ext = self.next_reg();
+                writeln!(self.body, "  {} = sext {} {} to i64", ext, val.ty, val.name).unwrap();
+                Val::new(ext, IrType::I64)
+            }
+            _ => val.clone(),
+        };
         let r = self.next_reg();
         writeln!(
             self.body,
             "  {} = inttoptr {} {} to ptr",
-            r, val.ty, val.name
+            r, src.ty, src.name
         )
         .unwrap();
         Val::new(r, IrType::Ptr)
@@ -933,6 +950,42 @@ impl FunctionBuilder {
         )
         .unwrap();
         Val::new(r, to.clone())
+    }
+
+    /// Float to signed int using the current FP rounding mode (round half to
+    /// even), which is what PowerBASIC uses for implicit float-to-integer
+    /// assignments and argument conversions.  LLVM `fptosi` truncates toward
+    /// zero and therefore loses the half-way rounding (HitGame's
+    /// `(h - 230) / 2 - 5` produced 63 instead of PBWin's 64).
+    pub fn fptosi_round(&mut self, val: &Val, to: &IrType) -> Val {
+        let native = if to.bit_width() > 32 {
+            IrType::I64
+        } else {
+            IrType::I32
+        };
+        let name = match (val.ty.clone(), native.clone()) {
+            (IrType::Double, IrType::I32) => "llvm.lrint.i32.f64",
+            (IrType::Double, IrType::I64) => "llvm.llrint.i64.f64",
+            (IrType::Float, IrType::I32) => "llvm.lrint.i32.f32",
+            (IrType::Float, IrType::I64) => "llvm.llrint.i64.f32",
+            _ => return self.fptosi(val, to),
+        };
+        let r = self.next_reg();
+        writeln!(
+            self.body,
+            "  {} = call {} @{}({})",
+            r,
+            native,
+            name,
+            val.typed()
+        )
+        .unwrap();
+        let rounded = Val::new(r, native.clone());
+        if &native == to {
+            rounded
+        } else {
+            self.trunc(&rounded, to)
+        }
     }
 
     /// Zero-extend i1 to wider integer.
@@ -1331,9 +1384,46 @@ fn format_f64_hex(val: f64) -> String {
 }
 
 /// Escape a string for LLVM IR constant.
-fn llvm_escape_string(s: &str) -> String {
+fn ansi_bytes(s: &str) -> Vec<u8> {
+    // PB ANSI literals are byte strings.  Code points up to U+00FF stand for
+    // the original source byte (the preprocessor's Latin-1 fallback), while
+    // genuinely wider characters keep their UTF-8 encoding.
+    //
+    // The lexer can also hand us a UTF-8 byte pair decoded as two Latin-1
+    // chars (source byte 0xBA arrives as U+00C2 U+00BA).  Collapse such a
+    // pair back to the single original byte so ANSI controls and GDI see the
+    // same byte string as PBWin ("Record Nº" must stay one 0xBA byte, not
+    // the two-byte sequence C2 BA).
+    let mut out = Vec::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let u = c as u32;
+        if (0xC2..=0xDF).contains(&u) && i + 1 < chars.len() {
+            let n = chars[i + 1] as u32;
+            if (0x80..=0xBF).contains(&n) {
+                // C2 BA is UTF-8 for U+00BA; the original ANSI byte is the
+                // payload byte BA (similarly C3 A9 → E9 for é).
+                out.push(n as u8);
+                i += 2;
+                continue;
+            }
+        }
+        if u <= 0xFF {
+            out.push(u as u8);
+        } else {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+        }
+        i += 1;
+    }
+    out
+}
+
+fn llvm_escape_bytes(bytes: &[u8]) -> String {
     let mut out = String::new();
-    for b in s.bytes() {
+    for &b in bytes {
         match b {
             b'\\' => out.push_str("\\5C"),
             b'"' => out.push_str("\\22"),

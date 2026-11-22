@@ -11,7 +11,8 @@
 #
 # Optional (with -Android):
 #   7. JDK 17, Gradle 8.14.3, Android SDK packages and NDK r27c
-#      (delegated to setup-android.ps1; ~1.3 GB download)
+#      (delegated to setup-android.ps1; ~1.3 GB download, requires at least
+#      4.6 GB free on the target volume before installation starts)
 #
 # Run from setup.bat (double-click), or:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup.ps1
@@ -382,3 +383,10 @@ if (Test-Path $pb) {
 }
 Write-Host ""
 Write-Host "Setup finished." -ForegroundColor Cyan
+
+# A failed Android install (including the 4.6 GB free-space gate) must not be
+# reported as a successful setup.  The Android step is optional, so only fail
+# the process when the user explicitly asked for it.
+if ($Android -and -not $AndroidSetupOk) {
+    exit 1
+}

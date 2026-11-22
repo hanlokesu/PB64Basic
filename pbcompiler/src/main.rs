@@ -858,6 +858,7 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
     script.push_str("$h = [ResEm]::BeginUpdateResource($exe, $false)\n");
     script.push_str("$RT_ICON = [IntPtr]3\n");
     script.push_str("$RT_GROUP_ICON = [IntPtr]14\n");
+    script.push_str("$nextIconId = 1000\n");
     for (id, path) in resources {
         let path_q = path.to_string_lossy().replace('\'', "''");
         script.push_str(&format!("$ico = [IO.File]::ReadAllBytes('{}')\n", path_q));
@@ -873,7 +874,8 @@ fn embed_resources(exe_path: &Path, resources: &[(u32, std::path::PathBuf)]) {
         script.push_str("  $imgSize = [BitConverter]::ToUInt32($ico, $srcOff + 8)\n");
         script.push_str("  $imgData = New-Object byte[] $imgSize\n");
         script.push_str("  [Array]::Copy($ico, $imgOff, $imgData, 0, $imgSize)\n");
-        script.push_str(&format!("  $iconId = [IntPtr]({} + $i + 1)\n", id));
+        script.push_str("  $iconId = [IntPtr]$nextIconId\n");
+        script.push_str("  $nextIconId++\n");
         script.push_str("  [void][ResEm]::UpdateResource($h, $RT_ICON, $iconId, 0, $imgData, $imgData.Length)\n");
         script.push_str("  $grp[$dstOff + 12] = [byte]($iconId.ToInt64() -band 0xFF)\n");
         script.push_str("  $grp[$dstOff + 13] = [byte](($iconId.ToInt64() -shr 8) -band 0xFF)\n");

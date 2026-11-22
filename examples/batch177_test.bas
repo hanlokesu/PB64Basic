@@ -61,7 +61,8 @@ END SUB
 '      OPTION      %WS_TABSTOP | %BS_LEFT | %BS_VCENTER   type BS_AUTORADIOBUTTON
 '      CHECK3STATE %BS_LEFT | %BS_VCENTER | %WS_TABSTOP   type BS_AUTO3STATE
 '      FRAME       %BS_LEFT | %BS_TOP                     type BS_GROUPBOX
-'      TEXTBOX     %WS_TABSTOP | %WS_BORDER | %ES_LEFT | %ES_AUTOHSCROLL
+'      TEXTBOX     %WS_TABSTOP | %ES_LEFT | %ES_AUTOHSCROLL (no WS_BORDER;
+'                  the frame is the %WS_EX_CLIENTEDGE extended style)
 '      LINE        %SS_ETCHEDFRAME
 '    The window CLASS is the second witness: Button for the first three,
 '    Edit for TEXTBOX, Static for LINE.
@@ -102,6 +103,7 @@ END SUB
 ' Raw numbers, because this dialect defines no %WS_* / %BS_* / %SS_* / %ES_* /
 ' %EM_* / %BM_* names:
 '     WS_TABSTOP 0x10000   WS_BORDER 0x800000   WS_EX_CLIENTEDGE 0x200
+'     (TEXTBOX does not carry WS_BORDER; 0x800000 is listed for contrast)
 '     BS_LEFT 0x100        BS_TOP 0x400         BS_VCENTER 0xC00
 '     ES_AUTOHSCROLL 0x80  SS_ETCHEDFRAME 0x12
 '     WM_GETTEXT 13        BM_GETCHECK 240      BM_SETCHECK 241
@@ -343,16 +345,18 @@ FUNCTION PBMAIN () AS LONG
     #ENDIF
 
     CALL DWORD gwlA USING GetWindowLongA(hTb, idx) TO st
-    #IF %MY_PBVER = 10
-        ConPrint "ok   TEXTBOX carries WS_BORDER (0x800000)"
-    #ELSE
-        IF (st AND 8388608) <> 0 THEN
-            ConPrint "ok   TEXTBOX carries WS_BORDER (0x800000)"
-        ELSE
-            fail = fail + 1
-            ConPrint "FAIL TEXTBOX lost WS_BORDER; style =" & STR$(st)
-        END IF
-    #ENDIF
+    IF st = 1342242944 THEN
+        ConPrint "ok   TEXTBOX default style is exactly 0x50010080"
+    ELSE
+        fail = fail + 1
+        ConPrint "FAIL TEXTBOX default style is not 0x50010080; style =" & STR$(st)
+    END IF
+    IF (st AND 8388608) = 0 THEN
+        ConPrint "ok   TEXTBOX leaves WS_BORDER clear (0x800000); CLIENTEDGE draws the frame"
+    ELSE
+        fail = fail + 1
+        ConPrint "FAIL TEXTBOX added WS_BORDER; style =" & STR$(st)
+    END IF
     IF (st AND 128) <> 0 THEN
         ConPrint "ok   TEXTBOX carries ES_AUTOHSCROLL (0x80)"
     ELSE
@@ -361,11 +365,11 @@ FUNCTION PBMAIN () AS LONG
     END IF
     idx = -20
     CALL DWORD gwlA USING GetWindowLongA(hTb, idx) TO ex
-    IF (ex AND 512) <> 0 THEN
-        ConPrint "ok   TEXTBOX carries WS_EX_CLIENTEDGE (0x200)"
+    IF ex = 512 THEN
+        ConPrint "ok   TEXTBOX exstyle is exactly WS_EX_CLIENTEDGE (0x200)"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL TEXTBOX exstyle =" & STR$(ex) & " (want WS_EX_CLIENTEDGE)"
+        ConPrint "FAIL TEXTBOX exstyle =" & STR$(ex) & " (want exactly WS_EX_CLIENTEDGE)"
     END IF
     idx = -16
 

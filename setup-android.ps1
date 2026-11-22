@@ -8,6 +8,9 @@
 #   4. Android NDK r27c (27.2.12479018)
 #
 # Download size is about 1.3 GB; the installed tree is about 3 GB.
+# The installer requires at least 4.6 GB free on the target volume before it
+# creates directories or downloads anything (1.3 GB download + 3 GB installed
+# + headroom).
 #
 # Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File setup-android.ps1
@@ -524,6 +527,30 @@ if ($CheckOnly) {
         Write-Host 'Re-run without -CheckOnly to install them.' -ForegroundColor Gray
     }
     exit 0
+}
+
+# ---------- Free-space gate ----------
+# A full install downloads about 1.3 GB and leaves about 3 GB installed.  The
+# 4.6 GB floor covers both plus headroom for staging and temporary files.  Do
+# this before creating $InstallRoot so a failed check leaves no partial tree.
+$RequiredFreeBytes = [long](4.6 * 1GB)
+if ($missing.Count -gt 0) {
+    $installFull = [IO.Path]::GetFullPath($InstallRoot)
+    $volumeRoot = [IO.Path]::GetPathRoot($installFull)
+    try {
+        $volume = New-Object System.IO.DriveInfo($volumeRoot)
+        $freeBytes = $volume.AvailableFreeSpace
+    } catch {
+        Write-Fail "Cannot determine free space on $volumeRoot for $InstallRoot`: $($_.Exception.Message)"
+        Write-Host '   Choose a local fixed drive with at least 4.6 GB free and re-run setup.' -ForegroundColor Gray
+        exit 1
+    }
+    if ($freeBytes -lt $RequiredFreeBytes) {
+        Write-Fail ("Not enough free space on {0}: {1:N2} GB available; at least 4.6 GB required (1.3 GB download + 3 GB installed)." -f $volumeRoot, ($freeBytes / 1GB))
+        Write-Host '   Free up space on that drive, or pass -Root <another-drive>\AndroidToolchain.' -ForegroundColor Gray
+        exit 1
+    }
+    Write-Ok ("Free space on {0}: {1:N2} GB (at least 4.6 GB required)." -f $volumeRoot, ($freeBytes / 1GB))
 }
 
 # ---------- Install ----------

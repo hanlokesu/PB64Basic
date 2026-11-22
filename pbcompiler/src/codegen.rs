@@ -27,6 +27,7 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%RGB_GREEN", 0x0000FF00),
     ("%RGB_CYAN", 0x00FFFF00),
     ("%RGB_RED", 0x000000FF),
+    ("%RGB_FIREBRICK", 0x002222B2),
     ("%RGB_MAGENTA", 0x00FF00FF),
     ("%RGB_BROWN", 0x00008080),
     ("%RGB_LIGHTGRAY", 0x00C0C0C0),
@@ -108,6 +109,23 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%BS_RIGHT", 0x00000200),
     ("%BS_TOP", 0x00000400),
     ("%BS_VCENTER", 0x00000C00),
+    // ComboBox styles.  Without these, an unknown %CBS_DROPDOWNLIST fell
+    // through to 0 and CONTROL ADD COMBOBOX silently created an editable
+    // CBS_DROPDOWN: Address's Country showed an empty edit instead of the
+    // selected "United States" (0.56% and a real behavioural difference).
+    ("%CBS_SIMPLE", 0x00000001),
+    ("%CBS_DROPDOWN", 0x00000002),
+    ("%CBS_DROPDOWNLIST", 0x00000003),
+    ("%CBS_OWNERDRAWFIXED", 0x00000010),
+    ("%CBS_OWNERDRAWVARIABLE", 0x00000020),
+    ("%CBS_AUTOHSCROLL", 0x00000040),
+    ("%CBS_OEMCONVERT", 0x00000080),
+    ("%CBS_SORT", 0x00000100),
+    ("%CBS_HASSTRINGS", 0x00000200),
+    ("%CBS_NOINTEGRALHEIGHT", 0x00000400),
+    ("%CBS_DISABLENOSCROLL", 0x00000800),
+    ("%CBS_UPPERCASE", 0x00002000),
+    ("%CBS_LOWERCASE", 0x00004000),
     ("%DS_3DLOOK", 0x00000004),
     ("%DS_CENTER", 0x00000800),
     ("%DS_CENTERMOUSE", 0x00001000),
@@ -126,13 +144,105 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%ES_RIGHT", 0x00000002),
     ("%ES_WANTRETURN", 0x00001000),
     ("%SS_BLACKFRAME", 0x00000007),
-    ("%SS_BLACKRECT", 0x00000003),
+    ("%SS_BLACKRECT", 0x00000004),
     ("%SS_CENTER", 0x00000001),
     ("%SS_GRAYFRAME", 0x00000008),
     ("%SS_LEFT", 0x00000000),
     ("%SS_LEFTNOWORDWRAP", 0x0000000C),
     ("%SS_RIGHT", 0x00000002),
     ("%SS_SIMPLE", 0x0000000B),
+    ("%SS_GRAYRECT", 0x00000005),
+    ("%SS_WHITERECT", 0x00000006),
+    ("%SS_WHITEFRAME", 0x00000009),
+    ("%SS_USERITEM", 0x0000000A),
+    ("%SS_OWNERDRAW", 0x0000000D),
+    ("%SS_BITMAP", 0x0000000E),
+    ("%SS_ENHMETAFILE", 0x0000000F),
+    ("%SS_ETCHEDHORZ", 0x00000010),
+    ("%SS_ETCHEDVERT", 0x00000011),
+    ("%SS_ETCHEDFRAME", 0x00000012),
+    ("%SS_REALSIZECONTROL", 0x00000040),
+    ("%SS_NOPREFIX", 0x00000080),
+    ("%SS_NOTIFY", 0x00000100),
+    ("%SS_CENTERIMAGE", 0x00000200),
+    ("%SS_RIGHTJUST", 0x00000400),
+    ("%SS_REALSIZEIMAGE", 0x00000800),
+    ("%SS_SUNKEN", 0x00001000),
+    ("%SS_ENDELLIPSIS", 0x00004000),
+    ("%SS_PATHELLIPSIS", 0x00008000),
+    ("%SS_WORDELLIPSIS", 0x0000C000),
+    /* Remaining style/class/message equates used by the official samples.
+    Every one of these was absent from the table, so a source line such
+    as "%BS_AUTOCHECKBOX OR %WS_TABSTOP" silently lost the style bits. */
+    ("%BS_AUTOCHECKBOX", 0x00000003),
+    ("%BS_LEFTTEXT", 0x00000020),
+    ("%BS_TEXT", 0x00000000),
+    ("%CS_VREDRAW", 0x00000001),
+    ("%CS_HREDRAW", 0x00000002),
+    ("%CS_DBLCLKS", 0x00000008),
+    ("%DT_LEFT", 0x00000000),
+    ("%DT_CENTER", 0x00000001),
+    ("%DT_VCENTER", 0x00000004),
+    ("%DT_SINGLELINE", 0x00000020),
+    ("%ES_NUMBER", 0x00002000),
+    ("%LBS_NOTIFY", 0x00000001),
+    ("%LBS_SORT", 0x00000002),
+    ("%LBS_OWNERDRAWFIXED", 0x00000010),
+    ("%LBS_HASSTRINGS", 0x00000040),
+    ("%LBS_NOINTEGRALHEIGHT", 0x00000100),
+    ("%LBS_WANTKEYBOARDINPUT", 0x00000400),
+    ("%LBS_DISABLENOSCROLL", 0x00001000),
+    ("%MCS_MULTISELECT", 0x00000002),
+    ("%SBS_SIZEGRIP", 0x00000010),
+    ("%SM_CXSCREEN", 0),
+    ("%SM_CYSCREEN", 1),
+    ("%SM_CXVSCROLL", 2),
+    ("%SM_CYCAPTION", 4),
+    ("%SW_HIDE", 0),
+    ("%SW_SHOWNORMAL", 1),
+    ("%SW_SHOW", 5),
+    ("%WS_EX_TOOLWINDOW", 0x00000080),
+    ("%WS_EX_CONTROLPARENT", 0x00010000),
+    ("%IDC_ARROW", 32512),
+    ("%IDC_IBEAM", 32513),
+    ("%IDI_APPLICATION", 32512),
+    ("%VK_RETURN", 0x0D),
+    ("%VK_SHIFT", 0x10),
+    ("%VK_SPACE", 0x20),
+    ("%VK_PGUP", 0x21),
+    ("%VK_PGDN", 0x22),
+    ("%VK_END", 0x23),
+    ("%VK_HOME", 0x24),
+    ("%VK_LEFT", 0x25),
+    ("%VK_UP", 0x26),
+    ("%VK_RIGHT", 0x27),
+    ("%VK_DOWN", 0x28),
+    ("%VK_A", 0x41),
+    ("%VK_B", 0x42),
+    ("%VK_C", 0x43),
+    ("%VK_D", 0x44),
+    ("%VK_E", 0x45),
+    ("%VK_F", 0x46),
+    ("%VK_G", 0x47),
+    ("%VK_H", 0x48),
+    ("%VK_I", 0x49),
+    ("%VK_J", 0x4A),
+    ("%VK_K", 0x4B),
+    ("%VK_L", 0x4C),
+    ("%VK_M", 0x4D),
+    ("%VK_N", 0x4E),
+    ("%VK_O", 0x4F),
+    ("%VK_P", 0x50),
+    ("%VK_Q", 0x51),
+    ("%VK_R", 0x52),
+    ("%VK_S", 0x53),
+    ("%VK_T", 0x54),
+    ("%VK_U", 0x55),
+    ("%VK_V", 0x56),
+    ("%VK_W", 0x57),
+    ("%VK_X", 0x58),
+    ("%VK_Y", 0x59),
+    ("%VK_Z", 0x5A),
     ("%WM_COMMAND", 0x00000111),
     ("%WM_CTLCOLORMSGBOX", 0x00000132),
     ("%WM_CTLCOLOREDIT", 0x00000133),
@@ -232,6 +342,358 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%IDCONTINUE", 11),
     ("%TRUE", 1),
     ("%FALSE", 0),
+    /* Common-control styles and messages (CommCtrl.inc). PBWin treats these as built-ins even when the source does not include the header. */
+    ("%ICC_LISTVIEW_CLASSES", 0x1),
+    ("%ICC_TREEVIEW_CLASSES", 0x2),
+    ("%ICC_BAR_CLASSES", 0x4),
+    ("%ICC_TAB_CLASSES", 0x8),
+    ("%ICC_UPDOWN_CLASS", 0x10),
+    ("%ICC_PROGRESS_CLASS", 0x20),
+    ("%ICC_HOTKEY_CLASS", 0x40),
+    ("%ICC_ANIMATE_CLASS", 0x80),
+    ("%ICC_WIN95_CLASSES", 0xFF),
+    ("%ICC_DATE_CLASSES", 0x100),
+    ("%ICC_USEREX_CLASSES", 0x200),
+    ("%ICC_COOL_CLASSES", 0x400),
+    ("%ICC_INTERNET_CLASSES", 0x800),
+    ("%ICC_PAGESCROLLER_CLASS", 0x1000),
+    ("%ICC_NATIVEFNTCTL_CLASS", 0x2000),
+    ("%ICC_STANDARD_CLASSES", 0x4000),
+    ("%ICC_LINK_CLASS", 0x8000),
+    ("%LVM_FIRST", 0x1000),
+    ("%ILC_MASK", 0x1),
+    ("%ILC_COLOR", 0x0),
+    ("%ILC_COLORDDB", 0xFE),
+    ("%ILC_COLOR4", 0x4),
+    ("%ILC_COLOR8", 0x8),
+    ("%ILC_COLOR16", 0x10),
+    ("%ILC_COLOR24", 0x18),
+    ("%ILC_COLOR32", 0x20),
+    ("%ILC_PALETTE", 0x800),
+    ("%ILC_MIRROR", 0x2000),
+    ("%ILC_PERITEMMIRROR", 0x8000),
+    ("%ILC_ORIGINALSIZE", 0x10000),
+    ("%ILC_HIGHQUALITYSCALE", 0x20000),
+    ("%ILS_NORMAL", 0x0),
+    ("%ILS_GLOW", 0x1),
+    ("%ILS_SHADOW", 0x2),
+    ("%ILS_SATURATE", 0x4),
+    ("%ILS_ALPHA", 0x8),
+    ("%HDF_LEFT", 0x0),
+    ("%HDF_RIGHT", 0x1),
+    ("%HDF_CENTER", 0x2),
+    ("%HDF_JUSTIFYMASK", 0x3),
+    ("%HDF_RTLREADING", 0x4),
+    ("%HDF_BITMAP", 0x2000),
+    ("%HDF_STRING", 0x4000),
+    ("%HDF_OWNERDRAW", 0x8000),
+    ("%HDF_IMAGE", 0x800),
+    ("%HDF_BITMAP_ON_RIGHT", 0x1000),
+    ("%HDF_SORTUP", 0x400),
+    ("%HDF_SORTDOWN", 0x200),
+    ("%HDF_CHECKBOX", 0x40),
+    ("%HDF_CHECKED", 0x80),
+    ("%HDF_FIXEDWIDTH", 0x100),
+    ("%HDF_SPLITBUTTON", 0x1000000),
+    ("%TBSTATE_CHECKED", 0x1),
+    ("%TBSTATE_PRESSED", 0x2),
+    ("%TBSTATE_ENABLED", 0x4),
+    ("%TBSTATE_HIDDEN", 0x8),
+    ("%TBSTATE_INDETERMINATE", 0x10),
+    ("%TBSTATE_WRAP", 0x20),
+    ("%TBSTATE_ELLIPSES", 0x40),
+    ("%TBSTATE_MARKED", 0x80),
+    ("%TBSTYLE_BUTTON", 0x0),
+    ("%TBSTYLE_SEP", 0x1),
+    ("%TBSTYLE_CHECK", 0x2),
+    ("%TBSTYLE_GROUP", 0x4),
+    ("%TBSTYLE_DROPDOWN", 0x8),
+    ("%TBSTYLE_AUTOSIZE", 0x10),
+    ("%TBSTYLE_NOPREFIX", 0x20),
+    ("%TBSTYLE_TOOLTIPS", 0x100),
+    ("%TBSTYLE_WRAPABLE", 0x200),
+    ("%TBSTYLE_ALTDRAG", 0x400),
+    ("%TBSTYLE_FLAT", 0x800),
+    ("%TBSTYLE_LIST", 0x1000),
+    ("%TBSTYLE_CUSTOMERASE", 0x2000),
+    ("%TBSTYLE_REGISTERDROP", 0x4000),
+    ("%TBSTYLE_TRANSPARENT", 0x8000),
+    ("%TBSTYLE_EX_DRAWDDARROWS", 0x1),
+    ("%TBSTYLE_EX_MIXEDBUTTONS", 0x8),
+    ("%TBSTYLE_EX_HIDECLIPPEDBUTTONS", 0x10),
+    ("%TBSTYLE_EX_DOUBLEBUFFER", 0x80),
+    ("%SB_SIMPLEID", 0xFF),
+    ("%LVS_ICON", 0x0),
+    ("%LVS_REPORT", 0x1),
+    ("%LVS_SMALLICON", 0x2),
+    ("%LVS_LIST", 0x3),
+    ("%LVS_TYPEMASK", 0x3),
+    ("%LVS_SINGLESEL", 0x4),
+    ("%LVS_SHOWSELALWAYS", 0x8),
+    ("%LVS_SORTASCENDING", 0x10),
+    ("%LVS_SORTDESCENDING", 0x20),
+    ("%LVS_SHAREIMAGELISTS", 0x40),
+    ("%LVS_NOLABELWRAP", 0x80),
+    ("%LVS_AUTOARRANGE", 0x100),
+    ("%LVS_EDITLABELS", 0x200),
+    ("%LVS_OWNERDATA", 0x1000),
+    ("%LVS_NOSCROLL", 0x2000),
+    ("%LVS_TYPESTYLEMASK", 0xFC00),
+    ("%LVS_ALIGNTOP", 0x0),
+    ("%LVS_ALIGNLEFT", 0x800),
+    ("%LVS_ALIGNMASK", 0xC00),
+    ("%LVS_OWNERDRAWFIXED", 0x400),
+    ("%LVS_NOCOLUMNHEADER", 0x4000),
+    ("%LVS_NOSORTHEADER", 0x8000),
+    ("%LVIF_TEXT", 0x1),
+    ("%LVIF_IMAGE", 0x2),
+    ("%LVIF_PARAM", 0x4),
+    ("%LVIF_STATE", 0x8),
+    ("%LVIF_INDENT", 0x10),
+    ("%LVIF_NORECOMPUTE", 0x800),
+    ("%LVIF_GROUPID", 0x100),
+    ("%LVIF_COLUMNS", 0x200),
+    ("%LVIF_COLFMT", 0x10000),
+    ("%LVNI_ALL", 0x0),
+    ("%LVNI_FOCUSED", 0x1),
+    ("%LVNI_SELECTED", 0x2),
+    ("%LVNI_CUT", 0x4),
+    ("%LVNI_DROPHILITED", 0x8),
+    ("%LVNI_ABOVE", 0x100),
+    ("%LVNI_BELOW", 0x200),
+    ("%LVNI_TOLEFT", 0x400),
+    ("%LVNI_TORIGHT", 0x800),
+    ("%LVCF_FMT", 0x1),
+    ("%LVCF_WIDTH", 0x2),
+    ("%LVCF_TEXT", 0x4),
+    ("%LVCF_SUBITEM", 0x8),
+    ("%LVCF_IMAGE", 0x10),
+    ("%LVCF_ORDER", 0x20),
+    ("%LVCF_MINWIDTH", 0x40),
+    ("%LVCF_DEFAULTWIDTH", 0x80),
+    ("%LVCF_IDEALWIDTH", 0x100),
+    ("%LVS_EX_GRIDLINES", 0x1),
+    ("%LVS_EX_SUBITEMIMAGES", 0x2),
+    ("%LVS_EX_CHECKBOXES", 0x4),
+    ("%LVS_EX_TRACKSELECT", 0x8),
+    ("%LVS_EX_HEADERDRAGDROP", 0x10),
+    ("%LVS_EX_FULLROWSELECT", 0x20),
+    ("%LVS_EX_ONECLICKACTIVATE", 0x40),
+    ("%LVS_EX_TWOCLICKACTIVATE", 0x80),
+    ("%LVS_EX_FLATSB", 0x100),
+    ("%LVS_EX_REGIONAL", 0x200),
+    ("%LVS_EX_INFOTIP", 0x400),
+    ("%LVS_EX_UNDERLINEHOT", 0x800),
+    ("%LVS_EX_UNDERLINECOLD", 0x1000),
+    ("%LVS_EX_MULTIWORKAREAS", 0x2000),
+    ("%LVS_EX_LABELTIP", 0x4000),
+    ("%LVS_EX_BORDERSELECT", 0x8000),
+    ("%LVS_EX_DOUBLEBUFFER", 0x10000),
+    ("%LVS_EX_HIDELABELS", 0x20000),
+    ("%LVS_EX_SINGLEROW", 0x40000),
+    ("%LVS_EX_SNAPTOGRID", 0x80000),
+    ("%LVS_EX_SIMPLESELECT", 0x100000),
+    ("%LVS_EX_JUSTIFYCOLUMNS", 0x200000),
+    ("%LVS_EX_TRANSPARENTBKGND", 0x400000),
+    ("%LVS_EX_TRANSPARENTSHADOWTEXT", 0x800000),
+    ("%LVS_EX_AUTOAUTOARRANGE", 0x1000000),
+    ("%LVS_EX_HEADERINALLVIEWS", 0x2000000),
+    ("%LVS_EX_AUTOCHECKSELECT", 0x8000000),
+    ("%LVS_EX_AUTOSIZECOLUMNS", 0x10000000),
+    ("%LVS_EX_COLUMNSNAPPOINTS", 0x40000000),
+    ("%LVS_EX_COLUMNOVERFLOW", 0x80000000),
+    ("%LVIF_DI_SETITEM", 0x1000),
+    ("%TVS_HASBUTTONS", 0x1),
+    ("%TVS_HASLINES", 0x2),
+    ("%TVS_LINESATROOT", 0x4),
+    ("%TVS_EDITLABELS", 0x8),
+    ("%TVS_DISABLEDRAGDROP", 0x10),
+    ("%TVS_SHOWSELALWAYS", 0x20),
+    ("%TVS_RTLREADING", 0x40),
+    ("%TVS_NOTOOLTIPS", 0x80),
+    ("%TVS_CHECKBOXES", 0x100),
+    ("%TVS_TRACKSELECT", 0x200),
+    ("%TVS_SINGLEEXPAND", 0x400),
+    ("%TVS_INFOTIP", 0x800),
+    ("%TVS_FULLROWSELECT", 0x1000),
+    ("%TVS_NOSCROLL", 0x2000),
+    ("%TVS_NONEVENHEIGHT", 0x4000),
+    ("%TVS_NOHSCROLL", 0x8000),
+    ("%TVIF_TEXT", 0x1),
+    ("%TVIF_IMAGE", 0x2),
+    ("%TVIF_PARAM", 0x4),
+    ("%TVIF_STATE", 0x8),
+    ("%TVIF_HANDLE", 0x10),
+    ("%TVIF_SELECTEDIMAGE", 0x20),
+    ("%TVIF_CHILDREN", 0x40),
+    ("%TVIF_INTEGRAL", 0x80),
+    ("%TVIF_DI_SETITEM", 0x1000),
+    ("%IDB_STD_SMALL_COLOR", 0),
+    ("%IDB_STD_LARGE_COLOR", 1),
+    ("%IDB_VIEW_SMALL_COLOR", 4),
+    ("%IDB_VIEW_LARGE_COLOR", 5),
+    ("%IDB_HIST_SMALL_COLOR", 8),
+    ("%IDB_HIST_LARGE_COLOR", 9),
+    ("%STD_CUT", 0),
+    ("%STD_COPY", 1),
+    ("%STD_PASTE", 2),
+    ("%STD_UNDO", 3),
+    ("%STD_REDOW", 4),
+    ("%STD_DELETE", 5),
+    ("%STD_FILENEW", 6),
+    ("%STD_FILEOPEN", 7),
+    ("%STD_FILESAVE", 8),
+    ("%STD_PRINTPRE", 9),
+    ("%STD_PROPERTIES", 10),
+    ("%STD_HELP", 11),
+    ("%STD_FIND", 12),
+    ("%STD_REPLACE", 13),
+    ("%STD_PRINT", 14),
+    ("%TB_ENABLEBUTTON", 0x401),
+    ("%TB_CHECKBUTTON", 0x402),
+    ("%TB_PRESSBUTTON", 0x403),
+    ("%TB_HIDEBUTTON", 0x404),
+    ("%TB_INDETERMINATE", 0x405),
+    ("%TB_MARKBUTTON", 0x406),
+    ("%TB_ISBUTTONENABLED", 0x409),
+    ("%TB_ISBUTTONCHECKED", 0x40A),
+    ("%TB_ISBUTTONPRESSED", 0x40B),
+    ("%TB_ISBUTTONHIDDEN", 0x40C),
+    ("%TB_ISBUTTONINDETERMINATE", 0x40D),
+    ("%TB_ISBUTTONHIGHLIGHTED", 0x40E),
+    ("%TB_SETSTATE", 0x411),
+    ("%TB_GETSTATE", 0x412),
+    ("%TB_ADDBITMAP", 0x413),
+    ("%TB_ADDBUTTONSA", 0x414),
+    ("%TB_INSERTBUTTONA", 0x415),
+    ("%TB_ADDBUTTONS", 0x414),
+    ("%TB_INSERTBUTTON", 0x415),
+    ("%TB_DELETEBUTTON", 0x416),
+    ("%TB_GETBUTTON", 0x417),
+    ("%TB_BUTTONCOUNT", 0x418),
+    ("%TB_COMMANDTOINDEX", 0x419),
+    ("%TB_SAVERESTOREA", 0x41A),
+    ("%TB_SAVERESTOREW", 0x44C),
+    ("%TB_CUSTOMIZE", 0x41B),
+    ("%TB_ADDSTRINGA", 0x41C),
+    ("%TB_ADDSTRINGW", 0x44D),
+    ("%TB_GETITEMRECT", 0x41D),
+    ("%TB_BUTTONSTRUCTSIZE", 0x41E),
+    ("%TB_SETBUTTONSIZE", 0x41F),
+    ("%TB_SETBITMAPSIZE", 0x420),
+    ("%TB_AUTOSIZE", 0x421),
+    ("%TB_GETTOOLTIPS", 0x423),
+    ("%TB_SETTOOLTIPS", 0x424),
+    ("%TB_SETPARENT", 0x425),
+    ("%TB_SETROWS", 0x427),
+    ("%TB_GETROWS", 0x428),
+    ("%TB_SETCMDID", 0x42A),
+    ("%TB_CHANGEBITMAP", 0x42B),
+    ("%TB_GETBITMAP", 0x42C),
+    ("%TB_GETBUTTONTEXTA", 0x42D),
+    ("%TB_GETBUTTONTEXTW", 0x44B),
+    ("%TB_REPLACEBITMAP", 0x42E),
+    ("%TB_SETINDENT", 0x42F),
+    ("%TB_SETIMAGELIST", 0x430),
+    ("%TB_GETIMAGELIST", 0x431),
+    ("%TB_LOADIMAGES", 0x432),
+    ("%TB_GETRECT", 0x433),
+    ("%TB_SETHOTIMAGELIST", 0x434),
+    ("%TB_GETHOTIMAGELIST", 0x435),
+    ("%TB_SETDISABLEDIMAGELIST", 0x436),
+    ("%TB_GETDISABLEDIMAGELIST", 0x437),
+    ("%TB_SETSTYLE", 0x438),
+    ("%TB_GETSTYLE", 0x439),
+    ("%TB_GETBUTTONSIZE", 0x43A),
+    ("%TB_SETBUTTONWIDTH", 0x43B),
+    ("%TB_SETMAXTEXTROWS", 0x43C),
+    ("%TB_GETTEXTROWS", 0x43D),
+    ("%TB_GETOBJECT", 0x43E),
+    ("%TB_GETHOTITEM", 0x447),
+    ("%TB_SETHOTITEM", 0x448),
+    ("%TB_SETANCHORHIGHLIGHT", 0x449),
+    ("%TB_GETANCHORHIGHLIGHT", 0x44A),
+    ("%TB_MAPACCELERATORA", 0x44E),
+    ("%TB_GETINSERTMARK", 0x44F),
+    ("%TB_SETINSERTMARK", 0x450),
+    ("%TB_INSERTMARKHITTEST", 0x451),
+    ("%TB_MOVEBUTTON", 0x452),
+    ("%TB_GETMAXSIZE", 0x453),
+    ("%TB_SETEXTENDEDSTYLE", 0x454),
+    ("%TB_GETEXTENDEDSTYLE", 0x455),
+    ("%TB_GETPADDING", 0x456),
+    ("%TB_SETPADDING", 0x457),
+    ("%TB_SETINSERTMARKCOLOR", 0x458),
+    ("%TB_GETINSERTMARKCOLOR", 0x459),
+    ("%TB_MAPACCELERATORW", 0x45A),
+    ("%TB_GETBUTTONINFOW", 0x43F),
+    ("%TB_SETBUTTONINFOW", 0x440),
+    ("%TB_GETBUTTONINFOA", 0x441),
+    ("%TB_SETBUTTONINFOA", 0x442),
+    ("%TB_INSERTBUTTONW", 0x443),
+    ("%TB_ADDBUTTONSW", 0x444),
+    ("%TB_HITTEST", 0x445),
+    ("%TB_SETDRAWTEXTFLAGS", 0x446),
+    ("%TB_GETSTRINGW", 0x45B),
+    ("%TB_GETSTRINGA", 0x45C),
+    ("%TB_GETMETRICS", 0x465),
+    ("%TB_SETMETRICS", 0x466),
+    ("%TB_GETITEMDROPDOWNRECT", 0x467),
+    ("%TB_SETPRESSEDIMAGELIST", 0x468),
+    ("%TB_GETPRESSEDIMAGELIST", 0x469),
+    ("%CBEIF_TEXT", 0x1),
+    ("%CBEIF_IMAGE", 0x2),
+    ("%CBEIF_SELECTEDIMAGE", 0x4),
+    ("%CBEIF_OVERLAY", 0x8),
+    ("%CBEIF_INDENT", 0x10),
+    ("%CBEIF_LPARAM", 0x20),
+    ("%CBEIF_DI_SETITEM", 0x10000000),
+    ("%CBEM_INSERTITEMA", 0x401),
+    ("%CBEM_SETIMAGELIST", 0x402),
+    ("%CBEM_GETIMAGELIST", 0x403),
+    ("%CBEM_GETITEMA", 0x404),
+    ("%CBEM_SETITEMA", 0x405),
+    ("%CBEM_DELETEITEM", 0x144),
+    ("%CBEM_GETCOMBOCONTROL", 0x406),
+    ("%CBEM_GETEDITCONTROL", 0x407),
+    ("%CBEM_SETEXSTYLE", 0x408),
+    ("%CBEM_GETEXSTYLE", 0x409),
+    ("%CBEM_GETEXTENDEDSTYLE", 0x409),
+    ("%CBEM_HASEDITCHANGED", 0x40A),
+    ("%CBEM_INSERTITEMW", 0x40B),
+    ("%CBEM_SETITEMW", 0x40C),
+    ("%CBEM_GETITEMW", 0x40D),
+    ("%CBEM_SETEXTENDEDSTYLE", 0x40E),
+    ("%CBEM_SETUNICODEFORMAT", 0x2005),
+    ("%CBEM_GETUNICODEFORMAT", 0x2006),
+    ("%CBES_EX_NOEDITIMAGE", 0x1),
+    ("%CBES_EX_NOEDITIMAGEINDENT", 0x2),
+    ("%CBES_EX_PATHWORDBREAKPROC", 0x4),
+    ("%CBES_EX_NOSIZELIMIT", 0x8),
+    ("%CBES_EX_CASESENSITIVE", 0x10),
+    ("%CBES_EX_TEXTENDELLIPSIS", 0x20),
+    ("%TCS_SCROLLOPPOSITE", 0x1),
+    ("%TCS_BOTTOM", 0x2),
+    ("%TCS_RIGHT", 0x2),
+    ("%TCS_MULTISELECT", 0x4),
+    ("%TCS_FLATBUTTONS", 0x8),
+    ("%TCS_FORCEICONLEFT", 0x10),
+    ("%TCS_FORCELABELLEFT", 0x20),
+    ("%TCS_HOTTRACK", 0x40),
+    ("%TCS_VERTICAL", 0x80),
+    ("%TCS_TABS", 0x0),
+    ("%TCS_BUTTONS", 0x100),
+    ("%TCS_SINGLELINE", 0x0),
+    ("%TCS_MULTILINE", 0x200),
+    ("%TCS_RIGHTJUSTIFY", 0x0),
+    ("%TCS_FIXEDWIDTH", 0x400),
+    ("%TCS_RAGGEDRIGHT", 0x800),
+    ("%TCS_FOCUSONBUTTONDOWN", 0x1000),
+    ("%TCS_OWNERDRAWFIXED", 0x2000),
+    ("%TCS_TOOLTIPS", 0x4000),
+    ("%TCS_FOCUSNEVER", 0x8000),
+    ("%TCS_EX_FLATSEPARATORS", 0x1),
+    ("%TCS_EX_REGISTERDROP", 0x2),
 ];
 
 pub struct CompileOptions {
@@ -1767,6 +2229,12 @@ struct FieldInfo {
     /// index — otherwise fields after a padding slot are mis-addressed or
     /// fall out of bounds (lm_fill panic).
     gep_idx: usize,
+    /// Byte offset from the start of the containing struct/union.  Regular
+    /// structs still use `gep_idx`, but a UNION is emitted as `[size x i8]`
+    /// and its nested-struct members must be reached at their real sub-offset
+    /// (RECT is a union of RECT_old/RECT_new; treating it as one i32 made
+    /// GetClientRect overwrite four bytes and every WM_PAINT rect invalid).
+    offset: u32,
     /// Bit-field metadata `(bit_offset_within_container, width, signed)` for
     /// a BIT/SBIT member. None for an ordinary byte-addressable field. The
     /// ir_type is the whole container (i8/i16/i32); access applies shift/mask.
@@ -2197,6 +2665,14 @@ impl Compiler {
             "SSIZE_T",
             "HANDLE",
             "IITEM",
+            // NMHDR.idFrom is UINT_PTR in the SDK; the PBWin header declares
+            // it DWORD.  Leaving it 4 bytes shifted every notification record
+            // (TOOLTIPTEXT.lpszText landed at +16 instead of +24) and made
+            // comctl32 write through the wrong pointer during TTN_NEEDTEXT.
+            "IDFROM",
+            // TOOLTIPTEXT.hinst is HINSTANCE but the member is named hinst,
+            // so the handle-prefix scan below does not see an HINSTANCE name.
+            "HINST",
         ];
         if EXACT.contains(&n.as_str()) {
             return true;
@@ -2303,12 +2779,45 @@ impl Compiler {
             &[IrType::I32, IrType::I32, IrType::I32],
             false,
         );
+        // DefWindowProc is routed through the runtime helper so SDK windows
+        // get the same thin non-client frame as PBWin.  Declare the helper
+        // unconditionally: a WinAPI prototype may not be reachable through the
+        // active include tree, but the call must still have a typed symbol.
+        if self.module.is_32bit() {
+            self.module.declare_external_stdcall(
+                "pb_defwindowproc",
+                &IrType::I32,
+                &[IrType::I32, IrType::I32, IrType::I32, IrType::I32],
+            );
+        } else {
+            self.module.declare_function(
+                "pb_defwindowproc",
+                &IrType::I64,
+                &[IrType::Ptr, IrType::I32, IrType::I64, IrType::I64],
+                false,
+            );
+        }
         self.module
             .declare_function("pb_raise_error", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("pb_put_record", &IrType::Void, &[IrType::I32], false);
         self.module
             .declare_function("pb_get_record", &IrType::Void, &[IrType::I32], false);
+        // Round-to-nearest-even float-to-integer conversions.  PBWin uses the
+        // x87/SSE default FP rounding mode for implicit LONG assignments; LLVM
+        // fptosi truncates, which shifted every HitGame graphic up by 1px.
+        self.module
+            .declare_function("llvm.lrint.i32.f64", &IrType::I32, &[IrType::Double], false);
+        self.module.declare_function(
+            "llvm.llrint.i64.f64",
+            &IrType::I64,
+            &[IrType::Double],
+            false,
+        );
+        self.module
+            .declare_function("llvm.lrint.i32.f32", &IrType::I32, &[IrType::Float], false);
+        self.module
+            .declare_function("llvm.llrint.i64.f32", &IrType::I64, &[IrType::Float], false);
         self.module.declare_function(
             "pb_put_str",
             &IrType::Void,
@@ -4224,6 +4733,8 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
+                IrType::I32,
+                IrType::I32,
             ],
             false,
         );
@@ -5634,6 +6145,12 @@ impl Compiler {
             false,
         );
         self.module.declare_function(
+            "pb_imagelist_add_bitmap_file_w",
+            &IrType::I32,
+            &[IrType::I64, IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
             "pb_imagelist_add_icon",
             &IrType::I32,
             &[IrType::I64, IrType::I64],
@@ -5768,7 +6285,7 @@ impl Compiler {
         self.module.declare_function(
             "pb_graphic_attach_ctl",
             &IrType::I32,
-            &[IrType::Ptr, IrType::I64],
+            &[IrType::Ptr, IrType::I64, IrType::I64],
             false,
         );
         // batch 181 - GRAPHIC REDRAW / SET FOCUS / SET LOC / SET CLIENT / SET OVERLAP / GET OVERLAP
@@ -7009,6 +7526,8 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_graphic_clear", &IrType::I32, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_graphic_clear_bg", &IrType::I32, &[], false);
         self.module.declare_function(
             "pb_graphic_line",
             &IrType::I32,
@@ -7045,6 +7564,7 @@ impl Compiler {
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
+                IrType::I32,
             ],
             false,
         );
@@ -7052,6 +7572,7 @@ impl Compiler {
             "pb_graphic_ellipse",
             &IrType::I32,
             &[
+                IrType::I32,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -7124,6 +7645,8 @@ impl Compiler {
         );
         self.module
             .declare_function("pb_graphic_print_str", &IrType::I32, &[IrType::Ptr], false);
+        self.module
+            .declare_function("pb_graphic_print_wstr", &IrType::I32, &[IrType::Ptr], false);
         self.module
             .declare_function("pb_graphic_print_tab", &IrType::I32, &[IrType::I32], false);
         self.module
@@ -7300,6 +7823,12 @@ impl Compiler {
         );
         self.module.declare_function(
             "pb_graphic_text_size",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_graphic_text_size_w",
             &IrType::I32,
             &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
             false,
@@ -7627,6 +8156,18 @@ impl Compiler {
             "pb_get_string",
             &IrType::I32,
             &[IrType::I32, IrType::I64, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_get_fixed_string",
+            &IrType::I32,
+            &[IrType::I32, IrType::I64, IrType::Ptr, IrType::I64],
+            false,
+        );
+        self.module.declare_function(
+            "pb_get_asciiz",
+            &IrType::I32,
+            &[IrType::I32, IrType::I64, IrType::Ptr, IrType::I64],
             false,
         );
         self.module.declare_function(
@@ -8669,11 +9210,12 @@ impl Compiler {
         let (empty_name, _) = self.module.add_string_constant("");
         self.empty_string_name = empty_name;
 
-        // Default MSGBOX title when title$ is omitted — official PB uses
-        // "PowerBASIC" (CHW msgbox.htm / msgbox_s.htm; batch 250).  User
-        // brand decision 2026-10-18: our compiler defaults to "PB64Basic"
-        // instead (deliberate divergence from the CHW default, user-picked).
-        let (title_name, _) = self.module.add_string_constant("PB64Basic");
+        // Default MSGBOX title when title$ is omitted.  Official PBWin10
+        // uses "PowerBASIC" (CHW msgbox.htm / msgbox_s.htm).  The earlier
+        // "PB64Basic" brand default was a deliberate divergence, but the
+        // official-sample parity requirement supersedes it: every sample
+        // screenshot must match PBWin10 pixel-for-pixel.
+        let (title_name, _) = self.module.add_string_constant("PowerBASIC");
         self.msgbox_title_name = title_name;
 
         // First pass: collect TYPE declarations, function/sub signatures, and globals
@@ -8784,6 +9326,7 @@ impl Compiler {
                             ir_type: IrType::I32,
                             dims: Vec::new(),
                             gep_idx: 0,
+                            offset: 0,
                             bit: None,
                         },
                         FieldInfo {
@@ -8792,6 +9335,7 @@ impl Compiler {
                             ir_type: IrType::I32,
                             dims: Vec::new(),
                             gep_idx: 1,
+                            offset: 4,
                             bit: None,
                         },
                     ],
@@ -8829,6 +9373,7 @@ impl Compiler {
                     ir_type: IrType::I32,
                     dims: Vec::new(),
                     gep_idx: i,
+                    offset: (i as u32) * 4,
                     bit: None,
                 });
             }
@@ -9339,34 +9884,38 @@ impl Compiler {
 
         if td.is_union {
             // CHW UNION: every member overlaps at offset 0; the structure size
-            // equals the longest member. LLVM has no union type, so the struct
-            // gets ONE field of the largest member type and every member name
-            // maps to index 0 — all members live at offset 0, exactly as the
-            // CHW "members overlap in memory" rule requires.
-            let mut largest: Option<(IrType, u32)> = None;
+            // equals the longest member. LLVM has no union type, so the whole
+            // union is one byte array of that size.  Each member carries the
+            // byte offset of its real field, which is essential when a union
+            // overlays two structs (WinDef.inc declares RECT as a UNION of
+            // RECT_old and RECT_new).  The old code chose only the largest
+            // *leaf* type (i32 for a four-LONG struct), emitted `{i32}`, and
+            // mapped every field to offset 0: SIZEOF(RECT) became 4 and
+            // GetClientRect overwrote the stack; HelloWin painted nothing.
+            let mut union_size = 1u32;
+            let mut union_align = 1u32;
             // Bit packing state for direct BIT/SBIT members inside the union:
             // (container total bits, bits used). The container still occupies
-            // the single union slot (gep_idx 0); only the bit metadata varies.
+            // the single union slot; only the bit metadata varies.
             let mut ubit_state: Option<(u32, u32)> = None;
             for field in td.fields.iter() {
                 // CHW: structures may also be embedded inside a UNION; their
-                // (flattened) members overlap at offset 0 like any member.
+                // members overlap at offset 0, but keep the sub-struct's field
+                // offsets so `rect.nTop` lands at +4, not at +0.
                 if let Some(nested_name) = &field.nested {
                     if let Some(sub) = self.type_layouts.get(nested_name) {
+                        union_size = union_size.max(sub.size);
+                        union_align = union_align.max(sub.align.max(1));
                         for m in &sub.fields {
-                            let ir_type = m.ir_type.clone();
-                            let sz = self.ir_size_bytes(&ir_type);
-                            if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
-                                largest = Some((ir_type.clone(), sz));
-                            }
                             let mn = normalize_name(&m.name);
-                            field_map.insert(mn.clone(), fields.len()); // Vec index
+                            field_map.insert(mn.clone(), fields.len());
                             fields.push(FieldInfo {
                                 name: mn,
                                 pb_type: m.pb_type.clone(),
-                                ir_type,
+                                ir_type: m.ir_type.clone(),
                                 dims: m.dims.clone(),
-                                gep_idx: 0, // all union members share LLVM slot 0
+                                gep_idx: 0,
+                                offset: m.offset,
                                 bit: m.bit,
                             });
                         }
@@ -9384,12 +9933,14 @@ impl Compiler {
                     elem_ir
                 };
                 let sz = self.ir_size_bytes(&ir_type);
-                if largest.as_ref().is_none_or(|(_, ls)| sz > *ls) {
-                    largest = Some((ir_type.clone(), sz));
-                }
+                union_size = union_size.max(sz);
+                union_align = union_align.max(
+                    Self::ir_align_bytes_arch(&ir_type, if self.module.is_32bit() { 4 } else { 8 })
+                        .max(1),
+                );
                 let field_name = normalize_name(&field.name);
-                field_map.insert(field_name.clone(), fields.len()); // Vec index
-                                                                    // Bit-field member: compute its bit offset in the shared slot.
+                field_map.insert(field_name.clone(), fields.len());
+                // Bit-field member: compute its bit offset in the shared slot.
                 let bit_meta = if let PbType::BitField {
                     width,
                     signed,
@@ -9427,19 +9978,20 @@ impl Compiler {
                     pb_type: field.pb_type.clone(),
                     ir_type,
                     dims: field.dims.clone(),
-                    gep_idx: 0, // all union members share LLVM slot 0
+                    gep_idx: 0,
+                    offset: 0,
                     bit: bit_meta,
                 });
             }
-            let union_size = largest.as_ref().map(|(_, sz)| *sz).unwrap_or(1);
-            let single = largest.map(|(t, _)| t).unwrap_or(IrType::I8);
+            let union_size = union_size.max(1);
+            let union_align = union_align.max(1);
+            let slot = IrType::Array(union_size as usize, Box::new(IrType::I8));
             // Official headers may re-declare a TYPE/UNION name (later
             // definition wins in PBWin); LLVM forbids a second %name = type,
             // so emit only the first definition while the layout map keeps
             // being updated to the latest (batch306).
             if !self.type_layouts.contains_key(&name) {
-                self.module
-                    .define_struct_type(&name, std::slice::from_ref(&single));
+                self.module.define_struct_type(&name, &[slot]);
             }
             self.type_layouts.insert(
                 name.clone(),
@@ -9449,11 +10001,7 @@ impl Compiler {
                     field_map,
                     is_union: true,
                     size: union_size,
-                    align: Self::ir_align_bytes_arch(
-                        &single,
-                        if self.module.is_32bit() { 4 } else { 8 },
-                    )
-                    .max(1),
+                    align: union_align,
                 },
             );
             return;
@@ -9520,6 +10068,7 @@ impl Compiler {
                 ir_type: IrType::I64,
                 dims: Vec::new(),
                 gep_idx: 0, // hidden header occupies LLVM slot 0
+                offset: 0,
                 bit: None,
             });
             idx = 1;
@@ -9564,6 +10113,7 @@ impl Compiler {
                         ir_type: container_ir.clone(),
                         dims: Vec::new(),
                         gep_idx: slot,
+                        offset: cur_offset,
                         bit: Some((0, width, signed)),
                     });
                     cur_offset += self.ir_size_bytes(&container_ir);
@@ -9590,6 +10140,7 @@ impl Compiler {
                                 ir_type: cir.clone(),
                                 dims: Vec::new(),
                                 gep_idx: slot,
+                                offset: cur_offset,
                                 bit: Some((bit_offset, width, signed)),
                             });
                             bit_state = Some((slot, total_bits, used + width, cpb, cir));
@@ -9638,6 +10189,7 @@ impl Compiler {
                             ir_type: IrType::I32,
                             dims: Vec::new(),
                             gep_idx: idx,
+                            offset: cur_offset,
                             bit: None,
                         });
                         cur_offset += self.ir_size_bytes(&IrType::I32);
@@ -9646,32 +10198,22 @@ impl Compiler {
                     }
                 };
                 if sub.is_union {
-                    // Embedded UNION: one struct field sized to the largest
-                    // member; every member maps to that same index (overlap).
-                    let largest = sub
-                        .fields
-                        .iter()
-                        .max_by_key(|f| self.ir_size_bytes(&f.ir_type));
-                    let ir_type = largest.map(|f| f.ir_type.clone()).unwrap_or(IrType::I8);
+                    // Embedded UNION: one byte-array slot sized to the union;
+                    // every member maps to that same index but keeps its real
+                    // byte offset (RECT's nTop must be +4, not +0).
+                    let ir_type = IrType::Array(sub.size.max(1) as usize, Box::new(IrType::I8));
                     emit_pad(&mut ir_types, &mut idx, &mut cur_offset, &ir_type, false);
                     ir_types.push(ir_type.clone());
                     for m in &sub.fields {
                         let mn = normalize_name(&m.name);
-                        let m_ir = if !self.module.is_32bit()
-                            && matches!(m.pb_type, PbType::Long | PbType::Dword)
-                            && Self::is_win64_pointer_field_name(&mn)
-                        {
-                            IrType::I64
-                        } else {
-                            m.ir_type.clone()
-                        };
                         field_map.insert(mn.clone(), fields.len());
                         fields.push(FieldInfo {
                             name: mn,
                             pb_type: m.pb_type.clone(),
-                            ir_type: m_ir,
+                            ir_type: m.ir_type.clone(),
                             dims: m.dims.clone(),
-                            gep_idx: idx, // all overlap on this LLVM slot
+                            gep_idx: idx,
+                            offset: cur_offset + m.offset,
                             bit: m.bit,
                         });
                     }
@@ -9703,6 +10245,7 @@ impl Compiler {
                             ir_type: m_ir.clone(),
                             dims: m.dims.clone(),
                             gep_idx: idx,
+                            offset: cur_offset,
                             bit: m.bit,
                         });
                         cur_offset += self.ir_size_bytes(&m_ir);
@@ -9764,6 +10307,7 @@ impl Compiler {
                     ir_type,
                     dims: field.dims.clone(),
                     gep_idx: idx,
+                    offset: cur_offset,
                     bit: None,
                 });
                 cur_offset += self.ir_size_bytes(&fields.last().unwrap().ir_type);
@@ -10539,6 +11083,8 @@ impl Compiler {
             "LOADMENUINDIRECT",
             "CREATEMENU",
             "CREATEPOPUPMENU",
+            "CREATETOOLBAR",
+            "CREATETOOLBAREX",
             "GETMENU",
             "GETSYSTEMMENU",
             "CREATEACCELERATORTABLE",
@@ -10576,6 +11122,15 @@ impl Compiler {
             "SETTIMER",
             "DIALOGBOXPARAM",
             "CREATEDIALOGPARAM",
+            // Common PBWin sample helpers: they create a handle internally and
+            // are declared `AS DWORD`, which truncated the 64-bit HWND before
+            // the caller could send TB_* / SB_* messages to it.
+            "MAKETOOLBAR",
+            "MAKESTATUSBAR",
+            "MAKEMENU",
+            "MAKEFONT",
+            "MAKEDC",
+            "MAKEBITMAP",
         ];
         BASES.contains(&base)
     }
@@ -10584,7 +11139,22 @@ impl Compiler {
         let name = normalize_name(&ds.name);
 
         // The external symbol name and params are shared by both branches.
-        let ir_name = ds.alias.clone().unwrap_or_else(|| name.clone());
+        // DefWindowProc must reach PBWin's thin non-client frame policy even
+        // for SDK windows whose own WndProc calls it directly (Floating's
+        // FLOATTOOLBAR was 68x150 outer but 52x111 client in PB64 vs 62x121
+        // in PBWin).  Route both ANSI/Unicode spellings to the runtime
+        // helper, which applies the same 3px/26px WM_NCCALCSIZE rule and
+        // forwards every other message to the real DefWindowProc.
+        let raw_ir_name = ds.alias.clone().unwrap_or_else(|| name.clone());
+        let is_defwin = raw_ir_name.eq_ignore_ascii_case("DefWindowProcA")
+            || raw_ir_name.eq_ignore_ascii_case("DefWindowProcW")
+            || name == "DEFWINDOWPROCA"
+            || name == "DEFWINDOWPROCW";
+        let ir_name = if is_defwin {
+            "pb_defwindowproc".to_string()
+        } else {
+            raw_ir_name
+        };
         let params: Vec<ParamInfo> = ds
             .params
             .iter()
@@ -10619,6 +11189,45 @@ impl Compiler {
             })
             .collect();
 
+        if is_defwin {
+            // LRESULT is pointer-sized: i64 on x64, i32 on i686.  Returning
+            // i64 from an i686 __stdcall call reads a phantom EDX half-word.
+            let ret_type = if self.module.is_32bit() {
+                IrType::I32
+            } else {
+                IrType::I64
+            };
+            let ir_params: Vec<IrType> = params.iter().map(|p| p.ir_type.clone()).collect();
+            self.external_decls.insert(
+                "pb_defwindowproc".to_string(),
+                ExternalDecl {
+                    ret_type: ret_type.clone(),
+                    params: ir_params,
+                    // pb_defwindowproc is __stdcall in runtime.c; on i686 the
+                    // declaration must carry the same convention or the linker
+                    // looks for an undecorated `_pb_defwindowproc` that does
+                    // not exist (HelloWin/Floating/Cool/Skeleton link failure).
+                    is_stdcall: self.module.is_32bit(),
+                    is_stubbed: true,
+                    import_lib: None,
+                    plain_link: false,
+                    dyn_lib: None,
+                },
+            );
+            self.functions.insert(
+                name,
+                FuncInfo {
+                    ir_name: "pb_defwindowproc".to_string(),
+                    ret_type,
+                    params,
+                    export: false,
+                    is_external: true,
+                    is_stdcall: self.module.is_32bit(),
+                    is_callback: false,
+                },
+            );
+            return;
+        }
         if ds.lib.is_none() {
             // DECLARE without LIB: an external symbol resolved by the LINKER
             // (from a #LINK object/library, or another compilation unit).
@@ -10728,14 +11337,14 @@ impl Compiler {
         //   CDECL uses the plain (caller-clean) dllimport instead.
         // - On x86_64 there is a single calling convention: plain dllimport
         let lib_name = ds.lib.as_deref().unwrap_or("").trim().to_uppercase();
-        let is_stubbed = Self::is_stubbed_dll(&lib_name);
+        let is_stubbed = is_defwin || Self::is_stubbed_dll(&lib_name);
         let is_stdcall = !is_stubbed && self.declare_is_stdcall(ds.call_conv);
         // User DLL import (batch 276): record the .lib so the link step can
         // resolve the dllimport symbols.  System DLLs are already covered by
         // `-lkernel32`/`-luser32`/... in link_exe/link_dll.  The library is
         // only added to the link line when reachable code references the
         // DECLARE, so unused header wrappers never pull a missing .lib.
-        let plain_link = lib_name == "HHCTRL.OCX" || lib_name == "HTMLHELP";
+        let plain_link = !is_defwin && (lib_name == "HHCTRL.OCX" || lib_name == "HTMLHELP");
         let dyn_lib = if ds.lib.is_some()
             && !is_stubbed
             && !plain_link
@@ -10767,7 +11376,7 @@ impl Compiler {
             let mut ret_type = Self::ir_type_for(&ds.return_type);
             if !self.module.is_32bit()
                 && matches!(ds.return_type, PbType::Dword | PbType::Long)
-                && Self::declare_return_is_win64_pointer(&ir_name)
+                && (Self::declare_return_is_win64_pointer(&ir_name))
             {
                 ret_type = IrType::I64;
             }
@@ -11360,8 +11969,13 @@ impl Compiler {
             }
         }
         if decl.is_stubbed {
-            self.module
-                .declare_function(ir_name, &decl.ret_type, &decl.params, false);
+            if decl.is_stdcall {
+                self.module
+                    .declare_external_stdcall(ir_name, &decl.ret_type, &decl.params);
+            } else {
+                self.module
+                    .declare_function(ir_name, &decl.ret_type, &decl.params, false);
+            }
         } else if decl.plain_link {
             // Static/import library linked directly (HTMLHELP): keep the
             // declaration free of dllimport, but preserve the stdcall
@@ -11499,6 +12113,13 @@ impl Compiler {
             "pb_data_activate",
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
+        // DATA is a static list: every DATA statement in the procedure is
+        // visible to DATACOUNT/READ$ from the first executable statement,
+        // regardless of where the DATA line appears in the source.  Address
+        // put its DATA block after "FOR x = 1 TO DATACOUNT", so building the
+        // list in statement order left DATACOUNT at zero and the Country
+        // combo empty.  Hoist the whole list to the prologue.
+        self.emit_local_data(&mut fb, &fd.body);
         self.register_vars.clear();
 
         // Compile body
@@ -11617,6 +12238,7 @@ impl Compiler {
             "pb_data_activate",
             &[Val::new(fn_name_str.clone(), IrType::Ptr)],
         );
+        self.emit_local_data(&mut fb, &sd.body);
         self.register_vars.clear();
 
         // Compile body
@@ -11959,6 +12581,31 @@ impl Compiler {
 
     // ========== Body / Statement compilation ==========
 
+    /// Hoist every DATA statement of a procedure into its entry block.
+    /// DATA has static lifetime in PowerBASIC: DATACOUNT counts the whole
+    /// local list and READ$/READ start at the first DATA item even when the
+    /// DATA lines physically follow the reader code.
+    fn emit_local_data(&mut self, fb: &mut FunctionBuilder, stmts: &[Statement]) {
+        for stmt in stmts {
+            match stmt {
+                Statement::Data(items) => {
+                    for item in items {
+                        let text = if item.quoted {
+                            item.text.clone()
+                        } else {
+                            item.text.trim().to_string()
+                        };
+                        let (str_name, _) = self.module.add_string_constant(&text);
+                        let sv = Val::new(str_name, IrType::Ptr);
+                        fb.call_void("pb_data_append", &[sv]);
+                    }
+                }
+                Statement::Block(inner) => self.emit_local_data(fb, inner),
+                _ => {}
+            }
+        }
+    }
+
     fn compile_body(&mut self, fb: &mut FunctionBuilder, stmts: &[Statement]) -> PbResult<()> {
         let mut idx = 0usize;
         while idx < stmts.len() {
@@ -12042,20 +12689,10 @@ impl Compiler {
                 self.compile_write_rec(fb, args, *trailing)?;
                 Ok(())
             }
-            Statement::Data(items) => {
-                // DATA item1, item2, ... — register constants into the runtime
-                // pool.  CHW: unquoted items are trimmed of leading/trailing
-                // spaces at compile time; quoted items keep them.
-                for item in items {
-                    let text = if item.quoted {
-                        item.text.clone()
-                    } else {
-                        item.text.trim().to_string()
-                    };
-                    let (str_name, _) = self.module.add_string_constant(&text);
-                    let sv = Val::new(str_name, IrType::Ptr);
-                    fb.call_void("pb_data_append", &[sv]);
-                }
+            Statement::Data(_) => {
+                // The whole local DATA list is emitted in the procedure
+                // prologue by emit_local_data(); a DATA line has no
+                // executable effect at its textual position.
                 Ok(())
             }
             Statement::Restore => {
@@ -12932,7 +13569,13 @@ impl Compiler {
                 if let Some(info) = self.symbols.lookup(&normalize_name(name)) {
                     matches!(info.pb_type, PbType::WString | PbType::FixedWString(_, _))
                 } else {
-                    false
+                    /* Function parameters live in the local scope rather than
+                    the module symbol table; fall back to expr_pb_type so a
+                    BYVAL txt AS WSTRING parameter is still recognised. */
+                    matches!(
+                        self.expr_pb_type(e),
+                        Some(PbType::WString) | Some(PbType::FixedWString(_, _))
+                    )
                 }
             }
             Expr::WideStringLit(_) => true,
@@ -12946,7 +13589,14 @@ impl Compiler {
                     }
                 }
                 let n = name.to_uppercase();
-                if n == "MID$" || n == "LEFT$" || n == "RIGHT$" {
+                if n == "STRPTR" || n == "STRPTR$" {
+                    /* STRPTR(wstring_var) already yields the UTF-16 data
+                    pointer; LoadImageW must not receive an ANSI->WIDE
+                    copy of those bytes (BmpList flags disappeared). */
+                    args.first()
+                        .map(|a| self.expr_is_wstring(a))
+                        .unwrap_or(false)
+                } else if n == "MID$" || n == "LEFT$" || n == "RIGHT$" {
                     args.first()
                         .map(|a| self.expr_is_wstring(a))
                         .unwrap_or(false)
@@ -13907,6 +14557,33 @@ impl Compiler {
         None
     }
 
+    /// Pointer to a user TYPE/UNION field.  Regular packed structs use the
+    /// LLVM field index; a UNION is emitted as `[size x i8]`, so its members
+    /// are reached by their recorded byte offset.  This is what makes
+    /// `RECT.nTop` land at +4 when RECT is the WinDef union of RECT_old and
+    /// RECT_new instead of collapsing every member onto offset 0.
+    fn type_field_ptr(
+        &self,
+        fb: &mut FunctionBuilder,
+        type_name: &str,
+        base: &Val,
+        field_idx: usize,
+    ) -> Val {
+        let layout = match self.type_layouts.get(type_name) {
+            Some(l) => l,
+            None => return fb.gep_struct(type_name, base, field_idx),
+        };
+        let field = match layout.fields.get(field_idx) {
+            Some(f) => f,
+            None => return fb.gep_struct(type_name, base, field_idx),
+        };
+        if !layout.is_union {
+            return fb.gep_struct(type_name, base, field.gep_idx);
+        }
+        let off = fb.const_i32(field.offset as i32);
+        fb.gep_byte(base, &off)
+    }
+
     /// True when the expression is a property/method read on a dispatch
     /// interface.  Such a node deliberately reports the interface name from
     /// `struct_type_of_expr` to support chained COM receivers, but it is not a
@@ -14394,8 +15071,7 @@ impl Compiler {
                     PbError::runtime(format!("Unknown field: {}.{}", type_name, member_norm))
                 })?;
                 let field_pb = layout.fields[field_idx].pb_type.clone();
-                let field_ptr =
-                    fb.gep_struct(&type_name, &struct_ptr, layout.fields[field_idx].gep_idx);
+                let field_ptr = self.type_field_ptr(fb, &type_name, &struct_ptr, field_idx);
                 Ok((field_ptr, field_pb))
             }
             Expr::MethodCall { base, name, args } => {
@@ -16124,8 +16800,17 @@ impl Compiler {
                 let mut charset = fb.const_i32(0);
                 let mut pitch = fb.const_i32(0);
                 let mut escapement = fb.const_i32(0);
-                let to_var: Option<String> = match call.args.last() {
-                    Some(Expr::Variable(tv)) => Some(tv.clone()),
+                // The TO target can be any PB lvalue, not just a bare name:
+                // Boltcalc stores each font handle with `FONT NEW ... TO
+                // hFont(1)`.  Treating only Expr::Variable as the target made
+                // the array element count as a sixth font argument and the
+                // returned handle was discarded, so hFont() stayed zero.
+                let to_var: Option<Expr> = match call.args.last() {
+                    Some(e @ Expr::Variable(_))
+                    | Some(e @ Expr::ArrayAccess(_, _))
+                    | Some(e @ Expr::FunctionCall(_, _))
+                    | Some(e @ Expr::Deref(_))
+                    | Some(e @ Expr::TypeMember(_, _)) => Some(e.clone()),
                     _ => None,
                 };
                 let arg_end = call.args.len() - usize::from(to_var.is_some());
@@ -16162,7 +16847,7 @@ impl Compiler {
                     &[name_v, points, style, charset, pitch, escapement],
                 );
                 if let Some(tv) = to_var {
-                    let target = self.compile_lvalue_ptr(fb, &Expr::Variable(tv))?;
+                    let target = self.compile_lvalue_ptr(fb, &tv)?;
                     let converted = self.convert_value(fb, &h, &target.0.ty, &target.1);
                     fb.store(&converted, &target.0);
                 }
@@ -16238,11 +16923,37 @@ impl Compiler {
                 let hv = self.compile_expr(fb, &call.args[0])?;
                 let hh = self.convert_value(fb, &hv, &IrType::I64, &PbType::Quad);
                 let bv = self.compile_expr(fb, &call.args[1])?;
-                let bb = self.convert_value(fb, &bv, &IrType::I64, &PbType::Quad);
-                let mv = self.compile_expr(fb, &call.args[2])?;
-                let mm = self.convert_value(fb, &mv, &IrType::I64, &PbType::Quad);
-                let idx = fb.call(&IrType::I32, "pb_imagelist_add_bitmap", &[hh, bb, mm]);
-                self.store_imagelist_add_result(fb, call, &idx, 3)?;
+                let is_string = matches!(
+                    self.expr_pb_type(&call.args[1]),
+                    Some(PbType::String)
+                        | Some(PbType::WString)
+                        | Some(PbType::FixedString(_))
+                        | Some(PbType::FixedWString(_, _))
+                );
+                if is_string {
+                    /* IMAGELIST ADD BITMAP hLst, bmpFile$ is the disk-file
+                    form even when the filename is a variable; the parser
+                    only rewrites literals.  Passing the char pointer as an
+                    HBITMAP left ComboBoxEx with an empty image list. */
+                    let wide = self.expr_is_wstring(&call.args[1]);
+                    let nm = if wide {
+                        bv
+                    } else {
+                        fb.call(&IrType::Ptr, "pb_ansi_to_wide", std::slice::from_ref(&bv))
+                    };
+                    let idx = fb.call(
+                        &IrType::I32,
+                        "pb_imagelist_add_bitmap_file_w",
+                        &[hh, nm, fb.const_i64(0)],
+                    );
+                    self.store_imagelist_add_result(fb, call, &idx, 3)?;
+                } else {
+                    let bb = self.convert_value(fb, &bv, &IrType::I64, &PbType::Quad);
+                    let mv = self.compile_expr(fb, &call.args[2])?;
+                    let mm = self.convert_value(fb, &mv, &IrType::I64, &PbType::Quad);
+                    let idx = fb.call(&IrType::I32, "pb_imagelist_add_bitmap", &[hh, bb, mm]);
+                    self.store_imagelist_add_result(fb, call, &idx, 3)?;
+                }
             }
             "IMAGELIST_ADD_BITMAP_FILE" => {
                 // args: hLst, Bmp$, Msk$(""), has_to [, to]
@@ -16491,10 +17202,19 @@ impl Compiler {
                 let h = self.compile_expr(fb, &call.args[1])?;
                 let h2 = self.convert_value(fb, &h, &IrType::I32, &PbType::Long);
                 let hbmp = fb.call(&IrType::I64, "pb_gdi_bitmap_new", &[w2, h2]);
-                if let Some(Expr::Variable(tv)) = call.args.get(2) {
-                    let target = self.compile_lvalue_ptr(fb, &Expr::Variable(tv.clone()))?;
-                    let converted = self.convert_value(fb, &hbmp, &target.0.ty, &target.1);
-                    fb.store(&converted, &target.0);
+                // The destination may be a TYPE field (`Sprites.PaddleBack`),
+                // not only a bare variable; the old Variable-only match dropped
+                // every UDT-field store and left all sprite handles 0.
+                if let Some(dst) = call.args.get(2) {
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, dst) {
+                        let converted = self.convert_value(fb, &hbmp, &ty, &pty);
+                        fb.store(&converted, &ptr);
+                    } else {
+                        return Err(PbError::generic(format!(
+                            "GRAPHIC BITMAP NEW target is not an assignable lvalue (line {})",
+                            call.line
+                        )));
+                    }
                 }
             }
             "GRAPHIC_BITMAP_END" => {
@@ -16524,7 +17244,25 @@ impl Compiler {
                     };
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let id64 = self.convert_value(fb, &id, &IrType::I64, &PbType::Quad);
-                    fb.call_void("pb_graphic_attach_ctl", &[hp, id64]);
+                    let rd = if let Some(a2) = call.args.get(2) {
+                        /* PBWin's GRAPHIC ATTACH third operand is the bare
+                        keyword REDRAW, not a variable; the generic
+                        argument parser hands it over as a Variable. */
+                        if let Expr::Variable(n) = a2 {
+                            if n.eq_ignore_ascii_case("REDRAW") {
+                                fb.const_i64(1)
+                            } else {
+                                let v = self.compile_expr(fb, a2)?;
+                                self.convert_value(fb, &v, &IrType::I64, &PbType::Quad)
+                            }
+                        } else {
+                            let v = self.compile_expr(fb, a2)?;
+                            self.convert_value(fb, &v, &IrType::I64, &PbType::Quad)
+                        }
+                    } else {
+                        fb.const_i64(0)
+                    };
+                    fb.call_void("pb_graphic_attach_ctl", &[hp, id64, rd]);
                 } else {
                     let h = self.compile_expr(fb, &call.args[0])?;
                     let h2 = self.convert_value(fb, &h, &IrType::I64, &PbType::Quad);
@@ -16536,13 +17274,17 @@ impl Compiler {
             }
             "GRAPHIC_CLEAR" => {
                 // args: [] or [color&] or [color&, fillstyle&]
-                let c = if let Some(a0) = call.args.first() {
-                    self.compile_expr(fb, a0)?
+                // GRAPHIC CLEAR with no colour argument fills with the current
+                // GRAPHIC COLOR background, not an implicit white.  Boltcalc
+                // sets %BLUE then calls GRAPHIC CLEAR and stayed white before
+                // this distinction was modelled.
+                if call.args.is_empty() {
+                    fb.call_void("pb_graphic_clear_bg", &[]);
                 } else {
-                    fb.const_i32(0xFFFFFF)
-                };
-                let c2 = self.convert_value(fb, &c, &IrType::I32, &PbType::Long);
-                fb.call_void("pb_graphic_clear", &[c2]);
+                    let c = self.compile_expr(fb, &call.args[0])?;
+                    let c2 = self.convert_value(fb, &c, &IrType::I32, &PbType::Long);
+                    fb.call_void("pb_graphic_clear", &[c2]);
+                }
             }
             "GRAPHIC_LINE_FULL" => {
                 // args: x1,y1,x2,y2,flags [,color]
@@ -18094,6 +18836,12 @@ impl Compiler {
             }
             "GRAPHIC_TEXT_SIZE" => {
                 let sp = self.compile_str_payload(fb, &call.args[0])?;
+                let tsize_fn = match self.expr_pb_type(&call.args[0]) {
+                    Some(PbType::WString) | Some(PbType::FixedWString(_, _)) => {
+                        "pb_graphic_text_size_w"
+                    }
+                    _ => "pb_graphic_text_size",
+                };
                 if let Some((wp, w_ir, w_pb)) = self.lvalue_ptr(fb, &call.args[1]) {
                     if let Some((hp, h_ir, h_pb)) = self.lvalue_ptr(fb, &call.args[2]) {
                         /* CHW returns Page Units as SINGLE; the runtime
@@ -18101,7 +18849,7 @@ impl Compiler {
                         fraction (official 1.5x height is 19.5). */
                         let tw = fb.alloca(&IrType::Float);
                         let th = fb.alloca(&IrType::Float);
-                        fb.call_void("pb_graphic_text_size", &[sp, tw.clone(), th.clone()]);
+                        fb.call_void(tsize_fn, &[sp, tw.clone(), th.clone()]);
                         let vw = fb.load(&IrType::Float, &tw);
                         let vh = fb.load(&IrType::Float, &th);
                         let cw = self.convert_value(fb, &vw, &w_ir, &w_pb);
@@ -18305,6 +19053,11 @@ impl Compiler {
                     // a 4-byte store, not the low half of this i64 (batch 183 fix)
                     let cv = self.convert_value(fb, &h, &ty, &pty);
                     fb.store(&cv, &ptr);
+                } else {
+                    return Err(PbError::generic(format!(
+                        "GRAPHIC BITMAP CAPTURE target is not an assignable lvalue (line {})",
+                        call.line
+                    )));
                 }
             }
             "GRAPHIC_BITMAP_LOAD" => {
@@ -18325,6 +19078,11 @@ impl Compiler {
                     // a 4-byte store, not the low half of this i64 (batch 183 fix)
                     let cv = self.convert_value(fb, &h, &ty, &pty);
                     fb.store(&cv, &ptr);
+                } else {
+                    return Err(PbError::generic(format!(
+                        "GRAPHIC BITMAP LOAD target is not an assignable lvalue (line {})",
+                        call.line
+                    )));
                 }
             }
             "GRAPHIC_COPY_BMP" => {
@@ -18817,7 +19575,14 @@ impl Compiler {
                     }
                     let v = self.compile_expr(fb, arg)?;
                     let s = self.convert_value(fb, &v, &IrType::Ptr, &PbType::String);
-                    fb.call_void("pb_graphic_print_str", &[s]);
+                    match self.expr_pb_type(arg) {
+                        Some(PbType::WString) | Some(PbType::FixedWString(_, _)) => {
+                            fb.call_void("pb_graphic_print_wstr", &[s]);
+                        }
+                        _ => {
+                            fb.call_void("pb_graphic_print_str", &[s]);
+                        }
+                    }
                 }
                 if call.args.is_empty() || !trailing_sep {
                     fb.call_void("pb_graphic_print_newline", &[]);
@@ -18832,7 +19597,11 @@ impl Compiler {
                     let e = self.compile_expr(fb, a1)?;
                     self.convert_value(fb, &e, &IrType::I32, &PbType::Long)
                 } else {
-                    fb.const_i32(0)
+                    /* Omitted background means "leave it unchanged" (-3).
+                    Passing 0 made every later GRAPHIC PRINT fill its
+                    glyph cells black; Calendar's red "today" print was
+                    followed by black-on-black rectangles for days 23-30. */
+                    fb.const_i32(-3)
                 };
                 fb.call_void("pb_graphic_color", &[f, back]);
             }
@@ -18876,32 +19645,57 @@ impl Compiler {
                 fb.call_void("pb_graphic_save", &[fname]);
             }
             "GRAPHIC_BOX" | "GRAPHIC_ELLIPSE" => {
-                // args: x1,y1,x2,y2 [,corner[,color[,fillcolor[,fillstyle]]]]
+                /* BOX: (x1,y1)-(x2,y2), corner, line, fill[, fillstyle]
+                ELLIPSE: (x1,y1)-(x2,y2), line, fill[, fillstyle] */
                 let f = if call.name == "GRAPHIC_BOX" {
                     "pb_graphic_box"
                 } else {
                     "pb_graphic_ellipse"
+                };
+                let (ci, fi, si) = if call.name == "GRAPHIC_BOX" {
+                    (5usize, 6usize, 7usize)
+                } else {
+                    (4usize, 5usize, 6usize)
                 };
                 let mut ia = Vec::new();
                 for arg in call.args.iter().take(4) {
                     let v = self.compile_expr(fb, arg)?;
                     ia.push(self.convert_value(fb, &v, &IrType::I32, &PbType::Long));
                 }
-                let color = if let Some(a4) = call.args.get(4) {
-                    let v = self.compile_expr(fb, a4)?;
+                let color = if let Some(a) = call.args.get(ci) {
+                    let v = self.compile_expr(fb, a)?;
                     self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
                 } else {
                     fb.const_i32(0)
                 };
-                let fc = if let Some(a5) = call.args.get(5) {
-                    let v = self.compile_expr(fb, a5)?;
+                let fc = if let Some(a) = call.args.get(fi) {
+                    let v = self.compile_expr(fb, a)?;
                     self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                } else {
+                    /* CHW: an omitted fill leaves the interior unfilled.
+                    This must be -2 (NULL_BRUSH), not 0 (solid black):
+                    PWRCLOCK omits the fill on its two centre ELLIPSEs,
+                    and 0 turned the white ring into a solid black dot. */
+                    fb.const_i32(-2)
+                };
+                let fs = if let Some(a) = call.args.get(si) {
+                    let v = self.compile_expr(fb, a)?;
+                    self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                } else if call.args.get(fi).is_some() {
+                    /* CHW: an omitted fillstyle means solid (0).  The runtime
+                    distinguishes fillcolor -2 (hollow) and -1 (edge colour)
+                    from an explicit RGB fill. */
+                    fb.const_i32(0)
                 } else {
                     fb.const_i32(0)
                 };
-                let fs = if let Some(a6) = call.args.get(6) {
-                    let v = self.compile_expr(fb, a6)?;
-                    self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                let corner = if call.name == "GRAPHIC_BOX" {
+                    if let Some(a) = call.args.get(4) {
+                        let v = self.compile_expr(fb, a)?;
+                        self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
+                    } else {
+                        fb.const_i32(0)
+                    }
                 } else {
                     fb.const_i32(0)
                 };
@@ -18915,6 +19709,7 @@ impl Compiler {
                         color,
                         fc,
                         fs,
+                        corner,
                     ],
                 );
             }
@@ -22538,12 +23333,24 @@ impl Compiler {
                     let y = self.compile_expr(fb, &call.args[3])?;
                     let w = self.compile_expr(fb, &call.args[4])?;
                     let h = self.compile_expr(fb, &call.args[5])?;
+                    // args: hwnd,id,x,y,w,h[,style[,exstyle]],target
+                    let (style, exstyle, target_idx) = if call.args.len() >= 9 {
+                        (
+                            self.compile_expr(fb, &call.args[6])?,
+                            self.compile_expr(fb, &call.args[7])?,
+                            8,
+                        )
+                    } else if call.args.len() == 8 {
+                        (self.compile_expr(fb, &call.args[6])?, fb.const_i32(0), 7)
+                    } else {
+                        (fb.const_i32(0), fb.const_i32(0), 6)
+                    };
                     let hc = fb.call(
                         &IrType::Ptr,
                         "pb_control_add_listview",
-                        &[parent, id, x, y, w, h],
+                        &[parent, id, x, y, w, h, style, exstyle],
                     );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[6]) {
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[target_idx]) {
                         let hc_i = fb.ptrtoint64(&hc);
                         let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
                         fb.store(&hc_i_v, &ptr);
@@ -22904,7 +23711,9 @@ impl Compiler {
                     let col = self.compile_expr(fb, &call.args[2])?;
                     let text = self.compile_str_payload(fb, &call.args[3])?;
                     let width = self.compile_expr(fb, &call.args[4])?;
+                    let width = self.to_i32_round(fb, &width);
                     let fmt = self.compile_expr(fb, &call.args[5])?;
+                    let fmt = self.to_i32(fb, &fmt);
                     fb.call_void(
                         "pb_listview_insert_column",
                         &[hd, id, col, text, width, fmt],
@@ -23250,6 +24059,7 @@ impl Compiler {
                     let id = self.compile_expr(fb, &call.args[1])?;
                     let col = self.compile_expr(fb, &call.args[2])?;
                     let width = self.compile_expr(fb, &call.args[3])?;
+                    let width = self.to_i32_round(fb, &width);
                     fb.call_void("pb_listview_set_column", &[hd, id, col, width]);
                 }
                 return Ok(());
@@ -26624,8 +27434,30 @@ impl Compiler {
                     let f = self.to_i32(fb, &fv);
                     let cv = self.compile_expr(fb, &call.args[1])?;
                     let count = self.to_i64(fb, &cv);
-                    let (ptr, _) = self.compile_lvalue_ptr(fb, &call.args[2])?;
-                    fb.call_void("pb_get_string", &[f, count, ptr]);
+                    let (ptr, pbty) = self.compile_lvalue_ptr(fb, &call.args[2])?;
+                    // An inline STRING*n local is the bytes themselves; the
+                    // generic pb_get_string writes a BSTR pointer through
+                    // char**, which overwrote Pong's LOCAL buff AS STRING * 4
+                    // and made VAL(buff) read stack garbage.
+                    match (&call.args[2], pbty) {
+                        // A fixed-string ARRAY element is a pointer slot
+                        // (GLOBAL HighNames(1 TO 5) AS STRING * 5 lowers to
+                        // [5 x ptr]); pb_get_string must store the BSTR there.
+                        // Only an inline fixed buffer (local STRING*n or a
+                        // fixed-string TYPE field) takes the byte-copy path.
+                        (Expr::ArrayAccess(..) | Expr::FunctionCall(..), _) => {
+                            fb.call_void("pb_get_string", &[f, count, ptr]);
+                        }
+                        (_, PbType::FixedString(n)) => {
+                            let n64 = fb.const_i64(n as i64);
+                            fb.call_void("pb_get_fixed_string", &[f, count, ptr, n64]);
+                        }
+                        (_, PbType::AsciiZ(n)) => {
+                            let n64 = fb.const_i64(n as i64);
+                            fb.call_void("pb_get_asciiz", &[f, count, ptr, n64]);
+                        }
+                        _ => fb.call_void("pb_get_string", &[f, count, ptr]),
+                    }
                 }
                 return Ok(());
             }
@@ -28068,12 +28900,37 @@ impl Compiler {
         if fam.starts_with("GRAPHIC_")
             || fam.starts_with("MENU_")
             || fam.starts_with("XPRINT_")
-            || fam.starts_with("DISPLAY_")
-            || fam.starts_with("FONT_")
-            || fam.starts_with("IMAGELIST_")
-            || fam.starts_with("ARRAY_")
-            || fam.starts_with("TCP_")
-            || fam.starts_with("UDP_")
+            // Only the five built-in DISPLAY common-dialog statements are
+            // handled above.  A prefix test also swallowed every user
+            // procedure whose name starts with Display_ (Pong's
+            // Display_HighScores / Display_NewGameInstructions), so their
+            // bodies were never queued and the screen stayed blank.
+            || fam == "DISPLAY_OPENFILE"
+            || fam == "DISPLAY_SAVEFILE"
+            || fam == "DISPLAY_BROWSE"
+            || fam == "DISPLAY_COLOR"
+            || fam == "DISPLAY_FONT"
+            || fam == "FONT_NEW"
+            || fam == "FONT_END"
+            || fam == "IMAGELIST_NEW"
+            || fam == "IMAGELIST_NEW_ICON"
+            || fam == "IMAGELIST_ADD_BITMAP"
+            || fam == "IMAGELIST_ADD_BITMAP_FILE"
+            || fam == "IMAGELIST_ADD_ICON"
+            || fam == "IMAGELIST_ADD_ICON_FILE"
+            || fam == "IMAGELIST_ADD_MASKED"
+            || fam == "IMAGELIST_ADD_MASKED_FILE"
+            || fam == "IMAGELIST_COUNT"
+            || fam == "IMAGELIST_SET_OVERLAY"
+            || fam == "IMAGELIST_KILL"
+            || fam == "ARRAY_SELECT"
+            || fam == "ARRAY_SELECT_OP"
+            || fam == "ARRAY_TAGARRAY"
+            || fam == "ARRAY_TAGARRAY_ERASE"
+            || fam == "ARRAY_REDIM_INCR"
+            || fam == "ARRAY_REDIM_DECR"
+            || fam == "TCP_NOTIFY"
+            || fam == "UDP_NOTIFY"
             || fam == "ACCEL_ATTACH"
             || fam == "LET_PTR"
             || fam == "DEF_FN"
@@ -28406,6 +29263,22 @@ impl Compiler {
                     }
                     continue;
                 }
+                if (param.is_byval || is_byval_override) && matches!(param.pb_type, PbType::WString)
+                {
+                    /* BYVAL WSTRING: an ANSI literal/STRING operand must be
+                    widened here; otherwise the callee receives a UTF-16
+                    pointer that actually holds ANSI bytes (BmpList
+                    AddBitMapToList txt AS WSTRING showed mojibake). */
+                    let val = self.compile_expr(fb, inner_arg)?;
+                    if self.expr_is_wstring(inner_arg) {
+                        compiled.push(val);
+                    } else {
+                        let wide =
+                            fb.call(&IrType::Ptr, "pb_ansi_to_wide", std::slice::from_ref(&val));
+                        compiled.push(wide);
+                    }
+                    continue;
+                }
                 if param.is_byval || is_byval_override {
                     // BYVAL VARIANT: the whole 16-byte container goes by value.
                     // compile_expr on a VARIANT variable yields its numeric
@@ -28553,6 +29426,19 @@ impl Compiler {
                             // it dereferences as a real structure (silent no-op or
                             // 0xC0000005).  Pass the null pointer directly instead.
                             compiled.push(fb.const_null_ptr());
+                        }
+                        Expr::ArrayAccess(n, _) | Expr::FunctionCall(n, _)
+                            if self.symbols.lookup_array(&normalize_name(n)).is_some() =>
+                        {
+                            // A BYREF scalar parameter given an array element
+                            // must receive the element's ADDRESS, not the
+                            // address of a temporary copy.  CreateToolbarEx
+                            // declares `lpButtons AS TBBUTTON` but callers pass
+                            // tbb(0); copying one element left comctl32 reading
+                            // the rest of the array off the caller's stack
+                            // (only the first button id was ever recognized).
+                            let (ptr, _pb) = self.compile_lvalue_ptr(fb, inner_arg)?;
+                            compiled.push(ptr);
                         }
                         _ => {
                             // Expression to BYREF: allocate temp
@@ -31452,7 +32338,14 @@ impl Compiler {
                             .find(|(k, _)| *k == upper.as_str())
                             .map(|(_, v)| *v)
                     });
-                let v = val.unwrap_or(0);
+                let v = match val {
+                    Some(v) => v,
+                    None => {
+                        self.warnings
+                            .push(format!("unknown equate %{} treated as 0", upper));
+                        0
+                    }
+                };
                 Ok(fb.const_i32(v as i32))
             }
             Expr::Deref(_inner) => {
@@ -31555,12 +32448,15 @@ impl Compiler {
                     // pb_graphic_text_size returns both extents through
                     // pointers, so materialise both and load the requested axis.
                     let sp = self.compile_str_payload(fb, &args[0])?;
+                    let tsize_fn = match self.expr_pb_type(&args[0]) {
+                        Some(PbType::WString) | Some(PbType::FixedWString(_, _)) => {
+                            "pb_graphic_text_size_w"
+                        }
+                        _ => "pb_graphic_text_size",
+                    };
                     let w_slot = fb.alloca(&IrType::Float);
                     let h_slot = fb.alloca(&IrType::Float);
-                    fb.call_void(
-                        "pb_graphic_text_size",
-                        &[sp, w_slot.clone(), h_slot.clone()],
-                    );
+                    fb.call_void(tsize_fn, &[sp, w_slot.clone(), h_slot.clone()]);
                     let slot = if raw_upper == "GRAPHIC_TEXT_SIZE_X" {
                         w_slot
                     } else {
@@ -33014,6 +33910,27 @@ impl Compiler {
         }
     }
 
+    /// PBWin rounds a floating-point `width&` argument to the nearest DLU
+    /// before the runtime converts it to pixels.  `LISTVIEW INSERT COLUMN`
+    /// needs this: FileFind passes `xx * 0.25` = 96.5 and PBWin emits 97,
+    /// while the generic implicit conversion truncates to 96 and shifts every
+    /// header divider by 1 px.  Control geometry keeps the truncating path
+    /// (PBWin's DLU rectangle conversion rounds edges, not widths).
+    fn to_i32_round(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
+        match &val.ty {
+            IrType::Double => {
+                let d = fb.call(&IrType::Double, "llvm.round.f64", std::slice::from_ref(val));
+                fb.fptosi(&d, &IrType::I32)
+            }
+            IrType::Float => {
+                let d = fb.fpext(val, &IrType::Double);
+                let r = fb.call(&IrType::Double, "llvm.round.f64", &[d]);
+                fb.fptosi(&r, &IrType::I32)
+            }
+            _ => self.to_i32(fb, val),
+        }
+    }
+
     fn to_f64(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         match &val.ty {
             IrType::Double => val.clone(),
@@ -33242,7 +34159,7 @@ impl Compiler {
                     fb.trunc(val, target_ir)
                 }
             } else {
-                fb.fptosi(val, target_ir)
+                fb.fptosi_round(val, target_ir)
             }
         } else {
             val.clone()
@@ -34457,14 +35374,32 @@ impl Compiler {
                 // skip the first operand when three args are present.
                 let operands: &[Expr] = if args.len() >= 3 { &args[1..] } else { args };
                 if operands.len() >= 2 {
+                    /* MAK(datatype, low, high) splits at the datatype's own
+                    width: WORD takes two bytes, DWORD/LONG take two words.
+                    The old code always shifted by 16 and never masked the
+                    low half, so MAKEIPADDRESS() (which nests two
+                    MAK(WORD,...) calls inside MAK(DWORD,...)) produced
+                    0.53.0.12 instead of 182.16.53.12 in SysIPAdd.bas. */
+                    let is_word = match &args[0] {
+                        Expr::Variable(s) => {
+                            let u = s.to_ascii_uppercase();
+                            u == "WORD" || u == "INTEGER"
+                        }
+                        _ => false,
+                    };
+                    let part_mask: i32 = if is_word { 0xFF } else { 0xFFFF };
+                    let part_shift = if is_word { 8 } else { 16 };
                     let lo = self.compile_expr(fb, &operands[0]);
                     Some(lo.and_then(|lo| {
                         let hi = self.compile_expr(fb, &operands[1])?;
                         let lo32 = self.to_i32(fb, &lo);
                         let hi32 = self.to_i32(fb, &hi);
-                        let sixteen = fb.const_i32(16);
-                        let hi_shifted = fb.shl(&hi32, &sixteen);
-                        Ok(fb.or(&lo32, &hi_shifted))
+                        let mask = fb.const_i32(part_mask);
+                        let lo_m = fb.and(&lo32, &mask);
+                        let hi_m = fb.and(&hi32, &mask);
+                        let shift = fb.const_i32(part_shift);
+                        let hi_shifted = fb.shl(&hi_m, &shift);
+                        Ok(fb.or(&lo_m, &hi_shifted))
                     }))
                 } else {
                     Some(Ok(fb.const_i32(0)))
@@ -34920,6 +35855,85 @@ impl Compiler {
                     arr_info.elem_ir_type.clone(),
                     arr_info.pb_type.clone(),
                 ))
+            }
+            // `Sprites.Background` and every other TYPE field.  Without this
+            // branch GRAPHIC BITMAP LOAD/NEW/CAPTURE silently dropped the
+            // destination store whenever the handle target was a UDT field:
+            // Pong reached GRAPHIC COPY with Sprites.Background == 0 and the
+            // whole playfield stayed blank (measured 2026-11-21).
+            Expr::TypeMember(base_expr, member) => {
+                if let Expr::PercentConst(_) = base_expr.as_ref() {
+                    return None; // %ENUM.Member is a constant, not an lvalue
+                }
+                let (base_ptr, base_pb) = self.compile_lvalue_ptr(fb, base_expr).ok()?;
+                let (type_name, struct_ptr) = match &base_pb {
+                    PbType::UserDefined(type_name) => (normalize_name(type_name), base_ptr),
+                    PbType::Pointer(target) => match target.as_ref() {
+                        PbType::UserDefined(type_name) => {
+                            let loaded = fb.load(&IrType::Ptr, &base_ptr);
+                            (normalize_name(type_name), loaded)
+                        }
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let layout = self.type_layouts.get(&type_name)?;
+                let field_idx = *layout.field_map.get(&normalize_name(member))?;
+                let field_ir = layout.fields[field_idx].ir_type.clone();
+                let field_pb = layout.fields[field_idx].pb_type.clone();
+                let field_ptr = self.type_field_ptr(fb, &type_name, &struct_ptr, field_idx);
+                Some((field_ptr, field_ir, field_pb))
+            }
+            // User TYPE member array: `Sprites.Letter(x)` arrives as a
+            // MethodCall (base Sprites, name Letter, args [x]) because the
+            // parser's dot-call sugar is indistinguishable from a method.
+            // Without this branch GRAPHIC BITMAP NEW/LOAD/CAPTURE rejected
+            // every UDT member-array destination, although reading the same
+            // element compiled fine.
+            Expr::MethodCall { base, name, args } => {
+                if self.receiver_is_interface(base) || args.is_empty() {
+                    return None;
+                }
+                let (base_ptr, base_pb) = self.compile_lvalue_ptr(fb, base).ok()?;
+                let (type_name, struct_ptr) = match &base_pb {
+                    PbType::UserDefined(type_name) => (normalize_name(type_name), base_ptr),
+                    PbType::Pointer(target) => match target.as_ref() {
+                        PbType::UserDefined(type_name) => {
+                            let loaded = fb.load(&IrType::Ptr, &base_ptr);
+                            (normalize_name(type_name), loaded)
+                        }
+                        _ => return None,
+                    },
+                    _ => return None,
+                };
+                let layout = self.type_layouts.get(&type_name)?;
+                let field_idx = *layout.field_map.get(&normalize_name(name))?;
+                let field_ir = layout.fields[field_idx].ir_type.clone();
+                let field_pb = layout.fields[field_idx].pb_type.clone();
+                let dims = layout.fields[field_idx].dims.clone();
+                let (_, elem_ir) = match &field_ir {
+                    IrType::Array(_, elem) => ((), elem.as_ref().clone()),
+                    _ => return None,
+                };
+                if dims.is_empty() || args.len() < dims.len() {
+                    return None;
+                }
+                let field_ptr = self.type_field_ptr(fb, &type_name, &struct_ptr, field_idx);
+                let mut flat = fb.const_i32(0);
+                let mut stride = 1i64;
+                for (arg_pos, dim) in dims.iter().enumerate().rev() {
+                    let idx_expr = &args[arg_pos];
+                    let idx = self.compile_expr(fb, idx_expr).ok()?;
+                    let idx_i32 = self.to_i32(fb, &idx);
+                    let lower = fb.const_i32(dim.0 as i32);
+                    let rel = fb.sub(&idx_i32, &lower);
+                    let stride_val = fb.const_i32(stride as i32);
+                    let scaled = fb.mul(&rel, &stride_val);
+                    flat = fb.add(&flat, &scaled);
+                    stride *= dim.1;
+                }
+                let elem_ptr = fb.gep_array(&field_ir, &field_ptr, &flat);
+                Some((elem_ptr, elem_ir, field_pb))
             }
             _ => None,
         }

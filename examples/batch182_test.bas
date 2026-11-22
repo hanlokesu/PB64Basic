@@ -183,7 +183,7 @@ FUNCTION PBMAIN () AS LONG
     GRAPHIC SET SCROLLTEXT 1
 
     ' ---- a red box to capture and to stretch --------------------------
-    GRAPHIC BOX (10,10)-(60,60), %RED, %RED, 1
+    GRAPHIC BOX (10,10)-(60,60), 0, %RED, %RED
     GRAPHIC REDRAW
     hdc = 0
     CALL DWORD dcA USING GetDC(hGr) TO hdc
