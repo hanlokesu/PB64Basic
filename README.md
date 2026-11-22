@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 403 (v0.2.193). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 404 (v0.2.194). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 404 (v0.2.194) - Fixed the two defects behind Discussion #5 with the José Roca WINAPI headers: POINT/POINTAPI are registered before any TYPE layout (a user-declared POINT still wins), and #INCLUDE accepts a quoted path with no closing quote at EOL. Window.bas builds and shows its main dialog with both the José Roca and stock PBWin10 header sets on x86_64 and i686; 488 compilable examples, 331 headless examples, 34 negative probes and the x86_64/i686 link smoke are clean. See the v0.2.194 changelog entry.
 > batch 403 (v0.2.193) - Closed the six headless regressions and the runtime semantics behind them. TEXTBOX controls now keep WS_BORDER clear, matching PBWin10's real style 0x50010080 with the frame drawn by WS_EX_CLIENTEDGE; the earlier "+WS_BORDER" conclusion was disproved and its false-positive test corrected; GRAPHIC CONTROL preserves a supplied style instead of replacing it with SS_OWNERDRAW; FONT NEW handles are no longer mistaken for raw HFONTs; GRAPHIC WINDOW and GRAPHIC WINDOW TEXT report POWERGRAPH and POWERTEXT respectively; GRAPHIC BOX optional-argument parsing was corrected in the regression programs; and the x86-only QUAD declarations that truncated 32-bit WinAPI returns were narrowed to the x64 branch. Also closed the batch 403 parser, GDI-lifecycle, dialog-unit, capture, GET$ ASCIIZ, missing-DLL, ListView-width and focus-restore items. All examples compile; headless, negative, link, fmt and clippy gates are clean. See the v0.2.193 changelog entry.
 > batch 402 packaging follow-up (v0.2.192) - Rebuilt the 958-page CHM, fixed the full-text-search claim, added the JK-IDE Android APK menu and setup-time Android toolchain probe, and refreshed the add-on DLL. Compiler behavior is unchanged. See the v0.2.192 changelog entry.
 > batch 402 packaging (v0.2.191) - Added the optional Android toolchain installer and a 958-page CHM with a complete Android demo APK guide; compiler behavior is unchanged. See the v0.2.191 changelog entry.
@@ -1086,6 +1087,26 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.194 (2026-11-22)
+
+Batch 404 fixes two compatibility defects exposed by the José Roca WINAPI_III_107 headers in Discussion #5. The stock PBWin10 path already worked and is unchanged.
+
+Highlights:
+
+- The compiler built-ins `POINT` and `POINTAPI` are registered before any `TYPE` member is laid out. `WinDef.inc` intentionally leaves `POINT` to the compiler, but a member such as `DRAWPATRECT.PTPOSITION AS POINT` was checked while the built-in was still missing and failed with `Error 524`. The built-in is eight bytes (two `LONG` fields at offsets 0 and 4); a program that declares its own `POINT` or `POINTAPI` keeps its declaration and is never shadowed.
+- `#INCLUDE` now accepts a quoted path whose closing quote is missing at end-of-line, matching PBWin. José Roca's `ws2def.inc` line 67 contains `#INCLUDE ONCE "inaddr.inc`; PB64Basic previously dropped the whole line, so `in_addr` was undefined and `SOCKADDR_IN` failed at line 730. A path may also end at an unquoted comment marker. The other seven malformed include lines in the same header set are handled by the same rule.
+- Added `examples/batch404_test.bas`, `examples/batch404_include_quote.inc` and `examples/batch404_user_point.bas`. The first checks `SIZEOF(POINT)=8`, `POINTAPI=8`, real field reads and writes through `POINT` members, and a quote-less include; the second checks that a user-declared 12-byte `POINT` is preserved.
+
+Validation:
+
+- Discussion #5 `Window.bas` with the José Roca headers: x86_64 and i686 both build and start; each window has a non-zero handle and title `Main dialog`.
+- The same source with the stock `C:\PBWin10\WINAPI` headers builds and starts with the same title.
+- `run_examples.py --compile-all`: 488 compiled, 0 failed (490 `.bas` files, of which 2 are include-only fragments).
+- `run_examples.py --all-headless`: 331 compiled, 327 ran, 0 run failures, 0 timeouts.
+- `check_negative_probes.py`: 34 probes, 0 BAD.
+- `link_smoke_32.py --examples --targets x86_64,i686`: 0 link failures.
+- `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` pass with Rust 1.100.0.
+- `batch404_test` and `batch404_user_point` build and return 0 on x86_64 and i686.
 ### v0.2.193 (2026-11-22)
 
 Batch 403 closes the remaining headless regressions and the runtime, parser and codegen gaps behind them. Compiler behavior changes in this release; the bundled help and package are rebuilt at this version.

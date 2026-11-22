@@ -1129,7 +1129,7 @@ impl Preprocessor {
                 {
                     rest = no_once.trim();
                 }
-                if let Some(inc_path) = extract_string(rest) {
+                if let Some(inc_path) = extract_include_string(rest) {
                     let resolved = resolve_include_path(file, &inc_path, &self.include_dirs);
                     match self.process_file(&resolved) {
                         Ok(inc_lines) => {
@@ -2215,6 +2215,24 @@ fn extract_string(s: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// `#INCLUDE` is more forgiving than the general string extractor: PBWin
+/// accepts a quoted path whose closing quote is missing at end-of-line (several
+/// official José Roca headers rely on this, e.g. `ws2def.inc` writes
+/// `#INCLUDE ONCE "inaddr.inc`).  Keep the rest of the line up to an unquoted
+/// comment marker so the include is still processed.
+fn extract_include_string(s: &str) -> Option<String> {
+    if let Some(path) = extract_string(s) {
+        return Some(path);
+    }
+    let s = s.trim().strip_prefix('"')?;
+    let path = s.split('\'').next().unwrap_or(s).trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(path.to_string())
+    }
 }
 
 /// Parse `name(params)` or `name` from the text after the MACRO keyword.

@@ -9290,6 +9290,25 @@ impl Compiler {
         }
         self.call_arg_array_names = call_arg_arrays;
 
+        // PBWin's compiler-built-in.inc always defines `Point` (x/y AS LONG).
+        // José Roca's WINAPI_III_107 headers rely on that built-in and use
+        // `POINT` without declaring it.  The layout must be registered before
+        // any TYPE member is checked: a member declared `AS POINT` is rejected
+        // with Error 524 if the built-in is added only after the TypeDecl scan.
+        let declared_type_names: HashSet<String> = program
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                TopLevel::TypeDecl(td) => Some(normalize_name(&td.name)),
+                _ => None,
+            })
+            .collect();
+        for name in ["POINT", "POINTAPI"] {
+            if !declared_type_names.contains(name) {
+                self.register_builtin_point_type(name);
+            }
+        }
+
         for item in &program.items {
             if let TopLevel::TypeDecl(td) = item {
                 if td.com {
@@ -9304,47 +9323,6 @@ impl Compiler {
                 }
                 self.register_type(td);
             }
-        }
-        // PBWin's compiler-built-in.inc always defines `Point` (x/y AS LONG).
-        // José Roca's WINAPI_III_107 headers rely on that built-in and use
-        // `POINT` without declaring it; without this layout the GUI wrappers
-        // fail codegen with "Unknown TYPE: POINT" (batch 383).
-        if !self.type_layouts.contains_key("POINT") {
-            self.module
-                .define_struct_type("POINT", &[IrType::I32, IrType::I32]);
-            let mut field_map = HashMap::new();
-            field_map.insert("X".to_string(), 0usize);
-            field_map.insert("Y".to_string(), 1usize);
-            self.type_layouts.insert(
-                "POINT".to_string(),
-                TypeLayout {
-                    ir_name: "POINT".to_string(),
-                    fields: vec![
-                        FieldInfo {
-                            name: "X".to_string(),
-                            pb_type: PbType::Long,
-                            ir_type: IrType::I32,
-                            dims: Vec::new(),
-                            gep_idx: 0,
-                            offset: 0,
-                            bit: None,
-                        },
-                        FieldInfo {
-                            name: "Y".to_string(),
-                            pb_type: PbType::Long,
-                            ir_type: IrType::I32,
-                            dims: Vec::new(),
-                            gep_idx: 1,
-                            offset: 4,
-                            bit: None,
-                        },
-                    ],
-                    field_map,
-                    is_union: false,
-                    size: 8,
-                    align: 4,
-                },
-            );
         }
         // PBWin/PBCC compiler-built-in PowerBounds UDT (Built-in_User_Defined_Types):
         // eight LONGs, ElementsN/LowBoundN for dimensions 1..4.  PB/CC's
@@ -9874,6 +9852,50 @@ impl Compiler {
         }
 
         Ok(())
+    }
+
+    /// PBWin's compiler built-in `Point`/`POINTAPI`: two LONGs, 8 bytes.
+    /// Registering this before the TypeDecl scan lets headers that rely on the
+    /// compiler-supplied `POINT` use it as an inline member type.
+    fn register_builtin_point_type(&mut self, name: &str) {
+        if self.type_layouts.contains_key(name) {
+            return;
+        }
+        self.module
+            .define_struct_type(name, &[IrType::I32, IrType::I32]);
+        let mut field_map = HashMap::new();
+        field_map.insert("X".to_string(), 0usize);
+        field_map.insert("Y".to_string(), 1usize);
+        self.type_layouts.insert(
+            name.to_string(),
+            TypeLayout {
+                ir_name: name.to_string(),
+                fields: vec![
+                    FieldInfo {
+                        name: "X".to_string(),
+                        pb_type: PbType::Long,
+                        ir_type: IrType::I32,
+                        dims: Vec::new(),
+                        gep_idx: 0,
+                        offset: 0,
+                        bit: None,
+                    },
+                    FieldInfo {
+                        name: "Y".to_string(),
+                        pb_type: PbType::Long,
+                        ir_type: IrType::I32,
+                        dims: Vec::new(),
+                        gep_idx: 1,
+                        offset: 4,
+                        bit: None,
+                    },
+                ],
+                field_map,
+                is_union: false,
+                size: 8,
+                align: 4,
+            },
+        );
     }
 
     fn register_type(&mut self, td: &TypeDecl) {
