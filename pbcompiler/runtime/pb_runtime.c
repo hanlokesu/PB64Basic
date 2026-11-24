@@ -348,6 +348,8 @@ __declspec(dllimport) int __stdcall DeleteFileA(const char* lpFileName);
 #define PB_B24_DEFS
 __declspec(dllimport) void* __stdcall FindFirstFileA(const char* lpFileName, char* lpFindFileData);
 __declspec(dllimport) int __stdcall FindNextFileA(void* hFindFile, char* lpFindFileData);
+__declspec(dllimport) void* __stdcall FindFirstFileW(const short* lpFileName, short* lpFindFileData);
+__declspec(dllimport) int __stdcall FindNextFileW(void* hFindFile, short* lpFindFileData);
 __declspec(dllimport) int __stdcall FindClose(void* hFindFile);
 __declspec(dllimport) unsigned long __stdcall GetLastError(void);
 /* OBJRESULT$ descriptive text: measured PBWin returns the Windows system
@@ -8518,6 +8520,40 @@ long pb_shell_sync(char* cmd, int mode, long* exit_out) {
 #endif
 }
 
+/* Expression form of SHELL: launch the child WITHOUT waiting and return its
+ * process id.  The sample `ProcessID& = SHELL("Notepad ...", 1)` documents
+ * exactly this asynchronous behavior; the statement form above stays
+ * synchronous per the CHW SHELL statement page. */
+long pb_shell_async(char* cmd, int mode) {
+    if (!cmd || !*cmd) return 0;
+#ifdef _WIN32
+    struct { unsigned long cb; void* reserved; char* desktop; char* title;
+             unsigned long x, y, xsz, ysz; unsigned long xcount, ycount;
+             unsigned long fillattr; unsigned long flags; unsigned short show;
+             unsigned short reserved2; void* reserved3; void* stdin_, *stdout_, *stderr_; } si;
+    struct { void* hProcess; void* hThread; unsigned long pid, tid; } pi;
+    memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+    unsigned long create_flags = (mode == 0) ? 0x08000000UL /* CREATE_NO_WINDOW */ : 0;
+    si.flags = 0x00000001UL /* STARTF_USESHOWWINDOW */;
+    si.show = (unsigned short)(mode < 0 ? 1 : (mode > 10 ? 1 : mode));
+    char* cmdmut = (char*)malloc(strlen(cmd) + 1);
+    if (!cmdmut) return 0;
+    strcpy(cmdmut, cmd);
+    int ok = CreateProcessA(NULL, cmdmut, NULL, NULL, 0/*FALSE*/,
+                            create_flags, NULL, NULL, &si, &pi);
+    free(cmdmut);
+    if (!ok) return 0;
+    unsigned long pid = pi.pid;
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (long)pid;
+#else
+    (void)mode;
+    return 0;
+#endif
+}
+
 /* ARRAY SCAN arr([idx]) [FOR count], OP expr, TO var& � first matching relative index, 0 = none.
    op: 0='=', 1='<>', 2='<', 3='>', 4='<=', 5='>=' */
 long long pb_array_scan_num(char* base, int elem_size, long long total, long long index,
@@ -12660,9 +12696,9 @@ void pb_type_set_str_pad(void* dest, const char* src, unsigned int size, const c
     if (n < size) memset((char*)dest + n, pad, size - n);
 }
 
-/* ================= Batch 24: DIR$ / DIR statement (FindFirstFileA family) ================= */
+/* ================= Batch 24: DIR$ / DIR statement (FindFirstFileW family) ================= */
 
-/* WIN32_FIND_DATAA layout (hand-rolled, no windows.h):
+/* WIN32_FIND_DATAW layout (hand-rolled, no windows.h):
    0  DWORD  dwFileAttributes
    4  FILETIME ftCreationTime (8)
    12 FILETIME ftLastAccessTime (8)
@@ -12671,19 +12707,23 @@ void pb_type_set_str_pad(void* dest, const char* src, unsigned int size, const c
    32 DWORD  nFileSizeLow
    36 DWORD  dwReserved0
    40 DWORD  dwReserved1
-   44 CHAR   cFileName[260]
-   304 CHAR  cAlternateFileName[14]
-   total >= 592 bytes
+   44 WCHAR  cFileName[260]
+   564 WCHAR  cAlternateFileName[14]
+   total 592 bytes
 */
 #define PB_FIND_DATA_SIZE 592
+/* PBWin's DirData UDT is the Unicode WIN32_FIND_DATA layout (592 bytes):
+ * CHW Built-in_User_Defined_Types declares DirData with QUAD FILETIMEs and
+ * WSTRINGZ * 260 / WSTRINGZ * 14 name buffers. */
+#define PB_DIRDATA_SIZE 592
 #define PB_FILE_ATTRIBUTE_DIRECTORY 0x10UL
 
 #ifndef PB_B24_DEFS
 #define PB_B24_DEFS
 typedef void* HANDLE_PB24;
 #define PB_INVALID_HANDLE ((void*)(intptr_t)-1)
-__declspec(dllimport) void* __stdcall FindFirstFileA(const char* lpFileName, char* lpFindFileData);
-__declspec(dllimport) int __stdcall FindNextFileA(void* hFindFile, char* lpFindFileData);
+__declspec(dllimport) void* __stdcall FindFirstFileW(const short* lpFileName, short* lpFindFileData);
+__declspec(dllimport) int __stdcall FindNextFileW(void* hFindFile, short* lpFindFileData);
 __declspec(dllimport) int __stdcall FindClose(void* hFindFile);
 #endif
 
@@ -12692,15 +12732,15 @@ static char g_dir_find_data[PB_FIND_DATA_SIZE];
 static int g_dir_only = 0;
 static unsigned long g_dir_attr = 0;
 
-static const char* g_dir_name(void) { return g_dir_find_data + 44; }
+static const short* g_dir_name(void) { return (const short*)(g_dir_find_data + 44); }
 static unsigned long g_dir_attrs(void) {
     unsigned long a;
     memcpy(&a, g_dir_find_data, sizeof(a));
     return a;
 }
 static int g_dir_is_dot(void) {
-    const char* n = g_dir_name();
-    return (n[0] == '.' && n[1] == '\0') || (n[0] == '.' && n[1] == '.' && n[2] == '\0');
+    const short* n = g_dir_name();
+    return (n[0] == '.' && n[1] == 0) || (n[0] == '.' && n[1] == '.' && n[2] == 0);
 }
 static int g_dir_match(void) {
     if (g_dir_is_dot()) return 0;
@@ -12716,8 +12756,28 @@ static int g_dir_match(void) {
     return (fa & g_dir_attr) == g_dir_attr;
 }
 static char* g_dir_make_bstr(void) {
-    const char* n = g_dir_name();
-    return pb_bstr_alloc(n, (unsigned int)strlen(n));
+    const short* n = g_dir_name();
+    int wlen = 0;
+    while (n[wlen]) wlen++;
+    int alen = WideCharToMultiByte(65001, 0, n, wlen, NULL, 0, NULL, NULL);
+    if (alen <= 0) return pb_bstr_alloc("", 0);
+    char* a = (char*)malloc((size_t)alen + 1);
+    if (!a) return pb_bstr_alloc("", 0);
+    WideCharToMultiByte(65001, 0, n, wlen, a, alen, NULL, NULL);
+    a[alen] = '\0';
+    char* b = pb_bstr_alloc(a, (unsigned int)alen);
+    free(a);
+    return b;
+}
+static short* g_dir_wide_mask(const char* mask) {
+    int n = (int)strlen(mask);
+    int wlen = MultiByteToWideChar(65001, 0, mask, n, NULL, 0);
+    if (wlen <= 0) return NULL;
+    short* w = (short*)malloc(((size_t)wlen + 1) * sizeof(short));
+    if (!w) return NULL;
+    MultiByteToWideChar(65001, 0, mask, n, w, wlen);
+    w[wlen] = 0;
+    return w;
 }
 
 /* DIR$ mask [, ONLY attr]  -> first match; returns "" when none */
@@ -12729,11 +12789,14 @@ char* pb_dir_first(char* mask, int only, unsigned long attr) {
     g_dir_only = only;
     g_dir_attr = attr;
     if (!mask || !*mask) return pb_bstr_alloc("", 0);
-    g_dir_handle = FindFirstFileA(mask, g_dir_find_data);
+    short* wmask = g_dir_wide_mask(mask);
+    if (!wmask) return pb_bstr_alloc("", 0);
+    g_dir_handle = FindFirstFileW(wmask, (short*)g_dir_find_data);
+    free(wmask);
     if (g_dir_handle == PB_INVALID_HANDLE) return pb_bstr_alloc("", 0);
     for (;;) {
         if (g_dir_match()) return g_dir_make_bstr();
-        if (!FindNextFileA(g_dir_handle, g_dir_find_data)) {
+        if (!FindNextFileW(g_dir_handle, (short*)g_dir_find_data)) {
             FindClose(g_dir_handle);
             g_dir_handle = PB_INVALID_HANDLE;
             return pb_bstr_alloc("", 0);
@@ -12741,11 +12804,21 @@ char* pb_dir_first(char* mask, int only, unsigned long attr) {
     }
 }
 
+/* DIR$(mask$ TO DirData) -> first match; copies the WIN32_FIND_DATAW record
+ * into the caller's DirData UDT (PBWin exposes FileSizeHigh/Low and the
+ * FILETIME fields from that layout). */
+char* pb_dir_first_to(char* mask, int only, unsigned long attr, void* out) {
+    if (out) memset(out, 0, PB_DIRDATA_SIZE);
+    char* name = pb_dir_first(mask, only, attr);
+    if (out && name && name[0]) memcpy(out, g_dir_find_data, PB_DIRDATA_SIZE);
+    return name;
+}
+
 /* DIR$ (NEXT) -> next match; "" when exhausted */
 char* pb_dir_next(void) {
     if (g_dir_handle == PB_INVALID_HANDLE) return pb_bstr_alloc("", 0);
     for (;;) {
-        if (!FindNextFileA(g_dir_handle, g_dir_find_data)) {
+        if (!FindNextFileW(g_dir_handle, (short*)g_dir_find_data)) {
             FindClose(g_dir_handle);
             g_dir_handle = PB_INVALID_HANDLE;
             return pb_bstr_alloc("", 0);
@@ -18560,9 +18633,24 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
     if (Msg == 0x0031) /* WM_GETFONT */ {
         return (long long)(size_t)pb_font_get(hWnd);
     }
-    if (Msg == 0x0006 /* WM_ACTIVATE */ && (wParam & 0xFFFFu) == 0) {
+    if (Msg == 0x0006 /* WM_ACTIVATE */) {
+        unsigned int wa = (unsigned int)(wParam & 0xFFFFu);
         void* cur = GetFocus();
-        if (cur && cur != hWnd) pb_lastfocus_set(hWnd, cur);
+        if (wa == 0) {
+            if (cur && cur != hWnd) pb_lastfocus_set(hWnd, cur);
+        } else if (!cur || cur == hWnd) {
+            /* A custom-class dialog has no DefDlgProc to restore its child
+               focus when it is activated.  PBWin gives the first tab-stop
+               control (or the explicit %BS_DEFAULT) the initial focus; do
+               the same here so the focus rectangle matches after
+               SetActiveWindow / SetForegroundWindow. */
+            void* last = pb_lastfocus_get(hWnd);
+            if (!last || !IsWindow(last)) last = pb_modal_initial_focus(hWnd);
+            if (last) {
+                SetFocus(last);
+                pb_lastfocus_set(hWnd, last);
+            }
+        }
     }
     if (Msg == 0x0007 /* WM_SETFOCUS */) {
         /* DefDlgProc restores the dialog's last child focus when the window is

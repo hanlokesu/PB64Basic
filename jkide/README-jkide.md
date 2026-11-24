@@ -43,7 +43,7 @@ The `Compilers` menu appears between `Options` and `Tools`. Its items:
 
 * **PBWin 10** - PowerBASIC for Windows 10 (`/IC:\PBWin10\WINAPI /L /Q`)
 * **PB64Basic (64bit)** - this project's x86_64 compiler
-* **PB64Basic (32bit)** - this project's i686 compiler (same `PB64Basic.exe`, target `i686-pc-windows-msvc`, runtime `pb_runtime_x86.obj`). The 32-bit output is named `<source>_x86.exe` so it does not overwrite the 64-bit `<source>.exe`.
+* **PB64Basic (32bit)** - this project's i686 compiler (same `PB64Basic.exe`, target `i686-pc-windows-msvc`, runtime `pb_runtime_x86.obj`). The default 64-bit output is `<source>_x64.exe`; the 32-bit output is `<source>_x86.exe`, so neither target overwrites the other or a PBWin-built `<source>.exe`.
 * **PBXB64** - PowerBASIC 64-bit fork (optional, detected if installed)
 * **Compile (default)** - JK-IDE's own default compile action
 * **Android APK** - builds an APK from the active `.bas` with

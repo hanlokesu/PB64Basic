@@ -240,7 +240,8 @@ fn real_main() {
     // #CONSOLE directive (batch 310).
     let cli_console = args.iter().any(|a| a == "--console");
 
-    let output = get_flag_value(&args, "-o").unwrap_or_else(|| {
+    let output_flag = get_flag_value(&args, "-o");
+    let output = output_flag.clone().unwrap_or_else(|| {
         let p = Path::new(file_path);
         p.with_extension("obj").to_string_lossy().into_owned()
     });
@@ -250,6 +251,20 @@ fn real_main() {
     // is a hard error rather than a silent choice.
     let target =
         get_flag_value(&args, "--target").unwrap_or_else(|| codegen::DEFAULT_TARGET.to_string());
+    // PB64Basic's default x86_64 EXE name carries an `_x64` suffix so it can
+    // coexist with the reference compiler's `<source>.exe` during side-by-side
+    // comparison.  `-o` and `#COMPILE EXE "name"` remain explicit overrides.
+    let exe_default_base =
+        if output_flag.is_none() && exe_name.is_none() && target.contains("x86_64") {
+            let source = Path::new(file_path);
+            let stem = source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("program");
+            Some(source.with_file_name(format!("{}_x64", stem)))
+        } else {
+            None
+        };
     let runtime_lib = match (get_flag_value(&args, "--runtime-lib"), positional_obj) {
         (Some(flag), Some(bare)) if flag != bare => {
             eprintln!(
@@ -305,6 +320,7 @@ fn real_main() {
         sll_name,
         exe_name,
         dll_name,
+        exe_default_base,
         session_mode,
         emit_llvm,
         debug_mode,
@@ -329,9 +345,14 @@ fn real_main() {
     ) {
         Ok(()) => {
             // --emit-llvm stops after writing <base>.ll; do not report the
-            // requested .obj name that was never produced.
+            // requested .obj name that was never produced.  For a successful
+            // EXE link, report the real final path (which may be the default
+            // <source>_x64.exe) instead of the intermediate .obj, so the user
+            // can find the binary without inferring the target suffix.
             let produced = if emit_llvm {
                 Path::new(&output).with_extension("ll")
+            } else if exe_mode {
+                codegen::resolve_exe_path(Path::new(&output), &opts)
             } else {
                 Path::new(&output).to_path_buf()
             };
@@ -804,7 +825,7 @@ fn compile_file(
 
     // Phase 5: Embed resources (icons, version info, etc.) into EXE
     if opts.exe_mode {
-        let exe_path = codegen::resolve_target_path(output_path, opts.exe_name.as_ref(), "exe");
+        let exe_path = codegen::resolve_exe_path(output_path, opts);
         if exe_path.exists() {
             let has_icons = !preprocessor.resources().is_empty();
             let has_raw = !preprocessor.raw_resources().is_empty();

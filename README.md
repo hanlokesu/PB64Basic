@@ -15,7 +15,7 @@ This repository is an enhanced branch that fixes an upstream bug and adds severa
 
 ## JK-IDE Integration and PB64Basic Help
 
-JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. The **Compilers** menu lists `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and `Compile (default)`, followed by an **Android APK** submenu, `Open PB Help`, `PB64BASIC.CHM` and `JKIDE.INI`. Both PB64Basic entries drive the same `PB64Basic.exe`: the 64-bit entry builds `<source>.exe` with the x86_64 runtime, while the 32-bit entry builds `<source>_x86.exe` with the i686 runtime, so one target never overwrites the other. The Android submenu builds `arm64-v8a`, `x86_64`, or both ABIs in one APK from the active source; it requires the separate `PB64Basic-Android` build project.
+JK-IDE can compile a source file with this compiler in **PB64Basic (64bit)** or **PB64Basic (32bit)** mode, or with the separate **PBXB64.exe** compiler. The **Compilers** menu lists `PBWin 10`, `PB64Basic (64bit)`, `PB64Basic (32bit)`, `PBXB64` and `Compile (default)`, followed by an **Android APK** submenu, `Open PB Help`, `PB64BASIC.CHM` and `JKIDE.INI`. Both PB64Basic entries drive the same `PB64Basic.exe`: the 64-bit entry builds `<source>_x64.exe` with the x86_64 runtime, while the 32-bit entry builds `<source>_x86.exe` with the i686 runtime, so one target never overwrites the other and the 64-bit output never collides with a PBWin-built `<source>.exe`. The Android submenu builds `arm64-v8a`, `x86_64`, or both ABIs in one APK from the active source; it requires the separate `PB64Basic-Android` build project.
 
 This branch also integrates PB64Basic Help. The complete help set is bundled in the repository as `jkide/PB64Basic.chm` (958 topic pages plus an index); when JK-IDE integration is selected, `setup.bat` installs it as `PB.chm`/`PB.chw` for native F1 and `PB64Basic.chm`/`PB64Basic.chw` for the add-on's **PB64BASIC.CHM** menu. The original PBWin 10 help is preserved once as `PB.chm.pbwin-bak` / `PB.chw.pbwin-bak` and republished as `PBWin.chm`/`PBWin.chw` for the add-on's **Open PB Help** menu. Put the mouse pointer over any word or keyword in your source and press **F1** to open that word's topic directly. If you prefer to browse, open the fork help from **PB64BASIC.CHM**, the original help from **Open PB Help**, or either file by double-clicking it, and use its contents and keyword index. This CHM is built with `Full-text search=No`, so it has no full-text search tab; the `HHC6003 Itircl.dll` line in the build log is expected for that setting.
 
@@ -154,7 +154,7 @@ programs and a one-click `compile.bat`. Unzip and run:
 
 ```bat
 cd PB64Basic-Enhanced-vX.Y.Z-x64
-compile.bat          :: builds examples\hello.bas -> examples\hello.exe
+compile.bat          :: builds examples\hello.bas -> examples\hello_x64.exe
 ```
 
 > **Which download should I use?** The green **Code → Download ZIP** button
@@ -446,8 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 406 (v0.2.196). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> batch 406 (v0.2.196) - Rebuilt and revalidated the 958-page CHM against the v0.2.195 compiler and Android demo suite. The GRAPHIC BOX page now documents an omitted corner as square; the Android demo page records v0.2.195 and archive SHA-256 78449CE57241F6E15440B52C4FDB9BA7474FA803AA5E3EE490F1D0D854EE4F7D; the CHM and CHW copies under jkide and the installed JK-IDE help slot are byte-identical. Page verification is 28 checks / 0 FAIL and F1 verification is 2148 checks / 0 FAIL. Compiler and runtime behavior are unchanged.
+> Updated through batch 407 (v0.2.197). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 407 (v0.2.197) - Gave the default x86_64 output an `_x64` suffix so PB64Basic can sit beside a PBWin-built `<source>.exe` for side-by-side comparison, and tightened the `DirData` / `DIR$` compatibility path. `Success:` now reports the final EXE path. See the v0.2.197 changelog entry.
 > batch 405 (v0.2.195) - Closed the APK / PB/CC / GUI residual set: GRAPHIC BOX negative-corner, omitted-corner and aspect semantics now match PBWin pixel for pixel, GRAPHIC COPY and the POLYGON/POLYLINE/XPRINT declarations were corrected, user procedures whose names start with GRAPHIC_/MENU_/XPRINT_ are no longer swallowed, the Android MSGBOX link guard was fixed, and the 20-APK suite was rebuilt and passed 20/20 emulator probes. All Windows source gates are clean.
 > batch 404 (v0.2.194) - Fixed the two defects behind Discussion #5 with the José Roca WINAPI headers: POINT/POINTAPI are registered before any TYPE layout (a user-declared POINT still wins), and #INCLUDE accepts a quoted path with no closing quote at EOL. Window.bas builds and shows its main dialog with both the José Roca and stock PBWin10 header sets on x86_64 and i686; 488 compilable examples, 331 headless examples, 34 negative probes and the x86_64/i686 link smoke are clean. See the v0.2.194 changelog entry.
 > batch 403 (v0.2.193) - Closed the six headless regressions and the runtime semantics behind them. TEXTBOX controls now keep WS_BORDER clear, matching PBWin10's real style 0x50010080 with the frame drawn by WS_EX_CLIENTEDGE; the earlier "+WS_BORDER" conclusion was disproved and its false-positive test corrected; GRAPHIC CONTROL preserves a supplied style instead of replacing it with SS_OWNERDRAW; FONT NEW handles are no longer mistaken for raw HFONTs; GRAPHIC WINDOW and GRAPHIC WINDOW TEXT report POWERGRAPH and POWERTEXT respectively; GRAPHIC BOX optional-argument parsing was corrected in the regression programs; and the x86-only QUAD declarations that truncated 32-bit WinAPI returns were narrowed to the x64 branch. Also closed the batch 403 parser, GDI-lifecycle, dialog-unit, capture, GET$ ASCIIZ, missing-DLL, ListView-width and focus-restore items. All examples compile; headless, negative, link, fmt and clippy gates are clean. See the v0.2.193 changelog entry.
@@ -1089,6 +1089,23 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.197 (2026-11-24)
+
+Batch 407 closes the batch1 working-tree changes and makes the default x86_64 artifact distinguishable from a PBWin-built executable.
+
+Highlights:
+
+- The default x86_64 output is now `<source>_x64.exe`, so a PBWin-built `<source>.exe` and a PB64Basic build can coexist and be launched together for comparison. An explicit `-o` and an explicit `#COMPILE EXE "name"` keep their exact requested names; the i686 default remains `<source>.exe` (JK-IDE's 32-bit path uses `<source>_x86.exe`).
+- The compiler's final `Success:` line now reports the real EXE path instead of the intermediate `.obj`.
+- `DirData` follows the PBWin Unicode definition (592 bytes: `FileAttributes`, three QUAD timestamps, `FileSizeHigh`/`FileSizeLow`, `Reserved0`/`Reserved1`, `FileName WStringZ * 260`, `ShortName WStringZ * 14`). `DIR$` uses `FindFirstFileW` / `FindNextFileW` and copies the full structure for the `TO DirDataVar` form.
+- batch1 parser/codegen/runtime fixes are included: `SWAP`, asynchronous `SHELL`, `DIR$ ... TO`, `ARRAY ASSIGN`, and control focus restore.
+- JK-IDE 64-bit compile/run, `compile.bat`, `setup.ps1`, README and the release/smoke scripts now agree on the `_x64.exe` default; the shipped `jkide/userdll.dll` was rebuilt from the updated add-on source so the IDE actually starts `<source>_x64.exe`.
+
+Validation:
+
+- All 98 official samples were re-attempted and re-captured on the batch 407 tree: 34 identical, 28 near, 1 diff (`DIGITAL.BAS`, 1.542%); 11 DLL targets were compiled but not run, 17 runs were skipped as interactive or environmental, 6 source files are invalid in both compilers, and 1 is rejected by PBWin 10 only. This matches the v0.2.196 baseline for the runnable comparison set.
+- `run_examples.py --compile-all`, the headless run, negative probes, dual-target link smoke, `cargo fmt --check`, `cargo clippy -D warnings`, and `release.py` gates are run before publication.
+
 ### v0.2.196 (2026-11-23)
 
 Batch 406 is a help-system rebuild for the shipped v0.2.195 compiler and runtime. There are no compiler or runtime changes.
@@ -1621,7 +1638,9 @@ No new official keywords were added; the coverage matrix counts are unchanged.
   `PB64Basic.exe`; the 64-bit entry calls `x86_64-pc-windows-msvc` with
   `pb_runtime_x64.obj`, and the 32-bit entry calls `i686-pc-windows-msvc`
   with `pb_runtime_x86.obj`. The 32-bit output is written as
-  `<source>_x86.exe` so it cannot overwrite the 64-bit `<source>.exe`.
+  `<source>_x86.exe`; batch 407 later changed the default 64-bit output to
+  `<source>_x64.exe`, so neither target overwrites the other or a PBWin-built
+  `<source>.exe`.
 - **Command IDs and live verification**: compile/run command IDs are
   `55012`/`55016` for the 64-bit entry and `55028`/`55029` for the 32-bit
   entry. Live menu probes produced a 172,032-byte PE `0x8664` executable

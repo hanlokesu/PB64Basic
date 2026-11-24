@@ -851,12 +851,13 @@ FUNCTION JK_CompileAndRun(BYVAL which AS LONG) AS LONG
         JK_SendOutput "PBWin 10 compile failed - not running (EXITCODE=" + TRIM$(STR$(rc)) + ")", &HFF
       END IF
     CASE %JKCOMP_RUN_PB64
-      exePath = LEFT$(f, LEN(f) - 4) + ".exe"
+      exePath = LEFT$(f, LEN(f) - 4) + "_x64.exe"
       stem = f
       DO WHILE INSTR(stem, "\") > 0
         stem = MID$(stem, INSTR(stem, "\") + 1)
       LOOP
       IF INSTR(stem, ".") > 0 THEN stem = LEFT$(stem, INSTR(stem, ".") - 1)
+      stem = stem + "_x64"
       IF JK_DeleteStaleExe(exePath, stem) = 0 THEN
         FUNCTION = -1
         EXIT FUNCTION

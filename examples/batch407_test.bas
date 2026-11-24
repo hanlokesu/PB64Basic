@@ -1,0 +1,12 @@
+#COMPILE EXE
+#DIM ALL
+
+FUNCTION PBMAIN() AS LONG
+    IF VERSION$ <> "v0.2.197" THEN
+        PRINT "FAIL version="; VERSION$
+        FUNCTION = 1
+        EXIT FUNCTION
+    END IF
+    PRINT "batch407 version ok"
+    FUNCTION = 0
+END FUNCTION

@@ -20371,6 +20371,17 @@ impl Parser {
                 } else if self.peek() != &Token::RParen {
                     // first arg: mask expression
                     args.push(self.parse_expression()?);
+                    // DIR$(mask$ TO DirData) — fill the PBWin DirData UDT with
+                    // the WIN32_FIND_DATA for the returned name.  This form has
+                    // no comma/ONLY clause, so it is handled before the
+                    // ordinary attribute parser.
+                    if self.peek() == &Token::To {
+                        self.advance();
+                        let target = self.parse_expression()?;
+                        self.expect(&Token::RParen)?;
+                        let mask = args.remove(0);
+                        return Ok(Expr::FunctionCall("DIR$TO".to_string(), vec![mask, target]));
+                    }
                     // optional [ONLY] attribute (CHW DIR$ function: DIR$(mask [, [ONLY] attr]))
                     while self.peek() == &Token::Comma {
                         self.advance();

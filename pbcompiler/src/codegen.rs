@@ -705,6 +705,11 @@ pub struct CompileOptions {
     pub exe_name: Option<(String, bool)>,
     /// #COMPILE DLL explicit target: (case-preserved name, exact '=' flag).
     pub dll_name: Option<(String, bool)>,
+    /// Default EXE base used when neither `-o` nor `#COMPILE EXE "name"` was
+    /// given.  The x86_64 target uses `<source>_x64` so a PB64Basic build
+    /// cannot overwrite the PBWin 10 `<source>.exe` during side-by-side
+    /// comparison.  None keeps the historical `output_path` stem.
+    pub exe_default_base: Option<PathBuf>,
     pub session_mode: bool,
     pub emit_llvm: bool,
     pub debug_mode: bool, // enable verbose debug logging (modal text, assertions)
@@ -763,6 +768,23 @@ pub fn resolve_target_path(
         }
         None => default_path.with_extension(ext),
     }
+}
+
+/// Resolve the final EXE path, including the fork's target suffix.
+///
+/// An explicit `#COMPILE EXE "name"` keeps PBWin's naming rules exactly.
+/// Otherwise, when the CLI did not pass `-o`, the caller supplies
+/// `exe_default_base` with the architecture suffix (`<source>_x64`); this
+/// keeps the PB64Basic EXE separate from the reference compiler's
+/// `<source>.exe` so both can be launched side by side.
+pub fn resolve_exe_path(default_path: &Path, opts: &CompileOptions) -> PathBuf {
+    if opts.exe_name.is_some() {
+        return resolve_target_path(default_path, opts.exe_name.as_ref(), "exe");
+    }
+    if let Some(base) = &opts.exe_default_base {
+        return base.with_extension("exe");
+    }
+    resolve_target_path(default_path, None, "exe")
 }
 
 /// Verify the destination can be written before invoking the linker. A missing
@@ -903,7 +925,7 @@ pub fn compile(
     }
 
     if opts.exe_mode {
-        let exe_path = resolve_target_path(output_path, opts.exe_name.as_ref(), "exe");
+        let exe_path = resolve_exe_path(output_path, opts);
         ensure_destination_writable(&exe_path)?;
         let obj_refs: Vec<&Path> = obj_paths.iter().map(|p| p.as_path()).collect();
         link_exe(
@@ -5848,6 +5870,12 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::I32],
             false,
         );
+        self.module.declare_function(
+            "pb_dir_first_to",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32, IrType::I32, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_dir_next", &IrType::Ptr, &[], false);
         self.module
@@ -8574,6 +8602,12 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::Ptr],
             false,
         );
+        self.module.declare_function(
+            "pb_shell_async",
+            &IrType::I32,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
         self.module
             .declare_function("pb_peek8", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -9387,6 +9421,140 @@ impl Compiler {
                     field_map,
                     is_union: false,
                     size: 32,
+                    align: 4,
+                },
+            );
+        }
+        // PBWin's compiler-built-in DirData UDT (used by DIR$(mask$ TO
+        // DirData)).  CHW Built-in_User_Defined_Types defines it as the
+        // Unicode WIN32_FIND_DATA layout: DWORD attributes, three QUAD
+        // FILETIMEs, DWORD sizes, then WSTRINGZ * 260 / WSTRINGZ * 14.
+        // PBWin packs the QUAD fields on a 4-byte boundary, so the struct is
+        // 592 bytes (44 + 520 + 28), not the ANSI 320-byte layout.
+        if !self.type_layouts.contains_key("DIRDATA") {
+            let file_name = IrType::Array(260, Box::new(IrType::I16));
+            let short_name = IrType::Array(14, Box::new(IrType::I16));
+            let ir_fields = vec![
+                IrType::I32,
+                IrType::I64,
+                IrType::I64,
+                IrType::I64,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                file_name.clone(),
+                short_name.clone(),
+            ];
+            self.module.define_packed_struct_type("DIRDATA", &ir_fields);
+            let mut fields = Vec::new();
+            let mut field_map = HashMap::new();
+            let push = |name: &str,
+                        pb_type: PbType,
+                        ir_type: IrType,
+                        offset: u32,
+                        fields: &mut Vec<FieldInfo>,
+                        field_map: &mut HashMap<String, usize>| {
+                let idx = fields.len();
+                field_map.insert(normalize_name(name), idx);
+                fields.push(FieldInfo {
+                    name: name.to_string(),
+                    pb_type,
+                    ir_type,
+                    dims: Vec::new(),
+                    gep_idx: idx,
+                    offset,
+                    bit: None,
+                });
+            };
+            push(
+                "FileAttributes",
+                PbType::Dword,
+                IrType::I32,
+                0,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "CreationTime",
+                PbType::Quad,
+                IrType::I64,
+                4,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "LastAccessTime",
+                PbType::Quad,
+                IrType::I64,
+                12,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "LastWriteTime",
+                PbType::Quad,
+                IrType::I64,
+                20,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "FileSizeHigh",
+                PbType::Dword,
+                IrType::I32,
+                28,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "FileSizeLow",
+                PbType::Dword,
+                IrType::I32,
+                32,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "Reserved0",
+                PbType::Dword,
+                IrType::I32,
+                36,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "Reserved1",
+                PbType::Dword,
+                IrType::I32,
+                40,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "FileName",
+                PbType::FixedWString(260, true),
+                file_name,
+                44,
+                &mut fields,
+                &mut field_map,
+            );
+            push(
+                "ShortName",
+                PbType::FixedWString(14, true),
+                short_name,
+                564,
+                &mut fields,
+                &mut field_map,
+            );
+            self.type_layouts.insert(
+                "DIRDATA".to_string(),
+                TypeLayout {
+                    ir_name: "DIRDATA".to_string(),
+                    fields,
+                    field_map,
+                    is_union: false,
+                    size: 592,
                     align: 4,
                 },
             );
@@ -20559,7 +20727,17 @@ impl Compiler {
                         let base = self.array_base(fb, &ti);
                         let total = self.array_total(fb, &ti);
                         for (v_idx, val_expr) in call.args.iter().skip(1).enumerate() {
-                            if !ti.indirect_base && v_idx as i64 >= ti.total_elements as i64 {
+                            // A dynamic/global array has total_elements == 0 in
+                            // its compile-time fallback shape; the live count
+                            // comes from the runtime descriptor.  Breaking on
+                            // the fallback made `ARRAY ASSIGN a() = ...` a
+                            // silent no-op for `GLOBAL a() AS STRING` (batch1
+                            // 013: every element stayed empty, so JOIN$ only
+                            // produced spaces).
+                            if !ti.dynamic
+                                && !ti.indirect_base
+                                && v_idx as i64 >= ti.total_elements as i64
+                            {
                                 break;
                             }
                             let v = self.compile_expr(fb, val_expr)?;
@@ -20567,10 +20745,11 @@ impl Compiler {
                                 self.convert_value(fb, &v, &ti.elem_ir_type, &ti.pb_type);
                             let flat = fb.const_i32(v_idx as i32);
                             let elem_ptr = fb.gep_array(&ti.array_ir_type, &base, &flat);
-                            if ti.indirect_base {
-                                // This thread's shape may be smaller than the
-                                // compile-time fallback; never write past the
-                                // descriptor's live element count.
+                            if ti.dynamic || ti.indirect_base {
+                                // Dynamic arrays use their live descriptor count;
+                                // THREADED shapes may be smaller than the
+                                // compile-time fallback.  Never write past the
+                                // runtime element count.
                                 let inrange = fb.icmp("sgt", &total, &fb.const_i64(v_idx as i64));
                                 let store_lbl = fb.next_label("assign.store");
                                 let cont_lbl = fb.next_label("assign.cont");
@@ -29483,6 +29662,24 @@ impl Compiler {
                                 compiled.push(ptr);
                                 continue;
                             }
+                            // System pseudo-variables such as DATE$ are
+                            // zero-argument builtins, not storage.  Passing
+                            // `YearFirst(Date$)` to a BYREF STRING parameter
+                            // previously reached ensure_variable_ptr and
+                            // failed with "variable DATE$ must be declared".
+                            // Materialise the builtin result in a temporary
+                            // string slot and pass that slot's address.
+                            let upper = vname.to_uppercase();
+                            if matches!(
+                                upper.as_str(),
+                                "DATE$" | "TIME$" | "WAITKEY$" | "LPRINT$" | "CURDIR$"
+                            ) {
+                                let val = self.compile_expr(fb, inner_arg)?;
+                                let tmp = fb.alloca(&IrType::Ptr);
+                                fb.store(&val, &tmp);
+                                compiled.push(tmp);
+                                continue;
+                            }
                             let norm = normalize_name(vname);
                             let ptr_name = self.ensure_variable_ptr(fb, &norm, vname)?;
                             compiled.push(Val::new(ptr_name, IrType::Ptr));
@@ -32446,6 +32643,9 @@ impl Compiler {
             }
             Expr::FunctionCall(name, args) => {
                 let raw_upper = name.to_uppercase();
+                if raw_upper == "DIR$TO" {
+                    return self.compile_dir_to(fb, args);
+                }
                 let name = normalize_name(name);
                 if raw_upper == "GRAPHIC_SIZE_X" || raw_upper == "GRAPHIC_SIZE_Y" {
                     let f = if raw_upper == "GRAPHIC_SIZE_X" {
@@ -34645,6 +34845,10 @@ impl Compiler {
             "UBOUND" => Some(self.builtin_bound(fb, args, true)),
             "ARRAYATTR" => Some(self.builtin_arrayattr(fb, args)),
             "JOIN" | "JOIN$" => Some(self.builtin_join(fb, args)),
+            // `pid& = SHELL(cmd$, mode&)` — the expression form launches the
+            // child asynchronously and returns its process id.  The statement
+            // form (`SHELL "cmd"`) remains the synchronous pb_shell_sync path.
+            "SHELL" => Some(self.builtin_shell(fb, args)),
             // CHW INPUTBOX$ has 5 parameters: (prompt$, [title$], [default$],
             // [xpos%], [ypos%]).  The console fallback accepts the extra
             // parameters syntactically (GUI modal input is headless-unverifiable);
@@ -35909,6 +36113,14 @@ impl Compiler {
                     info.ir_type.clone(),
                     info.pb_type.clone(),
                 ))
+            }
+            // `@ptr` in LVALUE position: `compile_lvalue_ptr` already loads the
+            // pointer value and returns the pointed-to address plus the target
+            // type (batch306).  Without this branch SWAP rejected `Swap @fp,
+            // @lp` with Error 482 even though reading `@fp` compiled.
+            Expr::Deref(_) => {
+                let (ptr, pb) = self.compile_lvalue_ptr(fb, expr).ok()?;
+                Some((ptr, Self::ir_type_for(&pb), pb))
             }
             Expr::ArrayAccess(arr_name, indices) | Expr::FunctionCall(arr_name, indices) => {
                 let name = normalize_name(arr_name);
@@ -37435,6 +37647,38 @@ impl Compiler {
         let delim = self.compile_expr(fb, &args[1])?;
         let delim_ptr = self.convert_value(fb, &delim, &IrType::Ptr, &PbType::String);
         Ok(fb.call(&IrType::Ptr, "pb_join", &[base, count, delim_ptr]))
+    }
+
+    fn builtin_shell(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        /* SHELL(cmd$, [mode&]) — asynchronous expression form; returns PID. */
+        if args.is_empty() || args.len() > 2 {
+            return Err(PbError::runtime("SHELL: expected SHELL(cmd$ [, mode&])"));
+        }
+        let cmd = self.compile_expr(fb, &args[0])?;
+        let cmd_ptr = self.convert_value(fb, &cmd, &IrType::Ptr, &PbType::String);
+        let mode = if args.len() > 1 {
+            let v = self.compile_expr(fb, &args[1])?;
+            self.to_i32(fb, &v)
+        } else {
+            fb.const_i32(1)
+        };
+        Ok(fb.call(&IrType::I32, "pb_shell_async", &[cmd_ptr, mode]))
+    }
+
+    fn compile_dir_to(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
+        /* DIR$(mask$ TO DirData): return the first matching name and fill the
+         * caller's WIN32_FIND_DATA-shaped DirData variable. */
+        if args.len() != 2 {
+            return Err(PbError::runtime("DIR$ TO: expected (mask$ TO DirData)"));
+        }
+        let mask = self.compile_expr(fb, &args[0])?;
+        let mask_ptr = self.convert_value(fb, &mask, &IrType::Ptr, &PbType::String);
+        let (out_ptr, _out_pb) = self.compile_lvalue_ptr(fb, &args[1])?;
+        Ok(fb.call(
+            &IrType::Ptr,
+            "pb_dir_first_to",
+            &[mask_ptr, fb.const_i32(0), fb.const_i32(0), out_ptr],
+        ))
     }
 
     fn builtin_inputbox(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {

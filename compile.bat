@@ -14,5 +14,5 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo COMPILE OK - .exe written next to: %BAS%
+echo COMPILE OK - x64 .exe written next to: %BAS% (default name adds _x64)
 pause

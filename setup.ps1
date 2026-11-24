@@ -377,6 +377,7 @@ if (Test-Path $pb) {
     Write-Host ""
     Write-Host "Try it (from this folder):" -ForegroundColor White
     Write-Host "   PB64Basic build your_program.bas --exe --target x86_64-pc-windows-msvc --runtime-lib pb_runtime_x64.obj" -ForegroundColor Gray
+    Write-Host "   (default output: your_program_x64.exe; use -o to choose another name)" -ForegroundColor Gray
     Write-Host "   (--lib-dir is optional: the compiler auto-detects the Windows SDK)" -ForegroundColor Gray
 } else {
     Write-Fail "PB64Basic.exe not found after the build. Check the errors above."
