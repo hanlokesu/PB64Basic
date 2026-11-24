@@ -1,5 +1,7 @@
 @echo off
 setlocal
+set "PB64_REPO=%~dp0"
+if "%PB64_REPO:~-1%"=="\" set "PB64_REPO=%PB64_REPO:~0,-1%"
 set "PB64_INCLUDE=%~1"
 "%SystemRoot%\System32\chcp.com" 65001 >nul
 title PB64Basic Setup
@@ -215,7 +217,7 @@ rem C:\Users\HANLO\Doubao\...\PBXB64\V6\PBX-Editor\PBXB64).  The fixed paths
 rem above cannot see those, so ask the locator to search the user profile.
 set "PBX_TMP=%TEMP%\pb64_pbxb64_exe.txt"
 if exist "%PBX_TMP%" del "%PBX_TMP%" >nul 2>nul
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\find_pbxb64.ps1" -RepoRoot "%~dp0" > "%PBX_TMP%" 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\find_pbxb64.ps1" -RepoRoot "%PB64_REPO%" > "%PBX_TMP%" 2>nul
 if exist "%PBX_TMP%" set /p "PBXB64=" < "%PBX_TMP%"
 if exist "%PBX_TMP%" del "%PBX_TMP%" >nul 2>nul
 if defined PBXB64 goto :pbx_set
@@ -257,7 +259,7 @@ rem JKIDE.ini.  find_android.ps1 also keeps the previous values when a re-run
 rem cannot find the toolchain, so a transient miss never blanks the menu.
 set "ANDROID_TMP=%TEMP%\pb64_android_ini.txt"
 if exist "%ANDROID_TMP%" del "%ANDROID_TMP%" >nul 2>nul
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\find_android.ps1" -RepoRoot "%~dp0" -ExistingIni "%JKIDE_DIR%\JKIDE.ini" > "%ANDROID_TMP%" 2>nul
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0jkide\find_android.ps1" -RepoRoot "%PB64_REPO%" -ExistingIni "%JKIDE_DIR%\JKIDE.ini" > "%ANDROID_TMP%" 2>nul
 set "ANDROID_SIZE=0"
 if exist "%ANDROID_TMP%" for %%A in ("%ANDROID_TMP%") do set "ANDROID_SIZE=%%~zA"
 if "%ANDROID_SIZE%"=="0" (

@@ -1,0 +1,5 @@
+#COMPILE EXE
+FUNCTION PBMAIN()
+    PRINT "Welcome to PB64Basic on Android"
+    SLEEP 3000
+END FUNCTION

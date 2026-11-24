@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 407 (v0.2.197). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 408 (v0.2.198). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 408 (v0.2.198) - Fixed the setup-time Android blank-key bug: `setup.bat` now passes a normalized repository path, `find_android.ps1` accepts the release-root `PB64Basic.exe` and searches ancestor folders for the Android checkout, and the Windows zip carries a minimal `PB64Basic-Android` builder so a fresh install can produce an APK. See the v0.2.198 changelog entry.
 > batch 407 (v0.2.197) - Gave the default x86_64 output an `_x64` suffix so PB64Basic can sit beside a PBWin-built `<source>.exe` for side-by-side comparison, and tightened the `DirData` / `DIR$` compatibility path. `Success:` now reports the final EXE path. See the v0.2.197 changelog entry.
 > batch 405 (v0.2.195) - Closed the APK / PB/CC / GUI residual set: GRAPHIC BOX negative-corner, omitted-corner and aspect semantics now match PBWin pixel for pixel, GRAPHIC COPY and the POLYGON/POLYLINE/XPRINT declarations were corrected, user procedures whose names start with GRAPHIC_/MENU_/XPRINT_ are no longer swallowed, the Android MSGBOX link guard was fixed, and the 20-APK suite was rebuilt and passed 20/20 emulator probes. All Windows source gates are clean.
 > batch 404 (v0.2.194) - Fixed the two defects behind Discussion #5 with the José Roca WINAPI headers: POINT/POINTAPI are registered before any TYPE layout (a user-declared POINT still wins), and #INCLUDE accepts a quoted path with no closing quote at EOL. Window.bas builds and shows its main dialog with both the José Roca and stock PBWin10 header sets on x86_64 and i686; 488 compilable examples, 331 headless examples, 34 negative probes and the x86_64/i686 link smoke are clean. See the v0.2.194 changelog entry.
@@ -1089,6 +1090,23 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.198 (2026-11-24)
+
+Batch 408 is a setup and Android packaging fix. There are no compiler or runtime behavior changes.
+
+Highlights:
+
+- `setup.bat` now normalizes its repository path before calling `find_android.ps1` and `find_pbxb64.ps1`. The old `"%~dp0"` argument ended in a backslash, which Windows PowerShell parsed inconsistently; `RepoRoot` arrived empty, so `AndroidBuildScript` and `AndroidPb64Exe` were written blank even when the files existed.
+- `find_android.ps1` now checks the release-root `PB64Basic.exe` before `target\release\PB64Basic.exe`, and walks parent directories for a sibling `PB64Basic-Android` checkout. A clean release extraction therefore writes non-empty Android keys.
+- The Windows release now carries a minimal `PB64Basic-Android` builder: `tools\build_apk.ps1`, the `PBApp` Gradle template, the Android support C sources and `Welcome Hello.bas`. `setup.bat` fills `AndroidBuildScript` with the packaged builder, so a fresh install can build an APK without a separate checkout.
+- `build_apk.ps1` also resolves `..\PB64Basic.exe`, so it works from the release layout when invoked directly.
+
+Validation:
+
+- A clean release-like extraction ran `setup.bat` and wrote non-empty `AndroidBuildScript` / `AndroidPb64Exe` values.
+- The packaged builder compiled `Welcome Hello.bas` to `Welcome-Hello-debug.apk` (53,089 B, x86_64, versionName `v0.2.198`); `aapt2`, `zipalign -c -v 4` and `apksigner verify` passed.
+- The 98-sample matrix is unchanged from v0.2.197: 34 identical, 28 near, 1 diff (`DIGITAL.BAS`, dynamic clock); zero cases where PBWin 10 compiles and PB64Basic fails.
+
 ### v0.2.197 (2026-11-24)
 
 Batch 407 closes the batch1 working-tree changes and makes the default x86_64 artifact distinguishable from a PBWin-built executable.

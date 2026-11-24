@@ -646,6 +646,6 @@ Write-Ok "NDK      : $NdkRoot"
 if ($SdkManager) { Write-Ok "sdkmanager: $SdkManager" }
 Write-Host ''
 Write-Host 'Build an APK with:' -ForegroundColor White
-Write-Host '   powershell -NoProfile -ExecutionPolicy Bypass -File tools\build_apk.ps1 "Welcome Hello.bas"' -ForegroundColor Gray
+Write-Host '   powershell -NoProfile -ExecutionPolicy Bypass -File PB64Basic-Android\tools\build_apk.ps1 "Welcome Hello.bas"' -ForegroundColor Gray
 Write-Host ''
 Write-Host 'Android toolchain setup finished.' -ForegroundColor Cyan

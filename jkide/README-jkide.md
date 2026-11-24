@@ -60,12 +60,12 @@ The `Compilers` menu appears between `Options` and `Tools`. Its items:
   32-bit Android ABIs (`armeabi-v7a`, `x86`) are **not** supported by the
   current builder or runtime baseline, so the menu does not offer them.
 
-  The Android submenu needs a separate `PB64Basic-Android` checkout that
+  The Windows release now carries a minimal `PB64Basic-Android` builder that
   provides `tools\build_apk.ps1`, the `PBApp` template and the Android
-  support sources. That project is not part of the Windows release zip.
-  `setup.bat` fills `AndroidBuildScript` when it can find the builder; when
-  the builder is absent the menu reports a clear error instead of starting
-  a build. Set `AndroidBuildScript` manually if the checkout is elsewhere.
+  support sources. `setup.bat` fills `AndroidBuildScript` with the packaged
+  builder and `AndroidPb64Exe` with the release `PB64Basic.exe`, so a fresh
+  install can build an APK without a separate checkout. Set
+  `AndroidBuildScript` manually if a different checkout should be used.
 
 ### Updating an existing JK-IDE install (important)
 

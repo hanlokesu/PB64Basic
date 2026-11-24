@@ -21,6 +21,12 @@ param(
     [string]$UserProfile = $env:USERPROFILE
 )
 
+# setup.bat used to pass "%~dp0" (a path ending in a backslash).  Windows
+# PowerShell parses the closing quote after that backslash inconsistently, so
+# RepoRoot arrived empty or truncated and every RepoRoot-derived key was
+# written blank.  Normalise both the batch caller and direct invocations.
+$RepoRoot = $RepoRoot.Trim().Trim('"').TrimEnd('\')
+
 $ErrorActionPreference = 'SilentlyContinue'
 
 function Test-Dir {
@@ -172,6 +178,20 @@ function Find-BuildScript {
         foreach ($dir in Get-ChildItem -LiteralPath $parent -Directory -Filter 'PB64Basic-Android' -ErrorAction SilentlyContinue) {
             & $add (Join-Path $dir.FullName 'tools\build_apk.ps1')
         }
+
+        # A release zip is often extracted several levels below the sibling
+        # PB64Basic-Android checkout (for example
+        # new-chat\powerbasilisk_test\pbsrc_b378\target\smoke\PB64Basic-Enhanced-...).
+        # Walk the ancestors so setup.bat still finds that checkout instead of
+        # writing an empty AndroidBuildScript.
+        $cursor = [IO.Path]::GetFullPath($Repo).TrimEnd('\')
+        for ($depth = 0; $depth -lt 8; $depth++) {
+            $up = Split-Path -Parent $cursor
+            if ([string]::IsNullOrWhiteSpace($up) -or $up -eq $cursor) { break }
+            $cursor = $up
+            & $add (Join-Path $cursor 'PB64Basic-Android\tools\build_apk.ps1')
+            & $add (Join-Path $cursor 'tools\build_apk.ps1')
+        }
     }
     if ($env:PB64_ANDROID_PROJECT) {
         & $add (Join-Path $env:PB64_ANDROID_PROJECT 'tools\build_apk.ps1')
@@ -283,8 +303,15 @@ $baselineValue = Pick-Dir $baselineValue 'androidbaseline'
 
 $pb64Value = ''
 if (-not [string]::IsNullOrWhiteSpace($RepoRoot)) {
-    $candidate = Join-Path $RepoRoot 'target\release\PB64Basic.exe'
+    # A release zip has PB64Basic.exe at its root; a source checkout has it
+    # under target\release.  Check the release layout first so a fresh install
+    # never writes an empty AndroidPb64Exe.
+    $candidate = Join-Path $RepoRoot 'PB64Basic.exe'
     if (Test-File $candidate) { $pb64Value = $candidate }
+    if (-not $pb64Value) {
+        $candidate = Join-Path $RepoRoot 'target\release\PB64Basic.exe'
+        if (Test-File $candidate) { $pb64Value = $candidate }
+    }
 }
 if (-not $pb64Value -and $old.ContainsKey('androidpb64exe') -and (Test-File $old['androidpb64exe'])) {
     $pb64Value = $old['androidpb64exe']
