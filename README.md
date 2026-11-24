@@ -1100,6 +1100,7 @@ Highlights:
 - `find_android.ps1` now checks the release-root `PB64Basic.exe` before `target\release\PB64Basic.exe`, and walks parent directories for a sibling `PB64Basic-Android` checkout. A clean release extraction therefore writes non-empty Android keys.
 - The Windows release now carries a minimal `PB64Basic-Android` builder: `tools\build_apk.ps1`, the `PBApp` Gradle template, the Android support C sources and `Welcome Hello.bas`. `setup.bat` fills `AndroidBuildScript` with the packaged builder, so a fresh install can build an APK without a separate checkout.
 - `build_apk.ps1` also resolves `..\PB64Basic.exe`, so it works from the release layout when invoked directly.
+- The historical `batch407_test.bas` fixture now checks that `VERSION$` starts with `v` instead of hardcoding `v0.2.197`, so later releases do not trip a stale version assertion.
 
 Validation:
 

@@ -2,11 +2,11 @@
 #DIM ALL
 
 FUNCTION PBMAIN() AS LONG
-    IF VERSION$ <> "v0.2.197" THEN
+    IF LEFT$(VERSION$, 1) <> "v" THEN
         PRINT "FAIL version="; VERSION$
         FUNCTION = 1
         EXIT FUNCTION
     END IF
-    PRINT "batch407 version ok"
+    PRINT "batch407 version="; VERSION$; " ok"
     FUNCTION = 0
 END FUNCTION
