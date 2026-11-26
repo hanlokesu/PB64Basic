@@ -447,7 +447,7 @@ exit code 0:
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
 > Updated through batch 412 (v0.2.201). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, and owner-draw ListBox row height. PB64Basic compiles 50/50 samples; of 37 comparable windows 33 are pixel-identical and 4 are near-identical (0.03-0.25%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
+> batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, owner-draw ListBox row height, and button `WM_CTLCOLORBTN` focus-rectangle color. PB64Basic compiles 50/50 samples; of 37 comparable windows 35 are pixel-identical and 2 are near-identical (0.03-0.04%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
 > batch 410 (v0.2.200) - Closed the deterministic defects from the third Gary Beene GUI batch: empty DIALOG NEW style/exstyle slots, GRAPHIC CLEAR colon boundaries, the ANSI %LVN_GETDISPINFO alias, Win64 widening of BYVAL DWORD/LONG handle parameters in header SUB wrappers, LVITEM 32-bit item indices, pointer-sized NMCUSTOMDRAW.dwItemSpec/lItemlParam, %RGB_PALETURQUOISE, WM_NOTIFY LRESULT propagation, RichEdit ES_NOHIDESEL initial-selection behaviour and LISTVIEW SET STYLEXX mask handling. Batch 3: PB64 46/50 compile, PBWin10 42/50, both 42/50, PB64-only failures 0; semantic identical 25, near 2, diff 9. Remaining diffs are control-fidelity gaps, not parser/codegen failures.
 > batch 409 (v0.2.199) - Fixed Discussion #8's José Roca include-file parse failures: reserved-word method names (`METHOD Xor`, `METHOD On`), nested pointer-field dereference (`@p.@field`, as in `@pImageCodecInfo.@MimeType`), and macro-name reuse in a `FUNCTION MAKEFOURCC` declaration. The full gbClientCapture v2.1 source now parses and builds x86_64 with the `C:\PBWin10\WinAPI` headers; `batch409_test` covers the new syntax at run time.
 > batch 408 (v0.2.198) - Fixed the setup-time Android blank-key bug: `setup.bat` now passes a normalized repository path, `find_android.ps1` accepts the release-root `PB64Basic.exe` and searches ancestor folders for the Android checkout, and the Windows zip carries a minimal `PB64Basic-Android` builder so a fresh install can produce an APK. See the v0.2.198 changelog entry.
@@ -1097,8 +1097,8 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 
 This release closes the deterministic control-fidelity gaps left by the fourth
 Gary Beene GUI batch. All 50 batch-4 samples compile with PB64Basic; 44 also compile
-with PBWin 10. Of the 37 comparable windows, 33 are pixel-identical and 4 are
-near-identical (0.03%-0.25%); 4 windows differ only because the native common
+with PBWin 10. Of the 37 comparable windows, 35 are pixel-identical and 2 are
+near-identical (0.03%-0.04%); 4 windows differ only because the native common
 dialogs use different Windows templates.
 
 ### Runtime and controls
@@ -1110,6 +1110,11 @@ dialogs use different Windows templates.
 - Modal focus: a dialog with no `WS_TABSTOP` child now gives initial focus to
   its first visible, enabled child, matching PBWin for the calendar-control
   sample. Dialogs with tab stops keep the existing z-order rule.
+- Button focus: standard buttons no longer answer `WM_CTLCOLORBTN` with a
+  background brush and transparent mode. That brush changed the DC colour
+  `DrawFocusRect` XORs against, so checkbox focus dots rendered as
+  `15,15,15` instead of PBWin's black. The default handler now matches
+  PBWin, closing the last focus-rectangle pixels in samples 0297 and 0395.
 - `BITMAP RENDER`: a request one pixel smaller than the native bitmap is drawn
   at native size, closing the missing right/bottom edge in the clipboard-image
   sample.

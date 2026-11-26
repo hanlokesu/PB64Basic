@@ -22912,6 +22912,12 @@ static void* pb_ctlcolor_brush(void* hCtl, void* hdc) {
                     SetBkColor(hdc, GetSysColor(15 /* COLOR_BTNFACE */));
                     return GetSysColorBrush(15);
                 }
+                /* Standard buttons paint their own face; returning a brush
+                   here changes the DC background that DrawFocusRect XORs
+                   against, turning PBWin's black focus dots into 15,15,15.
+                   Let DefWindowProc answer WM_CTLCOLORBTN instead. */
+                if (cls[0]=='B' && cls[1]=='U' && cls[2]=='T' && cls[3]=='T')
+                    return 0;
                 SetBkMode(hdc, 1 /* TRANSPARENT */);
                 return GetStockObject(5 /* NULL_BRUSH */);
             }
