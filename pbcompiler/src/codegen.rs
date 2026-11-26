@@ -21,6 +21,37 @@ pub const DEFAULT_TARGET: &str = "i686-pc-windows-msvc";
 /// without this, "%BS_DEFAULT OR %WS_TABSTOP" silently lost WS_TABSTOP
 /// (unknown equates resolved to 0).
 const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
+    /* Common font-dialog flags.  Without these DISPLAY FONT's `flags&`
+    argument silently became 0 (%%CF_BOTH ... warnings), so the dialog
+    used the runtime default instead of the caller's PBWin flags. */
+    ("%CF_SCREENFONTS", 0x00000001),
+    ("%CF_PRINTERFONTS", 0x00000002),
+    ("%CF_BOTH", 0x00000003),
+    ("%CF_SHOWHELP", 0x00000004),
+    ("%CF_ENABLEHOOK", 0x00000008),
+    ("%CF_ENABLETEMPLATE", 0x00000010),
+    ("%CF_ENABLETEMPLATEHANDLE", 0x00000020),
+    ("%CF_INITTOLOGFONTSTRUCT", 0x00000040),
+    ("%CF_USESTYLE", 0x00000080),
+    ("%CF_EFFECTS", 0x00000100),
+    ("%CF_APPLY", 0x00000200),
+    ("%CF_ANSIONLY", 0x00000400),
+    ("%CF_SCRIPTSONLY", 0x00000400),
+    ("%CF_NOVECTORFONTS", 0x00000800),
+    ("%CF_NOSIMULATIONS", 0x00001000),
+    ("%CF_LIMITSIZE", 0x00002000),
+    ("%CF_FIXEDPITCHONLY", 0x00004000),
+    ("%CF_WYSIWYG", 0x00008000),
+    ("%CF_FORCEFONTEXIST", 0x00010000),
+    ("%CF_SCALABLEONLY", 0x00020000),
+    ("%CF_TTONLY", 0x00040000),
+    ("%CF_NOFACESEL", 0x00080000),
+    ("%CF_NOSTYLESEL", 0x00100000),
+    ("%CF_NOSIZESEL", 0x00200000),
+    ("%CF_SELECTSCRIPT", 0x00400000),
+    ("%CF_NOSCRIPTSEL", 0x00800000),
+    ("%CF_NOVERTFONTS", 0x01000000),
+    ("%CF_INACTIVEFONTS", 0x02000000),
     /* PBWin built-in RGB colour equates (BGR order, as Windows COLORREF). */
     ("%RGB_BLACK", 0x00000000),
     ("%RGB_BLUE", 0x00FF0000),
@@ -7254,6 +7285,25 @@ impl Compiler {
         self.module
             .declare_function("pb_display_font", &IrType::I32, &[IrType::Ptr], false);
         self.module.declare_function(
+            "pb_display_font_full",
+            &IrType::I32,
+            &[
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::I32,
+                IrType::I32,
+                IrType::I32,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+                IrType::Ptr,
+            ],
+            false,
+        );
+        self.module.declare_function(
             "pb_display_browse",
             &IrType::I32,
             &[IrType::Ptr, IrType::Ptr, IrType::Ptr],
@@ -14181,10 +14231,21 @@ impl Compiler {
                                     .unwrap_or(0);
                                 if size > 0 {
                                     let dest = Val::new(ptr_name, IrType::Ptr);
+                                    // `value` here is a loaded struct VALUE, not an
+                                    // address.  Passing it straight to memcpy's
+                                    // pointer parameter emitted `call @memcpy(ptr,
+                                    // %RECT, i32)`, which LLVM lowered with a
+                                    // bogus by-value aggregate ABI: the rectangle
+                                    // stayed zero and ownerdraw listboxes painted
+                                    // nothing (0383).  Spill the value to a
+                                    // temporary first so the second argument is a
+                                    // real pointer.
+                                    let src_tmp = fb.alloca(&target_ir);
+                                    fb.store(&value, &src_tmp);
                                     fb.call(
                                         &IrType::Ptr,
                                         "memcpy",
-                                        &[dest, value.clone(), fb.const_i32(size as i32)],
+                                        &[dest, src_tmp, fb.const_i32(size as i32)],
                                     );
                                     return Ok(());
                                 }
@@ -18711,7 +18772,37 @@ impl Compiler {
                 }
             }
             "DISPLAY_FONT" => {
-                if let Some(a) = call.args.first() {
+                if call.args.len() >= 10 {
+                    // Full form: hParent,x,y,defname$,defpoints&,defstyle&,
+                    // flags& TO fontname$,points&,style&,color&,charset&.
+                    let hp = self.compile_expr(fb, &call.args[0])?;
+                    let hpv = self.convert_value(fb, &hp, &IrType::Ptr, &PbType::Dword);
+                    let x = self.compile_expr(fb, &call.args[1])?;
+                    let xv = self.convert_value(fb, &x, &IrType::I32, &PbType::Long);
+                    let y = self.compile_expr(fb, &call.args[2])?;
+                    let yv = self.convert_value(fb, &y, &IrType::I32, &PbType::Long);
+                    let name = self.compile_expr(fb, &call.args[3])?;
+                    let namev = self.convert_value(fb, &name, &IrType::Ptr, &PbType::String);
+                    let points = self.compile_expr(fb, &call.args[4])?;
+                    let pointsv = self.convert_value(fb, &points, &IrType::I32, &PbType::Long);
+                    let style = self.compile_expr(fb, &call.args[5])?;
+                    let stylev = self.convert_value(fb, &style, &IrType::I32, &PbType::Long);
+                    let flags = self.compile_expr(fb, &call.args[6])?;
+                    let flagsv = self.convert_value(fb, &flags, &IrType::I32, &PbType::Long);
+                    let mut vals = vec![hpv, xv, yv, namev, pointsv, stylev, flagsv];
+                    for idx in 7..12 {
+                        if let Some(a) = call.args.get(idx) {
+                            if let Some((p, _, _)) = self.lvalue_ptr(fb, a) {
+                                vals.push(p);
+                                continue;
+                            }
+                        }
+                        vals.push(Val::new("null".to_string(), IrType::Ptr));
+                    }
+                    fb.call_void("pb_display_font_full", &vals);
+                    return Ok(());
+                }
+                if let Some(a) = call.args.last() {
                     if let Some((p, _, _)) = self.lvalue_ptr(fb, a) {
                         fb.call_void("pb_display_font", &[p]);
                     }
@@ -33566,7 +33657,22 @@ impl Compiler {
                     }
                     return Ok(fb.zext(&narrow, &IrType::I32));
                 }
-                let field_ir = Self::ir_type_for(&field_pb);
+                // Read the storage width the TYPE layout actually assigned.
+                // Win64 promotes handle fields declared DWORD in the 32-bit
+                // PBWin headers to 8 bytes (DRAWITEMSTRUCT.hDC, hwndItem...).
+                // Re-deriving from field_pb here loaded only the low i32 and
+                // sign-extended it, so @lpDis.hDC became a bogus GDI handle
+                // and 0383's owner-draw ListBox painted nothing.
+                let field_ir = self
+                    .struct_type_of_expr(base_expr)
+                    .and_then(|class| self.type_layouts.get(&class))
+                    .and_then(|layout| {
+                        layout
+                            .field_map
+                            .get(&normalize_name(member))
+                            .map(|&idx| layout.fields[idx].ir_type.clone())
+                    })
+                    .unwrap_or_else(|| Self::ir_type_for(&field_pb));
                 let loaded = fb.load(&field_ir, &field_ptr);
                 // A TYPE field declared AS INTEGER is a signed 16-bit value.
                 // Without an explicit sign extension the i16 is zero-extended

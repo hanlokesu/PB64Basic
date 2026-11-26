@@ -10245,11 +10245,67 @@ impl Parser {
                             self.advance(); // consume DISPLAY
                             self.advance(); // consume sub-op
                             let mut args = Vec::new();
-                            if sub == "COLOR" || sub == "FONT" {
+                            if sub == "COLOR" {
                                 if self.peek() == &Token::To {
                                     self.advance(); // consume TO
                                 }
                                 args.push(self.parse_expression()?);
+                            } else if sub == "FONT" {
+                                // DISPLAY FONT [hParent],[x],[y],defname$,
+                                //   defpoints&,defstyle&,flags& TO fontname$,
+                                //   points&,style&,color&,charset&
+                                // The simple `DISPLAY FONT TO result$` form is
+                                // the same grammar with every input slot omitted.
+                                let defaults = [
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                    Expr::StringLit(String::new()),
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                    Expr::IntegerLit(0),
+                                ];
+                                let nslots = defaults.len();
+                                let mut slot = 0usize;
+                                while slot < nslots {
+                                    let default = defaults[slot].clone();
+                                    if self.peek() == &Token::To
+                                        || self.peek() == &Token::Eol
+                                        || self.peek() == &Token::Eof
+                                    {
+                                        args.push(default);
+                                        slot += 1;
+                                        continue;
+                                    }
+                                    if self.peek() == &Token::Comma {
+                                        self.advance();
+                                        args.push(default);
+                                        slot += 1;
+                                        continue;
+                                    }
+                                    args.push(self.parse_expression()?);
+                                    if self.peek() == &Token::Comma {
+                                        self.advance();
+                                    } else if self.peek() != &Token::To {
+                                        while args.len() < nslots {
+                                            args.push(defaults[args.len()].clone());
+                                        }
+                                        break;
+                                    }
+                                    slot += 1;
+                                }
+                                self.expect(&Token::To)?;
+                                args.push(self.parse_expression()?);
+                                while self.peek() == &Token::Comma {
+                                    self.advance();
+                                    args.push(self.parse_expression()?);
+                                }
+                                self.consume_to_eol();
+                                return Ok(Statement::Call(CallStmt {
+                                    name: format!("DISPLAY_{sub}"),
+                                    args,
+                                    line,
+                                }));
                             } else if sub == "OPENFILE" || sub == "SAVEFILE" || sub == "BROWSE" {
                                 // DISPLAY OPENFILE/SAVEFILE [hParent],[x],[y],title$,
                                 //   folder$,filter$,start$,defextn$,flags&
@@ -16778,12 +16834,32 @@ impl Parser {
                 }
                 Token::Identifier(w) => {
                     match w.to_uppercase().as_str() {
-                        "CONST" => modifier = SelectModifier::Const,
-                        "CONST$" => modifier = SelectModifier::ConstDollar,
-                        "CONST$$" => modifier = SelectModifier::ConstDollarDollar,
-                        _ => {}
+                        "CONST" => {
+                            modifier = SelectModifier::Const;
+                            self.advance();
+                        }
+                        "CONST$" => {
+                            modifier = SelectModifier::ConstDollar;
+                            self.advance();
+                        }
+                        "CONST$$" => {
+                            modifier = SelectModifier::ConstDollarDollar;
+                            self.advance();
+                        }
+                        _ => {
+                            // PBWin accepts `SELECT CASE AS <variable>` when the
+                            // variable is the whole selector (0771:
+                            // `Select Case As uMSG`).  Only swallow the name as
+                            // an unknown type when a selector expression follows
+                            // on the same line.
+                            if !matches!(
+                                self.peek_at(1),
+                                Some(Token::Eol | Token::Eof | Token::Colon) | None
+                            ) {
+                                self.advance();
+                            }
+                        }
                     }
-                    self.advance();
                 }
                 _ => {
                     self.advance();

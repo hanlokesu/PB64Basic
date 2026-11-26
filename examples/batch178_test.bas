@@ -259,9 +259,10 @@ FUNCTION PBMAIN () AS LONG
     END IF
 
     ' ------------------------------------------------------------------
-    ' The X form of the STATIC adds %SS_REALSIZECONTROL(0x40); the plain
-    ' form must not have it.  This pair is the whole difference between
-    ' IMAGE and IMAGEX as far as the window is concerned.
+    ' PBWin10 measured both IMAGE and IMAGEX as 0x5080000E: the X form
+    ' does NOT add %SS_REALSIZECONTROL(0x40); it pre-scales the bitmap
+    ' instead.  The earlier fork asserted 0x40 here, which made 0294 differ
+    ' from the reference.  Assert the measured PBWin style shape.
     ' ------------------------------------------------------------------
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hImg1, idx) TO st
@@ -274,16 +275,12 @@ FUNCTION PBMAIN () AS LONG
 
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hImg2, idx) TO st
-    #IF %MY_PBVER = 10
-        ConPrint "ok   IMAGEX has %SS_REALSIZECONTROL and %SS_ICON"
-    #ELSE
-        IF (st AND 64) <> 0 AND (st AND 31) = 3 THEN
-            ConPrint "ok   IMAGEX has %SS_REALSIZECONTROL and %SS_ICON"
-        ELSE
-            fail = fail + 1
-            ConPrint "FAIL IMAGEX style:" & STR$(st)
-        END IF
-    #ENDIF
+    IF (st AND 64) = 0 AND (st AND 31) = 3 THEN
+        ConPrint "ok   IMAGEX matches PBWin (SS_ICON, no SS_REALSIZECONTROL)"
+    ELSE
+        fail = fail + 1
+        ConPrint "FAIL IMAGEX style:" & STR$(st)
+    END IF
 
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hBtn2, idx) TO st

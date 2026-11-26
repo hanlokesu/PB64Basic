@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 410 (v0.2.200). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 412 (v0.2.201). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, and owner-draw ListBox row height. PB64Basic compiles 50/50 samples; of 37 comparable windows 33 are pixel-identical and 4 are near-identical (0.03-0.25%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
 > batch 410 (v0.2.200) - Closed the deterministic defects from the third Gary Beene GUI batch: empty DIALOG NEW style/exstyle slots, GRAPHIC CLEAR colon boundaries, the ANSI %LVN_GETDISPINFO alias, Win64 widening of BYVAL DWORD/LONG handle parameters in header SUB wrappers, LVITEM 32-bit item indices, pointer-sized NMCUSTOMDRAW.dwItemSpec/lItemlParam, %RGB_PALETURQUOISE, WM_NOTIFY LRESULT propagation, RichEdit ES_NOHIDESEL initial-selection behaviour and LISTVIEW SET STYLEXX mask handling. Batch 3: PB64 46/50 compile, PBWin10 42/50, both 42/50, PB64-only failures 0; semantic identical 25, near 2, diff 9. Remaining diffs are control-fidelity gaps, not parser/codegen failures.
 > batch 409 (v0.2.199) - Fixed Discussion #8's José Roca include-file parse failures: reserved-word method names (`METHOD Xor`, `METHOD On`), nested pointer-field dereference (`@p.@field`, as in `@pImageCodecInfo.@MimeType`), and macro-name reuse in a `FUNCTION MAKEFOURCC` declaration. The full gbClientCapture v2.1 source now parses and builds x86_64 with the `C:\PBWin10\WinAPI` headers; `batch409_test` covers the new syntax at run time.
 > batch 408 (v0.2.198) - Fixed the setup-time Android blank-key bug: `setup.bat` now passes a normalized repository path, `find_android.ps1` accepts the release-root `PB64Basic.exe` and searches ancestor folders for the Android checkout, and the Windows zip carries a minimal `PB64Basic-Android` builder so a fresh install can produce an APK. See the v0.2.198 changelog entry.
@@ -1092,6 +1093,61 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.201 (2026-11-27)
+
+This release closes the deterministic control-fidelity gaps left by the fourth
+Gary Beene GUI batch. All 50 batch-4 samples compile with PB64Basic; 44 also compile
+with PBWin 10. Of the 37 comparable windows, 33 are pixel-identical and 4 are
+near-identical (0.03%-0.25%); 4 windows differ only because the native common
+dialogs use different Windows templates.
+
+### Runtime and controls
+
+- `LISTVIEW`: when the `DIALOG CONTROL` statement omits the style argument,
+  PB64Basic applies `LVS_EX_FULLROWSELECT` (`0x20`); an explicit style is left
+  untouched. This restores the default listview behavior while the all-controls
+  sample keeps its requested zero extended style.
+- Modal focus: a dialog with no `WS_TABSTOP` child now gives initial focus to
+  its first visible, enabled child, matching PBWin for the calendar-control
+  sample. Dialogs with tab stops keep the existing z-order rule.
+- `BITMAP RENDER`: a request one pixel smaller than the native bitmap is drawn
+  at native size, closing the missing right/bottom edge in the clipboard-image
+  sample.
+- `GROUPBOX`: `WM_CTLCOLORBTN` returns a solid `COLOR_BTNFACE` brush with an
+  opaque background, removing the transparent caption rule.
+- Owner-draw `LISTBOX`: row height follows the control font plus three pixels,
+  and the clip region is reset before the user callback, so every row is
+  visible.
+- `GRAPHIC` buffers start from `0xF0F0F0` instead of black; ImageList handles
+  are resolved before `ImageList_GetImageCount` / `ImageList_Draw`; stretching
+  keeps the unclipped source page and samples inside the control content.
+- `FRAME` controls no longer receive an injected `WS_BORDER`; `IMAGE` controls
+  set the font before the image.
+
+### Parser and code generator
+
+- Accept `SELECT CASE AS uMSG` and the seven-slot `DISPLAY FONT` form.
+- Read `TYPE` fields at their real layout width, copy whole UDTs with `memcpy`,
+  and define the missing `%CF_*` constants.
+
+### Tests
+
+- `examples/batch412_test.bas` asserts the `LISTVIEW` extended style in both
+  forms: an omitted style reads back `0x20`, an explicit `%WS_BORDER` reads
+  back `0`.
+- `examples/batch178_test.bas` now asserts the `IMAGEX` shape measured under
+  PBWin 10 (`SS_ICON` without `SS_REALSIZECONTROL`).
+
+### Known rendering limits
+
+- The calendar/listbox focus rectangle, the 50x50 bitmap centre row/column,
+  and the system-font border width differ by a few pixels. The bitmap
+  resampling experiments (full 100->50, 96->49/50, WHITEONBLACK,
+  COLORONCOLOR) were all worse and were reverted.
+- Font and file dialogs use the Windows Vista templates in PB64Basic and the
+  older templates in PBWin 10; the semantics are complete, but the native layouts
+  differ.
+
 ### v0.2.200 (2026-11-26)
 
 This release closes the deterministic parser, structure-layout and runtime

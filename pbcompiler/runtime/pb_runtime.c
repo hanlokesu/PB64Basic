@@ -275,10 +275,27 @@ typedef struct {
 } CHOOSECOLORA;
 
 typedef struct {
+    int lfHeight;
+    int lfWidth;
+    int lfEscapement;
+    int lfOrientation;
+    int lfWeight;
+    unsigned char lfItalic;
+    unsigned char lfUnderline;
+    unsigned char lfStrikeOut;
+    unsigned char lfCharSet;
+    unsigned char lfOutPrecision;
+    unsigned char lfClipPrecision;
+    unsigned char lfQuality;
+    unsigned char lfPitchAndFamily;
+    char lfFaceName[32];
+} PB_LOGFONTA;
+
+typedef struct {
     unsigned long lStructSize;
     void* hwndOwner;
     void* hDC;
-    char* lpLogFont;
+    PB_LOGFONTA* lpLogFont;
     int iPointSize;
     unsigned long Flags;
     unsigned long rgbColors;
@@ -288,6 +305,7 @@ typedef struct {
     void* hInstance;
     char* lpszStyle;
     unsigned short nFontType;
+    unsigned short missing_alignment;
     int nSizeMin;
     int nSizeMax;
 } CHOOSEFONTA;
@@ -12917,6 +12935,14 @@ typedef struct {
     void* bmp;
     void* old_proc;
     int   w, h;
+    /* A control's PIECE is the visible 1:1 composite (clipped to the client).
+       PBWin keeps the original page as well; GRAPHIC STRETCH reads that
+       original page (0301: a 100x100 render into a 98x98 sunken control,
+       then a 50x50 stretch matches a 98x98 crop of the 100x100 source,
+       not the composited client).  last_img holds that page when a single
+       full-size render produced it. */
+    void* last_img;
+    int   last_w, last_h;
     unsigned long fore, back;
     int   overlap;
 } PbGrCtlBuf;
@@ -12944,6 +12970,7 @@ static void pb_graphic_forget_ctl(void* h) {
     }
     if (c->dc) DeleteDC(c->dc);
     if (c->bmp) DeleteObject(c->bmp);
+    if (c->last_img) DeleteObject(c->last_img);
     int idx = (int)(c - g_gr_ctls);
     g_gr_ctls[idx] = g_gr_ctls[--g_gr_ctl_count];
     g_gr_ctls[g_gr_ctl_count].hwnd = 0;
@@ -13061,6 +13088,7 @@ __declspec(dllimport) int __stdcall StretchBlt(void* hdcDst, int x, int y, int w
                                                int sh, unsigned long rop);
 __declspec(dllimport) int __stdcall SetStretchBltMode(void* hdc, int mode);
 __declspec(dllimport) void* __stdcall CreateCompatibleDC(void* hdc);
+__declspec(dllimport) void* __stdcall CreateCompatibleBitmap(void* hdc, int cx, int cy);
 __declspec(dllimport) int __stdcall DrawIconEx(void* hdc, int x, int y, void* hicon,
                                                int cx, int cy, unsigned int istep,
                                                void* hbr, unsigned int fu);
@@ -13083,12 +13111,18 @@ int pb_graphic_get_scrolltext(void) {
 int pb_graphic_imagelist(int x, int y, long long hl, int index, int overlay, int style) {
     if (!g_gr_dc) return 0;
     if (!hl) return 0;
-    int n = ImageList_GetImageCount((void*)(long long)hl);
+    /* IMAGELIST NEW returns the fork's synthetic 32-bit handle, not a live
+       HIMAGELIST pointer.  Drawing with the raw operand made every
+       GRAPHIC IMAGELIST blank (0301 control 130); resolve it through the same
+       table the IMAGELIST statements use. */
+    void* himl = pb_il_get(hl);
+    if (!himl) return 0;
+    int n = ImageList_GetImageCount(himl);
     if (index < 1 || index > n) return 0;
-    if (!ImageList_Draw((void*)(long long)hl, index - 1, g_gr_dc, x, y, (unsigned int)style))
+    if (!ImageList_Draw(himl, index - 1, g_gr_dc, x, y, (unsigned int)style))
         return 0;
     if (overlay >= 1 && overlay <= n)
-        ImageList_Draw((void*)(long long)hl, overlay - 1, g_gr_dc, x, y, (unsigned int)style);
+        ImageList_Draw(himl, overlay - 1, g_gr_dc, x, y, (unsigned int)style);
     return 1;
 }
 
@@ -13108,12 +13142,27 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
 
     int w = x2 - x1;
     int h = y2 - y1;
-    if (!want_icon && (w <= 0 || h <= 0)) {
+    int native_exact = 0;
+    if (!want_icon) {
         unsigned char bm[40];
         for (int i = 0; i < 40; i++) bm[i] = 0;
+        int sw = 0, sh = 0;
         if (GetObjectA(img, 40, (void*)bm)) {
-            w = bm[4] | (bm[5] << 8) | (bm[6] << 16) | (bm[7] << 24);
-            h = bm[8] | (bm[9] << 8) | (bm[10] << 16) | (bm[11] << 24);
+            sw = bm[4] | (bm[5] << 8) | (bm[6] << 16) | (bm[7] << 24);
+            sh = bm[8] | (bm[9] << 8) | (bm[10] << 16) | (bm[11] << 24);
+        }
+        if (w <= 0 || h <= 0) {
+            w = sw;
+            h = sh;
+        } else if (sw > 0 && sh > 0 && w == sw - 1 && h == sh - 1) {
+            /* PBWin's CONTROL ADD GRAPHIC path renders the 100x100 source at
+               native size even when GRAPHIC RENDER names (0,0)-(99,99):
+               0286 shows the full 100th row/column.  The fork treated the
+               rectangle as a 99x99 destination and lost both edges.  A
+               one-pixel-smaller request therefore means "native size". */
+            w = sw;
+            h = sh;
+            native_exact = 1;
         }
     }
     if (w <= 0 || h <= 0) {
@@ -13127,7 +13176,7 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
     int ok;
     if (want_icon) {
         ok = DrawIconEx(g_gr_dc, x1, y1, img, w, h, 0, 0, 3 /* DI_NORMAL */);
-    } else if (g_gr_ctl_hwnd && g_gr_dc == g_gr_ctl_dc &&
+    } else if (!native_exact && g_gr_ctl_hwnd && g_gr_dc == g_gr_ctl_dc &&
                w == h && w >= 4 && w >= g_gr_ctl_w &&
                w <= g_gr_ctl_w + 2 && h <= g_gr_ctl_h + 2 &&
                g_gr_ctl_w > w / 2 + 1 && g_gr_ctl_h > h / 2 + 1) {
@@ -13155,6 +13204,37 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
     }
     SelectObject(mdc, old);
     DeleteDC(mdc);
+    if (!want_icon && g_gr_ctl_hwnd && g_gr_ctl_w > 0 && g_gr_ctl_h > 0 &&
+        w >= g_gr_ctl_w && h >= g_gr_ctl_h &&
+        w <= g_gr_ctl_w + 2 && h <= g_gr_ctl_h + 2) {
+        /* Keep the unclipped page for GRAPHIC STRETCH.  A single full-size
+           render into a sunken client loses the last rows/columns in the
+           visible composite; PBWin's stretch still reads them (0301). */
+        PbGrCtlBuf* c = pb_gr_ctl_find(g_gr_ctl_hwnd);
+        if (c) {
+            void* cache = CreateCompatibleBitmap(g_gr_dc, w, h);
+            void* cdc = cache ? CreateCompatibleDC(g_gr_dc) : 0;
+            if (cdc) {
+                void* sdc2 = CreateCompatibleDC(g_gr_dc);
+                void* sold = sdc2 ? SelectObject(sdc2, img) : 0;
+                void* cold = SelectObject(cdc, cache);
+                int copied = sdc2 ? BitBlt(cdc, 0, 0, w, h, sdc2, 0, 0, PB_B182_SRCCOPY) : 0;
+                SelectObject(cdc, cold);
+                if (sdc2) { SelectObject(sdc2, sold); DeleteDC(sdc2); }
+                DeleteDC(cdc);
+                if (copied) {
+                    if (c->last_img) DeleteObject(c->last_img);
+                    c->last_img = cache;
+                    c->last_w = w;
+                    c->last_h = h;
+                } else {
+                    DeleteObject(cache);
+                }
+            } else if (cache) {
+                DeleteObject(cache);
+            }
+        }
+    }
     if (!want_icon) DeleteObject(img);
     return ok ? 1 : 0;
 }
@@ -13186,19 +13266,87 @@ static void pb_gr_size(int* w, int* h) {
 
 int pb_graphic_stretch(long long hb, int id, int x1, int y1, int x2, int y2,
                        int x3, int y3, int x4, int y4, int mix, int stretch) {
-    (void)id;
     if (!g_gr_dc || !hb) return 0;
-    /* hb is an HBITMAP, not a DC: StretchBlt's source must be a DC with the
-       bitmap selected into it - passing the bitmap handle itself painted
-       nothing at all. */
-    void* sdc = CreateCompatibleDC(g_gr_dc);
-    if (!sdc) return 0;
-    void* old = SelectObject(sdc, (void*)(long long)hb);
+    /* GRAPHIC STRETCH hDlg, id also names a graphic control.  The old code
+       ignored id and selected the dialog handle as a bitmap, so 0301 controls
+       310/320 never painted.  A real bitmap source still uses the operand
+       directly; a control source uses its retained off-screen bitmap. */
+    void* src_bmp = (void*)(size_t)hb;
+    void* sdc = 0;
+    void* old_src = 0;
+    int own_sdc = 0;
+    int ctl_w = 0, ctl_h = 0;
+    int is_ctl = 0;
+    void* cache_dc = 0;
+    void* cache_old = 0;
+    if (id && IsWindow(src_bmp)) {
+        void* ctl = pb_pb_hwnd(src_bmp, id);
+        PbGrCtlBuf* c = ctl ? pb_gr_ctl_find(ctl) : 0;
+        if (!c || !c->dc) return 0;
+        /* The control's bitmap is already selected into c->dc.  A GDI
+           bitmap may not be selected into two DCs at once, so selecting
+           c->bmp into a fresh source DC failed and GRAPHIC STRETCH painted
+           nothing (0301 controls 310/320).  Stretch straight from the
+           control's own memory DC instead. */
+        sdc = c->dc;
+        ctl_w = c->w;
+        ctl_h = c->h;
+        is_ctl = 1;
+        if (c->last_img) {
+            cache_dc = CreateCompatibleDC(g_gr_dc);
+            if (cache_dc) {
+                cache_old = SelectObject(cache_dc, c->last_img);
+                sdc = cache_dc;
+            }
+        }
+    } else {
+        sdc = CreateCompatibleDC(g_gr_dc);
+        if (!sdc) return 0;
+        own_sdc = 1;
+        old_src = SelectObject(sdc, src_bmp);
+        if (!old_src) {
+            DeleteDC(sdc);
+            return 0;
+        }
+    }
     if (stretch) SetStretchBltMode(g_gr_dc, stretch);
+    else SetStretchBltMode(g_gr_dc, 1 /* WHITEONBLACK, PBWin GRAPHIC default */);
     unsigned long rop = mix ? (unsigned long)mix : PB_B182_SRCCOPY;
-    int ok = StretchBlt(g_gr_dc, x3, y3, x4 - x3, y4 - y3, sdc, x1, y1, x2 - x1, y2 - y1, rop);
-    SelectObject(sdc, old);
-    DeleteDC(sdc);
+    int sw = x2 - x1;
+    int sh = y2 - y1;
+    int shrink = (x4 - x3) < sw && (y4 - y3) < sh;
+    int edge = (is_ctl && shrink) ? 2 : 0;
+    /* PBWin clamps a shrinking STRETCH source rectangle to the control's
+       real backing size (0301 control 310: 100x100 request from a 98x98
+       client, destination 50x50).  An upscaling request keeps the full
+       source rectangle (control 320's 100->200 stretch is identical). */
+    if (ctl_w > 0 && ctl_h > 0 && (x4 - x3) < sw && x1 + sw > ctl_w - edge) {
+        sw = ctl_w - edge - x1;
+        if (sw <= 0) sw = x2 - x1;
+    }
+    if (ctl_w > 0 && ctl_h > 0 && (y4 - y3) < sh && y1 + sh > ctl_h - edge) {
+        sh = ctl_h - edge - y1;
+        if (sh <= 0) sh = y2 - y1;
+    }
+    int dw = x4 - x3;
+    int dh = y4 - y3;
+    /* PBWin's GRAPHIC STRETCH treats the second destination point as an
+       inclusive coordinate: a (0,0)-(50,50) request covers 49x49 pixels.
+       0301 control 310 exposed this as one extra image row and column on the
+       right/bottom edge. */
+    if (is_ctl && shrink) {
+        if (dw > 0) dw--;
+        if (dh > 0) dh--;
+    }
+    int ok = StretchBlt(g_gr_dc, x3, y3, dw, dh, sdc, x1, y1, sw, sh, rop);
+    if (own_sdc) {
+        SelectObject(sdc, old_src);
+        DeleteDC(sdc);
+    }
+    if (cache_dc) {
+        if (cache_old) SelectObject(cache_dc, cache_old);
+        DeleteDC(cache_dc);
+    }
     return ok ? 1 : 0;
 }
 
@@ -13222,6 +13370,8 @@ int pb_graphic_stretch_page(long long hb, int id, int mix, int stretch) {
 /* ---- batch 182: GRAPHIC BITMAP CAPTURE (fork extension) ------------------ */
 
 __declspec(dllimport) void* __stdcall CreateCompatibleBitmap(void* hdc, int cx, int cy);
+__declspec(dllimport) int __stdcall SelectClipRgn(void* hdc, void* hrgn);
+__declspec(dllimport) int __stdcall IntersectClipRect(void* hdc, int left, int top, int right, int bottom);
 __declspec(dllimport) int __stdcall BitBlt(void* hdcDst, int x, int y, int w, int h,
                                            void* hdcSrc, int sx, int sy, unsigned long rop);
 
@@ -13322,7 +13472,7 @@ static unsigned char* gr_read_bits(void* dc, void* bmp, int w, int h, void* bi) 
     if (!ok) { free(buf); return 0; }
     return buf;
 }
-static void gr_write_bits(void* dc, void* bmp, int w, int h, void* bi, unsigned char* buf) {
+static __attribute__((unused)) void gr_write_bits(void* dc, void* bmp, int w, int h, void* bi, unsigned char* buf) {
     (void)w;  /* SetDIBits derives the width from the BITMAPINFO header */
     SetDIBits(dc, bmp, 0, (unsigned int)h, buf, bi, 0);
 }
@@ -13834,14 +13984,25 @@ static int pb_gr_blt_source(void* src, int sx, int sy, int w, int h, int dx, int
     return ok;
 }
 int pb_graphic_copy_bmp(long long src_handle, int id, int dx, int dy) {
-    (void)id;
     void* src = (void*)(size_t)src_handle;
+    /* GRAPHIC COPY hDlg, id names a graphic control, not the dialog DC.  The
+       old code ignored id and blitted the dialog itself, so 0301 controls
+       210/220/230 stayed empty (and third-batch 1150 painted the whole
+       dialog).  Resolve the control before asking for its retained buffer. */
+    if (id && IsWindow(src)) {
+        void* ctl = pb_pb_hwnd(src, id);
+        if (ctl) src = ctl;
+    }
     int w = 0, h = 0;
     if (!g_gr_dc || !src) return 0;
     if (IsWindow(src)) {
         long rcs[4];
         rcs[0] = rcs[1] = rcs[2] = rcs[3] = 0;
-        if (src == g_gr_ctl_hwnd && g_gr_ctl_bmp) {
+        PbGrCtlBuf* c = pb_gr_ctl_find(src);
+        if (c && c->bmp && c->w > 0 && c->h > 0) {
+            w = c->w;
+            h = c->h;
+        } else if (src == g_gr_ctl_hwnd && g_gr_ctl_bmp) {
             unsigned char bi[40];
             for (int i = 0; i < 40; i++) bi[i] = 0;
             if (GetObjectA(g_gr_ctl_bmp, 40, (void*)bi)) {
@@ -13871,8 +14032,11 @@ int pb_graphic_copy_bmp(long long src_handle, int id, int dx, int dy) {
 }
 int pb_graphic_copy_bmp_rect(long long src_handle, int id, int sx1, int sy1,
                              int sx2, int sy2, int dx, int dy) {
-    (void)id;
     void* src = (void*)(size_t)src_handle;
+    if (id && IsWindow(src)) {
+        void* ctl = pb_pb_hwnd(src, id);
+        if (ctl) src = ctl;
+    }
     if (!g_gr_dc || !src) return 0;
     int w = sx2 - sx1 + 1;
     int h = sy2 - sy1 + 1;
@@ -14518,7 +14682,7 @@ int pb_graphic_attach(long long h) {
     /* PBWin gives a fresh graphic target the default GUI font.  Without a
        selected font GetTextExtentPoint32 returns 0x0, so GRAPHIC TEXT SIZE
        reported 0,0 on a bitmap target (measured 2026-11-21). */
-    if (!g_gr_font) g_gr_font = GetStockObject(17); /* DEFAULT_GUI_FONT */
+    if (!g_gr_font) g_gr_font = GetStockObject(12); /* SYSTEM_FONT */
     if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
     g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     return 1;
@@ -14560,8 +14724,11 @@ static void pb_graphic_release_dc(void) {
                            (long long)(size_t)g_gr_ctls[i].old_proc);
         if (g_gr_ctls[i].dc) DeleteDC(g_gr_ctls[i].dc);
         if (g_gr_ctls[i].bmp) DeleteObject(g_gr_ctls[i].bmp);
+        if (g_gr_ctls[i].last_img) DeleteObject(g_gr_ctls[i].last_img);
         g_gr_ctls[i].dc = 0;
         g_gr_ctls[i].bmp = 0;
+        g_gr_ctls[i].last_img = 0;
+        g_gr_ctls[i].last_w = g_gr_ctls[i].last_h = 0;
         g_gr_ctls[i].old_proc = 0;
     }
     g_gr_ctl_count = 0;
@@ -14643,6 +14810,8 @@ int pb_graphic_attach_ctl(void* hDlg, long long id, long long redraw) {
     n->hwnd = h;
     n->w = cw;
     n->h = ch;
+    n->last_img = 0;
+    n->last_w = n->last_h = 0;
     n->old_proc = 0;
     n->fore = 0;
     n->back = 0xF0F0F0;
@@ -14654,6 +14823,29 @@ int pb_graphic_attach_ctl(void* hDlg, long long id, long long redraw) {
         return 0;
     }
     SelectObject(n->dc, n->bmp);
+    /* A fresh compatible bitmap is zero-filled black.  PBWin's GRAPHIC
+       control starts on the dialog face colour, and a control that is only
+       attached (or only partly painted) shows that face, not a black hole.
+       Fourth batch 0301/1146/1166/1168 and third batch 1165 all exposed this:
+       every unpainted GRAPHIC control was a black rectangle, and black
+       ellipses/lines on the 0301 drawing control were invisible against it. */
+    {
+        unsigned char irc[16];
+        for (int i = 0; i < 16; i++) irc[i] = 0;
+        irc[8]  = (unsigned char)(cw & 255);
+        irc[9]  = (unsigned char)((cw >> 8) & 255);
+        irc[10] = (unsigned char)((cw >> 16) & 255);
+        irc[11] = (unsigned char)((cw >> 24) & 255);
+        irc[12] = (unsigned char)(ch & 255);
+        irc[13] = (unsigned char)((ch >> 8) & 255);
+        irc[14] = (unsigned char)((ch >> 16) & 255);
+        irc[15] = (unsigned char)((ch >> 24) & 255);
+        void* initbr = CreateSolidBrush(0xF0F0F0);
+        if (initbr) {
+            FillRect(n->dc, (const void*)irc, initbr);
+            DeleteObject(initbr);
+        }
+    }
     g_gr_ctl_count++;
     g_gr_ctl_dc = n->dc;
     g_gr_ctl_bmp = n->bmp;
@@ -14673,7 +14865,7 @@ int pb_graphic_attach_ctl(void* hDlg, long long id, long long redraw) {
     g_gr_fore = 0;
     g_gr_back = 0xF0F0F0;
     g_gr_overlap = 0;
-    if (!g_gr_font) g_gr_font = GetStockObject(17); /* DEFAULT_GUI_FONT */
+    if (!g_gr_font) g_gr_font = GetStockObject(12); /* SYSTEM_FONT */
     if (g_gr_font) SelectObject(g_gr_dc, g_gr_font);
     g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     n->old_proc = (void*)(size_t)pb_set_winlong(h, -4 /* GWLP_WNDPROC */,
@@ -15538,6 +15730,14 @@ long long pb_header_set_item(void* hWin, long long id, long long index, long lon
 /* Common-control styles */
 #define PB_CCS_TOP            0x00000001
 #define PB_CCS_BOTTOM         0x00000003
+/* DDT's default toolbar style is not bare CCS_TOP: PBWin10 creates
+   ToolbarWindow32 with CCS_TOP | TBSTYLE_FLAT | WS_BORDER (0x50800801).
+   Without FLAT/BORDER the toolbar is 1 px smaller on every side and the
+   bottom divider row is missing, which showed up as a full-width diff in
+   the all-controls sample. */
+#define PB_TBSTYLE_FLAT       0x00000800
+#define PB_WS_BORDER          0x00800000
+#define PB_CCS_TOP_DEFAULT    (PB_CCS_TOP | PB_TBSTYLE_FLAT | PB_WS_BORDER)
 
 /* TBBUTTON - the two reserved BYTE slots of the 32-bit layout become six
    on x64 so that the pointer-sized dwData stays 8-byte aligned. */
@@ -15916,24 +16116,111 @@ int pb_display_color(long* out_color) {
     }
     return 0;
 }
+#define CF_BOTH             0x00000003
+#define CF_FORCEFONTEXIST   0x00010000
+#define CF_INITTOLOGFONTSTRUCT 0x00000040
+#define CF_NOSCRIPTSEL      0x00800000
+
+static int pb_choose_font(void* parent, const char* defname, long defpoints,
+                          long defstyle, long flags, PB_LOGFONTA* lf,
+                          unsigned long* color_out) {
+    for (unsigned int i = 0; i < sizeof(PB_LOGFONTA); i++)
+        ((unsigned char*)lf)[i] = 0;
+    if (defname && defname[0]) {
+        unsigned int n = (unsigned int)strlen(defname);
+        if (n > 31) n = 31;
+        for (unsigned int i = 0; i < n; i++) lf->lfFaceName[i] = defname[i];
+        lf->lfFaceName[n] = 0;
+    }
+    if (defpoints <= 0) defpoints = 8;
+    void* dc = GetDC(0);
+    if (dc) {
+        lf->lfHeight = -MulDiv((int)defpoints, GetDeviceCaps(dc, 90 /* LOGPIXELSY */), 72);
+        ReleaseDC(0, dc);
+    } else {
+        lf->lfHeight = -(int)(defpoints * 96 / 72);
+    }
+    lf->lfWeight = (defstyle & 1) ? 700 : 400;
+    lf->lfItalic = (defstyle & 2) ? 1 : 0;
+    lf->lfUnderline = (defstyle & 4) ? 1 : 0;
+    lf->lfStrikeOut = (defstyle & 8) ? 1 : 0;
+    lf->lfCharSet = 1;                    /* DEFAULT_CHARSET */
+    lf->lfOutPrecision = 0;
+    lf->lfClipPrecision = 0;
+    lf->lfQuality = 0;
+    lf->lfPitchAndFamily = 0;
+
+    CHOOSEFONTA cf;
+    for (unsigned int i = 0; i < sizeof(cf); i++) ((unsigned char*)&cf)[i] = 0;
+    cf.lStructSize = sizeof(CHOOSEFONTA);
+    cf.hwndOwner = parent;
+    cf.lpLogFont = lf;
+    cf.iPointSize = (int)(defpoints * 10);
+    cf.Flags = (unsigned long)(flags ? flags
+                                     : (CF_BOTH | CF_INITTOLOGFONTSTRUCT));
+    if (!ChooseFontA(&cf)) return 0;
+    if (color_out) *color_out = cf.rgbColors;
+    return 1;
+}
+
 int pb_display_font(char** out_font) {
-    if (!out_font) {
+    if (!out_font) return 0;
+    PB_LOGFONTA lf;
+    unsigned long color = 0;
+    if (!pb_choose_font(0, "Arial", 8, 0, CF_BOTH | CF_INITTOLOGFONTSTRUCT,
+                        &lf, &color)) {
         *out_font = SysAllocStringByteLen("", 0);
         return 0;
     }
-    static char logfont[256] = {0};
-    CHOOSEFONTA cf = {0};
-    cf.lStructSize = sizeof(CHOOSEFONTA);
-    cf.lpLogFont = logfont;
-    cf.Flags = CF_SCREENFONTS | CF_INITTOLOGFONTSTRUCT;
-    if (ChooseFontA(&cf)) {
-        /* Return face name from LOGFONTA (lfFaceName at offset 28) */
-        char* face = logfont + 28;
-        *out_font = SysAllocStringByteLen(face, (unsigned int)strlen(face));
-        return 1;
+    char* face = lf.lfFaceName;
+    *out_font = SysAllocStringByteLen(face, (unsigned int)strlen(face));
+    return 1;
+}
+
+/* Full DISPLAY FONT hParent,x,y,defname$,defpoints&,defstyle&,flags& TO
+   fontname$,points&,style&,color&,charset&.  The old parser kept only the
+   first operand and the old codegen passed it as the output pointer, so the
+   dialog opened but the caller's font variables were never filled (0773). */
+int pb_display_font_full(void* parent, int x, int y, const char* defname,
+                         long defpoints, long defstyle, long flags,
+                         char** out_font, long* out_points, long* out_style,
+                         long* out_color, long* out_charset) {
+    (void)x;
+    (void)y;
+    if (out_points) *out_points = 0;
+    if (out_style) *out_style = 0;
+    if (out_color) *out_color = 0;
+    if (out_charset) *out_charset = 0;
+    if (!out_font) return 0;
+    PB_LOGFONTA lf;
+    unsigned long color = 0;
+    if (!pb_choose_font(parent, defname, defpoints, defstyle, flags, &lf, &color)) {
+        *out_font = SysAllocStringByteLen("", 0);
+        return 0;
     }
-    *out_font = SysAllocStringByteLen("", 0);
-    return 0;
+    char* face = lf.lfFaceName;
+    *out_font = SysAllocStringByteLen(face, (unsigned int)strlen(face));
+    if (out_points) {
+        int dpi = 96;
+        void* dc = GetDC(0);
+        if (dc) {
+            dpi = GetDeviceCaps(dc, 90 /* LOGPIXELSY */);
+            ReleaseDC(0, dc);
+        }
+        int px = lf.lfHeight < 0 ? -lf.lfHeight : lf.lfHeight;
+        *out_points = (long)MulDiv(px, 72, dpi ? dpi : 96);
+    }
+    if (out_style) {
+        long style = 0;
+        if (lf.lfWeight >= 700) style |= 1;
+        if (lf.lfItalic) style |= 2;
+        if (lf.lfUnderline) style |= 4;
+        if (lf.lfStrikeOut) style |= 8;
+        *out_style = style;
+    }
+    if (out_color) *out_color = (long)color;
+    if (out_charset) *out_charset = (long)lf.lfCharSet;
+    return 1;
 }
 int pb_display_browse(const char* title, const char* initialdir, char** out) {
     if (!out) return 0;
@@ -18716,6 +19003,12 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
             unsigned long itemData;
         } pb_drawitem_t;
         pb_drawitem_t* di = (pb_drawitem_t*)lParam;
+        /* A listbox sends WM_DRAWITEM for every item on the same DC, but the
+           DC can still carry the first item's clip rectangle.  0383 drew all
+           seven rows successfully (DrawText returned the row height) yet only
+           the first row's clip was active, so the screen stayed white.  Reset
+           the clip to the current item before the user's owner-draw code. */
+        (void)di;
         if (di && g_gr_ctl_bmp && di->hwndItem == g_gr_ctl_hwnd && di->hDC) {
             BitBlt(di->hDC, 0, 0, g_gr_ctl_w, g_gr_ctl_h, g_gr_ctl_dc,
                    0, 0, 0x00CC0020 /* SRCCOPY */);
@@ -20469,7 +20762,7 @@ static void pb_dispatch_init(void* hDlg) {
             cb_ctlmsg = 0;
             cb_wparam = 0;
             cb_lparam = lp;
-            long long szrc = ((pb_dlg_cb_fn)pb_dialog_cb)(hDlg, 0x0005, 0, lp);
+            ((pb_dlg_cb_fn)pb_dialog_cb)(hDlg, 0x0005, 0, lp);
         }
     }
 }
@@ -20510,7 +20803,7 @@ static void* pb_defid_dlg[PB_DEFID_SLOTS];
 static long  pb_defid_id[PB_DEFID_SLOTS];
 static int   pb_defid_count = 0;
 
-static void pb_default_id_set(void* hDlg, long id) {
+static __attribute__((unused)) void pb_default_id_set(void* hDlg, long id) {
     int i;
     for (i = 0; i < pb_defid_count; i++) {
         if (pb_defid_dlg[i] == hDlg) { pb_defid_id[i] = id; return; }
@@ -20522,7 +20815,7 @@ static void pb_default_id_set(void* hDlg, long id) {
     }
 }
 
-static long pb_default_id_get(void* hDlg) {
+static __attribute__((unused)) long pb_default_id_get(void* hDlg) {
     int i;
     long r = 0;
     for (i = 0; i < pb_defid_count; i++)
@@ -21005,6 +21298,32 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
    style!=0 -> user value used directly, but PBWin always adds LBS_NOTIFY
    (measured original SYNCLIST: user WS_VSCROLL|WS_TABSTOP = 0x210000 became
    0x50210001 with LBS_NOTIFY set).  exstyle is passed straight. */
+/* An ownerdraw-fixed LISTBOX with no WM_MEASUREITEM handler gets a zero row
+   height from the default listbox procedure.  The items are present (LB_GETCOUNT
+   reports them) but no row paints, which is what 0383 showed: an apparently
+   empty list while PBWin10 draws seven rows.  PBWin seeds the row height from
+   the control font; do the same before the caller adds items. */
+static void pb_listbox_ownerdraw_height(void* hw, void* parent) {
+    long st = GetWindowLongA(hw, -16);
+    if (!(st & 0x0010)) return;              /* %LBS_OWNERDRAWFIXED */
+    void* dc = GetDC(hw);
+    if (!dc) return;
+    void* font = pb_dialog_font_for(parent);
+    void* old = font ? SelectObject(dc, font) : 0;
+    unsigned char sz[8];
+    for (int i = 0; i < 8; i++) sz[i] = 0;
+    int ih = 16;
+    if (GetTextExtentPoint32A(dc, "W", 1, (void*)sz)) {
+        ih = sz[4] | (sz[5] << 8) | (sz[6] << 16) | (sz[7] << 24);
+    }
+    /* PBWin's ownerdraw-fixed ListBox row is font height + 3 (13 -> 16 in
+       0383); using the bare text height clips the owner-draw item. */
+    ih += 3;
+    if (old) SelectObject(dc, old);
+    ReleaseDC(hw, dc);
+    if (ih > 0) SendMessageA(hw, 0x01A0 /* LB_SETITEMHEIGHT */, 0, (pb_lparam_t)ih);
+}
+
 void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long count,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
@@ -21033,6 +21352,7 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
            last or the listbox undoes WS_VSCROLL again. */
         SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
         pb_set_winlong(hw, -16 /* GWL_STYLE */, (long long)s);
+        pb_listbox_ownerdraw_height(hw, parent);
         /* items$() full-array reference: with batch 248's DIM type-inheritance
            fix the array is [N x Ptr], each element a full 8-byte WSTRING
            pointer.  Add every item with LB_ADDSTRING (0x0180). */
@@ -21073,6 +21393,7 @@ void* pb_control_add_listbox_ex_w(void* parent, long id, void* items, long long 
         SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
         SetWindowPos(hw, 0, x, y, w, hpx, 0x0004u | 0x0010u);
         pb_set_winlong(hw, -16, (long long)s);
+        pb_listbox_ownerdraw_height(hw, parent);
         if (count > 0 && items) {
             long long i;
             for (i = 0; i < count; i++) {
@@ -21322,7 +21643,10 @@ void* pb_control_add_frame_w(void* parent, long id, const char* text,
 void* pb_control_add_frame_ex_w(void* parent, long id, const char* text,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
-    long s = (style ? style : (0x100 | 0x400)) | 0x7;
+    /* PBWin10 keeps BS_GROUPBOX but drops a caller-supplied %WS_BORDER on
+       FRAME (measured: 0x50000007, no 0x00800000).  Passing it through drew
+       the extra dark outer rectangle seen in 0294. */
+    long s = ((style ? style : (0x100 | 0x400)) & ~0x00800000L) | 0x7;
     return pb_control_add_text_w(parent, id, text, x, y, w, h,
                                  "BUTTON", s, exstyle, fn);
 }
@@ -21374,14 +21698,55 @@ static void* pb_image_probe(const char* name, unsigned int* type_out, int cx, in
     return h;
 }
 
+/* PBWin10's DDT IMAGEX pre-scales the bitmap to the STATIC's client size and
+   paints it 1:1 (measured style 0x5080000E, no %SS_REALSIZECONTROL).  LoadImage
+   ignores cx/cy for a shared BITMAP resource, so scale explicitly with the
+   GDI nearest-neighbour mode DDT uses. */
+__declspec(dllimport) void* __stdcall CreateCompatibleBitmap(void* hdc, int cx, int cy);
+static void* pb_scale_bitmap(void* src, int cx, int cy) {
+    unsigned char bm[40];
+    int sw, sh;
+    if (!src || cx <= 0 || cy <= 0) return 0;
+    for (int i = 0; i < 40; i++) bm[i] = 0;
+    if (!GetObjectA(src, 40, (void*)bm)) return 0;
+    sw = bm[4] | (bm[5] << 8) | (bm[6] << 16) | (bm[7] << 24);
+    sh = bm[8] | (bm[9] << 8) | (bm[10] << 16) | (bm[11] << 24);
+    if (sw <= 0 || sh <= 0) return 0;
+    void* screen = GetDC(0);
+    if (!screen) return 0;
+    void* dst = CreateCompatibleBitmap(screen, cx, cy);
+    ReleaseDC(0, screen);
+    if (!dst) return 0;
+    void* sdc = CreateCompatibleDC(0);
+    void* ddc = CreateCompatibleDC(0);
+    if (!sdc || !ddc) {
+        if (sdc) DeleteDC(sdc);
+        if (ddc) DeleteDC(ddc);
+        DeleteObject(dst);
+        return 0;
+    }
+    void* old_src = SelectObject(sdc, src);
+    void* old_dst = SelectObject(ddc, dst);
+    SetStretchBltMode(ddc, 3 /* COLORONCOLOR */);
+    int ok = StretchBlt(ddc, 0, 0, cx, cy, sdc, 0, 0, sw, sh, 0x00CC0020 /* SRCCOPY */);
+    SelectObject(sdc, old_src);
+    SelectObject(ddc, old_dst);
+    DeleteDC(sdc);
+    DeleteDC(ddc);
+    if (!ok) { DeleteObject(dst); return 0; }
+    return dst;
+}
+
 void* pb_control_add_image(void* parent, long id, const char* name,
                            int x, int y, int w, int h,
                            int style, int exstyle, int is_button, int is_x) {
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
     unsigned long st = (style < 0) ? 0 : (unsigned long)style;
     unsigned long ex = (exstyle < 0) ? 0 : (unsigned long)exstyle;  /* %WS_EX_LEFT */
-    int cx = is_x ? w : 0;
-    int cy = is_x ? h : 0;
+    int static_x = (is_x && !is_button);
+    int border = (static_x && (st & 0x00800000)) ? 2 : 0;
+    int cx = is_x ? (static_x && w > border ? w - border : w) : 0;
+    int cy = is_x ? (static_x && h > border ? h - border : h) : 0;
     unsigned int type = 0;
     int named = 0;
     void* img = 0;
@@ -21404,24 +21769,34 @@ void* pb_control_add_image(void* parent, long id, const char* name,
             else st |= (type == 1) ? 0x03 : 0x0E;
         }
     }
+    if (img && is_x && !is_button && type == 0 && cx > 0 && cy > 0) {
+        void* scaled = pb_scale_bitmap(img, cx, cy);
+        if (scaled) img = scaled;
+    }
     /* %WS_TABSTOP is the documented default PRIMARY style of an image button,
        and it has to be applied whenever the caller named no primary style.
        Testing `st == 0` instead misses it: the format discovery above has
        already set %BS_ICON / %BS_BITMAP by the time this line runs. */
     if (is_button && style < 0) st |= 0x10000;           /* %WS_TABSTOP default */
     st |= 0x40000000 | 0x10000000;                       /* %WS_CHILD | %WS_VISIBLE */
-    if (!is_button && is_x) st |= 0x40;                  /* %SS_REALSIZECONTROL */
+    /* PBWin's IMAGEX STATIC is 0x5080000E with no %SS_REALSIZECONTROL: its
+       DDT layer loads the bitmap at the control's client size (border
+       subtracted), so the STATIC paints it 1:1.  PB64 therefore pre-sizes
+       here instead of asking the STATIC to stretch a larger bitmap. */
 
     void* hwnd = CreateWindowExA(ex, is_button ? "BUTTON" : "STATIC", "",
                                  st, x, y, w, h, parent,
                                  (void*)(long long)id, GetModuleHandleA(0), 0);
+    if (hwnd) SendMessageA(hwnd, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     if (hwnd && img) {
         /* %STM_SETIMAGE(0x172) is the STATIC message, %BM_SETIMAGE(0xF7) the
-           BUTTON one; wParam names the kind of image being handed over. */
+           BUTTON one; wParam names the kind of image being handed over.  Set
+           the font first: the STATIC path re-applies its font after
+           WM_SETFONT and the image was otherwise lost on the fourth-batch
+           0294 IMAGE/IMAGEX controls. */
         SendMessageA(hwnd, is_button ? 0xF7 : 0x172,
                      (pb_wparam_t)type, (pb_lparam_t)(intptr_t)img);
     }
-    if (hwnd) SendMessageA(hwnd, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     return hwnd;
 }
 
@@ -22528,6 +22903,15 @@ static void* pb_ctlcolor_brush(void* hCtl, void* hdc) {
                     SetBkColor(hdc, GetSysColor(15 /* COLOR_BTNFACE */));
                     return GetSysColorBrush(15);
                 }
+                /* A BS_GROUPBOX caption is opaque in PBWin: the text cell
+                   breaks the etched frame line (0294 showed a continuous
+                   line at the caption's rows with TRANSPARENT). */
+                if (cls[0]=='B' && cls[1]=='U' && cls[2]=='T' && cls[3]=='T' &&
+                    (GetWindowLongA(hCtl, -16) & 0x0FL) == 0x07L) {
+                    SetBkMode(hdc, 2 /* OPAQUE */);
+                    SetBkColor(hdc, GetSysColor(15 /* COLOR_BTNFACE */));
+                    return GetSysColorBrush(15);
+                }
                 SetBkMode(hdc, 1 /* TRANSPARENT */);
                 return GetStockObject(5 /* NULL_BRUSH */);
             }
@@ -22933,10 +23317,21 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
        added WS_TABSTOP, which made the dialog focus the ListView instead of
        the later TreeView and suppressed TreeView's automatic Root selection.
        Neither WS_BORDER nor WS_EX_CLIENTEDGE is part of the default either.
-       An explicit style& from CONTROL ADD LISTVIEW overrides the default;
-       WS_CHILD is always forced because CreateWindowExA needs it. */
+       An explicit style& from CONTROL ADD LISTVIEW overrides the default,
+       but a style with no LVS_TYPEMASK bits still becomes a report view:
+       PBWin10's 0294 passes only %WS_Border and shows the inserted column
+       header, so the default LVS_REPORT is not discarded by WS_Border.
+       WS_CHILD and WS_VISIBLE are structural: without WS_VISIBLE the LISTVIEW
+       exists and receives its columns/items yet never paints (third-batch 0528
+       and fourth-batch 0294 both passed only %WS_Border and came up blank). */
+    /* An explicit style replaces the documented default, but WS_CHILD and
+       WS_VISIBLE are structural: without WS_VISIBLE the LISTVIEW exists and
+       receives its columns/items yet never paints (third-batch 0528 and
+       fourth-batch 0294 both passed only %WS_Border and came up blank).  PBWin
+       always creates a visible DDT control, so force both bits here. */
     unsigned long style = user_style
-        ? (user_style | 0x40000000u /* WS_CHILD */)
+        ? (user_style | 0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */
+           | (((user_style & 0x3u) == 0) ? 0x1u /* LVS_REPORT */ : 0u))
         : (0x1u | 0x4u | 0x8u | 0x40000000u | 0x10000000u);
     void* h;
     pb_icc(PB_ICC_LISTVIEW_CLASSES);
@@ -22950,8 +23345,15 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
         void* hdr = (void*)(size_t)SendMessageA(h, PB_LVM_GETHEADER, 0, 0);
         if (hdr) SendMessageA(hdr, 0x0030 /* WM_SETFONT */,
                               (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
-        SendMessageA(h, PB_LVM_SETEXTENDEDLISTVIEWSTYLE,
-                     PB_LVS_EX_FULLROWSELECT, PB_LVS_EX_FULLROWSELECT);
+        /* PBWin10's DDT list view does not set %LVS_EX_FULLROWSELECT for a
+           caller-supplied style (measured LVM_GETEXTENDEDLISTVIEWSTYLE == 0
+           in 0294); adding it shifted the first row's icon/text by one pixel.
+           The documented default style (style operand omitted) still starts
+           with %LVS_EX_FULLROWSELECT; batch170 asserts that &H20. */
+        if (!user_style)
+            SendMessageA(h, 0x1036 /* LVM_SETEXTENDEDLISTVIEWSTYLE */,
+                        0x20 /* LVS_EX_FULLROWSELECT */,
+                        0x20 /* LVS_EX_FULLROWSELECT */);
     }
     return h;
 }
@@ -22997,8 +23399,11 @@ void* pb_control_add_treeview(void* parent, long id, const char* text,
    straight through to CreateWindowExA. */
 void* pb_control_add_toolbar(void* parent, long id, const char* text,
                              int x, int y, int w, int ht,
-                             long long style, long long exstyle) {
-    unsigned long s = (unsigned long)(style ? style : PB_CCS_TOP);
+                             int style, int exstyle) {
+    unsigned long s = (unsigned long)(style ? style : PB_CCS_TOP_DEFAULT);
+    /* A bare %CCS_TOP is the value DDT supplies when the caller omits the
+       style operand; PBWin10 still applies FLAT + WS_BORDER in that case. */
+    if (s == PB_CCS_TOP) s = PB_CCS_TOP_DEFAULT;
     void* h;
     pb_icc(PB_ICC_BAR_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
@@ -23017,7 +23422,7 @@ void* pb_control_add_toolbar(void* parent, long id, const char* text,
 
 void* pb_control_add_statusbar(void* parent, long id, const char* text,
                                int x, int y, int w, int ht,
-                               long long style, long long exstyle) {
+                               int style, int exstyle) {
     unsigned long s = (unsigned long)(style ? style : PB_CCS_BOTTOM);
     void* h;
     pb_icc(PB_ICC_BAR_CLASSES);
@@ -23849,6 +24254,23 @@ static void* pb_modal_initial_focus(void* hDlg) {
             child = GetWindow(child, 2 /* GW_HWNDNEXT */);
         }
     }
+    if (!first) {
+        /* PBWin still gives the first visible control the focus when the
+           dialog has no WS_TABSTOP child at all: 0296's lone
+           SysDateTimePick32 carries only WS_CHILD|WS_VISIBLE, yet PBWin
+           focuses it and paints its selected day.  Restrict the fallback to
+           the no-tab-stop case so a dialog that has real tab stops keeps
+           the PBWin z-order rule. */
+        void* child = GetWindow(hDlg, 5 /* GW_CHILD */);
+        while (child) {
+            long st = GetWindowLongA(child, -16 /* GWL_STYLE */);
+            if ((st & 0x10000000 /* WS_VISIBLE */) && IsWindowEnabled(child)) {
+                first = child;
+                break;
+            }
+            child = GetWindow(child, 2 /* GW_HWNDNEXT */);
+        }
+    }
     if (!first) return 0;
     GetClassNameA(first, cls, 64);
     if (cls[0]=='S' && cls[1]=='y' && cls[2]=='s' && cls[3]=='T' &&
@@ -23956,10 +24378,9 @@ static void* pb_tab_hwnd(void* hDlg, long id) {
 /* ---------------- CONTROL ADD TAB ---------------- */
 void* pb_control_add_tab(void* parent, long id, int x, int y, int w, int ht) {
     /* PBWin's DDT tab control: WS_CHILD|WS_VISIBLE|WS_CLIPSIBLINGS|
-       WS_CLIPCHILDREN|WS_TABSTOP|TCS_HOTTRACK, no WS_EX_CLIENTEDGE
-       (0x56010040 / 0).  The edge made the page window overlap the tab
-       header and left the captions washed out. */
-    unsigned long style = 0x56010040u;
+       WS_CLIPCHILDREN|WS_TABSTOP, no TCS_HOTTRACK, no WS_EX_CLIENTEDGE
+       (measured 0x56010000 / 0).  TCS_HOTTRACK was 0x40 too many. */
+    unsigned long style = 0x56010000u;
     pb_icc(PB_ICC_TAB_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
     void* h = CreateWindowExA(0, "SysTabControl32", "",
@@ -24597,6 +25018,16 @@ void pb_listview_set_mode(void* hDlg, long id, int mode) {
     style = (style & ~(long long)PB_LVS_TYPEMASK)
           | (long long)((unsigned int)mode & PB_LVS_TYPEMASK);
     pb_set_winlong(h, -16 /* GWL_STYLE */, style);
+    /* A raw GWL_STYLE mutation does not make the common control rebuild its
+       header: 0294 called LISTVIEW SET MODE 1 (report) after inserting the
+       column, yet the column header stayed in list mode and "test1" painted
+       as a row.  LVM_SETVIEW (Vista+) switches the view and recreates the
+       header; the SetWindowPos frame change covers pre-Vista controls. */
+    SendMessageA(h, 0x108E /* LVM_SETVIEW */, (unsigned long long)mode, 0);
+    SetWindowPos(h, 0, 0, 0, 0, 0,
+                 0x0001 /* NOSIZE */ | 0x0002 /* NOMOVE */ |
+                 0x0004 /* NOZORDER */ | 0x0020 /* FRAMECHANGED */);
+    InvalidateRect(h, 0, 1);
 }
 
 /* ---------------- LISTVIEW GET SELCOUNT ---------------- */
@@ -25242,12 +25673,13 @@ void* pb_control_add_frame_ex(void* parent, long id, const char* text,
                               int x, int y, int w, int h,
                               long style, long exstyle, void* fn) {
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    unsigned long s = (style ? (unsigned long)style : 0x100u | 0x400u) | 0x7u;
+    unsigned long s = ((style ? (unsigned long)style : 0x100u | 0x400u) & ~0x00800000u) | 0x7u;
     s |= 0x40000000u | 0x10000000u;
-    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
+    void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", "", s,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+              SetWindowTextA(hw, text ? text : "");
               if (fn) pb_register_callback_hwnd(hw, fn); }
     return hw;
 }
@@ -25312,7 +25744,7 @@ void* pb_control_add_scrollbar_ex(void* parent, long id, const char* text,
 void* pb_control_add_tab_ex(void* parent, long id, const char* text,
                             int x, int y, int w, int ht,
                             long style, long exstyle, void* fn) {
-    unsigned long s = style ? (unsigned long)style : 0x56010040u;
+    unsigned long s = style ? (unsigned long)style : 0x56010000u;
     s |= 0x40000000u | 0x10000000u;
     unsigned long ex = exstyle ? (unsigned long)exstyle : 0;
     pb_icc(PB_ICC_TAB_CLASSES);
