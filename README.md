@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 408 (v0.2.198). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 409 (v0.2.199). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 409 (v0.2.199) - Fixed Discussion #8's José Roca include-file parse failures: reserved-word method names (`METHOD Xor`, `METHOD On`), nested pointer-field dereference (`@p.@field`, as in `@pImageCodecInfo.@MimeType`), and macro-name reuse in a `FUNCTION MAKEFOURCC` declaration. The full gbClientCapture v2.1 source now parses and builds x86_64 with the `C:\PBWin10\WinAPI` headers; `batch409_test` covers the new syntax at run time.
 > batch 408 (v0.2.198) - Fixed the setup-time Android blank-key bug: `setup.bat` now passes a normalized repository path, `find_android.ps1` accepts the release-root `PB64Basic.exe` and searches ancestor folders for the Android checkout, and the Windows zip carries a minimal `PB64Basic-Android` builder so a fresh install can produce an APK. See the v0.2.198 changelog entry.
 > batch 407 (v0.2.197) - Gave the default x86_64 output an `_x64` suffix so PB64Basic can sit beside a PBWin-built `<source>.exe` for side-by-side comparison, and tightened the `DirData` / `DIR$` compatibility path. `Success:` now reports the final EXE path. See the v0.2.197 changelog entry.
 > batch 405 (v0.2.195) - Closed the APK / PB/CC / GUI residual set: GRAPHIC BOX negative-corner, omitted-corner and aspect semantics now match PBWin pixel for pixel, GRAPHIC COPY and the POLYGON/POLYLINE/XPRINT declarations were corrected, user procedures whose names start with GRAPHIC_/MENU_/XPRINT_ are no longer swallowed, the Android MSGBOX link guard was fixed, and the 20-APK suite was rebuilt and passed 20/20 emulator probes. All Windows source gates are clean.
@@ -1090,6 +1091,24 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.199 (2026-11-26)
+
+- Fixed the José Roca WINAPI include-file failures reported in Discussion #8.
+  `METHOD Xor` and `METHOD On` are now accepted as member names, so
+  `CGdipRegion.inc` parses; `@pointer.@pointer_field` now dereferences a
+  pointer-valued member, covering `@pImageCodecInfo.@MimeType` in
+  `GDIPUTILS.INC` and `CGdiPlus.inc`; and a procedure declaration may reuse a
+  macro name, so the `MAKEFOURCC` macro from `MMSystem.inc` no longer rewrites
+  the `FUNCTION MAKEFOURCC` signature in `ddraw.inc`.
+- Verified with the complete gbClientCapture v2.1 source from the PUMP thread:
+  it parses and builds a native x86_64 executable against the José Roca
+  `C:\PBWin10\WinAPI` headers.
+- Added `examples/batch409_test.bas`, which exercises nested pointer-member
+  dereference and the `Xor`/`On` method names at run time.
+- Also includes the validated second-batch Gary Beene GUI fixes already in the
+  tree: PBR rendering, status-bar layout, font charset handling, ScrollBar
+  defaults, and GRAPHIC quadrant geometry.
+
 ### v0.2.198 (2026-11-24)
 
 Batch 408 is a setup and Android packaging fix. There are no compiler or runtime behavior changes.

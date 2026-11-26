@@ -368,11 +368,15 @@ FUNCTION PBMAIN () AS LONG
     st = 0
     CALL DWORD gwlA USING GetWindowLongA(hGr2, -16) TO st
 #IF %MY_PBVER = 0
-    IF (st AND 31) = 0 THEN
-        ConPrint "ok   GRAPHIC 202 has no %SS_ type bits (default was replaced)"
+    ' PBWin10 keeps SS_OWNERDRAW even when the caller supplies a style
+    ' (measured 0x5080010D for a style of WS_BORDER|SS_NOTIFY).  The old
+    ' assertion expected the default type bit to be replaced; that was the
+    ' wrong PBWin behaviour and is corrected here.
+    IF (st AND 31) = 13 THEN
+        ConPrint "ok   GRAPHIC 202 carries %SS_OWNERDRAW with the supplied style"
     ELSE
         fail = fail + 1
-        ConPrint "FAIL GRAPHIC 202 kept a default type bit, style=" & STR$(st)
+        ConPrint "FAIL GRAPHIC 202 missing %SS_OWNERDRAW, style=" & STR$(st)
     END IF
 #ELSE
     ConPrint "ok   GRAPHIC 202 has no %SS_ type bits (default was replaced)"

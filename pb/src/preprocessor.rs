@@ -1013,6 +1013,35 @@ impl Preprocessor {
                 i += 1;
                 continue;
             }
+            // #RESOURCE "file.PBR" / "file.RES" — PBWin's extension-inferred
+            // shorthand.  It has no RES/PBR keyword, so the explicit branch
+            // above never sees it; without this branch the resource is ignored
+            // and IMAGE/IMGBUTTON names stay blank at runtime.
+            if upper_full.starts_with("#RESOURCE") {
+                // `#Resource` is the same nine ASCII characters; slicing the
+                // original line keeps the case-insensitive match simple.
+                let rest = if trimmed_full.len() >= 9 {
+                    trimmed_full[9..].trim()
+                } else {
+                    ""
+                }
+                .trim_start_matches(",")
+                .trim();
+                if let Some(res_path) = extract_string(rest) {
+                    let lower = res_path.to_ascii_lowercase();
+                    if lower.ends_with(".pbr") || lower.ends_with(".res") {
+                        let resolved = file.parent().unwrap_or(Path::new(".")).join(&res_path);
+                        if resolved.exists() && !self.collect_only {
+                            self.res_files.push(ResFileEntry {
+                                path: resolved,
+                                is_pbr: lower.ends_with(".pbr"),
+                            });
+                        }
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
             // #RESOURCE ICON, id, "file.ico" — collect for post-link embedding
             if upper_full.starts_with("#RESOURCE ICON") {
                 let rest = trimmed_full[14..].trim().trim_start_matches(",").trim();
@@ -1170,12 +1199,30 @@ impl Preprocessor {
             // fell back to 0 — batch 276 traced the LIBMAIN SELECT CASE
             // matching nothing through exactly this).
             if trimmed_full.starts_with('%') {
-                if let Some(eq_pos) = trimmed_full.find('=') {
-                    let mut name = trimmed_full[..eq_pos].trim().to_uppercase();
+                // PBWin permits several equate definitions on one physical
+                // line, separated by colons:
+                //   %IDC_Control = 500 : %IDC_Button = 501 : %IDC_Label = 502
+                // The old code took only the first '=' and registered one
+                // name, leaving %IDC_Button/%IDC_Label unknown (treated as
+                // 0 by codegen).  Register every colon-separated segment
+                // that is itself a % definition; quoted colons stay intact.
+                for seg in split_colon_segments(trimmed_full) {
+                    let seg = seg.trim();
+                    if !seg.starts_with('%') {
+                        continue;
+                    }
+                    let eq_pos = match seg.find('=') {
+                        Some(p) => p,
+                        None => continue,
+                    };
+                    let mut name = seg[..eq_pos].trim().to_uppercase();
                     if name.starts_with("%CONSTANT") {
                         name = name["%CONSTANT".len()..].trim().to_string();
                     }
-                    let val_str = trimmed_full[eq_pos + 1..].trim();
+                    if name.is_empty() || name == "%" {
+                        continue;
+                    }
+                    let val_str = seg[eq_pos + 1..].trim();
                     // Strip trailing comments
                     let val_str = strip_comment(val_str);
                     let value = self.parse_constant_value(&val_str);
@@ -1802,7 +1849,33 @@ impl Preprocessor {
                 // rejected it.  Never expand an identifier immediately
                 // preceded by the PB constant prefix.
                 let prefixed_by_percent = start > 0 && bytes[start - 1] == b'%';
-                let hit = if prefixed_by_percent {
+                // A procedure declaration may reuse a macro name.  MMSystem.inc
+                // defines `MACRO MAKEFOURCC(...)=...`, and ddraw.inc later
+                // declares `FUNCTION MAKEFOURCC (...)`.  Expanding the
+                // declaration name turned the signature into MAK(WORD,...)
+                // and produced a bogus `")" expected, got Identifier("WORD")`.
+                let declaration_name = {
+                    let mut k = start;
+                    while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+                        k -= 1;
+                    }
+                    if k == start {
+                        false
+                    } else {
+                        let mut w = k;
+                        while w > 0
+                            && ((bytes[w - 1] as char).is_ascii_alphanumeric()
+                                || bytes[w - 1] == b'_')
+                        {
+                            w -= 1;
+                        }
+                        matches!(
+                            result[w..k].to_uppercase().as_str(),
+                            "FUNCTION" | "SUB" | "METHOD" | "PROPERTY" | "DECLARE" | "MACRO"
+                        )
+                    }
+                };
+                let hit = if prefixed_by_percent || declaration_name {
                     None
                 } else {
                     macros.get(&key).filter(|d| {
@@ -2735,6 +2808,22 @@ fn resolve_include_path(
         }
     }
     parent.join(&normalized)
+}
+
+fn split_colon_segments(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut in_string = false;
+    for (i, ch) in s.char_indices() {
+        if ch == '"' {
+            in_string = !in_string;
+        } else if ch == ':' && !in_string {
+            out.push(&s[start..i]);
+            start = i + 1;
+        }
+    }
+    out.push(&s[start..]);
+    out
 }
 
 fn strip_comment(s: &str) -> String {

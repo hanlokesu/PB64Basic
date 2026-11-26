@@ -13127,6 +13127,29 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
     int ok;
     if (want_icon) {
         ok = DrawIconEx(g_gr_dc, x1, y1, img, w, h, 0, 0, 3 /* DI_NORMAL */);
+    } else if (g_gr_ctl_hwnd && g_gr_dc == g_gr_ctl_dc &&
+               w == h && w >= 4 && w >= g_gr_ctl_w &&
+               w <= g_gr_ctl_w + 2 && h <= g_gr_ctl_h + 2 &&
+               g_gr_ctl_w > w / 2 + 1 && g_gr_ctl_h > h / 2 + 1) {
+        /* PBWin10's owner-draw GRAPHIC control composits a 100x100 source
+           into its client as four 1:1 quadrants: the centre source row/
+           column is duplicated and the tail is clipped.  The destination
+           size is the live client (98x98 for a sunken 100x100 control in
+           1546, 100x100 for the borderless control in 0086).  A single
+           100->98 StretchBlt produces a different continuous resample, so
+           reproduce the four quadrants exactly.  Verified against the live
+           child DC of PBWin10 sample 1546 (mean 0.0) and the Graphic
+           control in sample 0086 (mean 0.0). */
+        int cw = g_gr_ctl_w;
+        int ch = g_gr_ctl_h;
+        int half = w / 2;
+        int seam = half + 1;
+        int rightw = cw - seam;
+        int bottomh = ch - seam;
+        ok = BitBlt(g_gr_dc, 0, 0, seam, seam, mdc, 0, 0, PB_B182_SRCCOPY)
+          && BitBlt(g_gr_dc, seam, 0, rightw, seam, mdc, half, 0, PB_B182_SRCCOPY)
+          && BitBlt(g_gr_dc, 0, seam, seam, bottomh, mdc, 0, half, PB_B182_SRCCOPY)
+          && BitBlt(g_gr_dc, seam, seam, rightw, bottomh, mdc, half, half, PB_B182_SRCCOPY);
     } else {
         ok = StretchBlt(g_gr_dc, x1, y1, w, h, mdc, 0, 0, w, h, PB_B182_SRCCOPY);
     }
@@ -14606,6 +14629,11 @@ int pb_graphic_attach_ctl(void* hDlg, long long id, long long redraw) {
     if (!GetClientRect(h, (void*)rc)) return 0;
     int cw = (int)(*(unsigned long*)(void*)(rc + 8));
     int ch = (int)(*(unsigned long*)(void*)(rc + 12));
+    /* Keep the canvas at the live client size.  A PBWin10 probe of 1546
+       (100x100 sunken control, 98x98 client) shows a 100x100 source composited
+       into the client as four 1:1 quadrants, not a 100->98 resample; 0086's
+       borderless Graphic control shows the same quirk against a 100x100 client.
+       pb_graphic_render_common reproduces that composition. */
     if (cw <= 0 || ch <= 0) return 0;
     void* sdc = GetDC(0);
     if (!sdc) return 0;
@@ -15502,7 +15530,10 @@ long long pb_header_set_item(void* hWin, long long id, long long index, long lon
 
 /* Statusbar messages - WM_USER + n */
 #define PB_SB_SETTEXTA        (0x0400 + 1)
-#define PB_SB_SETPARTS        (0x0400 + 5)
+/* SB_SETPARTS is WM_USER+4; WM_USER+5 is SB_GETPARTS.  The old +5 made
+   STATUSBAR SET PARTS write into the caller's widths buffer instead of
+   defining parts, so a three-part bar stayed one part. */
+#define PB_SB_SETPARTS        (0x0400 + 4)
 
 /* Common-control styles */
 #define PB_CCS_TOP            0x00000001
@@ -15713,10 +15744,19 @@ long long pb_toolbar_set_imagelist(void* hDlg, long long id, long long hLst,
 long long pb_statusbar_set_parts(void* hDlg, long long id, int* widths,
                                  long long count) {
     void* h = pb_pb_hwnd(hDlg, id);
+    int edges[32];
+    long long acc = 0;
     if (!h || !widths || count <= 0) return 0;
     if (count > 32) count = 32;
+    /* PowerBASIC's STATUSBAR SET PARTS takes each part's WIDTH; SB_SETPARTS
+       takes cumulative right edges.  Passing the values through unchanged
+       made 75,75,99999 a zero-width second part (PBWin shows all three). */
+    for (long long i = 0; i < count; i++) {
+        acc += widths[i];
+        edges[i] = (int)acc;
+    }
     return (long long)SendMessageA(h, (unsigned int)PB_SB_SETPARTS,
-                                   (unsigned int)count, (pb_lparam_t)widths);
+                                   (unsigned int)count, (pb_lparam_t)edges);
 }
 
 /* STATUSBAR SET TEXT hDlg, id&, item&, style&, text$
@@ -18686,6 +18726,16 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
            here made BmpList render as an empty white box. */
     }
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
+        /* Resizable PBWin dialogs use the real system frame.  The hand-made
+           3px/26px frame below is only for the thin fixed dialogs and SDK
+           windows PBWin draws that way; forcing it on a %WS_OverlappedWindow
+           dialog produced a 310x340 client for a requested 300x350 client
+           (1554). */
+        char cls[32];
+        if (GetClassNameA(hWnd, cls, (int)sizeof(cls)) > 0
+            && strcmp(cls, "PBWIN_DLG_CLASS") == 0
+            && (GetWindowLongA(hWnd, -16) & 0x00040000L) /* WS_THICKFRAME */)
+            return DefWindowProcA(hWnd, Msg, wParam, lParam);
         long* r = (long*)lParam;   /* RECT: left, top, right, bottom */
         /* A dialog with a menu bar attached (MENU ATTACH / DIALOG SET MENU)
            must reserve the menu height on top, or GetClientRect keeps
@@ -19023,7 +19073,7 @@ static void* pb_dialog_font(void) {
            was 8pt Tahoma-class, which is why the fork text looked smaller
            and different; GetStockObject(DEFAULT_GUI_FONT) resolves to the
            Win11 UI font (Segoe UI) which is also not a match. */
-        f = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 1,
+        f = CreateFontA(-11, 0, 0, 0, 400, 0, 0, 0, 0 /* ANSI_CHARSET, PBWin probe: charset 0 */,
                         0, 0, 0, 0, "MS Sans Serif");
         if (!f) f = (void*)1;   /* never return NULL (WM_SETFONT requires a font) */
     }
@@ -19233,12 +19283,32 @@ void* pb_window_new_dlg(const char* title, int x, int y, int w, int h,
        is added.  DDT Calendar (400x232, %WS_SYSMENU) depends on this exact
        behaviour: 600x377 outer, 594x348 client. */
     int add_frame = 1;
-    if (style && (style & 0x00080000u /* WS_SYSMENU */)
+    /* The "converted size is the OUTER size, no caption frame" quirk is a
+       DIALOG UNITS behaviour (verified with 100x100 DLU).  PIXELS always
+       treats the requested width/height as the CLIENT size: PBWin oracle
+       shows 200x200 PIXELS + WS_SYSMENU -> outer 206x229, client 200x200.
+       Applying the DLU quirk to PIXELS made the dialog 200x200 outer and
+       194x171 client, shifting every control/size comparison (0067, 0761). */
+    if (!units && style && (style & 0x00080000u /* WS_SYSMENU */)
         && !(style & 0x00C00000u /* WS_CAPTION / WS_DLGFRAME */)
         && !(style & 0x00000030u /* DS_MODALFRAME */)) add_frame = 0;
     (void)add_frame;
+    /* Resizable dialogs (WS_THICKFRAME, e.g. %WS_OverlappedWindow) use the
+       real system frame: 8px sizing border each side plus a 23px caption
+       (16x39 without a menu).  The fixed 6x29 thin frame is only correct
+       for WS_CAPTION|WS_SYSMENU dialogs.  A menu attached after creation
+       adds its height to the non-client area, exactly as PBWin does
+       (1554: PBWin outer 389/client 330, PB64 was outer 379/client 330). */
+    int fx = 6, fy = 29;
+    if (dwStyle & 0x00040000u /* WS_THICKFRAME */) {
+        pb_rect_t rc;
+        rc.left = 0; rc.top = 0; rc.right = cw; rc.bottom = ch;
+        AdjustWindowRectEx(&rc, dwStyle, 0, dwEx);
+        fx = (rc.right - rc.left) - cw;
+        fy = (rc.bottom - rc.top) - ch;
+    }
     void* hwnd = CreateWindowExA(dwEx, "PBWIN_DLG_CLASS", title, dwStyle,
-        px, py, cw + (add_frame ? 6 : 0), ch + (add_frame ? 29 : 0),
+        px, py, cw + (add_frame ? fx : 0), ch + (add_frame ? fy : 0),
         0, 0, GetModuleHandleA(0), 0);
     if (hwnd) {
 
@@ -20904,9 +20974,12 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
        65-DLU list is 95 px high, 11 px below the raw DLU conversion. */
     unsigned long style = 0x1 | 0x2 | 0x200000 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
+    int pixels = parent && pb_dlg_info_is_pixels(parent);
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    h -= 11;
-    if (h < 1) h = 1;
+    if (!pixels) {
+        h -= 11;
+        if (h < 1) h = 1;
+    }
     void* hw = CreateWindowExA(ex, "LISTBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -20929,9 +21002,12 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
 void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long count,
                                 int x, int y, int w, int h,
                                 long style, long exstyle, void* fn) {
+    int pixels = parent && pb_dlg_info_is_pixels(parent);
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    h -= 11;  /* integral-row snap, measured from the original SYNCLIST */
-    if (h < 1) h = 1;
+    if (!pixels) {
+        h -= 11;  /* integral-row snap, measured from the original SYNCLIST */
+        if (h < 1) h = 1;
+    }
     int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
@@ -20972,9 +21048,12 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
 void* pb_control_add_listbox_ex_w(void* parent, long id, void* items, long long count,
                                   int x, int y, int w, int h,
                                   long style, long exstyle, void* fn) {
+    int pixels = parent && pb_dlg_info_is_pixels(parent);
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
-    h -= 11;
-    if (h < 1) h = 1;
+    if (!pixels) {
+        h -= 11;
+        if (h < 1) h = 1;
+    }
     int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
@@ -21409,7 +21488,11 @@ void* pb_control_add_textbox_ex_w(void* parent, long id, const char* text,
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
     unsigned long s = style ? (unsigned long)style : 0x80u | 0x10000u;
     s |= 0x40000000u | 0x10000000u;
-    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
+    /* An explicit TEXTBOX style replaces the DDT defaults.  PBWin does not
+       keep %WS_EX_CLIENTEDGE when the caller supplies a style; the requested
+       width/height are then the control's window rectangle, and EDIT's
+       %WS_BORDER is drawn inside it (client stays 580x120). */
+    unsigned long ex = style ? (unsigned long)exstyle : 0x200u;
     void* hw = pb_ctl_create_w("EDIT", text, s, ex, x, y, w, h, parent, id);
     if (hw) {
         SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
@@ -21460,6 +21543,25 @@ void pb_control_set_option(void* hDlg, long long id, long long minid, long long 
    %SBS_HORZ(0x0); "if the width is less than the height, the control is
    automatically switched to %SBS_VERT(0x1), regardless of whether %SBS_HORZ
    is specified or not".  The old code hard-coded SBS_VERT + WS_TABSTOP. */
+/* PBWin initialises a scrollbar control with range 0-100, page 10.
+   SBM_SETSCROLLINFO sets range/page/position in one documented message;
+   the old SBM_SETRANGE 0x00F4 was not a valid scrollbar message, so both
+   range and page stayed at the Win32 defaults (0/0, page 1). */
+static void pb_scrollbar_init_default(void* hbar) {
+    struct { unsigned int cbSize; unsigned int fMask; int nMin; int nMax;
+             unsigned int nPage; int nPos; int nTrackPos; } si;
+    if (!hbar) return;
+    memset(&si, 0, sizeof(si));
+    si.cbSize = (unsigned int)sizeof(si);
+    si.fMask = 0x0007 /* SIF_RANGE | SIF_PAGE | SIF_POS */;
+    si.nMin = 0;
+    si.nMax = 100;
+    si.nPage = 10;
+    si.nPos = 0;
+    SendMessageA(hbar, 0x00E9 /* SBM_SETSCROLLINFO */, 1 /* redraw */,
+                 (long long)&si);
+}
+
 void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int ht) {
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
     unsigned long sbs = (w < ht) ? 1u : 0u;
@@ -21467,19 +21569,7 @@ void* pb_control_add_scrollbar(void* parent, long id, int x, int y, int w, int h
     void* hbar = CreateWindowExA(0, "SCROLLBAR", "", style,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
-    /* Set default range 0-100 so scrollbar works immediately */
-    SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
-    /* CHW SCROLLBAR_statement.htm: "Upon ScrollBar creation, the default
-     * page size is 10."  Win32 defaults nPage to 0, so set it explicitly. */
-    if (hbar) {
-        struct { unsigned int cbSize; unsigned int fMask; int nMin; int nMax;
-                 unsigned int nPage; int nPos; int nTrackPos; } si;
-        memset(&si, 0, sizeof(si));
-        si.cbSize = (unsigned int)sizeof(si);
-        si.fMask = 0x0002 /* SIF_PAGE */;
-        si.nPage = 10;
-        SendMessageA(hbar, 0x00E9 /* SBM_SETSCROLLINFO */, 0, (long long)&si);
-    }
+    pb_scrollbar_init_default(hbar);
     if (hbar) SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
     return hbar;
 }
@@ -21510,10 +21600,14 @@ void* pb_control_add_label_ex_w(void* parent, long id, const char* text,
 }
 
 /* CONTROL ADD PROGRESSBAR */
-void* pb_control_add_progressbar(void* parent, long id, int x, int y, int w, int ht) {
-    unsigned long style = 0x00000000 | 0x40000000 | 0x10000000;
+void* pb_control_add_progressbar(void* parent, long id, const char* text,
+                             int x, int y, int w, int ht) {
+    /* PBWin creates a progressbar with a 1-pixel WS_BORDER frame: a
+       100x20 request reports a 96x16 client.  It also stores the optional
+       caption as window text even though the control renders no text. */
+    unsigned long style = 0x00800000u | 0x40000000 | 0x10000000;
     pb_dlu_to_px_for(parent, &x,&y,&w,&ht);
-    void* h = CreateWindowExA(0, "msctls_progress32", "", style,
+    void* h = CreateWindowExA(0, "msctls_progress32", text ? text : "", style,
                            x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
@@ -21622,7 +21716,7 @@ void* pb_control_add_hscrollbar(void* parent, long id, int x, int y, int w, int 
     void* hbar = CreateWindowExA(0, "SCROLLBAR", "", style,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
-    SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE32 */, 0, 100);
+    pb_scrollbar_init_default(hbar);
     return hbar;
 }
 
@@ -21719,19 +21813,19 @@ static void pb_dlg_units_for(void* hDlg, int* dlu_x, int* dlu_y) {
     }
 }
 
-void pb_dialog_get_size(void* hDlg, long long* pw, long long* ph) {
+void pb_dialog_get_size(void* hDlg, long* pw, long* ph) {
     pb_rect_t rc;
     int dx, dy;
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetWindowRect(hDlg, &rc);
     if (pb_dlg_info_is_pixels(hDlg)) {
-        if (pw) *pw = (long long)(rc.right - rc.left);
-        if (ph) *ph = (long long)(rc.bottom - rc.top);
+        if (pw) *pw = (long)(rc.right - rc.left);
+        if (ph) *ph = (long)(rc.bottom - rc.top);
         return;
     }
     pb_dlg_units_for(hDlg, &dx, &dy);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
+    if (pw) *pw = (long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
+    if (ph) *ph = (long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET SIZE - dialog units in, pixels out to SetWindowPos.
@@ -22091,19 +22185,19 @@ static void pb_dlg_origin(void* hDlg, pb_point_t* org) {
 }
 
 /* DIALOG GET CLIENT hDlg TO nWide&, nHigh& */
-void pb_dialog_get_client(void* hDlg, long long* pw, long long* ph) {
+void pb_dialog_get_client(void* hDlg, long* pw, long* ph) {
     pb_rect_t rc;
     int dx, dy;
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetClientRect(hDlg, &rc);
     if (pb_dlg_info_is_pixels(hDlg)) {
-        if (pw) *pw = (long long)(rc.right - rc.left);
-        if (ph) *ph = (long long)(rc.bottom - rc.top);
+        if (pw) *pw = (long)(rc.right - rc.left);
+        if (ph) *ph = (long)(rc.bottom - rc.top);
         return;
     }
     pb_dlg_units_for(hDlg, &dx, &dy);
-    if (pw) *pw = (long long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
-    if (ph) *ph = (long long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
+    if (pw) *pw = (long)(((rc.right - rc.left) * 4 + dx / 2) / dx);
+    if (ph) *ph = (long)(((rc.bottom - rc.top) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET CLIENT hDlg, x&, y& - the arguments are a CLIENT size, so the
@@ -22127,7 +22221,7 @@ void pb_dialog_set_client(void* hDlg, long long w, long long h) {
 }
 
 /* DIALOG GET LOC hDlg TO x&, y& */
-void pb_dialog_get_loc(void* hDlg, long long* px, long long* py) {
+void pb_dialog_get_loc(void* hDlg, long* px, long* py) {
     pb_rect_t wr;
     pb_point_t org;
     int dx, dy;
@@ -22135,13 +22229,13 @@ void pb_dialog_get_loc(void* hDlg, long long* px, long long* py) {
     GetWindowRect(hDlg, &wr);
     pb_dlg_origin(hDlg, &org);
     if (pb_dlg_info_is_pixels(hDlg)) {
-        if (px) *px = (long long)(wr.left - org.x);
-        if (py) *py = (long long)(wr.top - org.y);
+        if (px) *px = (long)(wr.left - org.x);
+        if (py) *py = (long)(wr.top - org.y);
         return;
     }
     pb_dlg_units_for(hDlg, &dx, &dy);
-    if (px) *px = (long long)(((wr.left - org.x) * 4 + dx / 2) / dx);
-    if (py) *py = (long long)(((wr.top - org.y) * 8 + dy / 2) / dy);
+    if (px) *px = (long)(((wr.left - org.x) * 4 + dx / 2) / dx);
+    if (py) *py = (long)(((wr.top - org.y) * 8 + dy / 2) / dy);
 }
 
 /* DIALOG SET LOC hDlg, x&, y& */
@@ -22160,7 +22254,7 @@ void pb_dialog_set_loc(void* hDlg, long long x, long long y) {
 }
 
 /* DIALOG PIXELS hDlg, x&, y& TO UNITS xx&, yy&  - device units -> dialog units */
-void pb_dialog_pixels(void* hDlg, long long x, long long y, long long* px, long long* py) {
+void pb_dialog_pixels(void* hDlg, long long x, long long y, long* px, long* py) {
     int dx, dy;
     (void)hDlg;
     pb_dlg_units_for(hDlg, &dx, &dy);
@@ -22170,12 +22264,12 @@ void pb_dialog_pixels(void* hDlg, long long x, long long y, long long* px, long 
        is what keeps column 2 from being 2 px too wide and raising a
        horizontal scroll bar.  Verified with a PBWin 10 probe:
        scroll_px=17, scroll_dlu=8, after_set_px=540. */
-    if (px) *px = (long long)((x * 4 + dx / 2) / dx);
-    if (py) *py = (long long)((y * 8 + dy / 2) / dy);
+    if (px) *px = (long)((x * 4 + dx / 2) / dx);
+    if (py) *py = (long)((y * 8 + dy / 2) / dy);
 }
 
 /* DIALOG UNITS hDlg, x&, y& TO PIXELS xx&, yy&  - dialog units -> device units */
-void pb_dialog_units(void* hDlg, long long x, long long y, long long* px, long long* py) {
+void pb_dialog_units(void* hDlg, long long x, long long y, long* px, long* py) {
     int dx, dy;
     (void)hDlg;
     pb_dlg_units_for(hDlg, &dx, &dy);
@@ -22185,8 +22279,8 @@ void pb_dialog_units(void* hDlg, long long x, long long y, long long* px, long l
        CONTROL GET CLIENT -> DIALOG UNITS round trip then centers its clock
        one pixel too high (measured 2026-11-22 with a PBWin/PB64 probe:
        PBWin to_px=600,488; PB64 was 600,487). */
-    if (px) *px = (long long)((x * dx + 2) / 4);
-    if (py) *py = (long long)((y * dy + 4) / 8);
+    if (px) *px = (long)((x * dx + 2) / 4);
+    if (py) *py = (long)((y * dy + 4) / 8);
 }
 
 /* ===================================================================
@@ -22228,29 +22322,29 @@ void pb_dialog_units(void* hDlg, long long x, long long y, long long* px, long l
    =================================================================== */
 
 /* CONTROL GET CLIENT hDlg, id& TO nWide&, nHigh& */
-void pb_control_get_client(void* hDlg, long long id, long long* pw, long long* ph) {
+void pb_control_get_client(void* hDlg, long long id, long* pw, long* ph) {
     void* h = pb_pb_hwnd(hDlg, id);
     pb_rect_t rc;
     if (!h) { if (pw) *pw = 0; if (ph) *ph = 0; return; }
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetClientRect(h, &rc);
-    if (pw) *pw = (long long)pb_px_x_to_dlu_for(hDlg, rc.right - rc.left);
-    if (ph) *ph = (long long)pb_px_y_to_dlu_for(hDlg, rc.bottom - rc.top);
+    if (pw) *pw = (long)pb_px_x_to_dlu_for(hDlg, rc.right - rc.left);
+    if (ph) *ph = (long)pb_px_y_to_dlu_for(hDlg, rc.bottom - rc.top);
 }
 
 /* CONTROL GET SIZE hDlg, id& TO nWide&, nHigh& - overall, borders included */
-void pb_control_get_size(void* hDlg, long long id, long long* pw, long long* ph) {
+void pb_control_get_size(void* hDlg, long long id, long* pw, long* ph) {
     void* h = pb_pb_hwnd(hDlg, id);
     pb_rect_t rc;
     if (!h) { if (pw) *pw = 0; if (ph) *ph = 0; return; }
     rc.left = 0; rc.top = 0; rc.right = 0; rc.bottom = 0;
     GetWindowRect(h, &rc);
-    if (pw) *pw = (long long)pb_px_x_to_dlu_for(hDlg, rc.right - rc.left);
-    if (ph) *ph = (long long)pb_px_y_to_dlu_for(hDlg, rc.bottom - rc.top);
+    if (pw) *pw = (long)pb_px_x_to_dlu_for(hDlg, rc.right - rc.left);
+    if (ph) *ph = (long)pb_px_y_to_dlu_for(hDlg, rc.bottom - rc.top);
 }
 
 /* CONTROL GET LOC hDlg, id& TO x&, y& - from the parent's client origin */
-void pb_control_get_loc(void* hDlg, long long id, long long* px, long long* py) {
+void pb_control_get_loc(void* hDlg, long long id, long* px, long* py) {
     void* h = pb_pb_hwnd(hDlg, id);
     pb_rect_t wr;
     pb_point_t org;
@@ -22261,8 +22355,8 @@ void pb_control_get_loc(void* hDlg, long long id, long long* px, long long* py) 
     GetWindowRect(h, &wr);
     org.x = 0; org.y = 0;
     if (hDlg) ClientToScreen(hDlg, &org);
-    if (px) *px = (long long)pb_px_x_to_dlu_for(hDlg, wr.left - org.x);
-    if (py) *py = (long long)pb_px_y_to_dlu_for(hDlg, wr.top - org.y);
+    if (px) *px = (long)pb_px_x_to_dlu_for(hDlg, wr.left - org.x);
+    if (py) *py = (long)pb_px_y_to_dlu_for(hDlg, wr.top - org.y);
 }
 
 /* CONTROL SET LOC hDlg, id&, x&, y& */
@@ -22827,14 +22921,17 @@ typedef struct {
 void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht,
                               unsigned long user_style, unsigned long user_exstyle) {
     /* PBWin's DDT LISTVIEW default has LVS_REPORT (1), LVS_SINGLESEL (4),
-       LVS_SHOWSELALWAYS (8), WS_CHILD, WS_VISIBLE, WS_TABSTOP - and neither
-       WS_BORDER nor WS_EX_CLIENTEDGE.  Adding those (the pre-batch-397
-       default) inset the header by 3 px and shrank the client area.
+       LVS_SHOWSELALWAYS (8), WS_CHILD and WS_VISIBLE - but **no**
+       WS_TABSTOP.  A PBWin10 probe of the 0086 default-controls sample
+       reports 0x50000009; the fork's old default was 0x50010009 because it
+       added WS_TABSTOP, which made the dialog focus the ListView instead of
+       the later TreeView and suppressed TreeView's automatic Root selection.
+       Neither WS_BORDER nor WS_EX_CLIENTEDGE is part of the default either.
        An explicit style& from CONTROL ADD LISTVIEW overrides the default;
        WS_CHILD is always forced because CreateWindowExA needs it. */
     unsigned long style = user_style
         ? (user_style | 0x40000000u /* WS_CHILD */)
-        : (0x1u | 0x4u | 0x8u | 0x40000000u | 0x10000000u | 0x00010000u);
+        : (0x1u | 0x4u | 0x8u | 0x40000000u | 0x10000000u);
     void* h;
     pb_icc(PB_ICC_LISTVIEW_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
@@ -22864,7 +22961,8 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
    anything else is used verbatim apart from WS_CHILD|WS_VISIBLE, which are
    what make it a visible child control at all.  That is how a caller reaches
    %TVS_CHECKBOXES (0x0100), which TREEVIEW SET/GET CHECK requires. */
-void* pb_control_add_treeview(void* parent, long id, int x, int y, int w, int ht,
+void* pb_control_add_treeview(void* parent, long id, const char* text,
+                              int x, int y, int w, int ht,
                               int style_ovr, int exstyle_ovr) {
     /* PBWin10's default TREEVIEW style measured with _probe_styles.py:
        style 0x50010027 (TVS_HASBUTTONS|HASLINES|LINESATROOT|SHOWSELALWAYS,
@@ -22878,7 +22976,7 @@ void* pb_control_add_treeview(void* parent, long id, int x, int y, int w, int ht
     unsigned long exstyle = (exstyle_ovr != 0) ? (unsigned long)exstyle_ovr : 0u;
     pb_icc(PB_ICC_TREEVIEW_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    void* h = CreateWindowExA(exstyle, "SysTreeView32", "",
+    void* h = CreateWindowExA(exstyle, "SysTreeView32", text ? text : "",
                            style, x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
@@ -22896,10 +22994,9 @@ void* pb_control_add_toolbar(void* parent, long id, const char* text,
                              long long style, long long exstyle) {
     unsigned long s = (unsigned long)(style ? style : PB_CCS_TOP);
     void* h;
-    (void)text;
     pb_icc(PB_ICC_BAR_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    h = CreateWindowExA((unsigned long)exstyle, PB_TOOLBARCLASSNAME, "",
+    h = CreateWindowExA((unsigned long)exstyle, PB_TOOLBARCLASSNAME, text ? text : "",
                         s | 0x40000000 /* WS_CHILD */ | 0x10000000 /* WS_VISIBLE */,
                         x, y, w, ht, parent, (void*)(long long)id,
                         GetModuleHandleA(0), 0);
@@ -22917,10 +23014,9 @@ void* pb_control_add_statusbar(void* parent, long id, const char* text,
                                long long style, long long exstyle) {
     unsigned long s = (unsigned long)(style ? style : PB_CCS_BOTTOM);
     void* h;
-    (void)text;
     pb_icc(PB_ICC_BAR_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    h = CreateWindowExA((unsigned long)exstyle, PB_STATUSCLASSNAME, "",
+    h = CreateWindowExA((unsigned long)exstyle, PB_STATUSCLASSNAME, text ? text : "",
                         s | 0x40000000 | 0x10000000,
                         x, y, w, ht, parent, (void*)(long long)id,
                         GetModuleHandleA(0), 0);
@@ -22937,24 +23033,22 @@ void* pb_control_add_statusbar(void* parent, long id, const char* text,
        %WS_CHILD | %WS_VISIBLE | %SS_OWNERDRAW(0x0D)
    and, exactly as for every other CONTROL ADD form here, a style the
    program supplies REPLACES that default rather than adding to it.
-   The parser represents an omitted style as 0, so 0 is treated as
-   "omitted"; any non-zero style is used verbatim plus WS_CHILD and
-   WS_VISIBLE.  In particular a supplied style with no SS_* type bits
-   must not acquire SS_OWNERDRAW -- the help page lists only the four
-   border/notify flags for the supplied form, and batch179 probes both
-   the default (13) and the supplied (0) type bits.
+   A supplied border/notify style is additive on top of SS_OWNERDRAW:
+   PBWin10 style probes show 0x110D for a %SS_SUNKEN/%SS_NOTIFY control,
+   so the type bit is not replaced by the supplied style.
    Txt$ is carried on the window but never painted: a %SS_OWNERDRAW static
    draws nothing itself, and the help page says outright that a graphic
    control does not display its text. */
 void* pb_control_add_graphic(void* parent, long id, const char* text,
                              int x, int y, int w, int ht,
                              int style, int exstyle) {
-    /* DDT always creates the control as a visible child, whatever extra
-       style the program passes.  An omitted style (represented as 0 by
-       the parser) gets the documented SS_OWNERDRAW type; a supplied
-       non-zero style is preserved exactly, including a zero type field. */
-    unsigned long s = (unsigned long)style;
-    if (s == 0) s = 0x0000000Du /* SS_OWNERDRAW */;
+    /* DDT always creates the control as a visible child and always gives it
+       the SS_OWNERDRAW type, even when the program supplies border/notify
+       bits.  A PBWin10 probe of 1546 (CONTROL ADD GRAPHIC with
+       %WS_VISIBLE Or %SS_SUNKEN Or %SS_NOTIFY) reports style 0x5000110D;
+       preserving the supplied style verbatim produced 0x50001100 and left
+       the control on the ordinary STATIC paint path. */
+    unsigned long s = (unsigned long)style | 0x0000000Du /* SS_OWNERDRAW */;
     s |= 0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */;
     g_gr_ctl_dlu_w = w;
     g_gr_ctl_dlu_h = ht;
@@ -23004,11 +23098,43 @@ void* pb_control_add_header(void* parent, long id, const char* text,
    style is the caller's, and the style operand is passed through untouched.
    The one exception is an entirely zero style, which would create an invisible
    control; in that case WS_CHILD|WS_VISIBLE is supplied. */
+/* RichEdit 1.0 (the class registered by riched32.dll, which is what a DDT
+   `CONTROL ADD "RichEdit"` creates) ignores WM_SETFONT.  PBWin therefore
+   gives it the dialog font through EM_SETCHARFORMAT before inserting the
+   text; without that the control keeps the bold System face and its text
+   is both wider and heavier than the original.  CHARFORMATA is duplicated
+   here because this runtime deliberately does not include windows.h. */
+typedef struct {
+    unsigned long cbSize;
+    unsigned long dwMask;
+    unsigned long dwEffects;
+    long yHeight;
+    long yOffset;
+    unsigned long crTextColor;
+    unsigned char bCharSet;
+    unsigned char bPitchAndFamily;
+    char szFaceName[32];
+    unsigned short wFiller;
+} pb_charformat_a;
+
+static int pb_class_is_richedit(const char* cls) {
+    int i;
+    static const char name[] = "RICHEDIT";
+    if (!cls) return 0;
+    for (i = 0; i < 8; i++) {
+        char c = cls[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        if (c != name[i]) return 0;
+    }
+    return 1;
+}
+
 void* pb_control_add_custom(const char* cls, void* parent, long id, const char* text,
                             int x, int y, int w, int ht,
                             long style, long exstyle) {
     unsigned long s = (unsigned long)style;
     void* h;
+    int is_rich = pb_class_is_richedit(cls);
     /* Register every common-control class family before CreateWindowExA.
        ComboBoxEx32 (ICC_USEREX_CLASSES), SysDateTimePick32/SysMonthCal32
        (ICC_DATE_CLASSES) and the CoolBar class are not covered by the
@@ -23022,8 +23148,31 @@ void* pb_control_add_custom(const char* cls, void* parent, long id, const char* 
        built from one of them (e.g. "MSCTLS_TRACKBAR_CLASS32") exists */
     pb_icc(PB_ICC_LISTVIEW_CLASSES | PB_ICC_TREEVIEW_CLASSES | PB_ICC_BAR_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    h = CreateWindowExA((unsigned long)exstyle, cls, text ? text : "", s, x, y, w, ht,
+    h = CreateWindowExA((unsigned long)exstyle, cls,
+                        (is_rich || !text) ? "" : text, s, x, y, w, ht,
                         parent, (void*)(long long)id, GetModuleHandleA(0), 0);
+    /* RichEdit 1.0 ignores WM_SETFONT, so apply PBWin's DDT font through
+       EM_SETCHARFORMAT (SCF_DEFAULT) before the initial text arrives.
+       The face/size are the same MS Sans Serif 8.25pt (165 twips) the
+       dialog font uses; see pb_dialog_font() below.  With ES_NOHIDESEL
+       PBWin also leaves the whole initial text selected. */
+    if (h && is_rich) {
+        pb_charformat_a cf;
+        memset(&cf, 0, sizeof(cf));
+        cf.cbSize = (unsigned long)sizeof(cf);
+        cf.dwMask = 0xA8000001UL;   /* CFM_FACE | CFM_SIZE | CFM_CHARSET | CFM_BOLD */
+        cf.yHeight = 165;           /* 8.25 pt */
+        cf.dwEffects = 0;           /* clear the default System face's bold bit */
+        cf.bCharSet = 0;            /* ANSI_CHARSET */
+        cf.bPitchAndFamily = 0x22;  /* VARIABLE_PITCH | FF_SWISS */
+        strcpy(cf.szFaceName, "MS Sans Serif");
+        SendMessageA(h, 0x0444 /* EM_SETCHARFORMAT */, 0 /* SCF_DEFAULT */,
+                    (long long)(size_t)&cf);
+        if (text) SendMessageA(h, 0x000C /* WM_SETTEXT */, 0,
+                               (long long)(size_t)text);
+        if (s & 0x00000100UL /* ES_NOHIDESEL */)
+            SendMessageA(h, 0x00B1 /* EM_SETSEL */, 0, -1);
+    }
     /* SysIPAddress32 is built from four child EDIT controls, and the control
        does not forward WM_SETFONT to them.  PBWin leaves the IP fields on
        DEFAULT_GUI_FONT (MS Sans Serif 11, h=-11); our untouched children were
@@ -23635,7 +23784,6 @@ static void* pb_tab_page_tab[PB_TAB_MAX_PAGES];
 static int   pb_tab_page_num[PB_TAB_MAX_PAGES];
 static void* pb_tab_page_dlg[PB_TAB_MAX_PAGES];
 static int   pb_tab_page_count = 0;
-static int   pb_tabpage_registered = 0;
 
 static int pb_tab_page_find(void* hTab, int page) {
     for (int i = 0; i < pb_tab_page_count; i++) {
@@ -23791,20 +23939,6 @@ static long __stdcall pb_tabpage_wndproc(void* hWnd, unsigned int Msg,
     }
 }
 
-static void pb_tabpage_register_class(void) {
-    pb_wndclassex_t wc;
-    if (pb_tabpage_registered) return;
-    memset(&wc, 0, sizeof(wc));
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = (void*)pb_tabpage_wndproc;
-    wc.hInstance = GetModuleHandleA(0);
-    wc.hCursor = LoadCursorA(0, (const char*)32512);
-    wc.hbrBackground = (void*)5;   /* COLOR_WINDOW + 1 */
-    wc.lpszClassName = "PBWIN_TABPAGE_CLASS";
-    RegisterClassExA(&wc);
-    pb_tabpage_registered = 1;
-}
-
 /* Resolve the tab control from (dialog handle, control id). */
 static void* pb_tab_hwnd(void* hDlg, long id) {
     if (!hDlg) return 0;
@@ -23955,7 +24089,6 @@ long long pb_tab_insert_page(void* hDlg, long id, int page, int image,
     void* hPage;
     int slot;
     if (!h || page < 1) return 0;
-    pb_tabpage_register_class();
     memset(&it, 0, sizeof(it));
     it.mask = PB_TCIF_TEXT | (image > 0 ? PB_TCIF_IMAGE : 0u);
     it.pszText = (char*)(text ? text : "");
@@ -23970,13 +24103,28 @@ long long pb_tab_insert_page(void* hDlg, long id, int page, int image,
     GetClientRect(h, rcs);
     SendMessageA(h, PB_TCM_ADJUSTRECT, 0 /* FALSE: give the display area */,
                  (pb_lparam_t)(size_t)rcs);
-    hPage = CreateWindowExA(0, "PBWIN_TABPAGE_CLASS", "",
+    hPage = CreateWindowExA(0, (const char*)(size_t)32770 /* #32770 dialog class */, "",
                             0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */,
                             rcs[0], rcs[1], rcs[2] - rcs[0], rcs[3] - rcs[1],
                             h, 0, GetModuleHandleA(0), 0);
     if (!hPage) {
         SendMessageA(h, PB_TCM_DELETEITEM, (unsigned int)(page - 1), 0);
         return 0;
+    }
+    /* PBWin's tab pages are real dialog-class windows (#32770).  The built-in
+       dialog procedure does not post WM_QUIT on WM_DESTROY and would not route
+       WM_COMMAND to the TAB callback, so subclass it with the page procedure
+       right after creation.  Class identity now matches PBWin (0086). */
+    (void)pb_set_winlong(hPage, -4 /* GWLP_WNDPROC */, (long long)(size_t)pb_tabpage_wndproc);
+    /* A tab page is a child container, but PBWin creates it as a dialog
+       (#32770), so it inherits the owner dialog's font and unit system.  Store
+       the same snapshot: otherwise every CONTROL ADD on the page treats
+       PIXELS coordinates as DLU (0086's 60x20 label became 90x32). */
+    {
+        int dx = 0, dy = 0;
+        pb_dlg_info_units(hDlg, &dx, &dy);
+        pb_dlg_info_store(hPage, pb_dialog_font_for(hDlg), dx, dy,
+                          pb_dlg_info_is_pixels(hDlg));
     }
     if (cb) pb_register_callback_hwnd(hPage, cb);
     if (pb_tab_page_count < PB_TAB_MAX_PAGES) {
@@ -25098,7 +25246,10 @@ void* pb_control_add_textbox_ex(void* parent, long id, const char* text,
     pb_dlu_to_px_for(parent, &x, &y, &w, &h);
     unsigned long s = style ? (unsigned long)style : 0x80u | 0x10000u;
     s |= 0x40000000u | 0x10000000u;
-    unsigned long ex = exstyle ? (unsigned long)exstyle : 0x200u;
+    /* Explicit TEXTBOX style: PBWin drops the %WS_EX_CLIENTEDGE default and
+       keeps the requested width/height as the control rectangle; EDIT's
+       %WS_BORDER is drawn inside it (0078/0080: 580x120 stays 580x120). */
+    unsigned long ex = style ? (unsigned long)exstyle : 0x200u;
     void* hw = CreateWindowExA(ex, "EDIT", text, s,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -25142,17 +25293,7 @@ void* pb_control_add_scrollbar_ex(void* parent, long id, const char* text,
     void* hbar = CreateWindowExA((unsigned long)exstyle, "SCROLLBAR", text, s,
                             x, y, w, ht, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
-    SendMessageA(hbar, 0x00F4 /* SBM_SETRANGE */, 0, 100);
-    /* CHW: default page size is 10 on creation. */
-    if (hbar) {
-        struct { unsigned int cbSize; unsigned int fMask; int nMin; int nMax;
-                 unsigned int nPage; int nPos; int nTrackPos; } si;
-        memset(&si, 0, sizeof(si));
-        si.cbSize = (unsigned int)sizeof(si);
-        si.fMask = 0x0002 /* SIF_PAGE */;
-        si.nPage = 10;
-        SendMessageA(hbar, 0x00E9 /* SBM_SETSCROLLINFO */, 0, (long long)&si);
-    }
+    pb_scrollbar_init_default(hbar);
     if (hbar) { SendMessageA(hbar, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
                 if (fn) pb_register_callback_hwnd(hbar, fn); }
     return hbar;

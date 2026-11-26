@@ -1285,6 +1285,7 @@ fn link_dll(
             "-lwinspool".to_string(),
             "-lversion".to_string(),
             "-lmpr".to_string(),
+            "-lpsapi".to_string(),
             "-loleaut32".to_string(),
             "-luuid".to_string(),
             "-lhtmlhelp".to_string(),
@@ -1564,6 +1565,7 @@ fn link_exe(
             "-lwinspool".to_string(),
             "-lversion".to_string(),
             "-lmpr".to_string(),
+            "-lpsapi".to_string(),
             "-loleaut32".to_string(),
             "-luuid".to_string(),
             "-lhtmlhelp".to_string(),
@@ -4738,6 +4740,7 @@ impl Compiler {
             &[
                 IrType::Ptr,
                 IrType::I32,
+                IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -4766,6 +4769,7 @@ impl Compiler {
             &[
                 IrType::Ptr,
                 IrType::I32,
+                IrType::Ptr,
                 IrType::I32,
                 IrType::I32,
                 IrType::I32,
@@ -9129,6 +9133,15 @@ impl Compiler {
             .declare_dllimport("GetCommandLineA", &IrType::Ptr, &[]);
         self.module
             .declare_dllimport("GetModuleHandleA", &IrType::I64, &[IrType::Ptr]);
+        // PBWin's Win32API.inc reaches GetStdHandle through WinBase.inc but
+        // not AllocConsole (WinCon.inc is not included by win32api.inc).
+        // PBWin still accepts the call as a built-in API; PB64 lowered the
+        // call but emitted no declaration, so clang failed with
+        // `use of undefined value '@AllocConsole'` (0765/0766).  Predeclare
+        // the KERNEL32 entry point; a user WinCon.inc declaration is then a
+        // duplicate no-op because llvm_ir's declared set already contains it.
+        self.module
+            .declare_dllimport("AllocConsole", &IrType::I32, &[]);
         self.module
             .declare_dllimport("GetSystemMetrics", &IrType::I32, &[IrType::I32]);
         self.module.declare_dllimport(
@@ -14135,6 +14148,31 @@ impl Compiler {
                     let ptr_name = info.ptr_name.clone();
                     let target_ir = info.ir_type.clone();
                     let target_pb = info.pb_type.clone();
+                    // Whole-UDT assignment (`temp = @p[5]`): copy the source
+                    // struct bytes into the destination slot.  Without this
+                    // the generic path stored the source ADDRESS into the
+                    // first 8 bytes, so temp.s read as empty (batch2 1399).
+                    if let PbType::UserDefined(dst_ty) = &target_pb {
+                        if let Some(PbType::UserDefined(src_ty)) = self.expr_pb_type(&assign.value)
+                        {
+                            if normalize_name(dst_ty) == normalize_name(&src_ty) {
+                                let size = self
+                                    .type_layouts
+                                    .get(&normalize_name(dst_ty))
+                                    .map(|l| l.size)
+                                    .unwrap_or(0);
+                                if size > 0 {
+                                    let dest = Val::new(ptr_name, IrType::Ptr);
+                                    fb.call(
+                                        &IrType::Ptr,
+                                        "memcpy",
+                                        &[dest, value.clone(), fb.const_i32(size as i32)],
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
                     // CHW LET (with Types): a UDT value assigned to a dynamic
                     // string is copied byte-for-byte into a BSTR of the struct
                     // size, preserving embedded NULs. Must precede the Error
@@ -14913,6 +14951,12 @@ impl Compiler {
             // The parser may represent `a(i)` as FunctionCall rather than
             // ArrayAccess, so both forms consult the array table.
             Expr::ArrayAccess(name, _) => self.array_elem_pb_type(name),
+            Expr::FunctionCall(name, args) if name.eq_ignore_ascii_case("PEEKPTR") => {
+                match args.first().and_then(|a| self.expr_pb_type(a)) {
+                    Some(PbType::Pointer(inner)) => Some(*inner),
+                    _ => None,
+                }
+            }
             Expr::FunctionCall(name, idxs) if !idxs.is_empty() => self.array_elem_pb_type(name),
             Expr::Deref(inner) => self.expr_pb_type(inner),
             _ => None,
@@ -23217,29 +23261,31 @@ impl Compiler {
                 return Ok(());
             }
             "CONTROL_ADD_PROGRESSBAR" => {
-                // batch 220: the official syntax requires all 7 arguments, so a shorter
-                // spelling is malformed. Report it instead of silently doing nothing.
-                if call.args.len() < 7 {
+                // batch 220: the official syntax requires all arguments, so a
+                // shorter spelling is malformed. Report it instead of silently
+                // doing nothing.  Layout: hDlg, id, text, x, y, w, h, TO.
+                if call.args.len() < 8 {
                     return Err(pb::error::PbError::parser(
-                        "CONTROL_ADD_PROGRESSBAR requires its arguments: CONTROL ADD PROGRESSBAR hDlg , id& , x , y , xx , yy TO hCtrl&".to_string(),
+                        "CONTROL_ADD_PROGRESSBAR requires its arguments: CONTROL ADD PROGRESSBAR hDlg , id& [, text$ ] , x , y , xx , yy TO hCtrl&".to_string(),
                         None,
                         call.line,
                     ));
                 }
 
-                if call.args.len() >= 7 {
+                if call.args.len() >= 8 {
                     let parent = self.compile_expr(fb, &call.args[0])?;
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let x = self.compile_expr(fb, &call.args[2])?;
-                    let y = self.compile_expr(fb, &call.args[3])?;
-                    let w = self.compile_expr(fb, &call.args[4])?;
-                    let h = self.compile_expr(fb, &call.args[5])?;
+                    let text = self.compile_expr(fb, &call.args[2])?;
+                    let x = self.compile_expr(fb, &call.args[3])?;
+                    let y = self.compile_expr(fb, &call.args[4])?;
+                    let w = self.compile_expr(fb, &call.args[5])?;
+                    let h = self.compile_expr(fb, &call.args[6])?;
                     let hc = fb.call(
                         &IrType::Ptr,
                         "pb_control_add_progressbar",
-                        &[parent, id, x, y, w, h],
+                        &[parent, id, text, x, y, w, h],
                     );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[6]) {
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[7]) {
                         let hc_i = fb.ptrtoint64(&hc);
                         let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
                         fb.store(&hc_i_v, &ptr);
@@ -23609,22 +23655,32 @@ impl Compiler {
                         parent = fb.inttoptr(&parent);
                     }
                     let id = self.compile_expr(fb, &call.args[1])?;
-                    let x = self.compile_expr(fb, &call.args[2])?;
-                    let y = self.compile_expr(fb, &call.args[3])?;
-                    let w = self.compile_expr(fb, &call.args[4])?;
-                    let h = self.compile_expr(fb, &call.args[5])?;
-                    // Optional style&/exstyle& occupy slots 7 and 8; the parser
-                    // always emits them, but stay tolerant of a bare 7-operand
-                    // form so hand-built ASTs keep working. 0 means "omitted",
-                    // which is how the runtime selects the documented default.
-                    let style = if call.args.len() >= 9 {
-                        let v = self.compile_expr(fb, &call.args[7])?;
+                    /* Layout: [hDlg, id, text, x, y, w, h, target, style, exstyle].
+                    The pre-text 9-operand layout is still accepted for any
+                    hand-built AST. */
+                    let (text, base) = if call.args.len() >= 10 {
+                        (self.compile_expr(fb, &call.args[2])?, 3usize)
+                    } else {
+                        (
+                            self.compile_expr(fb, &Expr::StringLit(String::new()))?,
+                            2usize,
+                        )
+                    };
+                    let x = self.compile_expr(fb, &call.args[base])?;
+                    let y = self.compile_expr(fb, &call.args[base + 1])?;
+                    let w = self.compile_expr(fb, &call.args[base + 2])?;
+                    let h = self.compile_expr(fb, &call.args[base + 3])?;
+                    // Optional style&/exstyle& occupy the two slots after the
+                    // target. 0 means "omitted", which selects the documented
+                    // default in the runtime.
+                    let style = if call.args.len() >= base + 7 {
+                        let v = self.compile_expr(fb, &call.args[base + 5])?;
                         self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
                     } else {
                         fb.const_i32(0)
                     };
-                    let exstyle = if call.args.len() >= 9 {
-                        let v = self.compile_expr(fb, &call.args[8])?;
+                    let exstyle = if call.args.len() >= base + 7 {
+                        let v = self.compile_expr(fb, &call.args[base + 6])?;
                         self.convert_value(fb, &v, &IrType::I32, &PbType::Long)
                     } else {
                         fb.const_i32(0)
@@ -23632,9 +23688,9 @@ impl Compiler {
                     let hc = fb.call(
                         &IrType::Ptr,
                         "pb_control_add_treeview",
-                        &[parent, id, x, y, w, h, style, exstyle],
+                        &[parent, id, text, x, y, w, h, style, exstyle],
                     );
-                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[6]) {
+                    if let Some((ptr, ty, pty)) = self.lvalue_ptr(fb, &call.args[base + 4]) {
                         let hc_i = fb.ptrtoint64(&hc);
                         let hc_i_v = self.convert_value(fb, &hc_i, &ty, &pty);
                         fb.store(&hc_i_v, &ptr);
@@ -26968,9 +27024,11 @@ impl Compiler {
                 // batch 178: the resource-image family.  All four statements
                 // share one runtime helper; the two compile-time flags say
                 // whether the control is a BUTTON and whether it is the X
-                // (resize-to-fit) form.  The style and exstyle clauses are not
-                // reachable from the parser, so -1 is passed for both and the
-                // documented defaults apply.
+                // (resize-to-fit) form.  The optional style/exstyle clauses
+                // ARE reachable: `CONTROL ADD IMAGE h,id,name,x,y,w,h,style`
+                // (0087 passes %WS_Border) must reach CreateWindowEx or the
+                // STATIC has no border and its client stays 30x30 instead of
+                // PBWin's 28x28.
                 if call.args.len() >= 8 {
                     let mut hwnd = self.compile_expr(fb, &call.args[0])?;
                     if hwnd.ty != IrType::Ptr {
@@ -26988,8 +27046,14 @@ impl Compiler {
                         0
                     };
                     let is_x = if call.name.ends_with('X') { 1 } else { 0 };
-                    let style = fb.const_i32(-1);
-                    let exstyle = fb.const_i32(-1);
+                    let style = match call.args.get(7) {
+                        Some(e) => self.compile_expr(fb, e)?,
+                        None => fb.const_i32(-1),
+                    };
+                    let exstyle = match call.args.get(8) {
+                        Some(e) => self.compile_expr(fb, e)?,
+                        None => fb.const_i32(-1),
+                    };
                     let flag_button = fb.const_i32(is_button);
                     let flag_x = fb.const_i32(is_x);
                     let hc = fb.call(
@@ -35871,12 +35935,15 @@ impl Compiler {
                 })
             }
             "PEEKPTR" => {
-                // `@ptr[i]` is PEEK(BYTE, ptr+i); the parser keeps the base
-                // and offset separate so this is real pointer arithmetic
-                // (getelementptr i8), never PB string concatenation.
+                // `@ptr[i]` indexes by the POINTED-TO type, not by raw bytes.
+                // PBWin probe (1399 Pointer to UDT): a `TestType PTR` at
+                // element 5 yields the whole 18-byte TestType, so the byte
+                // offset is i * SizeOf(pointee).  The earlier unconditional
+                // i8 GEP read byte 5 of element 0 and left `temp.s` empty.
+                // Untyped bases (VarPtr results) keep the byte-offset form.
                 if args.len() != 2 {
                     return Some(Err(PbError::runtime(
-                        "PEEKPTR requires a pointer and a byte offset".to_string(),
+                        "PEEKPTR requires a pointer and an index".to_string(),
                     )));
                 }
                 let base = match self.compile_expr(fb, &args[0]) {
@@ -35893,13 +35960,43 @@ impl Compiler {
                     Ok(v) => self.to_i64(fb, &v),
                     Err(e) => return Some(Err(e)),
                 };
+                let pointee = match self.expr_pb_type(&args[0]) {
+                    Some(PbType::Pointer(inner)) => Some(*inner),
+                    _ => None,
+                };
+                let (byte_off, elem_ir, ref_like) = match pointee {
+                    Some(inner) => {
+                        let elem_ir = Self::ir_type_for(&inner);
+                        let elem_size = self.ir_size_bytes(&elem_ir);
+                        let off = if elem_size > 1 {
+                            fb.mul(&idx, &fb.const_i64(elem_size as i64))
+                        } else {
+                            idx
+                        };
+                        let ref_like = matches!(
+                            inner,
+                            PbType::String
+                                | PbType::WString
+                                | PbType::FixedString(_)
+                                | PbType::AsciiZ(_)
+                                | PbType::Interface(_)
+                                | PbType::UserDefined(_)
+                        );
+                        (off, Some(elem_ir), ref_like)
+                    }
+                    None => (idx, None, false),
+                };
                 let addr_reg = fb.next_reg();
                 fb.raw_line(&format!(
                     "{} = getelementptr i8, ptr {}, i64 {}",
-                    addr_reg, base_ptr.name, idx.name
+                    addr_reg, base_ptr.name, byte_off.name
                 ));
                 let addr = Val::new(addr_reg, IrType::Ptr);
-                Some(Ok(fb.call(&IrType::I32, "pb_peek8", &[addr])))
+                match elem_ir {
+                    Some(ty) if !ref_like => Some(Ok(fb.load(&ty, &addr))),
+                    Some(_) => Some(Ok(addr)),
+                    None => Some(Ok(fb.call(&IrType::I32, "pb_peek8", &[addr]))),
+                }
             }
             "PEEK" => {
                 // PEEK([datatype,] address) — default BYTE
@@ -38885,6 +38982,17 @@ impl Compiler {
 
     fn builtin_val(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         let s = self.compile_expr(fb, &args[0])?;
+        // VAL() in PBWin accepts WSTRING/WSTRINGZ and parses UTF-16 text.
+        // pb_val is byte-oriented (pb_str_len + one byte per character), so
+        // handing it a wide BSTR read the digits as '2',0,'0',0,... and
+        // returned 2 for "200" (batch2 0761: Val(xResult) fed Dialog Set
+        // Size 2x2, client collapsed to 0 height).  Convert wide operands
+        // to ANSI first; a pure-ASCII numeric string is byte-identical.
+        let s = if self.expr_is_wstring(&args[0]) {
+            fb.call(&IrType::Ptr, "pb_acode", &[s, fb.const_i32(-1)])
+        } else {
+            s
+        };
         // Optional 1-based offset (CHW VAL_function.htm); defaults to 1.
         let off = if args.len() >= 2 {
             let ov = self.compile_expr(fb, &args[1])?;
@@ -39033,6 +39141,18 @@ impl Compiler {
     fn builtin_metrics(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         if args.is_empty() {
             return Err(PbError::runtime("METRICS requires 1 argument"));
+        }
+        /* Frame.Resize.X/Y are the total DWM resize frame: SM_C[XY]FRAME
+        (4) plus SM_CXPADDEDBORDER (4).  The parser emits sentinels -1001/-1002. */
+        if let Expr::IntegerLit(sentinel) = &args[0] {
+            if *sentinel == -1001 || *sentinel == -1002 {
+                let frame_idx = fb.const_i32(if *sentinel == -1001 { 32 } else { 33 });
+                let padded_idx = fb.const_i32(92); /* SM_CXPADDEDBORDER */
+                let frame = self.call_win32_api(fb, &IrType::I32, "GetSystemMetrics", &[frame_idx]);
+                let padded =
+                    self.call_win32_api(fb, &IrType::I32, "GetSystemMetrics", &[padded_idx]);
+                return Ok(fb.add(&frame, &padded));
+            }
         }
         let v = self.compile_expr(fb, &args[0])?;
         let idx = self.to_i32(fb, &v);

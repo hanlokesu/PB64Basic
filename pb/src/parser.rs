@@ -244,6 +244,11 @@ impl Parser {
                 Token::Global => "GLOBAL",
                 Token::Open => "OPEN",
                 Token::Shared => "SHARED",
+                // José Roca's GDI+ interfaces declare `METHOD Xor`; the
+                // boolean operator token is a legal member name in PB10.
+                Token::Xor => "XOR",
+                // Some COM interfaces expose a member literally named `On`.
+                Token::On => "ON",
                 // Excel/Word generated headers declare `METHOD Select`, so
                 // the member-name position must accept SELECT as well.
                 Token::Select => "SELECT",
@@ -1398,10 +1403,11 @@ impl Parser {
 
     fn parse_global_var_list(&mut self, line: usize) -> PbResult<Vec<VarDecl>> {
         let mut decls: Vec<VarDecl> = Vec::new();
-        // PB semantics: a trailing AS type-fills the whole list, both
-        // back-filling previously untyped names and propagating forward.
-        // `GLOBAL a, b AS QUAD` declares both a and b as QUAD.
-        let mut pending_type: Option<PbType> = None;
+        // PB semantics: a trailing AS type-fills every name in the statement
+        // that has no explicit type, including names before commas.
+        // `GLOBAL a, b AS QUAD` declares both a and b as QUAD;
+        // `GLOBAL hDlg AS Dword, D(), temp AS TestType` gives D()/temp
+        // TestType, while the explicit hDlg stays Dword.
         let mut untyped: Vec<usize> = Vec::new();
         loop {
             let name = self.consume_identifier()?;
@@ -1421,13 +1427,12 @@ impl Parser {
                         decls[*i].pb_type = t.clone();
                     }
                     untyped.clear();
-                    pending_type = Some(t.clone());
                     t
-                } else if let Some(t) = &pending_type {
-                    t.clone()
                 } else {
                     let t = type_from_suffix(&name);
-                    untyped.push(idx);
+                    if !has_type_suffix(&name) {
+                        untyped.push(idx);
+                    }
                     t
                 };
                 decls.push(VarDecl {
@@ -1443,25 +1448,22 @@ impl Parser {
                     decls[*i].pb_type = t.clone();
                 }
                 untyped.clear();
-                pending_type = Some(t.clone());
                 decls.push(VarDecl {
                     name,
                     pb_type: t,
                     is_array: false,
                     line,
                 });
-            } else if let Some(t) = &pending_type {
-                decls.push(VarDecl {
-                    name,
-                    pb_type: t.clone(),
-                    is_array: false,
-                    line,
-                });
             } else {
-                // GLOBAL name (no type, infer from suffix)
+                // GLOBAL name (no type, infer from suffix).  A `$`/`%`/`&`
+                // suffix is an explicit type of its own and must NOT be
+                // back-filled by a later `AS` in the statement
+                // (`LOCAL temp$, wRC, cRC AS Rect` keeps temp$ as STRING).
                 let idx = decls.len();
                 let pb_type = type_from_suffix(&name);
-                untyped.push(idx);
+                if !has_type_suffix(&name) {
+                    untyped.push(idx);
+                }
                 decls.push(VarDecl {
                     name,
                     pb_type,
@@ -1473,6 +1475,11 @@ impl Parser {
             // Check for comma-separated additional variables
             if self.peek() == &Token::Comma {
                 self.advance();
+                // Keep `untyped`: a trailing AS at the end of the statement
+                // back-fills every still-untyped name in the declaration,
+                // across commas.  `GLOBAL hDlg AS Dword, D(), temp AS
+                // TestType` therefore types D() as TestType, while the
+                // already-explicit hDlg stays Dword.
             } else {
                 break;
             }
@@ -1547,7 +1554,12 @@ impl Parser {
                 t
             } else {
                 let t = type_from_suffix(&name);
-                untyped.push(idx);
+                // An explicit `$`/`%`/`&` suffix is not overridden by a later
+                // `AS TYPE`: `LOCAL temp$, wRC, cRC AS Rect` keeps temp$ as
+                // STRING.  Only names with no suffix can be back-filled.
+                if !has_type_suffix(&name) {
+                    untyped.push(idx);
+                }
                 t
             };
 
@@ -2210,6 +2222,17 @@ impl Parser {
                     || self.peek() == &Token::Eol)
             {
                 let nested_name = fname.to_uppercase();
+                // PBWin treats a bare self-reference inside its own TYPE as
+                // a zero-byte/no-op member.  WinSmCrd.inc line 261 writes
+                // `SCARD_T0_REQUEST` inside SCARD_T0_REQUEST itself; PBWin
+                // reports SizeOf = 10 (ioRequest 8 + bSw1 + bSw2) and
+                // accepts the header.  Creating a nested field here made
+                // codegen emit Error 524 Undefined TYPE.
+                if nested_name == name.to_uppercase() {
+                    self.consume_to_eol();
+                    self.skip_eol();
+                    continue;
+                }
                 fields.push(TypeField {
                     name: String::new(),
                     pb_type: PbType::Long,
@@ -11966,6 +11989,23 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // Optional style& [, exstyle&]; 0087 passes %WS_Border.
+                    let mut style = Expr::IntegerLit(-1);
+                    let mut exstyle = Expr::IntegerLit(-1);
+                    if self.peek() == &Token::Comma {
+                        let save = self.pos;
+                        self.advance();
+                        let is_call = matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("CALL"));
+                        if !is_call {
+                            style = self.parse_expression()?;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                exstyle = self.parse_expression()?;
+                            }
+                        } else {
+                            self.pos = save;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -11975,7 +12015,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_IMAGE".to_string(),
-                        args: vec![hwnd, id, image, x, y, w, h, target],
+                        args: vec![hwnd, id, image, x, y, w, h, style, exstyle, target],
                         line,
                     }));
                 }
@@ -12006,6 +12046,23 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // Optional style& [, exstyle&]; 0087 passes %WS_Border.
+                    let mut style = Expr::IntegerLit(-1);
+                    let mut exstyle = Expr::IntegerLit(-1);
+                    if self.peek() == &Token::Comma {
+                        let save = self.pos;
+                        self.advance();
+                        let is_call = matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("CALL"));
+                        if !is_call {
+                            style = self.parse_expression()?;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                exstyle = self.parse_expression()?;
+                            }
+                        } else {
+                            self.pos = save;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -12015,7 +12072,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_IMAGEX".to_string(),
-                        args: vec![hwnd, id, image, x, y, w, h, target],
+                        args: vec![hwnd, id, image, x, y, w, h, style, exstyle, target],
                         line,
                     }));
                 }
@@ -12046,6 +12103,23 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // Optional style& [, exstyle&] (same clause as IMAGE).
+                    let mut style = Expr::IntegerLit(-1);
+                    let mut exstyle = Expr::IntegerLit(-1);
+                    if self.peek() == &Token::Comma {
+                        let save = self.pos;
+                        self.advance();
+                        let is_call = matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("CALL"));
+                        if !is_call {
+                            style = self.parse_expression()?;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                exstyle = self.parse_expression()?;
+                            }
+                        } else {
+                            self.pos = save;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -12055,7 +12129,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_IMGBUTTON".to_string(),
-                        args: vec![hwnd, id, image, x, y, w, h, target],
+                        args: vec![hwnd, id, image, x, y, w, h, style, exstyle, target],
                         line,
                     }));
                 }
@@ -12086,6 +12160,23 @@ impl Parser {
                     let w = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let h = self.parse_expression()?;
+                    // Optional style& [, exstyle&] (same clause as IMAGE).
+                    let mut style = Expr::IntegerLit(-1);
+                    let mut exstyle = Expr::IntegerLit(-1);
+                    if self.peek() == &Token::Comma {
+                        let save = self.pos;
+                        self.advance();
+                        let is_call = matches!(self.peek(), Token::Identifier(w) if w.eq_ignore_ascii_case("CALL"));
+                        if !is_call {
+                            style = self.parse_expression()?;
+                            if self.peek() == &Token::Comma {
+                                self.advance();
+                                exstyle = self.parse_expression()?;
+                            }
+                        } else {
+                            self.pos = save;
+                        }
+                    }
                     let target = if matches!(self.peek(), Token::To) {
                         self.advance();
                         self.parse_expression()?
@@ -12095,7 +12186,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_IMGBUTTONX".to_string(),
-                        args: vec![hwnd, id, image, x, y, w, h, target],
+                        args: vec![hwnd, id, image, x, y, w, h, style, exstyle, target],
                         line,
                     }));
                 }
@@ -12755,15 +12846,18 @@ impl Parser {
                     self.expect(&Token::Comma)?;
 
                     // optional text$ slot (official CONTROL ADD): may be
-                    // a string literal, an empty '', ,' slot, or absent
+                    // a string literal, an empty ', ,' slot, or absent
                     // (legacy fork form id, x, y, w, h).
-                    if matches!(self.peek(), Token::StringLiteral(_)) {
-                        self.parse_expression()?;
+                    let text = if matches!(self.peek(), Token::StringLiteral(_)) {
+                        let t = self.parse_expression()?;
                         self.expect(&Token::Comma)?;
+                        t
                     } else if self.peek() == &Token::Comma {
-                        // empty text slot: id, , x
                         self.advance();
-                    }
+                        Expr::StringLit(String::new())
+                    } else {
+                        Expr::StringLit(String::new())
+                    };
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -12780,7 +12874,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_PROGRESSBAR".to_string(),
-                        args: vec![hwnd, id, x, y, w, h, target],
+                        args: vec![hwnd, id, text, x, y, w, h, target],
                         line,
                     }));
                 }
@@ -13192,7 +13286,7 @@ impl Parser {
                         line,
                     }));
                 }
-                // CONTROL ADD TREEVIEW, hWnd, id, x, y, w, h TO hCtrl&  (batch 158)
+                // CONTROL ADD TREEVIEW, hWnd, id, [txt$,] x, y, w, h TO hCtrl&  (batch 158)
                 if name_upper == "CONTROL"
                     && matches!(self.peek_at(1), Some(Token::Identifier(w)) if w.to_uppercase()=="ADD")
                     && matches!(self.peek_at(2), Some(Token::Identifier(w)) if w.to_uppercase()=="TREEVIEW")
@@ -13207,15 +13301,17 @@ impl Parser {
                     self.expect(&Token::Comma)?;
 
                     // optional text$ slot (official CONTROL ADD): may be
-                    // a string literal, an empty '', ,' slot, or absent
-                    // (legacy fork form id, x, y, w, h).
-                    if matches!(self.peek(), Token::StringLiteral(_)) {
-                        self.parse_expression()?;
+                    // a string literal, an empty ', ,' slot, or absent.
+                    let text = if matches!(self.peek(), Token::StringLiteral(_)) {
+                        let t = self.parse_expression()?;
                         self.expect(&Token::Comma)?;
+                        t
                     } else if self.peek() == &Token::Comma {
-                        // empty text slot: id, , x
                         self.advance();
-                    }
+                        Expr::StringLit(String::new())
+                    } else {
+                        Expr::StringLit(String::new())
+                    };
                     let x = self.parse_expression()?;
                     self.expect(&Token::Comma)?;
                     let y = self.parse_expression()?;
@@ -13248,7 +13344,7 @@ impl Parser {
                     self.consume_to_eol();
                     return Ok(Statement::Call(CallStmt {
                         name: "CONTROL_ADD_TREEVIEW".to_string(),
-                        args: vec![hwnd, id, x, y, w, h, target, style, exstyle],
+                        args: vec![hwnd, id, text, x, y, w, h, target, style, exstyle],
                         line,
                     }));
                 }
@@ -15986,7 +16082,15 @@ impl Parser {
                 let name_clone = name.clone();
 
                 // Check for label: IDENTIFIER:
-                if self.peek_at(1) == Some(&Token::Colon) {
+                // A known procedure name followed by ':' is a statement
+                // separator, not a label.  Gary Beene samples use
+                // `AddToolbar : AddStatusBar : AddListView : AddTreeView`
+                // and `AddComboBox : AddTreeView`; treating those as labels
+                // silently skipped every call before the last one.  The
+                // parser's forward scan already filled declared_procs.
+                if self.peek_at(1) == Some(&Token::Colon)
+                    && !self.declared_procs.contains(&name_upper)
+                {
                     self.advance(); // consume identifier
                     self.advance(); // consume colon
                     return Ok(Statement::Label(name_clone));
@@ -16306,7 +16410,12 @@ impl Parser {
                 t
             } else {
                 let t = type_from_suffix(&name);
-                untyped.push(idx);
+                // An explicit `$`/`%`/`&` suffix is not overridden by a later
+                // `AS TYPE`: `LOCAL temp$, wRC, cRC AS Rect` keeps temp$ as
+                // STRING.  Only names with no suffix can be back-filled.
+                if !has_type_suffix(&name) {
+                    untyped.push(idx);
+                }
                 t
             };
 
@@ -17636,22 +17745,28 @@ impl Parser {
                 self.advance();
                 let fmt = self.parse_clipboard_format();
                 if let Some(format) = fmt {
-                    if self.peek() == &Token::To {
+                    // PBWin accepts both `CLIPBOARD GET TEXT TO t$` (CHW)
+                    // and the reduced `CLIPBOARD GET TEXT t$` spelling used
+                    // by Gary Beene's 1547 sample.  Without the TO keyword
+                    // the next expression is the target.
+                    let target = if self.peek() == &Token::To {
                         self.advance();
-                        let target = self.parse_expression()?;
-                        let result = if self.peek() == &Token::Comma {
-                            self.advance();
-                            Some(self.parse_expression()?)
-                        } else {
-                            None
-                        };
-                        self.consume_to_eol();
-                        return Ok(Statement::ClipboardGet {
-                            format,
-                            target,
-                            result,
-                        });
-                    }
+                        self.parse_expression()?
+                    } else {
+                        self.parse_expression()?
+                    };
+                    let result = if self.peek() == &Token::Comma {
+                        self.advance();
+                        Some(self.parse_expression()?)
+                    } else {
+                        None
+                    };
+                    self.consume_to_eol();
+                    return Ok(Statement::ClipboardGet {
+                        format,
+                        target,
+                        result,
+                    });
                 }
                 self.consume_to_eol();
                 eprintln!("Error: CLIPBOARD GET: unsupported form on line {}", line);
@@ -20100,6 +20215,27 @@ impl Parser {
         let mut e = Expr::Deref(Box::new(inner));
         while self.peek() == &Token::Dot {
             self.advance();
+            // `@p.@field` dereferences a pointer-valued member: PB10 uses it
+            // for ImageCodecInfo's MimeType/Clsid and DEVmode pointer fields.
+            if self.peek() == &Token::At {
+                self.advance();
+                let member = if let Token::Identifier(w) = self.peek() {
+                    let w = w.clone();
+                    self.advance();
+                    w
+                } else if let Some(spelling) = Self::keyword_field_spelling(self.peek()) {
+                    self.advance();
+                    spelling
+                } else {
+                    return Err(PbError::parser(
+                        "Expected member name after '@' dereference dot",
+                        self.current_file(),
+                        self.current_line(),
+                    ));
+                };
+                e = Expr::Deref(Box::new(Expr::TypeMember(Box::new(e), member)));
+                continue;
+            }
             let member = if let Token::Identifier(w) = self.peek() {
                 let w = w.clone();
                 self.advance();
@@ -21453,26 +21589,30 @@ fn metric_index(parts: &[String]) -> Option<i64> {
         .collect::<Vec<_>>()
         .join(".");
     Some(match key.as_str() {
-        "BORDER.X" => 5,        // SM_CXBORDER
-        "BORDER.Y" => 6,        // SM_CYBORDER
-        "CAPTION" => 4,         // SM_CYCAPTION
-        "EDGE.X" => 45,         // SM_CXEDGE
-        "EDGE.Y" => 46,         // SM_CYEDGE
-        "FRAME.FIXED.X" => 7,   // SM_CXFIXEDFRAME = SM_CXDLGFRAME
-        "FRAME.FIXED.Y" => 8,   // SM_CYFIXEDFRAME = SM_CYDLGFRAME
-        "FRAME.RESIZE.X" => 32, // SM_CXSIZEFRAME = SM_CXFRAME
-        "FRAME.RESIZE.Y" => 33, // SM_CYSIZEFRAME = SM_CYFRAME
-        "ICON.X" => 11,         // SM_CXICON
-        "ICON.Y" => 12,         // SM_CYICON
-        "ICONSPACE.X" => 38,    // SM_CXICONSPACING
-        "ICONSPACE.Y" => 39,    // SM_CYICONSPACING
-        "MAXIMIZED.X" => 61,    // SM_CXMAXIMIZED
-        "MAXIMIZED.Y" => 62,    // SM_CYMAXIMIZED
-        "MENUBAR" => 15,        // SM_CYMENU
-        "MINIMUM.X" => 28,      // SM_CXMIN
-        "MINIMUM.Y" => 29,      // SM_CYMIN
-        "SCROLL.HORZ" => 3,     // SM_CYHSCROLL
-        "SCROLL.VERT" => 2,     // SM_CXVSCROLL
+        "BORDER.X" => 5,      // SM_CXBORDER
+        "BORDER.Y" => 6,      // SM_CYBORDER
+        "CAPTION" => 4,       // SM_CYCAPTION
+        "EDGE.X" => 45,       // SM_CXEDGE
+        "EDGE.Y" => 46,       // SM_CYEDGE
+        "FRAME.FIXED.X" => 7, // SM_CXFIXEDFRAME = SM_CXDLGFRAME
+        "FRAME.FIXED.Y" => 8, // SM_CYFIXEDFRAME = SM_CYDLGFRAME
+        // PowerBASIC's Frame.Resize.* is the total resize frame: the raw
+        // SM_C[XY]FRAME (4 on Win11) plus the DWM padded border
+        // SM_CXPADDEDBORDER (4), i.e. 8.  Keep sentinel ids here; codegen
+        // expands them into that two-metric sum.
+        "FRAME.RESIZE.X" => -1001,
+        "FRAME.RESIZE.Y" => -1002,
+        "ICON.X" => 11,      // SM_CXICON
+        "ICON.Y" => 12,      // SM_CYICON
+        "ICONSPACE.X" => 38, // SM_CXICONSPACING
+        "ICONSPACE.Y" => 39, // SM_CYICONSPACING
+        "MAXIMIZED.X" => 61, // SM_CXMAXIMIZED
+        "MAXIMIZED.Y" => 62, // SM_CYMAXIMIZED
+        "MENUBAR" => 15,     // SM_CYMENU
+        "MINIMUM.X" => 28,   // SM_CXMIN
+        "MINIMUM.Y" => 29,   // SM_CYMIN
+        "SCROLL.HORZ" => 3,  // SM_CYHSCROLL
+        "SCROLL.VERT" => 2,  // SM_CXVSCROLL
         _ => return None,
     })
 }

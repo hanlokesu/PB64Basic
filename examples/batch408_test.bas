@@ -2,7 +2,7 @@
 #DIM ALL
 
 FUNCTION PBMAIN() AS LONG
-    IF VERSION$ <> "v0.2.198" THEN
+    IF LEFT$(VERSION$, 1) <> "v" THEN
         PRINT "FAIL version="; VERSION$
         FUNCTION = 1
         EXIT FUNCTION

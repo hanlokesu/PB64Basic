@@ -114,13 +114,20 @@ pub fn parse_pbr(bytes: &[u8]) -> Result<Vec<ParsedResEntry>, String> {
         declared.push(pbr_u32(bytes, 8 + i * 4)? as usize);
     }
 
-    // The sample's header index ends exactly at 0x20.  Keep 0x20 as the
-    // primary base and also try the naturally aligned end of the index so a
-    // file with a different entry count is not rejected solely on layout.
-    let aligned = (8 + count * 4 + 15) & !15;
-    let mut bases = vec![0x20usize];
-    if aligned != 0x20 {
-        bases.push(aligned);
+    // The directory starts immediately after the header index.  For the
+    // one-entry SEDP_Lookup sample that is 0x0C, but the directory itself was
+    // written at 0x20, so 0x20 remains a fallback.  gbsnippets.pbr has 432
+    // entries: its index ends at 0x6C8, and the directory starts exactly
+    // there.  Rounding that up to a 16-byte boundary (0x6D0) lands eight
+    // bytes into the first directory header and makes every later offset
+    // nonsense, so try the exact end of the index before any alignment.
+    let header_end = 8 + count * 4;
+    let aligned = (header_end + 15) & !15;
+    let mut bases = vec![header_end];
+    for cand in [0x20usize, aligned] {
+        if cand != header_end && !bases.contains(&cand) {
+            bases.push(cand);
+        }
     }
     let mut last_err = String::new();
     for base in bases {
