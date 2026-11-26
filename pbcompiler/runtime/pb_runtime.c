@@ -18818,10 +18818,16 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
             cb_ctlmsg = code;
             cb_wparam = wParam;
             cb_lparam = lParam;
+            long long notify_result = 0;
             if (pb_dialog_cb) {
                 pb_dlg_cb_fn fn = (pb_dlg_cb_fn)pb_dialog_cb;
-                fn(hWnd, Msg, wParam, lParam);
+                notify_result = fn(hWnd, Msg, wParam, lParam);
             }
+            /* WM_NOTIFY is one of the messages whose LRESULT is meaningful:
+               ListView/TreeView custom draw returns CDRF_* here, and a
+               discarded non-zero result stops the control from sending the
+               CDDS_ITEM* passes (no per-row colours). */
+            return (long)notify_result;
         }
         return 0;
     }
@@ -23170,8 +23176,9 @@ void* pb_control_add_custom(const char* cls, void* parent, long id, const char* 
                     (long long)(size_t)&cf);
         if (text) SendMessageA(h, 0x000C /* WM_SETTEXT */, 0,
                                (long long)(size_t)text);
-        if (s & 0x00000100UL /* ES_NOHIDESEL */)
-            SendMessageA(h, 0x00B1 /* EM_SETSEL */, 0, -1);
+        /* ES_NOHIDESEL keeps an existing selection visible while the
+           control loses focus; it does not select the initial text.
+           PBWin leaves the caret at the start, so do not EM_SETSEL here. */
     }
     /* SysIPAddress32 is built from four child EDIT controls, and the control
        does not forward WM_SETFONT to them.  PBWin leaves the IP fields on
@@ -24678,8 +24685,12 @@ void pb_listview_set_stylexx(void* hDlg, long id, int style) {
     if (!h) return;
     /* The %LVS_EX_* mask is 32 bits wide and two of its members
        (%LVS_EX_COLUMNSNAPPOINTS, %LVS_EX_COLUMNOVERFLOW) have bit 31
-       set, so truncate to unsigned before widening into the LPARAM. */
-    SendMessageA(h, PB_LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
+       set, so truncate to unsigned before widening into the LPARAM.
+       LVM_SETEXTENDEDLISTVIEWSTYLE takes wParam=mask, lParam=style; a zero
+       mask changes nothing, which is why %LVS_EX_CHECKBOXES never created
+       the state-image list. */
+    SendMessageA(h, PB_LVM_SETEXTENDEDLISTVIEWSTYLE,
+                 (unsigned int)style,
                  (pb_lparam_t)(long long)(unsigned int)style);
 }
 

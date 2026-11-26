@@ -39,6 +39,7 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%RGB_LIGHTMAGENTA", 0x00FF80FF),
     ("%RGB_YELLOW", 0x0000FFFF),
     ("%RGB_WHITE", 0x00FFFFFF),
+    ("%RGB_PALETURQUOISE", 0x00AFEEEE),
     ("%GRAY", 0x00808080),
     /* PBWin also exposes the short colour names. */
     ("%BLACK", 0x00000000),
@@ -2688,7 +2689,6 @@ impl Compiler {
             "SIZE_T",
             "SSIZE_T",
             "HANDLE",
-            "IITEM",
             // NMHDR.idFrom is UINT_PTR in the SDK; the PBWin header declares
             // it DWORD.  Leaving it 4 bytes shifted every notification record
             // (TOOLTIPTEXT.lpszText landed at +16 instead of +24) and made
@@ -2697,6 +2697,12 @@ impl Compiler {
             // TOOLTIPTEXT.hinst is HINSTANCE but the member is named hinst,
             // so the handle-prefix scan below does not see an HINSTANCE name.
             "HINST",
+            // NMCUSTOMDRAW.dwItemSpec is DWORD_PTR and lItemlParam is LPARAM
+            // in the SDK; the 32-bit PBWin header spells both DWORD/LONG.
+            // Leaving them 4 bytes shifted clrText/clrTextBk, so ListView
+            // custom-draw colours were written past the structure.
+            "DWITEMSPEC",
+            "LITEMLPARAM",
         ];
         if EXACT.contains(&n.as_str()) {
             return true;
@@ -11154,11 +11160,23 @@ impl Compiler {
             .params
             .iter()
             .map(|p| {
-                let ir_type = if p.is_byval {
+                let mut ir_type = if p.is_byval {
                     Self::ir_type_for(&p.pb_type)
                 } else {
                     IrType::Ptr
                 };
+                // SUB wrappers in the PBWin headers spell handles as DWORD
+                // (`SUB ListView_SetItemCountEx(BYVAL hwndLV AS DWORD, ...)`).
+                // On x64 those are pointer-sized; forwarding the truncated i32
+                // to SendMessage produced a bogus HWND and the control stayed
+                // empty.  Apply the same widening used for FUNCTION parameters.
+                if !self.module.is_32bit()
+                    && p.is_byval
+                    && matches!(p.pb_type, PbType::Dword | PbType::Long)
+                    && Self::declare_param_name_is_pointer(&p.name)
+                {
+                    ir_type = IrType::I64;
+                }
                 ParamInfo {
                     name: normalize_name(&p.name),
                     pb_type: p.pb_type.clone(),

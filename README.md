@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 409 (v0.2.199). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 410 (v0.2.200). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 410 (v0.2.200) - Closed the deterministic defects from the third Gary Beene GUI batch: empty DIALOG NEW style/exstyle slots, GRAPHIC CLEAR colon boundaries, the ANSI %LVN_GETDISPINFO alias, Win64 widening of BYVAL DWORD/LONG handle parameters in header SUB wrappers, LVITEM 32-bit item indices, pointer-sized NMCUSTOMDRAW.dwItemSpec/lItemlParam, %RGB_PALETURQUOISE, WM_NOTIFY LRESULT propagation, RichEdit ES_NOHIDESEL initial-selection behaviour and LISTVIEW SET STYLEXX mask handling. Batch 3: PB64 46/50 compile, PBWin10 42/50, both 42/50, PB64-only failures 0; semantic identical 25, near 2, diff 9. Remaining diffs are control-fidelity gaps, not parser/codegen failures.
 > batch 409 (v0.2.199) - Fixed Discussion #8's José Roca include-file parse failures: reserved-word method names (`METHOD Xor`, `METHOD On`), nested pointer-field dereference (`@p.@field`, as in `@pImageCodecInfo.@MimeType`), and macro-name reuse in a `FUNCTION MAKEFOURCC` declaration. The full gbClientCapture v2.1 source now parses and builds x86_64 with the `C:\PBWin10\WinAPI` headers; `batch409_test` covers the new syntax at run time.
 > batch 408 (v0.2.198) - Fixed the setup-time Android blank-key bug: `setup.bat` now passes a normalized repository path, `find_android.ps1` accepts the release-root `PB64Basic.exe` and searches ancestor folders for the Android checkout, and the Windows zip carries a minimal `PB64Basic-Android` builder so a fresh install can produce an APK. See the v0.2.198 changelog entry.
 > batch 407 (v0.2.197) - Gave the default x86_64 output an `_x64` suffix so PB64Basic can sit beside a PBWin-built `<source>.exe` for side-by-side comparison, and tightened the `DirData` / `DIR$` compatibility path. `Success:` now reports the final EXE path. See the v0.2.197 changelog entry.
@@ -1091,6 +1092,55 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.200 (2026-11-26)
+
+This release closes the deterministic parser, structure-layout and runtime
+defects found by the third Gary Beene GUI batch. The batch produced 42/50
+samples where both compilers succeed, 25 identical, 2 near and 9 diff; there
+are no PB64-only compile failures.
+
+### Parser and preprocessor
+
+- `DIALOG NEW` accepts an omitted style or exstyle slot: `...,, TO hDlg` and
+  `...,,, TO hDlg` no longer try to parse the empty slot as an expression.
+- `GRAPHIC CLEAR` treats a colon as a statement boundary, so
+  `Graphic Clear : Graphic Redraw` is two statements.
+- The unsuffixed `%LVN_GETDISPINFO` alias resolves to the ANSI notification
+  `-150`, because PB64 creates ANSI common controls. `%LVN_GETDISPINFOW`
+  keeps `-177`.
+
+### Code generation
+
+- `BYVAL ... AS DWORD/LONG` handle parameters in header `SUB` wrappers are
+  widened to pointer size on x64, so `ListView_SetItemCountEx(hwndLV, ...)`
+  no longer truncates the HWND.
+- `LVITEM.iItem` / `iSubItem` stay 32-bit; removing the over-broad `IITEM`
+  rule restored the Win64 `LVITEMW` layout and the `pszText` offset.
+- `NMCUSTOMDRAW.dwItemSpec` and `lItemlParam` are pointer-sized; this restores
+  the `clrText` / `clrTextBk` offsets used by ListView custom draw.
+- `%RGB_PALETURQUOISE` is a built-in equate.
+
+### Runtime
+
+- `WM_NOTIFY` returns the dialog callback LRESULT. ListView/TreeView custom
+  draw therefore receives `CDRF_NOTIFYITEMDRAW` and the per-item passes.
+- RichEdit no longer selects the whole initial text when `ES_NOHIDESEL` is
+  present; PBWin leaves the caret at the start.
+- `LISTVIEW SET STYLEXX` passes the style as both mask and value, so
+  `%LVS_EX_*` bits are applied instead of discarded by a zero mask.
+
+### Validation
+
+- `examples/batch410_test.bas` covers the two empty `DIALOG NEW` slots,
+  `GRAPHIC CLEAR : GRAPHIC REDRAW`, `%RGB_PALETURQUOISE`, the ANSI
+  `%LVN_GETDISPINFO` alias and the explicit W alias; `FAILURES= 0`.
+- Gary Beene batch 3 report: `batch3_report.md`, `.csv`, `.json`, `.html`.
+  Compile layer: PB64 46/50, PBWin10 42/50, both 42/50, PB64-only failures 0.
+  Semantic layer: identical 25, near 2, diff 9. The remaining diffs are
+  control-fidelity gaps (ListView checkbox state images, TreeView state
+  images, EnumFontFamilies ListBox fill, Graphic Copy clipping and Graphic
+  rounded-shape composition), not parser or codegen failures.
+
 ### v0.2.199 (2026-11-26)
 
 - Fixed the José Roca WINAPI include-file failures reported in Discussion #8.

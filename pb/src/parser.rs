@@ -7733,7 +7733,7 @@ impl Parser {
                     if gop == "CLEAR" {
                         self.advance();
                         let mut args = Vec::new();
-                        if self.peek() != &Token::Eol && self.peek() != &Token::Eof {
+                        if !self.at_eol_or_eof() {
                             args.push(self.parse_expression()?);
                             while self.peek() == &Token::Comma {
                                 self.advance();
@@ -13812,20 +13812,27 @@ impl Parser {
                     // as an empty style/exstyle slot; otherwise TO is parsed
                     // as an expression and the build fails with
                     // "Unexpected token in expression: To".
-                    let style =
+                    let mut style = Expr::IntegerLit(0);
+                    let mut exstyle = Expr::IntegerLit(0);
+                    // PBWin accepts omitted style and exstyle slots:
+                    //   ..., style,, TO hDlg
+                    //   ..., ,, exstyle TO hDlg
+                    // A comma immediately followed by another comma is an empty
+                    // slot; it must not be parsed as an expression.
+                    for slot in 0..2 {
                         if self.peek() == &Token::Comma && self.peek_at(1) != Some(&Token::To) {
                             self.advance();
-                            self.parse_expression()?
-                        } else {
-                            Expr::IntegerLit(0)
-                        };
-                    let exstyle =
-                        if self.peek() == &Token::Comma && self.peek_at(1) != Some(&Token::To) {
-                            self.advance();
-                            self.parse_expression()?
-                        } else {
-                            Expr::IntegerLit(0)
-                        };
+                            if self.peek() == &Token::Comma {
+                                continue;
+                            }
+                            let value = self.parse_expression()?;
+                            if slot == 0 {
+                                style = value;
+                            } else {
+                                exstyle = value;
+                            }
+                        }
+                    }
                     if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
                         self.advance();
                     }

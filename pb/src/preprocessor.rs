@@ -1225,7 +1225,15 @@ impl Preprocessor {
                     let val_str = seg[eq_pos + 1..].trim();
                     // Strip trailing comments
                     let val_str = strip_comment(val_str);
-                    let value = self.parse_constant_value(&val_str);
+                    let mut value = self.parse_constant_value(&val_str);
+                    // PB64 creates common controls as ANSI windows, so
+                    // comctl32 sends LVN_GETDISPINFOA (-150).  commctrl.inc
+                    // maps the unsuffixed alias to the W form (-177) under
+                    // %Unicode=1; keep the alias at A so owner-data ListViews
+                    // reach their Case.  %LVN_GETDISPINFOW stays -177.
+                    if name.eq_ignore_ascii_case("%LVN_GETDISPINFO") && value == -177 {
+                        value = -150;
+                    }
                     self.constants.insert(name.to_string(), value);
                     self.defined_this_pass.insert(name.to_string());
                 }
