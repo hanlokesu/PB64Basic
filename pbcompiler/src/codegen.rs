@@ -12466,6 +12466,12 @@ impl Compiler {
         self.register_vars.clear();
 
         // Compile body
+        // A procedure with a PB label merged into inline asm must not be
+        // inlined: the optimizer would copy the asm text and duplicate the
+        // assembler label.
+        if Self::has_asm_label(&fd.body) {
+            fb.set_noinline();
+        }
         self.compile_body(&mut fb, &fd.body)?;
 
         if !fb.is_terminated() {
@@ -12949,6 +12955,26 @@ impl Compiler {
         }
     }
 
+    /// True when a procedure body contains a PB label immediately followed
+    /// by an ASM statement.  Such a label is folded into the inline-asm
+    /// block, so the procedure must stay out of line (see set_noinline).
+    fn has_asm_label(stmts: &[Statement]) -> bool {
+        for i in 0..stmts.len() {
+            match &stmts[i] {
+                Statement::Label(_) => {
+                    if i + 1 < stmts.len() && matches!(stmts[i + 1], Statement::Asm(_)) {
+                        return true;
+                    }
+                }
+                Statement::Block(inner) if Self::has_asm_label(inner) => {
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     fn compile_body(&mut self, fb: &mut FunctionBuilder, stmts: &[Statement]) -> PbResult<()> {
         let mut idx = 0usize;
         while idx < stmts.len() {
@@ -12971,6 +12997,13 @@ impl Compiler {
                 // register state is preserved across them (PB semantics).
                 let mut seq = vec![t.clone()];
                 let mut j = idx + 1;
+                // A plain PB label used as an ASM loop target must become a
+                // module-unique assembler label.  Keeping the bare name makes
+                // COFF emit a real symbol and two procedures using the same
+                // PB label then collide; prefixing with the procedure name
+                // keeps the spelling stable while making it unique.
+                // The tuple is (PB name, qualified name, index in sequence).
+                let mut asm_labels: Vec<(String, String, usize)> = Vec::new();
                 while j < stmts.len() {
                     if let Statement::Asm(t2) = &stmts[j] {
                         seq.push(t2.clone());
@@ -12982,13 +13015,28 @@ impl Compiler {
                         // outside the asm block, so pull the label into the
                         // block when more ASM follows it.
                         if j + 1 < stmts.len() && matches!(stmts[j + 1], Statement::Asm(_)) {
-                            seq.push(format!("{}:", name));
+                            let fn_name = self.current_fn_name.clone().unwrap_or_default();
+                            let qualified = format!("L{}_{}", fn_name, name);
+                            let def_idx = seq.len();
+                            asm_labels.push((name.clone(), qualified.clone(), def_idx));
+                            seq.push(format!("{}:", qualified));
                             j += 1;
                         } else {
                             break;
                         }
                     } else {
                         break;
+                    }
+                }
+                // Rewrite branch targets in the merged block to the
+                // procedure-unique spelling.  The definition line is left
+                // untouched.
+                for (line_idx, line) in seq.iter_mut().enumerate() {
+                    for (name, qualified, def_idx) in &asm_labels {
+                        if line_idx == *def_idx {
+                            continue;
+                        }
+                        *line = replace_asm_label_ref(line, name, qualified);
                     }
                 }
                 self.compile_asm_block(fb, &seq)?;
@@ -13747,18 +13795,14 @@ impl Compiler {
                     (&ops[0], &ops[1], &ops[2], &ops[3])
                 {
                     if opc == "mov" && width == "qword" && (*v as u64) > u32::MAX as u64 {
-                        let lo = (*v as u64 & 0xFFFF_FFFF) as u32;
-                        let hi = ((*v as u64) >> 32) as u32;
-                        let s_lo = constraints.len();
-                        constraints.push("r".to_string());
-                        args.push(format!("i32 {}", lo));
-                        let s_hi = constraints.len();
-                        constraints.push("r".to_string());
-                        args.push(format!("i32 {}", hi));
-                        instruction_texts.push(format!(
-                            "mov dword ptr [${}], ${}\nmov dword ptr [${}+4], ${}",
-                            slot, s_lo, slot, s_hi
-                        ));
+                        // x86 has no "store 64-bit immediate to memory"
+                        // encoding.  A pair of dword stores is correct in
+                        // principle, but LLVM prints a `*m` operand as
+                        // `[rsp + N]`, so appending `+4` produced the invalid
+                        // `[[rsp + N]+4]`.  Let LLVM lower a plain i64 store
+                        // instead (it already splits it where necessary).
+                        let dst = args[*slot].split_whitespace().last().unwrap_or("");
+                        fb.raw_line(&format!("store i64 {}, ptr {}", v, dst));
                         continue;
                     }
                 }
@@ -13848,25 +13892,33 @@ impl Compiler {
 
         if is_x64 {
             for line in &mut instruction_texts {
-                let toks = split_asm_tokens(line);
-                let mut out: Vec<String> = Vec::with_capacity(toks.len());
-                for tok in toks {
-                    if tok.starts_with('[') && tok.ends_with(']') && tok.len() >= 2 {
-                        out.push(format!(
-                            "[{}]",
-                            x64_rewrite_addr_expr(&tok[1..tok.len() - 1])
-                        ));
-                    } else if x64_pointer_regs.contains(&tok.to_ascii_lowercase()) {
-                        if let Some(alias) = x64_gpr_alias(&tok) {
-                            out.push(alias.to_string());
+                let mut rebuilt: Vec<String> = Vec::new();
+                // A physical ASM line may already contain a shuffle helper
+                // (`mem-to-mem MOV` expands to a load plus a store).  Rewrite
+                // each sub-line separately so the newline survives instead of
+                // being folded into a single invalid instruction.
+                for sub in line.split('\n') {
+                    let toks = split_asm_tokens(sub);
+                    let mut out: Vec<String> = Vec::with_capacity(toks.len());
+                    for tok in toks {
+                        if tok.starts_with('[') && tok.ends_with(']') && tok.len() >= 2 {
+                            out.push(format!(
+                                "[{}]",
+                                x64_rewrite_addr_expr(&tok[1..tok.len() - 1])
+                            ));
+                        } else if x64_pointer_regs.contains(&tok.to_ascii_lowercase()) {
+                            if let Some(alias) = x64_gpr_alias(&tok) {
+                                out.push(alias.to_string());
+                            } else {
+                                out.push(tok);
+                            }
                         } else {
                             out.push(tok);
                         }
-                    } else {
-                        out.push(tok);
                     }
+                    rebuilt.push(out.join(" "));
                 }
-                *line = out.join(" ");
+                *line = rebuilt.join("\n");
             }
         }
         if instruction_texts.is_empty() {
@@ -13891,7 +13943,17 @@ impl Compiler {
             let lower = line.to_lowercase();
             if (lower.starts_with("j") || lower.starts_with("loop")) && !lower.starts_with("jmp") {
                 if let Some(target) = line.split_whitespace().last() {
-                    if !asm_labels.contains(&target.trim().to_uppercase()) {
+                    let target_norm = target.trim().to_uppercase();
+                    let numeric_local = {
+                        let base = target_norm
+                            .strip_suffix('B')
+                            .or_else(|| target_norm.strip_suffix('F'))
+                            .unwrap_or(target_norm.as_str());
+                        !base.is_empty()
+                            && base.chars().all(|c| c.is_ascii_digit())
+                            && asm_labels.contains(base)
+                    };
+                    if !asm_labels.contains(&target_norm) && !numeric_local {
                         *t = "nop".to_string();
                         continue;
                     }
@@ -40996,6 +41058,43 @@ fn x64_rewrite_addr_expr(expr: &str) -> String {
         }
     }
     flush(&mut word, &mut out);
+    out
+}
+
+/// Replace whole-identifier occurrences of a PB label inside one inline-asm
+/// line with its procedure-unique assembler spelling (`L<fn>_<name>`).
+/// Assembly labels are case-sensitive, so the replacement uses the PB
+/// spelling even when the source branch target was typed in another case.
+fn replace_asm_label_ref(line: &str, name: &str, qualified: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let name_chars: Vec<char> = name.chars().collect();
+    if name_chars.is_empty() {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+    while i < chars.len() {
+        let end = i + name_chars.len();
+        let fits = end <= chars.len();
+        let is_match = fits
+            && chars[i..end]
+                .iter()
+                .zip(name_chars.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b));
+        let left_ok = i == 0
+            || !(chars[i - 1].is_ascii_alphanumeric()
+                || chars[i - 1] == '_'
+                || chars[i - 1] == '.');
+        let right_ok = fits
+            && (end == chars.len() || !(chars[end].is_ascii_alphanumeric() || chars[end] == '_'));
+        if is_match && left_ok && right_ok {
+            out.push_str(qualified);
+            i = end;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
     out
 }
 

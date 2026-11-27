@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 414 (v0.2.203). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 415 (v0.2.204). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 415 (v0.2.204) - Close the six remaining Gary Beene GUI residuals: 0398 and 0513 ListView header and delete-row geometry, 0899 subsystem 4.0 border width, 1135 global dynamic array shadowing, 0263 inline-asm Long Pointer and label merging (including the x86_64 noinline rule), and 0361 WM_GETMINMAXINFO plus GRAPHIC RENDER edge semantics. All six are pixel-identical at 0.0 percent with equal screenshot size and equal PNG SHA-256. Batch 5 stays 42 of 50; the eight remaining items are control-fidelity gaps. Self-check: examples/batch415_test.bas.
 > batch 414 (v0.2.203) - Fifth Gary Beene GUI batch: 50 previously unused samples. All 50 compile with both compilers and all 50 launch. 49 of 50 are pixel-identical (0.0%, same screenshot size); sample 0398 remains at 6.7% because its ListView header text composition still differs. Fixed COMCTL notification constants, ProgressBar bar colour, Tab-page background/focus, ListView header height/font and top seam, Font New handle semantics, status-bar 1px offset, graphic quadrant and closed-interval rendering, empty ListView style slots, and removed the implicit full-row select that PBWin does not use. 0737 was excluded because PBWin10 itself fails with Error 519 and the published icons are gone; it was replaced by self-contained 0740. Three stale ListView fixtures now assert PBWin10's measured zero extended style. Self-check: examples/batch414_test.bas.
 > batch 413 (v0.2.202) - Closed the remaining common-dialog gaps: classic 431x319 font dialog with Script=Western, and 555x385 Open/Save via the 370x237 NEWFILEOPENV2ORD template. Batch 4: PB64 50/50 compiles, 38/40 comparable windows identical, 2 near (0.03% / 0.044%), 1 size mismatch (0771). Self-check: examples/batch413_test.bas.
 > batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, owner-draw ListBox row height, and button `WM_CTLCOLORBTN` focus-rectangle color. PB64Basic compiles 50/50 samples; of 37 comparable windows 35 are pixel-identical and 2 are near-identical (0.03-0.04%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
@@ -1095,6 +1096,25 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.204 (2026-11-28)
+
+This release closes the five remaining Gary Beene GUI residuals and one ListView case from the earlier batch. All six samples now compile with both compilers, launch at the same window size, and produce pixel-identical screenshots at 0.0 percent difference; the two PNG files also have the same SHA-256 hash.
+
+#### Compiler and runtime
+
+- ListView header rendering now keeps a fixed 20-pixel header, applies the one-pixel nudge reflow, paints the one-pixel top band with the button-face colour, and removes the top-band column separators. Samples 0398 and 0513 are identical.
+- The x86_64 GUI link now uses subsystem 4.0, matching PBWin 10's `iBorderWidth=5`; sample 0899 is identical. The linker arguments must remain `-Xlinker /SUBSYSTEM:WINDOWS,4.0` followed by `-Wl,/ENTRY:mainCRTStartup`.
+- `compile_dim` reuses a global dynamic array only when the previous declaration is dynamic and the new declaration is an array, so a local scalar may shadow a global dynamic array with the same name. Sample 1135 is identical.
+- Inline assembly now handles `Long Pointer` operands, uses `*m` constraints for i686 scalars and pointers, folds a PB label that sits between two ASM lines into the same block, widens 32-bit pointer destinations to their 64-bit aliases on x86_64, and marks procedures that contain such labels `noinline`. The `noinline` attribute is required because LLVM copies inline-asm text during inlining and otherwise reports the label as already defined at `-O1` and `-O2`. Sample 0263 is identical.
+- The x86_64 ASM rewrite processes each physical line separately, so the newline emitted by a mem-to-mem shuffle survives instead of collapsing two instructions into one. It also lowers a qword memory store with a 64-bit immediate to an LLVM `store i64`, avoiding the invalid nested `[[rsp+N]+4]` operand produced by appending `+4` to an `*m` operand. `batch029_test` and `batch285_asm_math_test` compile and run again.
+- `WM_GETMINMAXINFO` clears `ptMinTrackSize` only for `PBWIN_DLG_CLASS` windows that carry `WS_THICKFRAME`; the `long[6]` and `long[7]` slots are used, not `[8]` and `[9]`.
+- `GRAPHIC RENDER` uses the bitmap's native source width and height. The closed-interval endpoint adjustment is applied only when the destination reaches the client right or bottom edge and exceeds the source size, preserving the `(0,0)-(100,100)` quadrant semantics. Sample 0361 is identical; samples 0294 and 0301 do not regress.
+
+#### Sample set
+
+- Batch 5 remains 42 of 50 identical. The eight remaining differences are control-fidelity gaps: 0292 near 0.123 percent, 0312 3.84 percent, 0315 near 0.137 percent, 0480 1.907 percent, 0411 near 0.12 percent, 0412 35.027 percent, 0530 18.1 percent, and 0531 15.668 percent.
+- Self-check: `examples/batch415_test.bas` asserts the version banner, global-array shadowing, an x86_64 `Long Pointer` copy, and a PB label loop inside inline ASM on both targets.
+
 ### v0.2.203 (2026-11-27)
 
 This release closes the fifth Gary Beene GUI batch: 50 samples that no earlier

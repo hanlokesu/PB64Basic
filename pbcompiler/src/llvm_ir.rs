@@ -522,6 +522,8 @@ pub struct FunctionBuilder {
     terminated: bool,
     /// Optional THREADSAFE lock guard.
     lock_guard: Option<LockGuard>,
+    /// Emit the `noinline` attribute on the definition header.
+    noinline: bool,
 }
 
 impl FunctionBuilder {
@@ -555,6 +557,7 @@ impl FunctionBuilder {
             current_label: "entry".to_string(),
             terminated: false,
             lock_guard: None,
+            noinline: false,
         };
         writeln!(fb.body, "entry:").unwrap();
         fb.entry_end_pos = fb.body.len();
@@ -567,8 +570,21 @@ impl FunctionBuilder {
         if !self.allocas.is_empty() {
             self.body.insert_str(self.entry_end_pos, &self.allocas);
         }
+        if self.noinline {
+            if let Some(pos) = self.body.find(" {\n") {
+                self.body.insert_str(pos, " noinline");
+            }
+        }
         self.body.push_str("}\n\n");
         self.body
+    }
+
+    /// Mark the function `noinline`.  A function whose body merges a PB
+    /// label into an inline-asm block must not be inlined: the optimizer
+    /// copies the asm text into the caller and leaves the original body,
+    /// which makes clang report the inline-asm label as already defined.
+    pub fn set_noinline(&mut self) {
+        self.noinline = true;
     }
 
     /// Get a fresh SSA register name.
