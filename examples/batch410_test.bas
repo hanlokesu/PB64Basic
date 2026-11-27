@@ -23,7 +23,9 @@ FUNCTION PBMAIN() AS LONG
     DIALOG END hDlg
 
     ' PB64 creates ANSI common controls; the unsuffixed owner-data alias is A.
-    IF %RGB_PALETURQUOISE <> &H00AFEEEE THEN fails = fails + 1
+    IF %RGB_PALETURQUOISE <> &H00EEEEAF THEN fails = fails + 1
+    IF %RGB_GREEN <> &H00008000 THEN fails = fails + 1
+    IF %RGB_LIGHTBLUE <> &H00E6D8AD THEN fails = fails + 1
     IF %LVN_GETDISPINFO <> -150 THEN fails = fails + 1
     IF %LVN_GETDISPINFOW <> -177 THEN fails = fails + 1
 

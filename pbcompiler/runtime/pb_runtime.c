@@ -423,6 +423,7 @@ __declspec(dllimport) int __stdcall ReleaseDC(void* hWnd, void* hDC);
 __declspec(dllimport) int __stdcall MulDiv(int nNumber, int nNumerator, int nDenominator);
 __declspec(dllimport) unsigned long __stdcall SetBkColor(void* hdc, unsigned long color);
 __declspec(dllimport) void* __stdcall CreateFontA(int cHeight, int cWidth, int cEscapement, int cOrientation, int cWeight, unsigned char bItalic, unsigned char bUnderline, unsigned char bStrikeOut, unsigned char iCharSet, unsigned char iOutPrecision, unsigned char iClipPrecision, unsigned char iQuality, unsigned char iPitchAndFamily, const char* pszFaceName);
+__declspec(dllimport) void* __stdcall CreateFontW(int cHeight, int cWidth, int cEscapement, int cOrientation, int cWeight, unsigned char bItalic, unsigned char bUnderline, unsigned char bStrikeOut, unsigned char iCharSet, unsigned char iOutPrecision, unsigned char iClipPrecision, unsigned char iQuality, unsigned char iPitchAndFamily, const short* pszFaceName);
 __declspec(dllimport) int __stdcall DeleteObject(void* hObject);
 __declspec(dllimport) void* __stdcall ImageList_Create(int cx, int cy, unsigned int flags, int cInitial, int cGrow);
 __declspec(dllimport) int __stdcall ImageList_GetImageCount(void* himl);
@@ -10243,8 +10244,7 @@ long long pb_wstr_asc(char* s, long long pos) {
 
 /* ANSI BSTR payload -> UTF-16 BSTR (freshly BSTR-alloc'd). */
 char* pb_ansi_to_wide(const char* ansi) {
-    static const char empty[] = "";
-    if (!ansi) ansi = empty;
+    if (!ansi) return NULL;
 #ifdef _WIN32
     unsigned int alen = (unsigned int)SysStringByteLen(ansi);
     int wlen = MultiByteToWideChar(PB_CP_ACP, 0, ansi, (int)alen, NULL, 0);
@@ -12951,6 +12951,8 @@ static void* g_gr_ctl_dc = 0;
 static void* g_gr_ctl_bmp = 0;
 static void* g_gr_ctl_hwnd = 0;
 static int   g_gr_ctl_w = 0, g_gr_ctl_h = 0;
+static float g_gr_clip_l = 0, g_gr_clip_t = 0, g_gr_clip_r = 0, g_gr_clip_b = 0;
+static int g_gr_clip_set = 0;
 /* One off-screen buffer per graphic control.  Hitgame attaches GRAPHIC1,
    paints its green board, attaches GRAPHIC2, then returns to GRAPHIC1;
    a single global buffer discarded GRAPHIC1's pixels on every switch and
@@ -13632,21 +13634,32 @@ int pb_graphic_scale(float x1, float y1, float x2, float y2) {
     if (!g_gr_dc) return 0;
     g_gr_scale_x1 = (long)x1; g_gr_scale_y1 = (long)y1;
     g_gr_scale_x2 = (long)x2; g_gr_scale_y2 = (long)y2;
-    int w = 0, h = 0;
-    if (g_gr_bmp) gr_bmp_dim(g_gr_bmp, &w, &h);
-    else { w = (int)g_gr_ctl_w; h = (int)g_gr_ctl_h; }
-    g_gr_page_x = (w > 0) ? fabs((double)(x2 - x1) / (double)w) : 1.0;
-    g_gr_page_y = (h > 0) ? fabs((double)(y2 - y1) / (double)h) : 1.0;
+    int cw = 0, ch = 0;
+    if (g_gr_bmp) gr_bmp_dim(g_gr_bmp, &cw, &ch);
+    else { cw = (int)g_gr_ctl_w; ch = (int)g_gr_ctl_h; }
+    int l = g_gr_clip_set ? (int)g_gr_clip_l : 0;
+    int t = g_gr_clip_set ? (int)g_gr_clip_t : 0;
+    int r = g_gr_clip_set ? (int)g_gr_clip_r : 0;
+    int b = g_gr_clip_set ? (int)g_gr_clip_b : 0;
+    int w = cw - l - r, h = ch - t - b;
+    if (w <= 0) w = cw > 0 ? cw : 1;
+    if (h <= 0) h = ch > 0 ? ch : 1;
+    double dx = (double)(x2 - x1), dy = (double)(y2 - y1);
+    if (dx == 0) dx = 1; if (dy == 0) dy = 1;
+    g_gr_page_x = fabs(dx / (double)w);
+    g_gr_page_y = fabs(dy / (double)h);
     SetMapMode(g_gr_dc, PB_MM_ANISOTROPIC);
-    SetWindowExtEx(g_gr_dc, w, h, NULL);
-    SetViewportExtEx(g_gr_dc, (int)(x2 - x1), (int)(y2 - y1), NULL);
-    SetViewportOrgEx(g_gr_dc, (int)x1, (int)y1, NULL);
+    SetWindowExtEx(g_gr_dc, (int)dx, (int)dy, NULL);
+    SetViewportExtEx(g_gr_dc, w, h, NULL);
+    SetViewportOrgEx(g_gr_dc, l - (int)((double)x1 * w / dx),
+                     t - (int)((double)y1 * h / dy), NULL);
     return 1;
 }
 
 int pb_graphic_scale_pixels(void) {
     if (!g_gr_dc) return 0;
     SetMapMode(g_gr_dc, PB_MM_TEXT);
+    SetViewportOrgEx(g_gr_dc, 0, 0, NULL);
     g_gr_scale_x1 = 0; g_gr_scale_y1 = 0; g_gr_scale_x2 = 0; g_gr_scale_y2 = 0;
     g_gr_page_x = 1.0; g_gr_page_y = 1.0;
     return 1;
@@ -13727,12 +13740,23 @@ int pb_graphic_set_size(int w, int h) {
     }
     return 1;
 }
-static float g_gr_clip_l = 0, g_gr_clip_t = 0, g_gr_clip_r = 0, g_gr_clip_b = 0;
-static int g_gr_clip_set = 0;
 int pb_graphic_set_clip(float l, float t, float r, float b) {
     g_gr_clip_l = l; g_gr_clip_t = t; g_gr_clip_r = r; g_gr_clip_b = b;
-    g_gr_clip_set = 1;
-    if (g_gr_dc) IntersectClipRect(g_gr_dc, (int)l, (int)t, (int)r, (int)b);
+    g_gr_clip_set = (l != 0 || t != 0 || r != 0 || b != 0);
+    if (g_gr_dc) {
+        if (!g_gr_clip_set) {
+            SelectClipRgn(g_gr_dc, 0);
+            SetMapMode(g_gr_dc, PB_MM_TEXT);
+            SetViewportOrgEx(g_gr_dc, 0, 0, NULL);
+        } else {
+            int cw = g_gr_ctl_w, ch = g_gr_ctl_h;
+            if (g_gr_bmp) gr_bmp_dim(g_gr_bmp, &cw, &ch);
+            if (cw <= 0 || ch <= 0) { cw = (int)g_gr_clip_r + (int)l; ch = (int)g_gr_clip_b + (int)t; }
+            IntersectClipRect(g_gr_dc, (int)l, (int)t, cw - (int)r, ch - (int)b);
+            SetMapMode(g_gr_dc, PB_MM_TEXT);
+            SetViewportOrgEx(g_gr_dc, (int)l, (int)t, NULL);
+        }
+    }
     return 1;
 }
 static long g_gr_virtual_w = 0, g_gr_virtual_h = 0;
@@ -13824,8 +13848,10 @@ int pb_graphic_set_caption(char* s) {
 static long g_gr_wrap = 1; /* default: text wraps */
 int pb_graphic_get_clip(float* w, float* h) {
     if (g_gr_clip_set) {
-        *w = g_gr_clip_r - g_gr_clip_l;
-        *h = g_gr_clip_b - g_gr_clip_t;
+        int cw = (int)g_gr_ctl_w, ch = (int)g_gr_ctl_h;
+        if (g_gr_bmp) gr_bmp_dim(g_gr_bmp, &cw, &ch);
+        *w = (float)(cw - (int)g_gr_clip_l - (int)g_gr_clip_r);
+        *h = (float)(ch - (int)g_gr_clip_t - (int)g_gr_clip_b);
         return 1;
     }
     if (!g_gr_dc) return 0;
@@ -14564,8 +14590,8 @@ int pb_graphic_line_full(int x1, int y1, int x2, int y2, int color, int flags) {
 }
 int pb_graphic_box(int x1, int y1, int x2, int y2, int color, int fillcolor, int fillstyle, int corner) {
     if (!g_gr_dc) return 0;
-    if (g_gr_overlap) { x2 += 1; y2 += 1; }   /* batch 181 */
     pb_gw_touch();
+    if (g_gr_overlap) { x2 += 1; y2 += 1; }
     void* pen = CreatePen(g_gr_style, g_gr_width, (unsigned long)(unsigned int)color);
     void* oldp = SelectObject(g_gr_dc, pen);
     /* CHW: fillcolor -2 (or omitted) leaves the interior unfilled; -1 means
@@ -14606,8 +14632,8 @@ int pb_graphic_box(int x1, int y1, int x2, int y2, int color, int fillcolor, int
 int pb_graphic_ellipse(int x1, int y1, int x2, int y2, int color, int fillcolor, int fillstyle, int corner) {
     (void)corner;
     if (!g_gr_dc) return 0;
-    if (g_gr_overlap) { x2 += 1; y2 += 1; }   /* batch 181 */
     pb_gw_touch();
+    if (g_gr_overlap) { x2 += 1; y2 += 1; }
     void* pen = CreatePen(g_gr_style, g_gr_width, (unsigned long)(unsigned int)color);
     void* oldp = SelectObject(g_gr_dc, pen);
     void* br = 0;
@@ -16296,6 +16322,22 @@ int pb_display_browse(const char* title, const char* initialdir, char** out) {
     return 0;
 }
 /* Full DISPLAY BROWSE form: hParent,x,y,title$,folder$,flags& TO result$. */
+__declspec(dllimport) int __stdcall PostMessageA(void* hWnd, unsigned long Msg,
+                                                pb_wparam_t wParam,
+                                                pb_lparam_t lParam);
+/* PBWin's folder dialog gives the initial focus to the OK button; the
+   Explorer-style dialog opened with BIF_NEWDIALOGSTYLE otherwise leaves it
+   on the tree view, which changes both the selection colours and the focus
+   rectangle in a screenshot comparison. */
+static int __stdcall pb_browse_focus_cb(void* hwnd, unsigned int msg,
+                                        long long lp, long long data) {
+    (void)lp; (void)data;
+    if (msg == 1 /* BFFM_INITIALIZED */) {
+        PostMessageA(hwnd, 0x0028 /* WM_NEXTDLGCTL */,
+                     (pb_wparam_t)(size_t)GetDlgItem(hwnd, 1 /* IDOK */), 1);
+    }
+    return 0;
+}
 int pb_display_browse_full(void* parent, int x, int y, const char* title,
                            const char* initialdir, int flags, char** out) {
     (void)x;
@@ -16309,7 +16351,8 @@ int pb_display_browse_full(void* parent, int x, int y, const char* title,
     bi.pidlRoot = 0;
     bi.pszDisplayName = display_name;
     bi.lpszTitle = title && title[0] ? title : "Select Folder";
-    bi.ulFlags = (unsigned int)(flags ? flags : 0x00000001);
+    bi.lpfn = (void*)pb_browse_focus_cb;
+    bi.ulFlags = (unsigned int)(flags ? flags : 0x00000001) | 0x00000040 /* BIF_NEWDIALOGSTYLE: PBWin DISPLAY BROWSE default */;
     void* pidl = SHBrowseForFolderA(&bi);
     if (pidl) {
         if (SHGetPathFromIDListA(pidl, path)) {
@@ -18988,6 +19031,56 @@ static void pb_lastfocus_forget(void* hDlg) {
     }
 }
 
+/* ListViews whose font the program replaced explicitly.  PBWin keeps the
+   header at its 20px default and clips a larger header font; the list rows
+   sit one pixel lower.  Track the affected controls so the dialog erase can
+   repaint the one-pixel seam that falls outside the list clip region. */
+static void* pb_lv_tab_h[16];
+static void* pb_lv_tab_parent[16];
+static void* pb_lv_tab_hdr[16];
+static int   pb_lv_tab_explicit[16];
+
+static void pb_lv_paint_top_bands(void* hWnd, void* dc) {
+    if (!hWnd || !dc) return;
+    for (int i = 0; i < 16; i++) {
+        if (!pb_lv_tab_h[i] || pb_lv_tab_parent[i] != hWnd ||
+            !pb_lv_tab_explicit[i]) continue;
+        pb_rect_t rc;
+        if (!GetWindowRect(pb_lv_tab_h[i], &rc)) continue;
+        pb_point_t pt;
+        pt.x = rc.left; pt.y = rc.top;
+        ScreenToClient(hWnd, &pt);
+        long band[4];
+        band[0] = pt.x; band[1] = pt.y - 1;
+        band[2] = pt.x + (rc.right - rc.left); band[3] = pt.y;
+        void* br = CreateSolidBrush(0x00FFFFFFu);
+        if (br) {
+            FillRect(dc, band, br);
+            DeleteObject(br);
+        }
+        void* hdr = pb_lv_tab_hdr[i];
+        if (!hdr) continue;
+        int cols = (int)(size_t)SendMessageA(hdr, 0x1200 /* HDM_GETITEMCOUNT */, 0, 0);
+        if (cols <= 0) continue;
+        int cx = pt.x;
+        br = CreateSolidBrush(0x00696969u);
+        if (!br) continue;
+        for (int c = 0; c < cols; c++) {
+            int cw = (int)(size_t)SendMessageA(pb_lv_tab_h[i],
+                                       0x101D /* LVM_GETCOLUMNWIDTH */, c, 0);
+            if (cw <= 0) continue;
+            cx += cw;
+            if (cx < band[2]) {
+                long sep[4];
+                sep[0] = cx - 1; sep[1] = pt.y - 1;
+                sep[2] = cx; sep[3] = pt.y;
+                FillRect(dc, sep, br);
+            }
+        }
+        DeleteObject(br);
+    }
+}
+
 #if defined(_WIN64)
 static long long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned long long wParam, unsigned long long lParam) {
     PB_CSLOG("CS WNDPROC msg=%x hwnd=%p wp=%p lp=%p cb=%p", Msg, hWnd, (void*)(size_t)wParam, (void*)(size_t)lParam, pb_dialog_cb);
@@ -19236,6 +19329,7 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
                 FillRect(dc, rcs, br);
                 DeleteObject(br);
             }
+            pb_lv_paint_top_bands(hWnd, dc);
             return 1;
         }
         /* #32770 has no class background brush; DefDlgProc leaves the client
@@ -19252,6 +19346,7 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
                 FillRect(dc, rcs, br);
                 DeleteObject(br);
             }
+            pb_lv_paint_top_bands(hWnd, dc);
             return 1;
         }
     }
@@ -22568,6 +22663,50 @@ void pb_control_set_font(void* hDlg, long long id, long long hFont) {
         if (!hf) hf = (void*)(size_t)SendMessageA(hDlg, 0x0031 /* WM_GETFONT */, 0, 0);
     }
     SendMessageA(h, 0x0030 /* WM_SETFONT */, (pb_wparam_t)(size_t)hf, 1 /* redraw */);
+    /* PBWin's ListView keeps its 20px header and clips a larger explicit
+       header font; the list rows sit one pixel lower than the fork's.  Only
+       ListViews the program actually re-fonted need this composition. */
+    {
+        char cls[64];
+        cls[0] = 0;
+        GetClassNameA(h, cls, 64);
+        if ((cls[0]=='S'||cls[0]=='s') && cls[1]=='y' && cls[2]=='s' &&
+            cls[3]=='L' && cls[4]=='i' && cls[5]=='s' && cls[6]=='t') {
+            void* hdr = (void*)(size_t)SendMessageA(h, 0x101F /* LVM_GETHEADER */, 0, 0);
+            for (int i = 0; i < 16; i++)
+                if (pb_lv_tab_h[i] == h) {
+                    pb_lv_tab_explicit[i] = 1;
+                    pb_lv_tab_hdr[i] = hdr;
+                }
+            if (hdr) {
+                pb_rect_t rc;
+                if (GetWindowRect(hdr, &rc))
+                    SetWindowPos(hdr, 0, 0, 0, rc.right - rc.left, 20,
+                                 0x0002u | 0x0004u);
+            }
+            static void* lv_shifted[16];
+            int known = 0;
+            for (int i = 0; i < 16; i++)
+                if (lv_shifted[i] == h) { known = 1; break; }
+            if (!known) {
+                for (int i = 0; i < 16; i++)
+                    if (!lv_shifted[i]) { lv_shifted[i] = h; break; }
+                void* parent = GetParent(h);
+                pb_rect_t rc;
+                if (parent && GetWindowRect(h, &rc)) {
+                    pb_point_t pt;
+                    pt.x = rc.left; pt.y = rc.top;
+                    ScreenToClient(parent, &pt);
+                    SetWindowPos(h, 0, pt.x, pt.y + 1,
+                                 rc.right - rc.left, rc.bottom - rc.top - 1,
+                                 0x0004u | 0x0010u);
+                }
+                if (hdr)
+                    SetWindowPos(hdr, 0, 0, 0, 0, 0,
+                                 0x0001u | 0x0004u | 0x0010u);
+            }
+        }
+    }
 }
 
 /* CONTROL SHOW STATE hDlg, id&, showstate& [TO lResult&] - ShowWindow()
@@ -23366,6 +23505,97 @@ typedef struct {
 } PB_TVINSERTSTRUCT;
 
 /* ---------------- CONTROL ADD LISTVIEW ---------------- */
+/* ---------------- LISTVIEW HEADER HEIGHT / FONT ----------------
+   PBWin10 sizes the header from the current header font, but a ListView
+   WM_SETFONT also resizes SysHeader32 to fit the list font (Mistral 14 ->
+   26px) while PBWin keeps the header font it was given.  The subclass
+   rejects only the font the ListView forwards, allows an explicit
+   header WM_SETFONT, and clamps every height change to the header font. */
+#if defined(_WIN64)
+__declspec(dllimport) int __stdcall SetWindowSubclass(void* hwnd,
+    long long (__stdcall* proc)(void*, unsigned int, unsigned long long,
+                                long long, unsigned long long, unsigned long long),
+    unsigned long long id, unsigned long long ref);
+__declspec(dllimport) long long __stdcall DefSubclassProc(void* hwnd,
+    unsigned int msg, unsigned long long wp, long long lp);
+#endif
+typedef struct { void* hwnd; void* hwndInsertAfter; int x, y, cx, cy;
+                 unsigned int flags; } PbWindowPos;
+
+static int pb_header_height(void* hh) {
+    void* font = (void*)(intptr_t)SendMessageA(hh, 0x0031 /* WM_GETFONT */, 0, 0);
+    int height = 20;
+    void* dc = GetDC(hh);
+    if (dc) {
+        void* old = 0;
+        char tm[64];
+        __declspec(dllimport) int __stdcall GetTextMetricsA(void*, void*);
+        if (!font) font = GetStockObject(17 /* DEFAULT_GUI_FONT */);
+        if (font) old = SelectObject(dc, font);
+        memset(tm, 0, sizeof(tm));
+        if (GetTextMetricsA(dc, tm)) {
+            int tmh = *(int*)tm;
+            /* PBWin10's header is one text line plus its border: 20px for
+               Tahoma 12 at the sample DPI. */
+            if (tmh + 6 > height) height = tmh + 6;
+            if (height > 40) height = 40;
+        }
+        if (old) SelectObject(dc, old);
+        ReleaseDC(hh, dc);
+    }
+    return height;
+}
+
+#if defined(_WIN64)
+static long long __stdcall pb_header_font_subproc(void* h, unsigned int msg,
+                                                  unsigned long long wp, long long lp,
+                                                  unsigned long long id, unsigned long long ref) {
+    if (msg == 0x0030 /* WM_SETFONT */) {
+        /* PBWin10's DDT ListView header keeps its creation-time font even
+           when the program sends WM_SETFONT to the header directly (0398:
+           Tahoma 12 request, 20px default header, small bold glyphs). */
+        return 0;
+    }
+    if (msg == 0x0046 /* WM_WINDOWPOSCHANGING */ && lp) {
+        PbWindowPos* p = (PbWindowPos*)lp;
+        int want = pb_header_height(h);
+        if (p->cy > want) p->cy = want;
+    }
+    return DefSubclassProc(h, msg, wp, lp);
+}
+#endif
+
+static void pb_listview_header_fix(void* hLV, void* hdr) {
+    if (!hdr) return;
+#if defined(_WIN64)
+    SetWindowSubclass(hdr, pb_header_font_subproc, 1, 0);
+#endif
+    pb_rect_t rc;
+    if (GetWindowRect(hdr, &rc))
+        SetWindowPos(hdr, 0, 0, 0, rc.right - rc.left, pb_header_height(hdr),
+                     0x0002u /* SWP_NOMOVE */ | 0x0004u /* SWP_NOZORDER */);
+    /* The header resize alone leaves the list view's cached item origin at
+       the old height; a one-pixel width resize and back re-lays the rows
+       against the new header (0398). */
+    if (hLV) {
+        pb_rect_t lr;
+        if (GetWindowRect(hLV, &lr)) {
+            int w = lr.right - lr.left, ht = lr.bottom - lr.top;
+            SetWindowPos(hLV, 0, 0, 0, w + 1, ht,
+                         0x0002u | 0x0004u | 0x0010u /* SWP_NOACTIVATE */);
+            SetWindowPos(hLV, 0, 0, 0, w, ht,
+                         0x0002u | 0x0004u | 0x0010u /* SWP_NOACTIVATE */);
+        }
+    }
+}
+
+void* pb_listview_getheader(void* hLV) {
+    if (!hLV) return 0;
+    void* hh = (void*)(intptr_t)SendMessageA(hLV, PB_LVM_GETHEADER, 0, 0);
+    pb_listview_header_fix(hLV, hh);
+    return hh;
+}
+
 void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht,
                               unsigned long user_style, unsigned long user_exstyle) {
     /* PBWin's DDT LISTVIEW default has LVS_REPORT (1), LVS_SINGLESEL (4),
@@ -23398,20 +23628,24 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
                         style, x, y, w, ht, parent,
                         (void*)(long long)id, GetModuleHandleA(0), 0);
     if (h) {
-        SendMessageA(h, 0x0030 /* WM_SETFONT */,
-                     (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        void* df = pb_dialog_font_for(parent);
+        SendMessageA(h, 0x0030 /* WM_SETFONT */, (unsigned long long)(size_t)df, 1);
         void* hdr = (void*)(size_t)SendMessageA(h, PB_LVM_GETHEADER, 0, 0);
-        if (hdr) SendMessageA(hdr, 0x0030 /* WM_SETFONT */,
-                              (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
-        /* PBWin10's DDT list view does not set %LVS_EX_FULLROWSELECT for a
-           caller-supplied style (measured LVM_GETEXTENDEDLISTVIEWSTYLE == 0
-           in 0294); adding it shifted the first row's icon/text by one pixel.
-           The documented default style (style operand omitted) still starts
-           with %LVS_EX_FULLROWSELECT; batch170 asserts that &H20. */
-        if (!user_style)
-            SendMessageA(h, 0x1036 /* LVM_SETEXTENDEDLISTVIEWSTYLE */,
-                        0x20 /* LVS_EX_FULLROWSELECT */,
-                        0x20 /* LVS_EX_FULLROWSELECT */);
+        if (hdr) {
+            SendMessageA(hdr, 0x0030 /* WM_SETFONT */, (unsigned long long)(size_t)df, 1);
+            pb_listview_header_fix(h, hdr);
+        }
+        for (int i = 0; i < 16; i++)
+            if (!pb_lv_tab_h[i]) {
+                pb_lv_tab_h[i] = h;
+                pb_lv_tab_parent[i] = parent;
+                pb_lv_tab_hdr[i] = hdr;
+                pb_lv_tab_explicit[i] = 0;
+                break;
+            }
+        /* PBWin10's DDT list view does not set %LVS_EX_FULLROWSELECT,
+           whether the style operand is omitted or supplied (measured
+           LVM_GETEXTENDEDLISTVIEWSTYLE == 0 in 0294 and batch170). */
     }
     return h;
 }
@@ -23427,14 +23661,53 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
    anything else is used verbatim apart from WS_CHILD|WS_VISIBLE, which are
    what make it a visible child control at all.  That is how a caller reaches
    %TVS_CHECKBOXES (0x0100), which TREEVIEW SET/GET CHECK requires. */
+/* TVS_CHECKBOXES needs three 16x16 state images (blank, unchecked,
+   checked).  comctl32 does not materialise a state image list for a tree
+   created with the style bit alone; PBWin10 does, and TREEVIEW SET CHECK
+   then has something to draw. */
+static void* pb_treeview_state_images(void) {
+    static void* il = 0;
+    if (il) return il;
+    il = ImageList_Create(16, 16, 0x20 /* ILC_COLOR24 */ | 0x1 /* ILC_MASK */,
+                          3, 3);
+    if (!il) return 0;
+    void* screen = GetDC(0);
+    void* dc = CreateCompatibleDC(screen);
+    for (int k = 0; k < 3; k++) {
+        void* bmp = CreateCompatibleBitmap(screen, 16, 16);
+        void* old = SelectObject(dc, bmp);
+        void* br = CreateSolidBrush(0x00FF00FFu /* magenta mask */);
+        pb_rect_t rc; rc.left = 0; rc.top = 0; rc.right = 16; rc.bottom = 16;
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+        if (k > 0) {
+            void* pen = CreatePen(0 /* PS_SOLID */, 1, 0x00000000u);
+            void* oldp = SelectObject(dc, pen);
+            void* oldb = SelectObject(dc, GetStockObject(5 /* NULL_BRUSH */));
+            Rectangle(dc, 2, 2, 14, 14);
+            if (k == 2) {
+                MoveToEx(dc, 4, 8, 0);
+                LineTo(dc, 7, 11);
+                LineTo(dc, 12, 4);
+            }
+            SelectObject(dc, oldb);
+            SelectObject(dc, oldp);
+            DeleteObject(pen);
+        }
+        SelectObject(dc, old);
+        ImageList_AddMasked(il, bmp, 0x00FF00FFu);
+        DeleteObject(bmp);
+    }
+    DeleteDC(dc);
+    ReleaseDC(0, screen);
+    return il;
+}
+
+/* PBWin10's default TREEVIEW style measured with _probe_styles.py:
+   style 0x50010027 ... */
 void* pb_control_add_treeview(void* parent, long id, const char* text,
                               int x, int y, int w, int ht,
                               int style_ovr, int exstyle_ovr) {
-    /* PBWin10's default TREEVIEW style measured with _probe_styles.py:
-       style 0x50010027 (TVS_HASBUTTONS|HASLINES|LINESATROOT|SHOWSELALWAYS,
-       WS_TABSTOP), exstyle 0.  The old default also set WS_BORDER *and*
-       WS_EX_CLIENTEDGE, drawing a two-pixel frame PBWin does not have and
-       shifting the first node down two pixels (Treeview.bas 2.261%). */
     unsigned long style = (style_ovr != 0)
         ? ((unsigned long)style_ovr | 0x40000000u | 0x10000000u)
         : (0x1u | 0x2u | 0x4u | 0x20u | 0x40000000u | 0x10000000u
@@ -23442,10 +23715,24 @@ void* pb_control_add_treeview(void* parent, long id, const char* text,
     unsigned long exstyle = (exstyle_ovr != 0) ? (unsigned long)exstyle_ovr : 0u;
     pb_icc(PB_ICC_TREEVIEW_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
-    void* h = CreateWindowExA(exstyle, "SysTreeView32", text ? text : "",
+    /* PBWin10 creates the common control through the Unicode entry point.
+       Besides text handling, comctl32 only materialises the TVS_CHECKBOXES
+       state image list for a Unicode tree; an ANSI-created tree accepted
+       TVM_SETITEM state=0 but kept drawing an empty checkbox slot, so
+       0747's explicit "remove checkbox" was a no-op. */
+    char* wtext = text ? pb_ansi_to_wide(text) : NULL;
+    void* h = CreateWindowExW(exstyle, (const short*)L"SysTreeView32",
+                           wtext ? (const short*)wtext : (const short*)L"",
                            style, x, y, w, ht, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
-    if (h) SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+    if (wtext) SysFreeString(wtext);
+    if (h) {
+        SendMessageA(h, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        if (style & 0x0100u /* TVS_CHECKBOXES */) {
+            void* il = pb_treeview_state_images();
+            if (il) SendMessageW(h, 0x1109 /* TVM_SETIMAGELIST */, 2 /* TVSIL_STATE */, (pb_lparam_t)(size_t)il);
+        }
+    }
     return h;
 }
 

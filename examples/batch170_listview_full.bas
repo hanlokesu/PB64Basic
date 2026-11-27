@@ -167,17 +167,14 @@ FUNCTION PBMAIN () AS LONG
     LISTVIEW SET HEADER hDlg, 401, 1, "Name"
 
     ' ---------------- GET / SET STYLEXX ----------------
-    ' CONTROL ADD LISTVIEW starts the control with %LVS_EX_FULLROWSELECT.
+    ' PBWin10 leaves the LISTVIEW extended style at 0 when the style
+    ' operand is omitted (measured with a PBWin10 probe).  The fork used
+    ' to add %LVS_EX_FULLROWSELECT here, which made 0533 paint a wide
+    ' selection band that PBWin does not draw.
     ConPrint "--- GET / SET STYLEXX ---"
-#IF %MY_PBVER = 0
     LISTVIEW GET STYLEXX hDlg, 401 TO n
     ConPrint "stylexx        -> &H" & HEX$(n)
-    IF n <> &H20 THEN fail = fail + 1
-#ELSE
-    ' PBWin does not default the LISTVIEW extended style to LVS_EX_FULLROWSELECT;
-    ' the fork starts with &H20. Print the fork-expected value, skip PB assertion.
-    ConPrint "stylexx        -> &H20"
-#ENDIF
+    IF n <> 0 THEN fail = fail + 1
     LISTVIEW SET STYLEXX hDlg, 401, &H21
     LISTVIEW GET STYLEXX hDlg, 401 TO n
     ConPrint "stylexx        -> &H" & HEX$(n)

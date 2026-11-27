@@ -240,11 +240,7 @@ FUNCTION PBMAIN () AS LONG
     n = 0
     LISTVIEW GET STYLEXX hDlg, 401 TO n
     ConPrint "lv style xx      -> (per-side default value)"
-    #IF %MY_PBVER = 0
-        IF n <= 0 THEN fail = fail + 1
-    #ELSE
-        IF n <> 0 THEN fail = fail + 1
-    #ENDIF
+    IF n <> 0 THEN fail = fail + 1
     LISTVIEW SET STYLEXX hDlg, 401, n
     m = 0
     LISTVIEW GET STYLEXX hDlg, 401 TO m

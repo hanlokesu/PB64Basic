@@ -6,12 +6,11 @@
 ' Purpose: lock the LISTVIEW default extended-style split that batch 412
 '          restored while keeping sample 0294 pixel-identical.
 '
-'           Rule under test:
-'             * style operand omitted  -> documented DDT default, which
-'               includes %LVS_EX_FULLROWSELECT (&H20).
+'           Rule under test (measured with a PBWin10 probe):
+'             * style operand omitted  -> extended style also starts at 0;
+'               PBWin10 does not add %LVS_EX_FULLROWSELECT to a DDT list view.
 '             * explicit style supplied (0294 passes only %WS_BORDER)
-'               -> no implicit %LVS_EX_FULLROWSELECT; the caller's
-'               extended style starts at zero.
+'               -> no implicit %LVS_EX_FULLROWSELECT either.
 '
 '           The two witnesses are the same LISTVIEW GET STYLEXX statement
 '           on two controls created in one dialog, so a regression that
@@ -19,7 +18,7 @@
 '           fails one of the two assertions.
 '
 ' Expected output:
-'   default style xx -> &H20
+'   default style xx -> &H0
 '   explicit style xx -> &H0
 '   === FAILURES: 0 ===
 '   exit code 0
@@ -52,7 +51,8 @@ FUNCTION PBMAIN () AS LONG
     DIALOG NEW 0, "batch412 LISTVIEW default extended style", 0, 0, 320, 180 TO hDlg
     DIALOG SHOW MODELESS hDlg
 
-    ' Control 401: style operand omitted -> documented DDT default.
+    ' Control 401: style operand omitted -> PBWin10 still leaves the
+    ' extended style at zero; no implicit full-row select is added.
     CONTROL ADD LISTVIEW, hDlg, 401, "", 10, 10, 300, 70
     CONTROL HANDLE hDlg, 401 TO hLv
     IF hLv = 0 THEN fail = fail + 1
@@ -60,7 +60,7 @@ FUNCTION PBMAIN () AS LONG
     n = -1
     LISTVIEW GET STYLEXX hDlg, 401 TO n
     ConPrint "default style xx -> &H" & HEX$(n)
-    IF n <> &H20 THEN fail = fail + 1
+    IF n <> 0 THEN fail = fail + 1
 
     ' Control 402: explicit style with no LVS_TYPEMASK bits (the 0294
     ' shape).  It still becomes a report view, but its extended style must

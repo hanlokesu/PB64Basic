@@ -52,25 +52,35 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%CF_NOSCRIPTSEL", 0x00800000),
     ("%CF_NOVERTFONTS", 0x01000000),
     ("%CF_INACTIVEFONTS", 0x02000000),
+    /* PBWin's DDT layer predefines the common control notification codes;
+    without them an unknown %TCN_SELCHANGE silently folded to 0, so
+    `IF CB.Nmcode = %TCN_SelChange` fired on every callback (0315). */
+    ("%TCN_FIRST", -550),
+    ("%TCN_KEYDOWN", -550),
+    ("%TCN_SELCHANGE", -551),
+    ("%TCN_SELCHANGING", -552),
+    ("%TCN_GETOBJECT", -553),
+    ("%TCN_FOCUSCHANGE", -554),
+    ("%TCM_FIRST", 0x00001300),
     /* PBWin built-in RGB colour equates (BGR order, as Windows COLORREF). */
     ("%RGB_BLACK", 0x00000000),
     ("%RGB_BLUE", 0x00FF0000),
-    ("%RGB_GREEN", 0x0000FF00),
+    ("%RGB_GREEN", 0x00008000),
     ("%RGB_CYAN", 0x00FFFF00),
     ("%RGB_RED", 0x000000FF),
     ("%RGB_FIREBRICK", 0x002222B2),
     ("%RGB_MAGENTA", 0x00FF00FF),
-    ("%RGB_BROWN", 0x00008080),
-    ("%RGB_LIGHTGRAY", 0x00C0C0C0),
-    ("%RGB_DARKGRAY", 0x00808080),
-    ("%RGB_LIGHTBLUE", 0x00FF8080),
-    ("%RGB_LIGHTGREEN", 0x0080FF80),
-    ("%RGB_LIGHTCYAN", 0x00FFFF80),
+    ("%RGB_BROWN", 0x002A2AA5),
+    ("%RGB_LIGHTGRAY", 0x00D3D3D3),
+    ("%RGB_DARKGRAY", 0x00A9A9A9),
+    ("%RGB_LIGHTBLUE", 0x00E6D8AD),
+    ("%RGB_LIGHTGREEN", 0x0090EE90),
+    ("%RGB_LIGHTCYAN", 0x00FFFFE0),
     ("%RGB_LIGHTRED", 0x008080FF),
     ("%RGB_LIGHTMAGENTA", 0x00FF80FF),
     ("%RGB_YELLOW", 0x0000FFFF),
     ("%RGB_WHITE", 0x00FFFFFF),
-    ("%RGB_PALETURQUOISE", 0x00AFEEEE),
+    ("%RGB_PALETURQUOISE", 0x00EEEEAF),
     ("%GRAY", 0x00808080),
     /* PBWin also exposes the short colour names. */
     ("%BLACK", 0x00000000),
@@ -83,7 +93,7 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%LIGHTGRAY", 0x00C0C0C0),
     ("%DARKGRAY", 0x00808080),
     ("%LIGHTBLUE", 0x00FF8080),
-    ("%LIGHTGREEN", 0x0080FF80),
+    ("%LIGHTGREEN", 0x0090EE90),
     ("%LIGHTCYAN", 0x00FFFF80),
     ("%LIGHTRED", 0x008080FF),
     ("%LIGHTMAGENTA", 0x00FF80FF),
@@ -2738,6 +2748,22 @@ impl Compiler {
         if EXACT.contains(&n.as_str()) {
             return true;
         }
+        // Win32 structure members spelled hItem / hTree / hNode are HTREEITEM
+        // (or another handle) even though the 32-bit PBWin headers declare
+        // them DWORD.  TVITEMEX.hItem left at 4 bytes put the following
+        // state/stateMask at +12 instead of +16, so TVM_SETITEM read a
+        // truncated handle and silently ignored the state change (0747).
+        const EXCLUDE_SEG: &[&str] = &["HEIGHT", "HOUR", "HALF", "HUE", "HAND"];
+        for seg in n.split('_') {
+            let b = seg.as_bytes();
+            if b.len() >= 2
+                && b[0] == b'H'
+                && b[1].is_ascii_uppercase()
+                && !EXCLUDE_SEG.contains(&seg)
+            {
+                return true;
+            }
+        }
         if n.starts_with("LP") {
             // LPFN..., LPRECT, LPSTR, LPVOID, LPSZ...
             return true;
@@ -5092,6 +5118,8 @@ impl Compiler {
             &[IrType::Ptr, IrType::I32, IrType::I32, IrType::Ptr],
             false,
         );
+        self.module
+            .declare_function("pb_listview_getheader", &IrType::Ptr, &[IrType::Ptr], false);
         self.module.declare_function(
             "pb_listview_get_headerid",
             &IrType::Void,
@@ -5635,6 +5663,18 @@ impl Compiler {
             "pb_treeview_get_attr",
             &IrType::I64,
             &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_treeview_getitemex",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module.declare_function(
+            "pb_treeview_setitemex",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -24981,6 +25021,40 @@ impl Compiler {
                 }
                 return Ok(());
             }
+            "TREEVIEW_GETITEMEX" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "TREEVIEW_GETITEMEX requires its arguments: TREEVIEW GETITEMEX hTree , TVItemEX".to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let mut ht = self.compile_expr(fb, &call.args[0])?;
+                if ht.ty != IrType::Ptr {
+                    ht = self.value_as_ptr(fb, &ht);
+                }
+                if let Some((item, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
+                    fb.call_void("pb_treeview_getitemex", &[ht, item]);
+                }
+                return Ok(());
+            }
+            "TREEVIEW_SETITEMEX" => {
+                if call.args.len() < 2 {
+                    return Err(pb::error::PbError::parser(
+                        "TREEVIEW_SETITEMEX requires its arguments: TREEVIEW SETITEMEX hTree , TVItemEX".to_string(),
+                        None,
+                        call.line,
+                    ));
+                }
+                let mut ht = self.compile_expr(fb, &call.args[0])?;
+                if ht.ty != IrType::Ptr {
+                    ht = self.value_as_ptr(fb, &ht);
+                }
+                if let Some((item, _, _)) = self.lvalue_ptr(fb, &call.args[1]) {
+                    fb.call_void("pb_treeview_setitemex", &[ht, item]);
+                }
+                return Ok(());
+            }
             "TREEVIEW_INSERT_ITEM" => {
                 // batch 220: the official syntax requires all 8 arguments, so a shorter
                 // spelling is malformed. Report it instead of silently doing nothing.
@@ -32919,6 +32993,24 @@ impl Compiler {
                         None,
                         self.current_line,
                     ));
+                }
+                // ListView_GetHeader(hLV): Win32API.inc pulls in CommCtrl.inc,
+                // but the fork's stub header has no declaration and the old
+                // compiler silently produced zero.  0398 then sent
+                // WM_SETFONT to HWND 0 and left its header at the default font.
+                if raw_upper == "LISTVIEW_GETHEADER" {
+                    if args.len() != 1 {
+                        return Err(PbError::parser(
+                            "ListView_GetHeader requires one window handle argument",
+                            None,
+                            self.current_line,
+                        ));
+                    }
+                    let mut hv = self.compile_expr(fb, &args[0])?;
+                    if hv.ty != IrType::Ptr {
+                        hv = self.value_as_ptr(fb, &hv);
+                    }
+                    return Ok(fb.call(&IrType::Ptr, "pb_listview_getheader", &[hv]));
                 }
                 // CHR$$(n...) returns a WSTRING (UTF-16 BSTR); each argument is
                 // truncated to the low 16 bits (PBWin probe: CHR$$(&H1F600) ->

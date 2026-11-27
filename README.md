@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 413 (v0.2.202). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 414 (v0.2.203). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 414 (v0.2.203) - Fifth Gary Beene GUI batch: 50 previously unused samples. All 50 compile with both compilers and all 50 launch. 49 of 50 are pixel-identical (0.0%, same screenshot size); sample 0398 remains at 6.7% because its ListView header text composition still differs. Fixed COMCTL notification constants, ProgressBar bar colour, Tab-page background/focus, ListView header height/font and top seam, Font New handle semantics, status-bar 1px offset, graphic quadrant and closed-interval rendering, empty ListView style slots, and removed the implicit full-row select that PBWin does not use. 0737 was excluded because PBWin10 itself fails with Error 519 and the published icons are gone; it was replaced by self-contained 0740. Three stale ListView fixtures now assert PBWin10's measured zero extended style. Self-check: examples/batch414_test.bas.
 > batch 413 (v0.2.202) - Closed the remaining common-dialog gaps: classic 431x319 font dialog with Script=Western, and 555x385 Open/Save via the 370x237 NEWFILEOPENV2ORD template. Batch 4: PB64 50/50 compiles, 38/40 comparable windows identical, 2 near (0.03% / 0.044%), 1 size mismatch (0771). Self-check: examples/batch413_test.bas.
 > batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, owner-draw ListBox row height, and button `WM_CTLCOLORBTN` focus-rectangle color. PB64Basic compiles 50/50 samples; of 37 comparable windows 35 are pixel-identical and 2 are near-identical (0.03-0.04%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
 > batch 410 (v0.2.200) - Closed the deterministic defects from the third Gary Beene GUI batch: empty DIALOG NEW style/exstyle slots, GRAPHIC CLEAR colon boundaries, the ANSI %LVN_GETDISPINFO alias, Win64 widening of BYVAL DWORD/LONG handle parameters in header SUB wrappers, LVITEM 32-bit item indices, pointer-sized NMCUSTOMDRAW.dwItemSpec/lItemlParam, %RGB_PALETURQUOISE, WM_NOTIFY LRESULT propagation, RichEdit ES_NOHIDESEL initial-selection behaviour and LISTVIEW SET STYLEXX mask handling. Batch 3: PB64 46/50 compile, PBWin10 42/50, both 42/50, PB64-only failures 0; semantic identical 25, near 2, diff 9. Remaining diffs are control-fidelity gaps, not parser/codegen failures.
@@ -1094,6 +1095,73 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.203 (2026-11-27)
+
+This release closes the fifth Gary Beene GUI batch: 50 samples that no earlier
+batch had used. Every sample compiles with both PB64Basic and PBWin 10, both
+binaries launch and produce a window. 49 of the 50 screenshots are pixel-identical at 0.0 percent difference with the same dimensions; sample 0398 remains at 6.7 percent because its ListView header text composition differs.
+
+#### Runtime and controls
+
+- Added the missing COMCTL notification constants `%TCN_FIRST`,
+  `%TCN_KEYDOWN`, `%TCN_SELCHANGE`, `%TCN_SELCHANGING`, `%TCN_GETOBJECT`,
+  `%TCN_FOCUSCHANGE` and `%TCM_FIRST`. Before this, an unknown equate silently
+  became zero, so a Tab control compared `Nmcode` against zero and fired a
+  spurious message box.
+- `PBM_SETBARCOLOR` now uses `wParam=0` and `lParam=COLORREF`; the progress
+  control also paints its trough with the requested background colour.
+- Tab-page child dialogs now erase with `COLOR_BTNFACE`, matching the PBWin
+  page background instead of leaving the parent brush visible.
+- `LISTVIEW GET HEADER` is available both as a statement and as the
+  `ListView_GetHeader()` expression. The header is kept at 20 pixels, the
+  dialog font is applied only when the program did not call `CONTROL SET FONT`,
+  and the one-pixel band above an explicitly fonted list is painted together
+  with its column separators. This reduced sample 0398 from 7.24 to 6.73 percent; its header text still differs from PBWin 10.
+- `FONT NEW` returns the font slot, as PBWin does, rather than the raw HFONT.
+  `WM_GETFONT` on a PBWin-created header returns an invalid slot number, so a
+  slot is the value the DDT statements expect.
+- `STATUSBAR SET PARTS` uses `acc-1` for each boundary, removing the one-pixel
+  offset in sample 0292.
+- `GRAPHIC RENDER` no longer requires the extra quadrant bit test, and a
+  target that exceeds the control client area with unequal width and height is
+  treated as the closed interval PBWin renders before clipping. Sample 0361
+  moved from 23.233 percent to identical while 0292 kept its 100x100 result.
+- `CONTROL ADD LISTVIEW` accepts consecutive commas for omitted style slots.
+  An explicit `%WS_VISIBLE Or %LVS_ICON` style is no longer rewritten as a
+  report view, and the implicit `%LVS_EX_FULLROWSELECT` was removed because
+  PBWin leaves the extended style at zero. This fixed samples 0515, 0516, 0530,
+  0531 and 0533.
+
+#### Sample set
+
+- 0737 (`Change Node Icons at Runtime`) was excluded rather than counted as a
+  PB64Basic fix: PBWin 10 itself reports Error 519 for
+  `TreeView_GetItemEX` / `SetItemEX`, and the `x.ico` / `type.ico` files it
+  references are no longer published. It was replaced by the self-contained
+  0740 (`Delete Node + Children`), which is pixel-identical. The batch still has
+  50 samples and its IDs have zero overlap with batches 1 through 4.
+
+#### Tests
+
+- `examples/batch414_test.bas` checks the release banner, `%TCN_SELCHANGE`
+  and `%RGB_LIGHTGREEN`.
+- `batch170_listview_full`, `batch191_test` and `batch412_test` were corrected
+  to assert PBWin 10's measured zero default extended style. The old
+  `&H20` expectation was a fork-only assumption, disproved by running the same
+  fixture under PBWin 10.
+- Screenshot evidence: 50 result directories under
+  `garybeene-corpus/batch5_dual_work/samples`, each with `side_by_side.png`,
+  `diff.png` and `result.json`.
+
+#### Gate results
+
+- `run_examples.py --compile-all`: 501 compiled, 0 failed.
+- `run_examples.py --all-headless`: 342 compiled, 0 compile failed, 338 ran,
+  0 run failed, 4 no-exe.
+- Negative probes: 34 probes, 0 bad.
+- 32-bit link smoke: 0 link failures.
+- Batch 5 dual run: 50 identical, 0 near, 0 diff, 50 same-size.
+
 ### v0.2.202 (2026-11-27)
 
 This release closes the remaining common-dialog fidelity gaps from the fourth

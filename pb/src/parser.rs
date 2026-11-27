@@ -13307,16 +13307,29 @@ impl Parser {
                     // default regardless of %LVS_ICON / %LVS_LIST.
                     let mut style: Option<Expr> = None;
                     let mut exstyle: Option<Expr> = None;
-                    if self.peek() == &Token::Comma {
+                    /* `id, "", x, y, w, h,, %WS_Ex_ClientEdge` is legal:
+                    the style slot is empty and the exstyle follows it.
+                    The previous scanner parsed the second comma as an
+                    expression and aborted (0515, "Unexpected token in
+                    expression: Comma"). */
+                    while self.peek() == &Token::Comma {
                         self.advance();
-                        if self.peek() != &Token::To && self.peek() != &Token::Eol {
-                            style = Some(self.parse_expression()?);
-                            if self.peek() == &Token::Comma {
-                                self.advance();
-                                if self.peek() != &Token::To && self.peek() != &Token::Eol {
-                                    exstyle = Some(self.parse_expression()?);
-                                }
+                        if self.peek() == &Token::Comma {
+                            if style.is_none() {
+                                style = Some(Expr::IntegerLit(0));
+                            } else if exstyle.is_none() {
+                                exstyle = Some(Expr::IntegerLit(0));
+                            } else {
+                                break;
                             }
+                        } else if self.peek() == &Token::To || self.peek() == &Token::Eol {
+                            break;
+                        } else if style.is_none() {
+                            style = Some(self.parse_expression()?);
+                        } else if exstyle.is_none() {
+                            exstyle = Some(self.parse_expression()?);
+                        } else {
+                            break;
                         }
                     }
                     let target = if self.peek() == &Token::To {
