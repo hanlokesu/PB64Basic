@@ -1562,7 +1562,15 @@ fn link_exe(
     if opts.console_mode == Some(true) {
         args.push("-Wl,/SUBSYSTEM:CONSOLE,/ENTRY:mainCRTStartup".to_string());
     } else {
-        args.push("-Wl,/SUBSYSTEM:WINDOWS,/ENTRY:mainCRTStartup".to_string());
+        // PBWin10 emits GUI images with subsystem version 4.0.  Windows uses
+        // that version to select the legacy non-client metrics: a 4.0 GUI
+        // process reports iBorderWidth=5, while a 6.0 image reports 1 (C
+        // SPI_GETNONCLIENTMETRICS probe, Windows 11).  Matching PBWin10 here
+        // keeps SIZEOF/system-metric samples (0899) identical and is the same
+        // frame/header geometry the reference screenshots were captured with.
+        args.push("-Xlinker".to_string());
+        args.push("/SUBSYSTEM:WINDOWS,4.0".to_string());
+        args.push("-Wl,/ENTRY:mainCRTStartup".to_string());
     }
 
     // 32-bit only: lld-link enables /SAFESEH by default and rejects any object
@@ -12967,6 +12975,18 @@ impl Compiler {
                     if let Statement::Asm(t2) = &stmts[j] {
                         seq.push(t2.clone());
                         j += 1;
+                    } else if let Statement::Label(name) = &stmts[j] {
+                        // PBWin inline asm commonly uses a plain PB label as
+                        // its loop target (`lp1:` followed by `! jns short
+                        // lp1`).  LLVM inline asm cannot branch to a label
+                        // outside the asm block, so pull the label into the
+                        // block when more ASM follows it.
+                        if j + 1 < stmts.len() && matches!(stmts[j + 1], Statement::Asm(_)) {
+                            seq.push(format!("{}:", name));
+                            j += 1;
+                        } else {
+                            break;
+                        }
                     } else {
                         break;
                     }
@@ -13531,6 +13551,12 @@ impl Compiler {
                 slot: usize,
                 disp: i64,
             },
+            /// Pointer-valued variable (`Long Pointer`, `X PTR`): the
+            /// constraint already holds the loaded pointer, so the operand
+            /// is the register itself, not a byte load through it.
+            RegPtr {
+                slot: usize,
+            },
             Imm(i64),
             Raw(String),
             Comma,
@@ -13553,12 +13579,35 @@ impl Compiler {
                     // `b[0]` in inline asm addresses the first character of
                     // the string data, so pass the loaded pointer and index
                     // through the asm operand.
-                    let loaded =
-                        fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+                    let is_string = matches!(
+                        info.pb_type,
+                        PbType::String
+                            | PbType::WString
+                            | PbType::FixedString(_)
+                            | PbType::AsciiZ(_)
+                            | PbType::FixedWString(_, _)
+                    );
+                    if is_string {
+                        let loaded =
+                            fb.load(&IrType::Ptr, &Val::new(info.ptr_name.clone(), IrType::Ptr));
+                        let slot = constraints.len();
+                        constraints.push("r".to_string());
+                        args.push(format!("ptr {}", loaded.name));
+                        return Some(Op::PtrMem { slot, disp: 0 });
+                    }
+                    // `Long Pointer` / typed PTR: PBWin's `mov edi, fp`
+                    // moves the pointer value, not the byte it points at.
+                    // Use an indirect memory operand so the hard-coded
+                    // ESI/EDI registers do not also consume input GPRs.
+                    let is_64 = !self_.module.is_32bit();
                     let slot = constraints.len();
-                    constraints.push("r".to_string());
-                    args.push(format!("ptr {}", loaded.name));
-                    return Some(Op::PtrMem { slot, disp: 0 });
+                    constraints.push("*m".to_string());
+                    args.push(format!(
+                        "ptr elementtype({}) {}",
+                        if is_64 { "i64" } else { "i32" },
+                        info.ptr_name
+                    ));
+                    return Some(Op::RegPtr { slot });
                 }
                 let width = match &info.ir_type {
                     IrType::I8 => "byte",
@@ -13575,9 +13624,15 @@ impl Compiler {
                         return None;
                     }
                 };
+                let elem = match width {
+                    "byte" => "i8",
+                    "word" => "i16",
+                    "dword" => "i32",
+                    _ => "i64",
+                };
                 let slot = constraints.len();
-                constraints.push("r".to_string());
-                args.push(format!("ptr {}", info.ptr_name));
+                constraints.push("*m".to_string());
+                args.push(format!("ptr elementtype({}) {}", elem, info.ptr_name));
                 Some(Op::Mem {
                     width: width.to_string(),
                     slot,
@@ -13588,6 +13643,14 @@ impl Compiler {
         };
 
         let mut instruction_texts: Vec<String> = Vec::new();
+        // On x64 a PB `Long Pointer` holds a 64-bit address.  x86 inline
+        // asm still names ESI/EDI; loading only 32 bits would truncate the
+        // pointer and crash.  Track which 32-bit registers received a
+        // pointer operand and promote them (and address expressions) to the
+        // matching 64-bit register.
+        let mut x64_pointer_regs: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let is_x64 = !self.module.is_32bit();
 
         for line in lines {
             let t = strip_asm_comment(line);
@@ -13737,10 +13800,10 @@ impl Compiler {
                             constraints.push("r".to_string());
                             args.push(format!("{} 0", scratch_ty));
                             shuffle_lines
-                                .push(format!("mov ${}, {} ptr [${}]", scratch_slot, width, slot));
+                                .push(format!("mov ${}, {} ptr ${}", scratch_slot, width, slot));
                             operand_parts.push(format!("${}", scratch_slot));
                         } else {
-                            operand_parts.push(format!("{} ptr [${}]", width, slot));
+                            operand_parts.push(format!("{} ptr ${}", width, slot));
                         }
                         i += 1;
                     }
@@ -13752,6 +13815,20 @@ impl Compiler {
                         } else {
                             operand_parts.push(format!("byte ptr [${}-{}]", slot, -*disp));
                         }
+                        i += 1;
+                    }
+                    Op::RegPtr { slot } => {
+                        if is_x64 && operand_parts.len() >= 2 {
+                            let opcode = operand_parts[0].trim().to_ascii_lowercase();
+                            let dest = operand_parts[1].trim().to_ascii_lowercase();
+                            if opcode == "mov" {
+                                if let Some(alias) = x64_gpr_alias(&dest) {
+                                    operand_parts[1] = alias.to_string();
+                                    x64_pointer_regs.insert(dest);
+                                }
+                            }
+                        }
+                        operand_parts.push(format!("${}", slot));
                         i += 1;
                     }
                     Op::Raw(txt) => {
@@ -13769,6 +13846,29 @@ impl Compiler {
             instruction_texts.push(text.trim().to_string());
         }
 
+        if is_x64 {
+            for line in &mut instruction_texts {
+                let toks = split_asm_tokens(line);
+                let mut out: Vec<String> = Vec::with_capacity(toks.len());
+                for tok in toks {
+                    if tok.starts_with('[') && tok.ends_with(']') && tok.len() >= 2 {
+                        out.push(format!(
+                            "[{}]",
+                            x64_rewrite_addr_expr(&tok[1..tok.len() - 1])
+                        ));
+                    } else if x64_pointer_regs.contains(&tok.to_ascii_lowercase()) {
+                        if let Some(alias) = x64_gpr_alias(&tok) {
+                            out.push(alias.to_string());
+                        } else {
+                            out.push(tok);
+                        }
+                    } else {
+                        out.push(tok);
+                    }
+                }
+                *line = out.join(" ");
+            }
+        }
         if instruction_texts.is_empty() {
             return Ok(());
         }
@@ -16265,7 +16365,7 @@ impl Compiler {
         // buffer.  A DIM/REDIM here changes the live count through the runtime
         // instead of replacing a stack alloca.
         if let Some(prev) = self.symbols.lookup_array(&name).cloned() {
-            if prev.dynamic {
+            if prev.dynamic && dim.is_array {
                 if dim.bounds.is_empty() {
                     return Ok(());
                 }
@@ -40858,6 +40958,47 @@ fn strip_asm_comment(text: &str) -> String {
 /// Split an inline-ASM line into tokens. Whitespace and commas separate
 /// tokens; a bracketed memory operand `[...]` stays one token; double-quoted
 /// strings stay one token.
+/// Map a 32-bit x86 GPR name to its 64-bit x64 alias.
+fn x64_gpr_alias(reg: &str) -> Option<&'static str> {
+    Some(match reg.to_ascii_lowercase().as_str() {
+        "eax" => "rax",
+        "ebx" => "rbx",
+        "ecx" => "rcx",
+        "edx" => "rdx",
+        "esi" => "rsi",
+        "edi" => "rdi",
+        "ebp" => "rbp",
+        "esp" => "rsp",
+        _ => return None,
+    })
+}
+
+/// Rewrite register names inside an x86 addressing expression (`[esi+ebx*4]`).
+fn x64_rewrite_addr_expr(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        if !word.is_empty() {
+            if let Some(alias) = x64_gpr_alias(word) {
+                out.push_str(alias);
+            } else {
+                out.push_str(word);
+            }
+            word.clear();
+        }
+    };
+    for ch in expr.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            word.push(ch);
+        } else {
+            flush(&mut word, &mut out);
+            out.push(ch);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
+}
+
 fn split_asm_tokens(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut cur = String::new();

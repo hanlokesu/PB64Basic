@@ -13173,6 +13173,7 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
     int w = x2 - x1;
     int h = y2 - y1;
     int native_exact = 0;
+    int src_w = w, src_h = h;
     if (!want_icon) {
         unsigned char bm[40];
         for (int i = 0; i < 40; i++) bm[i] = 0;
@@ -13181,15 +13182,24 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
             sw = bm[4] | (bm[5] << 8) | (bm[6] << 16) | (bm[7] << 24);
             sh = bm[8] | (bm[9] << 8) | (bm[10] << 16) | (bm[11] << 24);
         }
+        if (sw > 0 && sh > 0) { src_w = sw; src_h = sh; }
+        /* PBWin treats (0,0)-(99,99) as the full native 100x100 source, and
+           a request that exactly matches the source is a 1:1 copy.  It adds
+           the inclusive endpoint only when the request actually grows past
+           the source and reaches the live control edge: 0361's 100x120
+           render into the 100x100 client covers 101x121 and maps at
+           99/120, while 0294/0301's 100x100 render stays native. */
+        if (sw > 0 && sh > 0 && g_gr_ctl_w > 0 && g_gr_ctl_h > 0
+            && x2 >= g_gr_ctl_w && y2 >= g_gr_ctl_h
+            && (x2 > src_w || y2 > src_h)) {
+            w++;
+            h++;
+        }
         if (w <= 0 || h <= 0) {
             w = sw;
             h = sh;
         } else if (sw > 0 && sh > 0 && w == sw - 1 && h == sh - 1) {
-            /* PBWin's CONTROL ADD GRAPHIC path renders the 100x100 source at
-               native size even when GRAPHIC RENDER names (0,0)-(99,99):
-               0286 shows the full 100th row/column.  The fork treated the
-               rectangle as a 99x99 destination and lost both edges.  A
-               one-pixel-smaller request therefore means "native size". */
+            /* A request one pixel inside the source means native size. */
             w = sw;
             h = sh;
             native_exact = 1;
@@ -13230,7 +13240,11 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
           && BitBlt(g_gr_dc, 0, seam, seam, bottomh, mdc, 0, half, PB_B182_SRCCOPY)
           && BitBlt(g_gr_dc, seam, seam, rightw, bottomh, mdc, half, half, PB_B182_SRCCOPY);
     } else {
-        ok = StretchBlt(g_gr_dc, x1, y1, w, h, mdc, 0, 0, w, h, PB_B182_SRCCOPY);
+        /* The source rectangle is the bitmap's native size, not the target
+           rectangle: 0361 renders a 100x100 bitmap into (0,0)-(100,120)
+           (the live client height), and using h=120 as the source height
+           made StretchBlt read outside the bitmap and leave the old page. */
+        ok = StretchBlt(g_gr_dc, x1, y1, w, h, mdc, 0, 0, src_w, src_h, PB_B182_SRCCOPY);
     }
     SelectObject(mdc, old);
     DeleteDC(mdc);
@@ -13266,6 +13280,11 @@ int pb_graphic_render_common(char* name, int x1, int y1, int x2, int y2, int wan
         }
     }
     if (!want_icon) DeleteObject(img);
+    /* GRAPHIC RENDER without a ReDraw callback (0361's WM_SIZE branch
+       re-creates the control and renders the new page) otherwise leaves the
+       stale first bitmap on screen until some unrelated WM_PAINT arrives.
+       PBWin repaints the control immediately. */
+    if (g_gr_ctl_hwnd) InvalidateRect(g_gr_ctl_hwnd, 0, 0);
     return ok ? 1 : 0;
 }
 
@@ -19042,6 +19061,7 @@ static int   pb_lv_tab_explicit[16];
 
 static void pb_lv_paint_top_bands(void* hWnd, void* dc) {
     if (!hWnd || !dc) return;
+    __declspec(dllimport) unsigned long __stdcall GetSysColor(int nIndex);
     for (int i = 0; i < 16; i++) {
         if (!pb_lv_tab_h[i] || pb_lv_tab_parent[i] != hWnd ||
             !pb_lv_tab_explicit[i]) continue;
@@ -19053,31 +19073,11 @@ static void pb_lv_paint_top_bands(void* hWnd, void* dc) {
         long band[4];
         band[0] = pt.x; band[1] = pt.y - 1;
         band[2] = pt.x + (rc.right - rc.left); band[3] = pt.y;
-        void* br = CreateSolidBrush(0x00FFFFFFu);
+        void* br = CreateSolidBrush((unsigned long)GetSysColor(15 /* COLOR_3DFACE */));
         if (br) {
             FillRect(dc, band, br);
             DeleteObject(br);
         }
-        void* hdr = pb_lv_tab_hdr[i];
-        if (!hdr) continue;
-        int cols = (int)(size_t)SendMessageA(hdr, 0x1200 /* HDM_GETITEMCOUNT */, 0, 0);
-        if (cols <= 0) continue;
-        int cx = pt.x;
-        br = CreateSolidBrush(0x00696969u);
-        if (!br) continue;
-        for (int c = 0; c < cols; c++) {
-            int cw = (int)(size_t)SendMessageA(pb_lv_tab_h[i],
-                                       0x101D /* LVM_GETCOLUMNWIDTH */, c, 0);
-            if (cw <= 0) continue;
-            cx += cw;
-            if (cx < band[2]) {
-                long sep[4];
-                sep[0] = cx - 1; sep[1] = pt.y - 1;
-                sep[2] = cx; sep[3] = pt.y;
-                FillRect(dc, sep, br);
-            }
-        }
-        DeleteObject(br);
     }
 }
 
@@ -19162,6 +19162,24 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
         /* Not a GRAPHIC control: an owner-drawn LISTBOX/COMBOBOX item must
            still reach the user's CB.WPARAM/CB.LPARAM handler.  Returning 0
            here made BmpList render as an empty white box. */
+    }
+    if (Msg == 0x0024) /* WM_GETMINMAXINFO - PBWin dialogs ignore the normal-window minimum tracking width */ {
+        /* A #32770 dialog with WS_THICKFRAME may be created narrower than
+           SM_CXMINTRACK (0361 asks for a 100px client and PBWin realises a
+           116px outer window).  PBWIN_DLG_CLASS is a normal registered class,
+           so DefWindowProc clamps it to the 136px minimum tracking width and
+           the client grows to 120px.  Clear only ptMinTrackSize; leave the
+           maximised/max-track values from DefWindowProc untouched. */
+        char mmcls[32];
+        if (GetClassNameA(hWnd, mmcls, (int)sizeof(mmcls)) > 0
+            && strcmp(mmcls, "PBWIN_DLG_CLASS") == 0
+            && (GetWindowLongA(hWnd, -16) & 0x00040000L) /* WS_THICKFRAME */) {
+            (void)DefWindowProcA(hWnd, Msg, wParam, lParam);
+            /* MINMAXINFO: 5 POINTs; ptMinTrackSize is the 4th (indices 6/7). */
+            ((long*)lParam)[6] = 0;
+            ((long*)lParam)[7] = 0;
+            return 0;
+        }
     }
     if (Msg == 0x0083) /* WM_NCCALCSIZE - dialog-style frame */ {
         /* Resizable PBWin dialogs use the real system frame.  The hand-made
@@ -22663,9 +22681,10 @@ void pb_control_set_font(void* hDlg, long long id, long long hFont) {
         if (!hf) hf = (void*)(size_t)SendMessageA(hDlg, 0x0031 /* WM_GETFONT */, 0, 0);
     }
     SendMessageA(h, 0x0030 /* WM_SETFONT */, (pb_wparam_t)(size_t)hf, 1 /* redraw */);
-    /* PBWin's ListView keeps its 20px header and clips a larger explicit
-       header font; the list rows sit one pixel lower than the fork's.  Only
-       ListViews the program actually re-fonted need this composition. */
+    /* PBWin's ListView lets its font resize the 26px header band.  Record
+       the ListView/header pair so the top-band repaint and header subclass
+       apply; do not force a header height here (0398: Mistral 14 -> 26px,
+       then an explicit Tahoma 12 header font keeps that band). */
     {
         char cls[64];
         cls[0] = 0;
@@ -22678,33 +22697,6 @@ void pb_control_set_font(void* hDlg, long long id, long long hFont) {
                     pb_lv_tab_explicit[i] = 1;
                     pb_lv_tab_hdr[i] = hdr;
                 }
-            if (hdr) {
-                pb_rect_t rc;
-                if (GetWindowRect(hdr, &rc))
-                    SetWindowPos(hdr, 0, 0, 0, rc.right - rc.left, 20,
-                                 0x0002u | 0x0004u);
-            }
-            static void* lv_shifted[16];
-            int known = 0;
-            for (int i = 0; i < 16; i++)
-                if (lv_shifted[i] == h) { known = 1; break; }
-            if (!known) {
-                for (int i = 0; i < 16; i++)
-                    if (!lv_shifted[i]) { lv_shifted[i] = h; break; }
-                void* parent = GetParent(h);
-                pb_rect_t rc;
-                if (parent && GetWindowRect(h, &rc)) {
-                    pb_point_t pt;
-                    pt.x = rc.left; pt.y = rc.top;
-                    ScreenToClient(parent, &pt);
-                    SetWindowPos(h, 0, pt.x, pt.y + 1,
-                                 rc.right - rc.left, rc.bottom - rc.top - 1,
-                                 0x0004u | 0x0010u);
-                }
-                if (hdr)
-                    SetWindowPos(hdr, 0, 0, 0, 0, 0,
-                                 0x0001u | 0x0004u | 0x0010u);
-            }
         }
     }
 }
@@ -23506,11 +23498,11 @@ typedef struct {
 
 /* ---------------- CONTROL ADD LISTVIEW ---------------- */
 /* ---------------- LISTVIEW HEADER HEIGHT / FONT ----------------
-   PBWin10 sizes the header from the current header font, but a ListView
-   WM_SETFONT also resizes SysHeader32 to fit the list font (Mistral 14 ->
-   26px) while PBWin keeps the header font it was given.  The subclass
-   rejects only the font the ListView forwards, allows an explicit
-   header WM_SETFONT, and clamps every height change to the header font. */
+   PBWin10 sizes the header from the header font.  A ListView WM_SETFONT
+   also resizes SysHeader32 to fit the list font (0398: Mistral 14 ->
+   26px); the subclass clamps every height change back to the current
+   header font so an explicit header WM_SETFONT (Tahoma 12 bold) stays
+   authoritative, matching PBWin10's 20px header. */
 #if defined(_WIN64)
 __declspec(dllimport) int __stdcall SetWindowSubclass(void* hwnd,
     long long (__stdcall* proc)(void*, unsigned int, unsigned long long,
@@ -23551,15 +23543,38 @@ static long long __stdcall pb_header_font_subproc(void* h, unsigned int msg,
                                                   unsigned long long wp, long long lp,
                                                   unsigned long long id, unsigned long long ref) {
     if (msg == 0x0030 /* WM_SETFONT */) {
-        /* PBWin10's DDT ListView header keeps its creation-time font even
-           when the program sends WM_SETFONT to the header directly (0398:
-           Tahoma 12 request, 20px default header, small bold glyphs). */
-        return 0;
-    }
-    if (msg == 0x0046 /* WM_WINDOWPOSCHANGING */ && lp) {
-        PbWindowPos* p = (PbWindowPos*)lp;
-        int want = pb_header_height(h);
-        if (p->cy > want) p->cy = want;
+        void* lv = ref ? (void*)(size_t)ref : 0;
+        int forwarded = lv &&
+            (void*)(size_t)wp == (void*)(size_t)SendMessageA(lv, 0x0031 /* WM_GETFONT */, 0, 0);
+        if (forwarded) {
+            /* ListView WM_SETFONT forwards the list font to SysHeader32.
+               PBWin10 lets that resize the header (Mistral 14 -> 26px),
+               so pass it through untouched. */
+            return DefSubclassProc(h, msg, wp, lp);
+        }
+        /* An explicit header WM_SETFONT (0398: Tahoma 12 bold) changes
+           the header text and PBWin10 settles the header band at 20px,
+           regardless of the larger list font that sized it first. */
+        long long r = DefSubclassProc(h, msg, wp, lp);
+        pb_rect_t rc;
+        if (GetWindowRect(h, &rc)) {
+            SetWindowPos(h, 0, 0, 0, rc.right - rc.left, 20,
+                         0x0002u /* SWP_NOMOVE */ | 0x0004u /* SWP_NOZORDER */ |
+                         0x0010u /* SWP_NOACTIVATE */);
+            /* The ListView cached the old 26px item origin when the width
+               resize ran; a one-pixel width nudge re-lays the rows against
+               the now-20px header (0398: items sat 6px low without it). */
+            void* lv = (void*)(size_t)ref;
+            pb_rect_t lr;
+            if (lv && GetWindowRect(lv, &lr)) {
+                int w = lr.right - lr.left, ht = lr.bottom - lr.top;
+                SetWindowPos(lv, 0, 0, 0, w + 1, ht,
+                             0x0002u | 0x0004u | 0x0010u);
+                SetWindowPos(lv, 0, 0, 0, w, ht,
+                             0x0002u | 0x0004u | 0x0010u);
+            }
+        }
+        return r;
     }
     return DefSubclassProc(h, msg, wp, lp);
 }
@@ -23568,7 +23583,7 @@ static long long __stdcall pb_header_font_subproc(void* h, unsigned int msg,
 static void pb_listview_header_fix(void* hLV, void* hdr) {
     if (!hdr) return;
 #if defined(_WIN64)
-    SetWindowSubclass(hdr, pb_header_font_subproc, 1, 0);
+    SetWindowSubclass(hdr, pb_header_font_subproc, 1, (unsigned long long)(size_t)hLV);
 #endif
     pb_rect_t rc;
     if (GetWindowRect(hdr, &rc))
