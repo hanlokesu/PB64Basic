@@ -4,7 +4,7 @@
 // See LICENSE for the full license terms.
 // =====================================================================
 /*
- * pb_runtime.c � PowerBASIC runtime support for PB64Basic
+ * pb_runtime.c ? PowerBASIC runtime support for PB64Basic
  *
  * Implements FORMAT$, PARSE$, REPLACE, and other PB-specific functions
  * that don't have direct C library equivalents.
@@ -28,6 +28,7 @@ static void* pb_font_slot_get(long long h);
 #include <ctype.h>
 #include <math.h>
 #include <time.h>  /* clock for pb_tix fallback */
+#include "pb_classic_file_template.h"
 #include <sys/stat.h>  /* _stat / _S_IFDIR for ISFOLDER */
 #include <errno.h>    /* errno -> PB error mapping on OPEN failure */
 #include <stdint.h>   /* uintptr_t for the Windows-compatible declarations */
@@ -185,7 +186,7 @@ unsigned long WaitForSingleObject(void* h, unsigned long ms);
 #endif
 
 #if defined(_WIN32) || defined(__ANDROID__)
-/* Declare only what we need from oleaut32 � avoids pulling in all of windows.h */
+/* Declare only what we need from oleaut32 ? avoids pulling in all of windows.h */
 __declspec(dllimport) char* __stdcall SysAllocStringByteLen(const char* psz, unsigned int len);
 __declspec(dllimport) wchar_t* __stdcall SysAllocString(const wchar_t* psz);
 __declspec(dllimport) void __stdcall SysFreeString(char* bstrString);
@@ -260,6 +261,9 @@ typedef struct {
     void* lCustData;
     void* lpfnHook;
     const char* lpTemplateName;
+    void* pvReserved;
+    unsigned long dwReserved;
+    unsigned long FlagsEx;
 } OPENFILENAMEA;
 
 typedef struct {
@@ -331,11 +335,35 @@ __declspec(dllimport) int __stdcall ChooseColorA(CHOOSECOLORA* lpcc);
 __declspec(dllimport) int __stdcall ChooseFontA(CHOOSEFONTA* lpcf);
 
 #define OFN_OVERWRITEPROMPT 0x00000002
+#define OFN_ENABLETEMPLATEHANDLE 0x00000080
+#define OFN_HIDEREADONLY 0x00000004
 #define OFN_FILEMUSTEXIST 0x00001000
 #define OFN_PATHMUSTEXIST 0x00000800
+#define OFN_EXPLORER 0x00080000
 #define CC_RGBINIT 0x00000001
 #define CF_SCREENFONTS 0x00000001
 #define CF_INITTOLOGFONTSTRUCT 0x00000040
+#define CF_ENABLEHOOK 0x00000008
+
+#if defined(_WIN64)
+typedef unsigned long long PB_HOOK_UINT;
+typedef unsigned long long PB_HOOK_WPARAM;
+typedef long long PB_HOOK_LPARAM;
+#else
+typedef unsigned int PB_HOOK_UINT;
+typedef unsigned int PB_HOOK_WPARAM;
+typedef long PB_HOOK_LPARAM;
+#endif
+
+/* A hook without a custom template makes comdlg32 load the legacy (pre-
+   Windows 7) font.dlg template.  PBWin10 uses that classic dialog; without
+   this, ChooseFontA shows the Windows 7 "Show more fonts" layout. */
+static PB_HOOK_UINT __stdcall pb_font_hook(void* hdlg, unsigned int msg,
+                                           PB_HOOK_WPARAM wparam,
+                                           PB_HOOK_LPARAM lparam) {
+    (void)hdlg; (void)msg; (void)wparam; (void)lparam;
+    return 0;
+}
 
 __declspec(dllimport) int __stdcall EnableMenuItem(void* h, unsigned int id, unsigned int f);
 __declspec(dllimport) int __stdcall CheckMenuItem(void* h, unsigned int id, unsigned int f);
@@ -650,7 +678,7 @@ __declspec(dllimport) void __stdcall GetSystemTimeAsFileTime(pb_filetime* ft);
 
 /* ===== Debug/crash reporting ===== */
 static const char* pb_debug_current_func = "unknown";
-int pb_debug_line = 0; /* Current source line � updated by codegen */
+int pb_debug_line = 0; /* Current source line ? updated by codegen */
 static int pb_debug_enabled = 0;
 static int pb_debug_verbose = 0; /* Set to 1 for verbose modal/function logging */
 static FILE* pb_debug_log = NULL;
@@ -865,7 +893,7 @@ int pb_str_cstr_len(const char* s) {
 /* Forward declaration: BSTR byte length (NUL-safe), defined later. */
 int pb_str_len(const char* s);
 
-/* Public BSTR allocation wrapper — called from LLVM IR codegen (cdecl) */
+/* Public BSTR allocation wrapper ? called from LLVM IR codegen (cdecl) */
 char* pb_bstr_alloc(const char* src, unsigned int len) {
 #ifdef _WIN32
     return SysAllocStringByteLen(src, len);
@@ -2165,7 +2193,7 @@ char* pb_tab_expand(char* s, int tabstop) {
     return r;
 }
 char* pb_strreverse(char* s) {
-    /* BSTR-safe: use the byte length, not strlen — CHR$(0 TO 255) starts with
+    /* BSTR-safe: use the byte length, not strlen ? CHR$(0 TO 255) starts with
        NUL and strlen would report 0 (batch272: STRREVERSE$ of a NUL-leading
        string silently returned ""). */
     size_t n = SysStringByteLen(s);
@@ -2214,7 +2242,7 @@ char* pb_repeat(long long n, char* s) {
     return pb_bstr_alloc(buf, (unsigned int)total);
 }
 char* pb_nul_str(long long n) {
-    // NUL$(n) — a BSTR of n ASCII-0 bytes (batch 306).  WindowsX.inc /
+    // NUL$(n) ? a BSTR of n ASCII-0 bytes (batch 306).  WindowsX.inc /
     // ListBoxCtrl.inc use NUL$(4096) to preallocate a receive buffer.
     if (n < 0) n = 0;
     char* buf = (char*)malloc((size_t)n + 1);
@@ -2246,7 +2274,7 @@ double pb_exp10(double x) { return pow(10.0, x); }
 double pb_log2(double x) { return log2(x); }
 double pb_log10(double x) { return log10(x); }
 
-/* Batch 37: CVx family � read little-endian binary strings (PB payload pointer).
+/* Batch 37: CVx family ? read little-endian binary strings (PB payload pointer).
    off is 1-based character position, default 1.
    mode 0 = zero-extend (BYTE/WORD/DWORD), 1 = sign-extend (LONG/QUAD). */
 long long pb_cv_int(char* s, long long off, long long n, long long mode) {
@@ -2393,7 +2421,7 @@ void pb_desktop_get_ppi(long* x, long* y) {
     ReleaseDC(NULL, dc);
 }
 
-/* LEN() � BSTR byte length (unlike strlen, handles embedded NUL bytes) */
+/* LEN() ? BSTR byte length (unlike strlen, handles embedded NUL bytes) */
 /* Audit rule (batch 391): a function that receives a language STRING must use
    pb_str_len, never strlen - a BSTR carries its byte length in the four bytes
    before the data pointer and may contain embedded NULs.  strlen is valid only
@@ -2724,7 +2752,7 @@ char* pb_acode(const char* wide, int codepage) {
     return out;
 }
 
-/* Public BSTR free wrapper � called from LLVM IR codegen (cdecl) */
+/* Public BSTR free wrapper ? called from LLVM IR codegen (cdecl) */
 void pb_bstr_free(char* bstr) {
 #ifdef _WIN32
     SysFreeString(bstr);
@@ -3521,10 +3549,10 @@ char* pb_format_digits(double val, int digits) {
     return bstr_from_buf(r);
 }
 /* ============================================================
- * PARSE$ � Split string by delimiter, extract Nth field (1-based)
+ * PARSE$ ? Split string by delimiter, extract Nth field (1-based)
  *
- * PARSE$(string, delimiter, index)  � returns the index'th field
- * PARSE$(string, delimiter)          � returns field count
+ * PARSE$(string, delimiter, index)  ? returns the index'th field
+ * PARSE$(string, delimiter)          ? returns field count
  *
  * When index <= 0, returns the count of fields as a string-encoded integer.
  * When called with 3 args from PB: index is the field number (1-based).
@@ -3776,7 +3804,7 @@ void pb_parse_array(const char* str, const char* delim, int mode,
 #undef PB_STORE_FIELD
 
 /* ============================================================
- * REPLACE � Replace all occurrences of old_str with new_str in target
+ * REPLACE ? Replace all occurrences of old_str with new_str in target
  *
  * Modifies the target string pointer in-place (PB semantics).
  * ============================================================ */
@@ -3962,7 +3990,7 @@ char* pb_using_multi(const char* fmt, const int* kinds, const double* nums,
 }
 
 /* ============================================================
- * REMOVE$ � Remove all occurrences of characters in chars from str
+ * REMOVE$ ? Remove all occurrences of characters in chars from str
  * ============================================================ */
 char* pb_remove(const char* str, const char* chars) {
     int len, clen, i, j;
@@ -4070,7 +4098,7 @@ int pb_freefile(void) {
     return 0;
 }
 
-/* Batch 92: FRE() � free memory in bytes (uses GlobalMemoryStatusEx) */
+/* Batch 92: FRE() ? free memory in bytes (uses GlobalMemoryStatusEx) */
 long long pb_fre(void) {
     MEMORYSTATUSEX msx;
     memset(&msx, 0, sizeof(msx));
@@ -4174,7 +4202,7 @@ void pb_close(int filenum) {
     }
 }
 
-/* FILEATTR([#] fnum&, fattr) � PB attribute query (see official FILEATTR function page). */
+/* FILEATTR([#] fnum&, fattr) ? PB attribute query (see official FILEATTR function page). */
 long long pb_fileattr(int filenum, int attr) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES) return 0;
     FILE* f = file_handles[filenum];
@@ -4216,7 +4244,7 @@ long long pb_fileattr(int filenum, int attr) {
     return 0;
 }
 
-/* FILENAME$([#] fnum&) � file-system name of an open file. */
+/* FILENAME$([#] fnum&) ? file-system name of an open file. */
 char* pb_filename(int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) {
         return pb_bstr_alloc("", 0);
@@ -4572,7 +4600,7 @@ int pb_eof(int filenum) {
         fseek(file_handles[filenum], pos, SEEK_SET);
         return (got < 2) ? -1 : 0;
     }
-    /* PB EOF() returns true when no more data to read � need to peek ahead */
+    /* PB EOF() returns true when no more data to read ? need to peek ahead */
     int ch = fgetc(file_handles[filenum]);
     if (ch == EOF) return -1;  /* PB: -1 = true (EOF) */
     ungetc(ch, file_handles[filenum]);
@@ -6468,7 +6496,7 @@ void pb_environ_set(const char* s) {
     }
 }
 
-/* FILECOPY src$, dst$ � copy a file. Sets ERR on failure (PB semantics). */
+/* FILECOPY src$, dst$ ? copy a file. Sets ERR on failure (PB semantics). */
 int pb_filecopy(const char* src, const char* dst) {
     if (!src || !dst) { pb_err_var = pb_err = 76; return -1; }
     if (!CopyFileA(src, dst, 0)) {
@@ -6482,7 +6510,7 @@ int pb_filecopy(const char* src, const char* dst) {
     return 0;
 }
 
-/* SETATTR "path", attr& � set file attributes. Sets ERR on failure. */
+/* SETATTR "path", attr& ? set file attributes. Sets ERR on failure. */
 void pb_setattr(const char* path, int attr) {
     if (!path) { pb_err_var = pb_err = 76; return; }
     if (!SetFileAttributesA(path, (unsigned long)attr)) {
@@ -6504,7 +6532,7 @@ int pb_err_var = 0; /* ERR system variable: keeps the LAST error code after
 int pb_err_stmt_id = 0;  /* id of the statement that triggered the error */
 int pb_err_active = 0;   /* 1 while executing the ON ERROR handler (trapping suspended) */
 
-/* ===== ERROR$ � PB error message lookup ===== */
+/* ===== ERROR$ ? PB error message lookup ===== */
 static const char* pb_error_msgs[] = {
     [0] = "No Error",
     [5] = "Illegal function call",
@@ -6576,7 +6604,7 @@ __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void* hModule, 
 __declspec(dllimport) int __stdcall GetModuleHandleExA(unsigned long dwFlags, const char* lpModuleName, void** phModule);
 #endif
 
-/* ENVIRON$("VARNAME") � returns environment variable value */
+/* ENVIRON$("VARNAME") ? returns environment variable value */
 char* pb_environ(const char* var_name) {
     if (!var_name || !var_name[0]) {
         char* empty = (char*)malloc(1);
@@ -6606,7 +6634,7 @@ char* pb_environ(const char* var_name) {
 #endif
 }
 
-/* EXE.PATH$ � returns directory of current executable */
+/* EXE.PATH$ ? returns directory of current executable */
 char* pb_exe_path(void) {
 #ifdef _WIN32
     char buf[4096];
@@ -6632,7 +6660,7 @@ char* pb_exe_path(void) {
 #endif
 }
 
-/* EXE.NAME$ � returns filename of current executable */
+/* EXE.NAME$ ? returns filename of current executable */
 char* pb_exe_name(void) {
 #ifdef _WIN32
     char buf[4096];
@@ -6660,7 +6688,7 @@ char* pb_exe_name(void) {
 
 /* ===== Null-safe string concatenation ===== */
 
-/* pb_str_concat � concatenates two strings, treating null as empty.
+/* pb_str_concat ? concatenates two strings, treating null as empty.
    Strings are real BSTRs (SysAllocStringByteLen) on Windows, so strlen would
    truncate embedded NULs (CHR$(0)): use SysStringByteLen for the true length. */
 char* pb_str_concat(const char* a, const char* b) {
@@ -6705,7 +6733,7 @@ __declspec(dllimport) void __stdcall GetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 __declspec(dllimport) int __stdcall SetLocalTime(PB_SYSTEMTIME* lpSystemTime);
 #endif
 
-/* DATE$ � returns "MM-DD-YYYY" */
+/* DATE$ ? returns "MM-DD-YYYY" */
 char* pb_date(void) {
     char buf[12];
 #ifdef _WIN32
@@ -6724,7 +6752,7 @@ char* pb_date(void) {
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
 
-/* TIME$ � returns "HH:MM:SS" */
+/* TIME$ ? returns "HH:MM:SS" */
 char* pb_time(void) {
     char buf[10];
 #ifdef _WIN32
@@ -6887,7 +6915,7 @@ void pb_set_time(const char* s) {
 #endif
 }
 
-/* WAITKEY$ — waits for one key press (console), returns the key as a 1-char string.
+/* WAITKEY$ ? waits for one key press (console), returns the key as a 1-char string.
    Interactive console: _getch (immediate, no Enter needed).
    Redirected stdin (pipes / CI): getchar so automated tests can feed a key.
    GUI app that got a console via AllocConsole (double-clicked EXE): CRT stdin is
@@ -6954,7 +6982,7 @@ __declspec(dllimport) int __stdcall PlaySoundA(const char* pszSound, void* hmod,
 #define PB_SND_FILENAME 0x00020000
 #define PB_SND_ASYNC    0x00000001
 
-/* TIX � high-resolution performance counter (QUAD) */
+/* TIX ? high-resolution performance counter (QUAD) */
 /* TIX - read the CPU time-stamp counter (RDTSC). CHW TIX_statement.htm:
  * "Measures elapsed CPU cycles", the smallest timing increment.  PBWin10 emits
  * the raw rdtsc opcode (verified by disassembly), so we match that instead of
@@ -6984,7 +7012,7 @@ long long pb_tix(void) {
     return pb_rdtsc_counter();
 }
 
-/* MKBYT$ (n) � one byte as a single-character string */
+/* MKBYT$ (n) ? one byte as a single-character string */
 char* pb_mkbyt(int n) {
     char buf[2];
     buf[0] = (char)(n & 0xFF);
@@ -6992,11 +7020,11 @@ char* pb_mkbyt(int n) {
     return pb_bstr_alloc(buf, 1);
 }
 
-/* ISINFINITE (x) / ISNORMAL (x) � IEEE-754 classification, PB -1/0 */
+/* ISINFINITE (x) / ISNORMAL (x) ? IEEE-754 classification, PB -1/0 */
 int pb_isinfinite(double v) { return isinf(v) ? -1 : 0; }
 int pb_isnormal(double v) { return isnormal(v) ? -1 : 0; }
 
-/* CHDRIVE drv$ � change current drive (PB semantics: drive letter only) */
+/* CHDRIVE drv$ ? change current drive (PB semantics: drive letter only) */
 int pb_chdrive(const char* drv) {
 #ifdef _WIN32
     if (drv && drv[0] != '\0') {
@@ -7006,7 +7034,7 @@ int pb_chdrive(const char* drv) {
     pb_err_var = pb_err = 76; return -1;
 }
 
-/* SETEOF #f � truncate file at current position */
+/* SETEOF #f ? truncate file at current position */
 int pb_seteof(int f) {
     if (f < 1 || f >= MAX_FILE_HANDLES || file_handles[f] == NULL) { pb_err_var = pb_err = 52; return -1; }
 #ifdef _WIN32
@@ -7020,7 +7048,7 @@ int pb_seteof(int f) {
 #endif
 }
 
-/* PLAY WAVE "file.wav" — start playback without blocking the caller.
+/* PLAY WAVE "file.wav" ? start playback without blocking the caller.
  * PBWin's PLAY WAVE is the fire-and-forget form (verified with the
  * PowerBASIC Pong oracle: its 24.8 s AppStart.wav plays while the dialog
  * is already visible); PLAY WAVE END stops it.  Using synchronous
@@ -7044,7 +7072,7 @@ void pb_play_wave_end(void) {
 
 /* ===== Batch 2: ARRAY REVERSE / PUT$ / SHIFT / ROTATE ===== */
 
-/* ARRAY REVERSE � reverse elements in place */
+/* ARRAY REVERSE ? reverse elements in place */
 void pb_array_reverse(void* base, int elem_size, int total) {
     if (!base || total <= 1) return;
     char* p = (char*)base;
@@ -7105,7 +7133,7 @@ int pb_open_random(const char* path, int filenum, unsigned reclen) {
     return pb_open_random_ex(path, filenum, reclen, 0, 0, 1);
 }
 
-/* PUT #f [,recnum] � write current record buffer at current record position */
+/* PUT #f [,recnum] ? write current record buffer at current record position */
 void pb_put_record(int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     /* CHW error 54: PUT on a file opened in sequential mode -> ERR 54 */
@@ -7119,7 +7147,7 @@ void pb_put_record(int filenum) {
     fflush(f);
 }
 
-/* GET #f [,recnum] � read record into buffer (short read zero-fills) */
+/* GET #f [,recnum] ? read record into buffer (short read zero-fills) */
 void pb_get_record(int filenum) {
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
     /* CHW error 54: GET on a file opened in sequential mode -> ERR 54 */
@@ -7133,7 +7161,7 @@ void pb_get_record(int filenum) {
     if (got < rec_len[filenum]) memset(rec_buf[filenum] + got, 0, rec_len[filenum] - got);
 }
 
-/* FIELD #n, FROM off TO ... � set current record position (CHW BASE aware) */
+/* FIELD #n, FROM off TO ... ? set current record position (CHW BASE aware) */
 void pb_seek_record(int filenum, long long recnum) {
     if (filenum >= 1 && filenum < MAX_FILE_HANDLES) {
         long long base = pb_file_base(filenum);
@@ -7142,7 +7170,7 @@ void pb_seek_record(int filenum, long long recnum) {
     }
 }
 
-/* FIELD #n, size AS var � bind field var to file record buffer sub-section */
+/* FIELD #n, size AS var ? bind field var to file record buffer sub-section */
 int pb_field_bind_file(int filenum, long long offset, unsigned len, pb_field_t* fv) {
     if (!fv) { pb_err_var = pb_err = 5; return -1; }
     if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !rec_buf[filenum]) {
@@ -7159,7 +7187,7 @@ int pb_field_bind_file(int filenum, long long offset, unsigned len, pb_field_t* 
     return 0;
 }
 
-/* FIELD dyn$, size AS var � bind field var BY REFERENCE to a string variable
+/* FIELD dyn$, size AS var ? bind field var BY REFERENCE to a string variable
    slot (char**). The payload is resolved at every get/set, so reassigning the
    string variable follows automatically. */
 int pb_field_bind_str(char** slot, long long offset, unsigned len, pb_field_t* fv) {
@@ -7178,7 +7206,7 @@ static char* pb_field_base(pb_field_t* fv) {
     return fv->data;
 }
 
-/* fieldvar = expr � copy into bound sub-section, pad blanks (file semantics) */
+/* fieldvar = expr ? copy into bound sub-section, pad blanks (file semantics) */
 void pb_field_set(pb_field_t* fv, const char* s, unsigned slen) {
     char* base = pb_field_base(fv);
     if (!fv || !base || fv->len == 0) return;
@@ -7191,8 +7219,8 @@ void pb_field_set(pb_field_t* fv, const char* s, unsigned slen) {
     }
 }
 
-/* expr = fieldvar / PRINT fieldvar � return a fresh NUL-terminated copy of the
-   sub-section (payload pointer, no BSTR prefix � the compiler's string convention) */
+/* expr = fieldvar / PRINT fieldvar ? return a fresh NUL-terminated copy of the
+   sub-section (payload pointer, no BSTR prefix ? the compiler's string convention) */
 char* pb_field_get(pb_field_t* fv) {
     char* base = pb_field_base(fv);
     if (!fv || !base || fv->len == 0) {
@@ -7400,7 +7428,7 @@ char* pb_callstk_quote(const char* s) {
 }
 
 /* CALLSTK filename$: write every frame, OUTERMOST first (PBWin order), one per
-   line: NAME(args) — see CHW CALLSTK_statement.htm example (PBMAIN() first). */
+   line: NAME(args) ? see CHW CALLSTK_statement.htm example (PBMAIN() first). */
 void pb_callstk_dump(const char* filename) {
     if (!filename || !filename[0]) return;
     FILE* f = fopen(filename, "w");
@@ -7813,17 +7841,17 @@ static void pb_mat_write(char* base, int es, int is_float, long long idx, double
     else { memcpy(base + idx * 8, &v, 8); }
 }
 
-/* MAT a() = CON / CON(expr) / ZER � fill all elements */
+/* MAT a() = CON / CON(expr) / ZER ? fill all elements */
 void pb_mat_fill(char* base, int es, int is_float, long long total, double val) {
     for (long long i = 0; i < total; i++) pb_mat_write(base, es, is_float, i, val);
 }
 
-/* MAT a() = b() � element copy */
+/* MAT a() = b() ? element copy */
 void pb_mat_copy(char* dst, const char* src, int es, long long total) {
     memcpy(dst, src, (size_t)(total * es));
 }
 
-/* MAT a() = b() + c() / b() - c() � elementwise, same size */
+/* MAT a() = b() + c() / b() - c() ? elementwise, same size */
 void pb_mat_add(char* dst, const char* a, const char* b, int es, int is_float, long long total, int sub) {
     for (long long i = 0; i < total; i++) {
         double av = pb_mat_read(a, es, is_float, i);
@@ -7832,26 +7860,26 @@ void pb_mat_add(char* dst, const char* a, const char* b, int es, int is_float, l
     }
 }
 
-/* MAT a() = (expr) * b() � scalar multiplication */
+/* MAT a() = (expr) * b() ? scalar multiplication */
 void pb_mat_scale(char* dst, int es, int is_float, long long total, double s, const char* a) {
     for (long long i = 0; i < total; i++) pb_mat_write(dst, es, is_float, i, s * pb_mat_read(a, es, is_float, i));
 }
 
-/* MAT a() = IDN � 2-D square identity (rows == cols) */
+/* MAT a() = IDN ? 2-D square identity (rows == cols) */
 void pb_mat_identity(char* dst, int es, int is_float, int rows, int cols) {
     for (int i = 0; i < rows; i++)
         for (int j = 0; j < cols; j++)
             pb_mat_write(dst, es, is_float, (long long)i * cols + j, i == j ? 1.0 : 0.0);
 }
 
-/* MAT a() = TRN(b()) � dst(rows x cols) = src(cols x rows); dst dims must be swapped */
+/* MAT a() = TRN(b()) ? dst(rows x cols) = src(cols x rows); dst dims must be swapped */
 void pb_mat_trn(char* dst, const char* src, int es, int is_float, int src_rows, int src_cols) {
     for (int i = 0; i < src_rows; i++)
         for (int j = 0; j < src_cols; j++)
             pb_mat_write(dst, es, is_float, (long long)j * src_rows + i, pb_mat_read(src, es, is_float, (long long)i * src_cols + j));
 }
 
-/* MAT a() = b() * c() � 2-D multiply: dst(l x n) = a(l x m) * b(m x n) */
+/* MAT a() = b() * c() ? 2-D multiply: dst(l x n) = a(l x m) * b(m x n) */
 void pb_mat_mul(char* dst, const char* a, const char* b, int es, int is_float, int l, int m, int n) {
     for (int i = 0; i < l; i++) {
         for (int j = 0; j < n; j++) {
@@ -7863,7 +7891,7 @@ void pb_mat_mul(char* dst, const char* a, const char* b, int es, int is_float, i
     }
 }
 
-/* MAT a() = INV(b()) � 2-D square inverse via Gauss-Jordan on the augmented
+/* MAT a() = INV(b()) ? 2-D square inverse via Gauss-Jordan on the augmented
    matrix [A | I]. Returns 0 on success, -1 if singular. */
 int pb_mat_inv(char* dst, const char* src, int es, int is_float, int n) {
     if (n <= 0) return -1;
@@ -7900,7 +7928,7 @@ int pb_mat_inv(char* dst, const char* src, int es, int is_float, int n) {
     return singular ? -1 : 0;
 }
 
-/* x$ = expr for FIELD dyn$-bound strings � copy into a fresh mutable buffer
+/* x$ = expr for FIELD dyn$-bound strings ? copy into a fresh mutable buffer
    (string constants live in read-only memory and must never be written through) */
 /* Copy a string into a FRESH buffer and rebind slot.  The buffer carries the
    runtime's BSTR layout (4-byte little-endian byte length immediately before
@@ -8071,7 +8099,7 @@ char* pb_mid_func(const char* s, long long start, long long third,
     return pb_bstr_alloc(s + idx, (unsigned int)n);
 }
 
-/* FIELD RESET var � unbind, becomes empty */
+/* FIELD RESET var ? unbind, becomes empty */
 void pb_field_reset(pb_field_t* fv) {
     if (!fv) return;
     fv->data = NULL;
@@ -8080,7 +8108,7 @@ void pb_field_reset(pb_field_t* fv) {
     fv->kind = 0;
 }
 
-/* FIELD STRING var � copy current sub-section into a private buffer, unbind */
+/* FIELD STRING var ? copy current sub-section into a private buffer, unbind */
 void pb_field_tostr(pb_field_t* fv) {
     char* base = pb_field_base(fv);
     if (!fv) return;
@@ -8094,7 +8122,7 @@ void pb_field_tostr(pb_field_t* fv) {
     fv->kind = 0; /* private buffer */
 }
 
-/* PUT$ #f, str$ � write ANSI string at current file position */
+/* PUT$ #f, str$ ? write ANSI string at current file position */
 int pb_put_string(int f, const char* s) {
     if (f < 1 || f >= MAX_FILE_HANDLES || file_handles[f] == NULL) { pb_err_var = pb_err = 52; return -1; }
     /* CHW error 54: PUT$ on a file opened in sequential mode -> ERR 54 */
@@ -8117,7 +8145,7 @@ int pb_get_string(int f, long long count, char** dest) {
     size_t got = fread(buf, 1, (size_t)count, file_handles[f]);
     *dest = pb_bstr_alloc(buf, (unsigned int)got);
     free(buf);
-    /* NB: do NOT SysFreeString the previous *dest � the variable is often
+    /* NB: do NOT SysFreeString the previous *dest ? the variable is often
        initialized to a codegen string constant (not a BSTR), and freeing it
        crashes. Old BSTRs leak instead; acceptable for a compiler runtime. */
     return (got == (size_t)count) ? 0 : -1;
@@ -8211,10 +8239,10 @@ int pb_get_wstring(int f, long long count, char** dest) {
     return (got == bytes) ? 0 : -1;
 }
 
-/* SHIFT LEFT � logical left shift on 64-bit */
+/* SHIFT LEFT ? logical left shift on 64-bit */
 long long pb_shift_left(long long v, int n) { return v << (n & 63); }
 
-/* SHIFT RIGHT � keep_sign=1 is arithmetic (SIGNED), 0 is logical */
+/* SHIFT RIGHT ? keep_sign=1 is arithmetic (SIGNED), 0 is logical */
 long long pb_shift_right(long long v, int n, int keep_sign) {
     int k = n & 63;
     if (keep_sign) return v >> k;
@@ -8246,7 +8274,7 @@ long long pb_shift_right_w(long long v, int n, int width, int keep_sign) {
     return (long long)(x >> k);
 }
 
-/* ROTATE LEFT/RIGHT � 64-bit circular shift */
+/* ROTATE LEFT/RIGHT ? 64-bit circular shift */
 long long pb_rotate_left(long long v, int n) {
     int k = n & 63;
     if (k == 0) return v;
@@ -8300,7 +8328,7 @@ extern int pb_android_ui_play_tone(long freq, long dur);
 extern int pb_android_ui_message_beep(void);
 #endif
 
-/* PLAY SOUND freq&, duration& � speaker beep via Beep() */
+/* PLAY SOUND freq&, duration& ? speaker beep via Beep() */
 int pb_play_sound(long freq, long dur) {
 #ifdef _WIN32
     return Beep((unsigned long)freq, (unsigned long)dur) ? 0 : -1;
@@ -8352,7 +8380,7 @@ void pb_split(const char* src, int n, char** out1, char** out2, int word) {
     *out2 = pb_bstr_alloc(src + n, (int)(len - n));
 }
 
-/* ARRAY SHUFFLE � Fisher-Yates shuffle in place */
+/* ARRAY SHUFFLE ? Fisher-Yates shuffle in place */
 void pb_array_shuffle(void* base, int elem_size, int total) {
     if (!base || total <= 1) return;
     char* p = (char*)base;
@@ -8468,7 +8496,7 @@ double pb_read_data_num(void) {
     return atof(data_active->items[data_active->cursor++]);
 }
 
-/* READ$(n%) — CHW READ_function.htm: 1-based random access to the local DATA
+/* READ$(n%) ? CHW READ_function.htm: 1-based random access to the local DATA
    list; n > DATACOUNT returns an empty string with no runtime error. */
 char* pb_read_data_idx(long long n) {
     if (!data_active || n < 1 || n > data_active->count) {
@@ -8572,7 +8600,7 @@ long pb_shell_async(char* cmd, int mode) {
 #endif
 }
 
-/* ARRAY SCAN arr([idx]) [FOR count], OP expr, TO var& � first matching relative index, 0 = none.
+/* ARRAY SCAN arr([idx]) [FOR count], OP expr, TO var& ? first matching relative index, 0 = none.
    op: 0='=', 1='<>', 2='<', 3='>', 4='<=', 5='>=' */
 long long pb_array_scan_num(char* base, int elem_size, long long total, long long index,
                             long long count, long long value, int op) {
@@ -8625,7 +8653,7 @@ long long pb_array_scan_str(char* base, long long total, long long index, long l
     return 0;
 }
 
-/* ARRAY INSERT arr(index) [FOR count] [, value] — insert element; with count,
+/* ARRAY INSERT arr(index) [FOR count] [, value] ? insert element; with count,
    only count elements shift up to make room (PBWin-measured; count 0/absent =
    shift to the end). */
 void pb_array_insert_num(char* base, int elem_size, long long total, long long index,
@@ -8652,7 +8680,7 @@ void pb_array_insert_str(char* base, int elem_size, long long total, long long i
     memcpy(base + (index - 1) * elem_size, &bstr, (size_t)elem_size);
 }
 
-/* ARRAY DELETE arr(index) [FOR count] [, fill] — remove element(s), shift up;
+/* ARRAY DELETE arr(index) [FOR count] [, fill] ? remove element(s), shift up;
    the vacated tail slot is filled with `fill` (0 / empty string when absent). */
 void pb_array_delete(char* base, int elem_size, long long total, long long index,
                      long long count, int is_string, long long fill_num, char* fill_str) {
@@ -8685,7 +8713,7 @@ void pb_array_delete(char* base, int elem_size, long long total, long long index
 }
 
 
-/* ARRAY ARRAYIX arr() � set each element to its element index (1-based).
+/* ARRAY ARRAYIX arr() ? set each element to its element index (1-based).
    Numeric arrays: value = index (widened to element size).
    String arrays: element = decimal text of index (BSTR). */
 void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
@@ -8721,11 +8749,11 @@ void pb_array_arrayix(char* base, int elem_size, long long total, int type) {
 #define CF_UNICODETEXT 13
 /* GMEM_MOVEABLE is defined once near the GLOBALMEM helpers (0x0002u). */
 
-/* CCUR / CCUX — round to fixed decimals (currency semantics, PBWin10). */
+/* CCUR / CCUX ? round to fixed decimals (currency semantics, PBWin10). */
 double pb_ccur(double x) { return round(x * 10000.0) / 10000.0; }
 double pb_ccux(double x) { return round(x * 100.0) / 100.0; }
 
-/* CSET$(s$, len& [, pad]) — center s$ into len bytes, pad with first char
+/* CSET$(s$, len& [, pad]) ? center s$ into len bytes, pad with first char
    of pad or space.  Left padding = (len - slen)/2 (PBWin behavior). */
 char* pb_cset_str(const char* s, long long len, const char* pad) {
     unsigned long slen = (unsigned long)pb_str_len(s);
@@ -8830,7 +8858,7 @@ int pb_clipboard_reset(void) {
     return -1;                          /* TRUE on success (PBWin10) */
 }
 
-/* CLIPBOARD SET/GET OEMTEXT / UNICODE / BITMAP — CHW 9 forms (batch 258e).
+/* CLIPBOARD SET/GET OEMTEXT / UNICODE / BITMAP ? CHW 9 forms (batch 258e).
    OEMTEXT converts ANSI<->OEM (console charset).  UNICODE (legacy PB form)
    stores/reads UTF-16LE bytes inside an ANSI-typed string; the byte count
    comes from SysStringByteLen because embedded NULs break strlen.  BITMAP
@@ -9241,7 +9269,7 @@ void pb_poke_wstr_wstringz(void* addr, const char* s) {
 #define STDCALL
 #endif
 
-/* VARICHEK.DLL � HiScore: checks/updates high score table
+/* VARICHEK.DLL ? HiScore: checks/updates high score table
  * Returns: 2 if highest score, else 1; x=-1 for check-only
  * Stubbed: linked directly into exe (cdecl, not dllimport) */
 int HiScore(int x, const char* Winner, const char* PathSpec) {
@@ -9249,7 +9277,7 @@ int HiScore(int x, const char* Winner, const char* PathSpec) {
     return 1;  /* Not highest score */
 }
 
-/* Example DLL stub — RemarksData: returns STRPTR to a string.
+/* Example DLL stub ? RemarksData: returns STRPTR to a string.
  * Keep the pointer width: returning int truncated the 64-bit address on x64.
  * Stubbed: linked directly into exe (cdecl, not dllimport). */
 const char* RemarksData(int x) {
@@ -9984,7 +10012,7 @@ static void swap_elem(char* a, char* b, int es) {
     memcpy(b, tmp, (size_t)es);
 }
 
-/* ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()] [,DESCEND] — CHW range
+/* ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()] [,DESCEND] ? CHW range
    sort with optional tag-along array.  index/count are 1-based; count 0/absent
    = index .. end.  Tag array swaps in lockstep with the data array. */
 void pb_array_sort2(char* base, int elem_size, long long total, long long index,
@@ -10057,7 +10085,7 @@ static int apply_op(int c, int op) {
     }
 }
 
-/* ARRAY SCAN arr([index]) [FOR count], op expr, TO lvar — CHW relative-index
+/* ARRAY SCAN arr([index]) [FOR count], op expr, TO lvar ? CHW relative-index
    scan.  Returns 1..count for the first matching element (relative to the
    scan start), 0 = no match.  Numeric arrays compare i64-widened values;
    string arrays compare BSTR contents with optional 1-based FROM..TO window
@@ -10168,7 +10196,7 @@ long long pb_asc_get_buf(const char* s, long long len, long long pos) {
     return (long long)(unsigned char)s[pos - 1];
 }
 
-/* ASC(s$ [, pos]) — character code at 1-based pos; negative pos counts from
+/* ASC(s$ [, pos]) ? character code at 1-based pos; negative pos counts from
    the end; null string / pos 0 / out-of-range returns -1 (CHW + PBWin10). */
 long long pb_asc_get(char* s, long long pos) {
     if (!s) return -1;
@@ -10379,7 +10407,7 @@ long long pb_array_unique(char* base, int elem_size, long long total, int is_str
             write++;
         }
     }
-    /* zero the tail � fixed-size array model (PB decrements UBOUND; we cannot resize) */
+    /* zero the tail ? fixed-size array model (PB decrements UBOUND; we cannot resize) */
     for (long long k = write; k < total; k++) {
         if (is_string) {
             *(char**)(base + k * elem_size) = NULL;
@@ -12103,7 +12131,7 @@ char* pb_progid_get(const char* clsid) {
     if (RegOpenKeyExA((HKEY_PB)0x80000000L, key, 0, 0x20019L, &hkey) != 0)
         return pb_bstr_alloc("", 0);
     /* The ProgID lives in a SUBKEY named "ProgID" (its default value), not as
-       a named value of the CLSID key — open the subkey, then read "" default. */
+       a named value of the CLSID key ? open the subkey, then read "" default. */
     if (RegOpenKeyExA(hkey, "ProgID", 0, 0x20019L, &sub) != 0) {
         RegCloseKey(hkey);
         return pb_bstr_alloc("", 0);
@@ -12263,7 +12291,7 @@ char* pb_guid_txt(const char* guid16) {
 /* VARIANT$(vrnt) / VARIANT$$(vrnt) - CHW VARIANT_function1.htm (batch 299):
    extract the dynamic string (VT_BSTR, code 8) held in a 16-byte PB Variant
    variable.  VARIANT$ returns the ANSI (narrow) form, VARIANT$$ the WSTRING
-   (UTF-16 BSTR) form — both share the BSTR value union slot at +8.  Any other
+   (UTF-16 BSTR) form ? both share the BSTR value union slot at +8.  Any other
    VT type returns an empty string (ANSI "") / null wide pointer. */
 char* pb_variant_str(const void* v) {
     unsigned short vt;
@@ -12442,7 +12470,7 @@ static void pb_lpt_write(const char* buf, unsigned int len) {
     WriteFile(pb_lpt_handle, buf, len, &w, NULL);
     pb_lpt_col += (int)len;
 }
-/* LPRINT "..." � BSTR payload, no CRLF */
+/* LPRINT "..." ? BSTR payload, no CRLF */
 void pb_lprint_bstr(char* s) {
     if (s) pb_lpt_write(s, (unsigned int)pb_str_len(s));
 }
@@ -12590,7 +12618,7 @@ void* pb_dyn_proc(const char* lib, const char* proc) {
 }
 #endif
 
-/* Batch 43: PRINTERCOUNT (placed mid-file next to pb_import_addr � file-tail
+/* Batch 43: PRINTERCOUNT (placed mid-file next to pb_import_addr ? file-tail
    placement of fresh Win32 dllimport calls crashed inside PB-linked exes). */
 #define PB_PRINTER_ENUM_LOCAL 0x00000002
 #define PB_PRINTER_ENUM_CONNECTIONS 0x00000004
@@ -12851,7 +12879,7 @@ void pb_dir_close(void) {
         g_dir_handle = PB_INVALID_HANDLE;
     }
 }
-/* PATHSCAN$(director, filespec$ [, pathspec$]) � find a file on disk and return
+/* PATHSCAN$(director, filespec$ [, pathspec$]) ? find a file on disk and return
    FULL/PATH/NAME/EXTN/NAMEX part (semantics per official PATHSCAN$ function page).
    pathspec$ is a semicolon-separated list of directories to search. */
 char* pb_pathscan(const char* director, const char* filespec, const char* pathspec) {
@@ -12874,7 +12902,7 @@ char* pb_pathscan(const char* director, const char* filespec, const char* pathsp
         char find_data[592];
         void* h = FindFirstFileA(buf, find_data);
         if (h != PB_INVALID_HANDLE) {
-            /* file exists � now resolve the part on the FULL found path */
+            /* file exists ? now resolve the part on the FULL found path */
             char found[1024];
             strncpy(found, buf, 1023); found[1023] = 0;
             /* remove the filespec tail from buf to get the directory, then
@@ -13913,7 +13941,7 @@ void* pb_graphic_bitmap_load_ex(char* fname, int nw, int nh) {
 static int pb_graphic_cell_metrics(int* cw, int* ch);
 static int pb_graphic_chr_metrics(int* cw, int* ch);
 
-/* GRAPHIC CELL = row&, col& — move the print position to a 1-based text
+/* GRAPHIC CELL = row&, col& ? move the print position to a 1-based text
    cell.  A zero argument leaves that axis unchanged (CHW). */
 int pb_graphic_set_cell(long row, long col) {
     if (!g_gr_dc) return 0;
@@ -13927,7 +13955,7 @@ int pb_graphic_set_cell(long row, long col) {
     return MoveToEx(g_gr_dc, x, y, 0) ? 1 : 0;
 }
 
-/* GRAPHIC CELL TO row&, col& — retrieve the 1-based text cell containing
+/* GRAPHIC CELL TO row&, col& ? retrieve the 1-based text cell containing
    the current print position. */
 int pb_graphic_get_cell(long* row, long* col) {
     if (!g_gr_dc) { if (row) *row = 0; if (col) *col = 0; return 0; }
@@ -14295,7 +14323,7 @@ static int pb_graphic_cell_metrics(int* cw, int* ch) {
     return 1;
 }
 
-/* GRAPHIC(Chr.Size.X/Y) — average character cell in page units. */
+/* GRAPHIC(Chr.Size.X/Y) ? average character cell in page units. */
 int pb_graphic_chr_size_font(float* w, float* h) {
     int cw = 8, ch = 16;
     pb_graphic_chr_metrics(&cw, &ch);
@@ -14329,7 +14357,7 @@ static int pb_graphic_chr_metrics(int* cw, int* ch) {
     return 1;
 }
 
-/* GRAPHIC CELL SIZE TO w!, h! — average cell in page units. */
+/* GRAPHIC CELL SIZE TO w!, h! ? average cell in page units. */
 int pb_graphic_cell_size_font(float* w, float* h) {
     int cw = 8, ch = 16;
     pb_graphic_cell_metrics(&cw, &ch);
@@ -14499,7 +14527,7 @@ int pb_graphic_copy(int x1, int y1, int x2, int y2, int x3, int y3) {
     return BitBlt(g_gr_dc, x3, y3, w, h, g_gr_dc, x1, y1, 0x00CC0020); /* SRCCOPY */
 }
 
-/* GRAPHIC LINE/BOX/ELLIPSE � drawing on attached target (batch 53) */
+/* GRAPHIC LINE/BOX/ELLIPSE ? drawing on attached target (batch 53) */
 int pb_graphic_line(int x1, int y1, int x2, int y2, int color) {
     if (!g_gr_dc) return 0;
     if (color < 0) color = (int)g_gr_fore;   /* colour omitted */
@@ -14651,7 +14679,7 @@ int pb_graphic_paint(int x, int y, int fillcolor, int border, int fillstyle) {
     return ok ? 1 : 0;
 }
 
-/* GRAPHIC ATTACH/DETACH/CLEAR � bitmap graphic target (batch 52) */
+/* GRAPHIC ATTACH/DETACH/CLEAR ? bitmap graphic target (batch 52) */
 /* Release only the DC that is currently selected.  A control's off-screen
    buffer (g_gr_ctl_dc / g_gr_ctl_bmp) belongs to the control, not to the
    attach that happens to be current: Pong draws the background, switches to
@@ -14921,7 +14949,7 @@ int pb_graphic_clear_bg(void) {
     return pb_graphic_clear((int)g_gr_back);
 }
 
-/* XPRINT � host-based printer GDI (batch 68) */
+/* XPRINT ? host-based printer GDI (batch 68) */
 static void* g_xp_dc = 0;
 #define PB_LOGPIXELSX 88
 #define PB_LOGPIXELSY 90
@@ -14939,7 +14967,7 @@ int pb_xprint_attach(char* printer, char* job) {
     }
     if (g_xp_dc) { DeleteDC(g_xp_dc); g_xp_dc = 0; }
     void* dc = 0;
-    /* Always use screen DC for now � printer DC requires winspool and may not exist in CI */
+    /* Always use screen DC for now ? printer DC requires winspool and may not exist in CI */
     dc = CreateDCA("DISPLAY", 0, 0, 0);
     g_xp_dc = dc;
     return dc ? 1 : 0;
@@ -15471,7 +15499,7 @@ int pb_xprint_imagelist(int op, int arg1, int arg2) {
     }
     return 1;
 }
-/* === Batch 77/353: TCP/UDP NOTIFY — store mask and deliver window messages === */
+/* === Batch 77/353: TCP/UDP NOTIFY ? store mask and deliver window messages === */
 /* CHW: TCP NOTIFY [#] fNum&, {SEND|RECV|ACCEPT|CONNECT|CLOSE} TO hWnd& AS wMsg&
    WSAAsyncSelect asks Winsock to post wMsg to hWnd when a selected socket event
    occurs.  The posted lParam is (error << 16) | event and wParam is the socket's
@@ -16079,7 +16107,22 @@ static int pb_display_file_full(int save, void* parent, int x, int y,
     ofn.Flags = (unsigned long)(flags ? flags
                                   : (save ? OFN_OVERWRITEPROMPT
                                           : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST)));
+    /* PBWin10 passes OFN_EXPLORER; keep it so comdlg32 uses the legacy V2
+       template (with the places bar) instead of the modern Common Item Dialog. */
+    ofn.Flags |= OFN_EXPLORER;
+    if (!save) ofn.Flags |= OFN_HIDEREADONLY;
+    void *tpl = GlobalAlloc(0x0002u, PB_CLASSIC_FILE_TEMPLATE_SIZE);
+    if (tpl) {
+        void *tp = GlobalLock(tpl);
+        if (tp) {
+            memcpy(tp, pb_classic_file_template, PB_CLASSIC_FILE_TEMPLATE_SIZE);
+            GlobalUnlock(tpl);
+            ofn.Flags |= OFN_ENABLETEMPLATEHANDLE;
+            ofn.hInstance = tpl;
+        }
+    }
     int ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+    if (tpl) GlobalFree(tpl);
     if (ok) {
         *out = SysAllocStringByteLen(file_buf, (unsigned int)strlen(file_buf));
         if (count) *count = 1;
@@ -16158,6 +16201,15 @@ static int pb_choose_font(void* parent, const char* defname, long defpoints,
     cf.iPointSize = (int)(defpoints * 10);
     cf.Flags = (unsigned long)(flags ? flags
                                      : (CF_BOTH | CF_INITTOLOGFONTSTRUCT));
+    /* PBWin10's legacy template leaves the Script combo populated.  The
+       sample passes CF_NOSCRIPTSEL, but PBWin10's dialog still shows the
+       current script; clear it here to match the reference visual. */
+    cf.Flags &= ~CF_NOSCRIPTSEL;
+    /* PBWin10's font dialog is the legacy template.  comdlg32 selects the
+       Windows 7 layout when no hook is installed; an enabled hook with no
+       custom template forces the earlier font.dlg. */
+    cf.Flags |= CF_ENABLEHOOK;
+    cf.lpfnHook = (void*)pb_font_hook;
     if (!ChooseFontA(&cf)) return 0;
     if (color_out) *color_out = cf.rgbColors;
     return 1;
@@ -16653,7 +16705,7 @@ int pb_array_redim_decr(void* arr_ptr, int elem_size, int old_count, int decreme
 /* === Batch 80: EVENTS / RAISEEVENT event model ===
    The old INSTANCE stub was removed with pb_class_create; current INSTANCE handling
    goes through the batch222 object/event path. */
-/* EVENTS / RAISEEVENT / EVENT SOURCE � simplified noop event model */
+/* EVENTS / RAISEEVENT / EVENT SOURCE ? simplified noop event model */
 static int g_event_enabled = 1;
 void pb_events_enable(int enable) { g_event_enabled = enable; }
 /* --- batch 222: class-wide event bus (integer method ids) ---
@@ -16688,7 +16740,7 @@ void* pb_obj_new(long long size) {
     return calloc(1, (size_t)size);
 }
 
-/* ---- batch271/284: NEWCOM / GETCOM / ANYCOM — real COM instantiation ------
+/* ---- batch271/284: NEWCOM / GETCOM / ANYCOM ? real COM instantiation ------
  * CHW How_do_you_create_an_object_:
  *   LET objvar = NEWCOM "ProgID"                  (CoCreateInstance, new)
  *   LET objvar = GETCOM "ProgID"                  (GetActiveObject, running)
@@ -17163,7 +17215,7 @@ long pb_com_result(void) {
     return pb_com_hresult;
 }
 
-/* OBJRESULT$([nexp&]) — CHW OBJRESULT$_function.htm: "Returns a string which
+/* OBJRESULT$([nexp&]) ? CHW OBJRESULT$_function.htm: "Returns a string which
  * describes an OBJRESULT (hResult) code."  Measured against PBWin10 (probe
  * objres_out.txt): the descriptive text is the Windows system message for the
  * hResult, produced by FormatMessageA(FROM_SYSTEM), e.g.
@@ -17199,7 +17251,7 @@ char* pb_objresult_str(long hr_signed) {
     return out;
 }
 
-/* ---- batch278-74: OBJECT CALL / OBJECT GET — DISPATCH invocation with
+/* ---- batch278-74: OBJECT CALL / OBJECT GET ? DISPATCH invocation with
  * VARIANT marshalling (CHW OBJECT_statement / How_do_you_call_a_DISPATCH_METHOD).
  * Type codes shared with codegen:
  *   0 LONG(I4) 1 DOUBLE(R8) 2 STRING(ANSI PB BSTR -> VT_BSTR) 3 SINGLE(R4)
@@ -17505,7 +17557,7 @@ static unsigned short pb_com_vt_for(int tc) {
         case 8: return 6;      /* VT_CY   */
         case 9: return 11;     /* VT_BOOL */
         case 10: return 12;    /* VT_VARIANT */
-        case 12: return 8;     /* VT_BSTR — WSTRING slot already holds a
+        case 12: return 8;     /* VT_BSTR ? WSTRING slot already holds a
                                   UTF-16 BSTR (batch280) */
         default: return 0;     /* VT_EMPTY */
     }
@@ -17608,7 +17660,7 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
     }
     pb_com_init();
     if (mname && mname[0]) {
-        wchar_t* pname = wname; /* rgszNames is wchar_t*[] — a pointer array */
+        wchar_t* pname = wname; /* rgszNames is wchar_t*[] ? a pointer array */
         int mn = pb_str_len(mname);
         int got;
         if (mn > 511) mn = 511;
@@ -17652,7 +17704,7 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
                     break;
                 }
                 case 12: { /* WSTRING: slot already points at a UTF-16 BSTR
-                               (length prefix + UTF-16LE + NUL) — pass as-is. */
+                               (length prefix + UTF-16LE + NUL) ? pass as-is. */
                     v->v.pVal = *(void**)pargs[i];
                     break;
                 }
@@ -17687,7 +17739,7 @@ long pb_com_invoke(void* disp, const char* mname, void** pargs, const int* ptype
             if (ptypes[i] == 2 && vargs[nargs - 1 - i].v.pVal) {
                 SysFreeString((char*)vargs[nargs - 1 - i].v.pVal);
             }
-            /* ptypes[i] == 12 (WSTRING) passes the slot pointer as-is —
+            /* ptypes[i] == 12 (WSTRING) passes the slot pointer as-is ?
                it belongs to the PB variable, never freed here. */
         }
         free(vargs);
@@ -17762,9 +17814,9 @@ void pb_event_source_set(void* obj, int source_id) { /* noop */
     (void)obj;
     (void)source_id;
 }
-/* LET with OBJECTS � object reference assignment (simplified: pointer copy) */
+/* LET with OBJECTS ? object reference assignment (simplified: pointer copy) */
 void pb_let_object(void** dst, void* src) { if (dst) *dst = src; }
-/* LET with VARIANTS � variant assignment (simplified: store as pointer+tag) */
+/* LET with VARIANTS ? variant assignment (simplified: store as pointer+tag) */
 static void* g_variant_last_ptr = 0;
 static int g_variant_last_tag = 0;
 void pb_let_variant(void** dst_ptr, int* dst_tag, void* src_ptr, int src_tag) {
@@ -17774,7 +17826,7 @@ void pb_let_variant(void** dst_ptr, int* dst_tag, void* src_ptr, int src_tag) {
     g_variant_last_tag = src_tag;
 }
 
-/* GRAPHIC BITMAP � memory DIB bitmaps (batch 51) */
+/* GRAPHIC BITMAP ? memory DIB bitmaps (batch 51) */
 static long long g_last_bmp = 0;
 long long pb_gdi_bitmap_new(int w, int h) {
     void* hdc = CreateCompatibleDC(0);
@@ -17801,7 +17853,7 @@ int pb_gdi_bitmap_end(long long h) {
     return ok ? 1 : 0;
 }
 
-/* MENU � user32 menu objects (batch 50) */
+/* MENU ? user32 menu objects (batch 50) */
 long long pb_menu_new_bar(void) {
     return (long long)(intptr_t)CreateMenu();
 }
@@ -17943,7 +17995,7 @@ int pb_menu_destroy(long long h) {
     return DestroyMenu((void*)(intptr_t)h) ? 1 : 0;
 }
 
-/* COLOR / CON.COLOR — console text attribute (PB/CC, batch 49).
+/* COLOR / CON.COLOR ? console text attribute (PB/CC, batch 49).
  *
  * Fore/back are 0..15; -1 means "leave that nibble unchanged" as PB/CC
  * documents.  The optional third argument applies the resulting attribute
@@ -17981,7 +18033,7 @@ void pb_color_count(int fore, int back, int count) {
     }
 }
 
-/* IMAGELIST � comctl32 image list objects (batch 48).
+/* IMAGELIST ? comctl32 image list objects (batch 48).
    PBWin exposes a 32-bit HIMAGELIST.  On x64 comctl32 returns a real pointer
    whose low 32 bits routinely have bit 31 set (measured: 0xF224D630).  Storing
    that in a PB LONG and then widening it back sign-extends the address into
@@ -18223,7 +18275,7 @@ int pb_imagelist_set_overlay(long long h, int image, int overlay) {
     return 0;
 }
 
-/* FONT NEW / FONT END � GDI logical font objects (batch 47) */
+/* FONT NEW / FONT END ? GDI logical font objects (batch 47) */
 int pb_font_new(const char* name, float points, int style, int charset, int pitch, int escapement) {
     (void)pitch;       /* pitch/family is left at the GDI default */
     void* hdc = GetDC(NULL);
@@ -18254,12 +18306,12 @@ int pb_font_end(int h) {
     return hf ? (DeleteObject(hf) ? 1 : 0) : 0;
 }
 
-/* MEMORY COPY src, dst, count � byte block copy (memmove, overlap-safe). */
+/* MEMORY COPY src, dst, count ? byte block copy (memmove, overlap-safe). */
 void pb_mem_copy(long long src, long long dst, long long count) {
     if (count > 0) memmove((void*)(intptr_t)dst, (void*)(intptr_t)src, (size_t)count);
 }
 
-/* MEMORY SWAP src, dst, count � byte-by-byte exchange of two blocks. */
+/* MEMORY SWAP src, dst, count ? byte-by-byte exchange of two blocks. */
 void pb_mem_swap(long long src, long long dst, long long count) {
     unsigned char* a = (unsigned char*)(intptr_t)src;
     unsigned char* b = (unsigned char*)(intptr_t)dst;
@@ -18282,7 +18334,7 @@ void pb_mem_fill(long long dst, long long count, long long val, long long width)
     }
 }
 
-/* MEMORY FILL dst, count, str$ � repeat the string pattern over count bytes. */
+/* MEMORY FILL dst, count, str$ ? repeat the string pattern over count bytes. */
 void pb_mem_fill_str(long long dst, long long count, const char* s) {
     unsigned char* p = (unsigned char*)(intptr_t)dst;
     size_t slen = s ? (size_t)pb_str_len(s) : 0;
@@ -18290,7 +18342,7 @@ void pb_mem_fill_str(long long dst, long long count, const char* s) {
     for (long long i = 0; i < count; i++) p[i] = (unsigned char)s[i % slen];
 }
 
-/* ERL$ � most recent error checkpoint id, as a string (numeric approximation of
+/* ERL$ ? most recent error checkpoint id, as a string (numeric approximation of
    the official label/line-name semantics; limited to the checkpoint id stored by
    the ON ERROR trapping machinery). */
 char* pb_erl_str(void) {
@@ -18299,7 +18351,7 @@ char* pb_erl_str(void) {
     return pb_bstr_alloc(buf, (int)strlen(buf));
 }
 
-/* EXTRACT$([start,] MainStr, [ANY] MatchStr) � returns MainStr from start up to
+/* EXTRACT$([start,] MainStr, [ANY] MatchStr) ? returns MainStr from start up to
    (not including) the first occurrence of MatchStr; ANY = any single character
    of MatchStr ends the extraction. start <= 0 or beyond length -> empty string;
    MatchStr absent -> whole remainder. */
@@ -18321,17 +18373,17 @@ char* pb_extract(long long start, const char* main_str, const char* match_str, i
     return pb_bstr_alloc(main_str + i, (unsigned int)(end - i));
 }
 
-/* RGB(r, g, b) � pack into &H00BBGGRR (byte1 red, byte2 green, byte3 blue). */
+/* RGB(r, g, b) ? pack into &H00BBGGRR (byte1 red, byte2 green, byte3 blue). */
 long long pb_rgb3(long long r, long long g, long long b) {
     return (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16);
 }
 
-/* BGR(r, g, b) � pack into &H00RRGGBB (byte1 blue, byte2 green, byte3 red). */
+/* BGR(r, g, b) ? pack into &H00RRGGBB (byte1 blue, byte2 green, byte3 red). */
 long long pb_bgr3(long long r, long long g, long long b) {
     return (b & 0xFF) | ((g & 0xFF) << 8) | ((r & 0xFF) << 16);
 }
 
-/* RGB(bgrval) / BGR(rgbval) � single-argument byte swap (identical op). */
+/* RGB(bgrval) / BGR(rgbval) ? single-argument byte swap (identical op). */
 long long pb_rgb_swap(long long x) {
     return ((x & 0xFF) << 16) | (x & 0xFF00) | ((x >> 16) & 0xFF);
 }
@@ -18345,7 +18397,7 @@ long long pb_rgb_swap(long long x) {
 __declspec(dllimport) int __stdcall EnumPrintersW(unsigned long Flags, const char* Name, unsigned long Level, char* pPrinterEnum, unsigned long cbBuf, unsigned long* pcbNeeded, unsigned long* pcReturned);
 
 char* pb_bits_str(const char* director, const char* s) {
-    (void)director; /* STRING / WSTRING � this build is ANSI-only */
+    (void)director; /* STRING / WSTRING ? this build is ANSI-only */
     if (!s) return pb_bstr_alloc("", 0);
     return pb_bstr_alloc(s, (int)pb_str_len(s));
 }
@@ -24507,7 +24559,7 @@ char* pb_tab_get_text_bstr(void* hDlg, long id, int page) {
     return out;
 }
 
-/* ---- TAB$(TEXT, hDlg, ID&, PageNum&) — official function form ---------- */
+/* ---- TAB$(TEXT, hDlg, ID&, PageNum&) ? official function form ---------- */
 void* pb_tab_get_text_str(void* hDlg, long id, int page) {
     return (void*)pb_tab_get_text_bstr(hDlg, id, page);
 }
@@ -25777,3 +25829,17 @@ void* pb_control_add_editbox_ex(void* parent, long id, const char* text,
               if (fn) pb_register_callback_hwnd(hw, fn); }
     return hw;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+

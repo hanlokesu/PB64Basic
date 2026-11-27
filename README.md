@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 412 (v0.2.201). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 413 (v0.2.202). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 413 (v0.2.202) - Closed the remaining common-dialog gaps: classic 431x319 font dialog with Script=Western, and 555x385 Open/Save via the 370x237 NEWFILEOPENV2ORD template. Batch 4: PB64 50/50 compiles, 38/40 comparable windows identical, 2 near (0.03% / 0.044%), 1 size mismatch (0771). Self-check: examples/batch413_test.bas.
 > batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, owner-draw ListBox row height, and button `WM_CTLCOLORBTN` focus-rectangle color. PB64Basic compiles 50/50 samples; of 37 comparable windows 35 are pixel-identical and 2 are near-identical (0.03-0.04%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
 > batch 410 (v0.2.200) - Closed the deterministic defects from the third Gary Beene GUI batch: empty DIALOG NEW style/exstyle slots, GRAPHIC CLEAR colon boundaries, the ANSI %LVN_GETDISPINFO alias, Win64 widening of BYVAL DWORD/LONG handle parameters in header SUB wrappers, LVITEM 32-bit item indices, pointer-sized NMCUSTOMDRAW.dwItemSpec/lItemlParam, %RGB_PALETURQUOISE, WM_NOTIFY LRESULT propagation, RichEdit ES_NOHIDESEL initial-selection behaviour and LISTVIEW SET STYLEXX mask handling. Batch 3: PB64 46/50 compile, PBWin10 42/50, both 42/50, PB64-only failures 0; semantic identical 25, near 2, diff 9. Remaining diffs are control-fidelity gaps, not parser/codegen failures.
 > batch 409 (v0.2.199) - Fixed Discussion #8's José Roca include-file parse failures: reserved-word method names (`METHOD Xor`, `METHOD On`), nested pointer-field dereference (`@p.@field`, as in `@pImageCodecInfo.@MimeType`), and macro-name reuse in a `FUNCTION MAKEFOURCC` declaration. The full gbClientCapture v2.1 source now parses and builds x86_64 with the `C:\PBWin10\WinAPI` headers; `batch409_test` covers the new syntax at run time.
@@ -1093,6 +1094,46 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.202 (2026-11-27)
+
+This release closes the remaining common-dialog fidelity gaps from the fourth
+Gary Beene GUI batch. PB64Basic compiles 50/50 samples; 38 of the 40 comparable
+windows are pixel-identical, two are near-identical (0.03% and 0.044%), and one remains a
+size mismatch (`0771`, browser-folder sizing).
+
+#### Runtime and controls
+
+- `DISPLAY FONT`: `ChooseFontA` now installs the same empty hook PBWin 10 uses,
+  which makes comdlg32 load the classic `font.dlg` layout. The dialog is
+  431x319 with `Script=Western`, matching PBWin 10 pixel-for-pixel.
+- `DISPLAY OPENFILE` / `DISPLAY SAVEFILE`: the runtime passes `OFN_EXPLORER`
+  plus an in-memory `NEWFILEOPENV2ORD` template (`370x237`) through
+  `OFN_ENABLETEMPLATEHANDLE`. The dialog is 555x385 with the places bar,
+  matching PBWin 10 for both Open and Save As.
+- Open dialogs also set `OFN_HIDEREADONLY`. Without it, comdlg32 collapsed the
+  read-only row and produced a 555x382 window; with it, the Open dialog is the
+  same 555x385 as PBWin 10.
+- `OPENFILENAMEA` now carries the Vista tail fields (`pvReserved`,
+  `dwReserved`, `FlagsEx`), so the structure is the full 152 bytes expected by
+  current comdlg32. The shorter 136-byte structure made comdlg32 ignore the
+  template handle.
+- The template bytes are compiled into the runtime; no external DLL or file is
+  needed at run time.
+
+#### Tests
+
+- `examples/batch413_test.bas` pins the packaged `VERSION$` to the v0.2
+  release line.
+- Batch-4 screenshot evidence: `0773` 431x319 identical, `0775` 555x385
+  identical, `0777` 555x385 identical.
+
+#### Known rendering limits
+
+- `0771` still uses a different browser-folder size.
+- `0301` retains a 92-pixel centre line from GDI stretch sampling (0.03%).
+- `0899` still reports a system border width of 1 versus PBWin 10's 5; the
+  source of that value is unconfirmed.
+
 ### v0.2.201 (2026-11-27)
 
 This release closes the deterministic control-fidelity gaps left by the fourth
@@ -1102,7 +1143,6 @@ near-identical (0.03%-0.04%); 4 windows differ only because the native common
 dialogs use different Windows templates.
 
 ### Runtime and controls
-
 - `LISTVIEW`: when the `DIALOG CONTROL` statement omits the style argument,
   PB64Basic applies `LVS_EX_FULLROWSELECT` (`0x20`); an explicit style is left
   untouched. This restores the default listview behavior while the all-controls
@@ -1136,7 +1176,6 @@ dialogs use different Windows templates.
   and define the missing `%CF_*` constants.
 
 ### Tests
-
 - `examples/batch412_test.bas` asserts the `LISTVIEW` extended style in both
   forms: an omitted style reads back `0x20`, an explicit `%WS_BORDER` reads
   back `0`.
@@ -1144,7 +1183,6 @@ dialogs use different Windows templates.
   PBWin 10 (`SS_ICON` without `SS_REALSIZECONTROL`).
 
 ### Known rendering limits
-
 - The calendar/listbox focus rectangle, the 50x50 bitmap centre row/column,
   and the system-font border width differ by a few pixels. The bitmap
   resampling experiments (full 100->50, 96->49/50, WHITEONBLACK,
