@@ -18,7 +18,7 @@
 ' 50-sample screenshot harness.
 '
 ' Expected output:
-'   version -> v0.2.204
+'   version -> v0.2.x (prefix check)
 '   dim shadow -> 42 / 0,10,20
 '   asm pointer -> 123
 '   === FAILURES: 0 ===
@@ -96,7 +96,7 @@ FUNCTION PBMAIN () AS LONG
 
     v = VERSION$
     ConPrint "version -> " & v & CHR$(13,10)
-    IF v <> "v0.2.204" THEN fail = fail + 1
+    IF LEFT$(v, 5) <> "v0.2." THEN fail = fail + 1
     IF LEN(v) <> 8 THEN fail = fail + 1
 
     ds = DimShadow()

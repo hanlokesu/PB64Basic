@@ -446,8 +446,9 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 415 (v0.2.204). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
-> batch 415 (v0.2.204) - Close the six remaining Gary Beene GUI residuals: 0398 and 0513 ListView header and delete-row geometry, 0899 subsystem 4.0 border width, 1135 global dynamic array shadowing, 0263 inline-asm Long Pointer and label merging (including the x86_64 noinline rule), and 0361 WM_GETMINMAXINFO plus GRAPHIC RENDER edge semantics. All six are pixel-identical at 0.0 percent with equal screenshot size and equal PNG SHA-256. Batch 5 stays 42 of 50; the eight remaining items are control-fidelity gaps. Self-check: examples/batch415_test.bas.
+> Updated through batch 425 (v0.2.205). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 425 (v0.2.205) - Implemented a true 10-byte x87 Extended type: LEN=10, MKE$/CVE$, 80-bit scalar/array/UDT/global layout, 80-bit arithmetic and output, VAL(), and function argument/return passing. The x87 control word is initialised to 0x037F at process and thread entry, and f80 helpers cover SQR/EXP/LOG/trig/pow/round. Floating literals now carry PBWin's default precision class (<=6 digits SINGLE, 7-16 DOUBLE, 17+ EXT; !/#/## override), and `^` always evaluates on the x87 stack. Gary Beene batch 5 is now 50 of 50 pixel-identical; batch 2 rerun is 39 identical / 3 dependency skip / 2 dynamic pass / 6 PBWin10 compile failures. Self-check: examples/batch421_ext_test.bas and examples/batch424_ext_thread_test.bas.
+> batch 415 (v0.2.204) - Close the six remaining Gary Beene GUI residuals: 0398 and 0513 ListView header and delete-row geometry, 0899 subsystem 4.0 border width, 1135 global dynamic array shadowing, 0263 inline-asm Long Pointer and label merging (including the x86_64 noinline rule), and 0361 WM_GETMINMAXINFO plus GRAPHIC RENDER edge semantics. All six are pixel-identical at 0.0 percent with equal screenshot size and equal PNG SHA-256. Batch 5 was 42 of 50 at that release; the eight remaining items were closed in v0.2.205. Self-check: examples/batch415_test.bas.
 > batch 414 (v0.2.203) - Fifth Gary Beene GUI batch: 50 previously unused samples. All 50 compile with both compilers and all 50 launch. 49 of 50 are pixel-identical (0.0%, same screenshot size); sample 0398 remains at 6.7% because its ListView header text composition still differs. Fixed COMCTL notification constants, ProgressBar bar colour, Tab-page background/focus, ListView header height/font and top seam, Font New handle semantics, status-bar 1px offset, graphic quadrant and closed-interval rendering, empty ListView style slots, and removed the implicit full-row select that PBWin does not use. 0737 was excluded because PBWin10 itself fails with Error 519 and the published icons are gone; it was replaced by self-contained 0740. Three stale ListView fixtures now assert PBWin10's measured zero extended style. Self-check: examples/batch414_test.bas.
 > batch 413 (v0.2.202) - Closed the remaining common-dialog gaps: classic 431x319 font dialog with Script=Western, and 555x385 Open/Save via the 370x237 NEWFILEOPENV2ORD template. Batch 4: PB64 50/50 compiles, 38/40 comparable windows identical, 2 near (0.03% / 0.044%), 1 size mismatch (0771). Self-check: examples/batch413_test.bas.
 > batch 412 (v0.2.201) - Close the last deterministic batch-4 control gaps: LISTVIEW default extended style, modal focus fallback, bitmap native-1 render, GroupBox brush, owner-draw ListBox row height, and button `WM_CTLCOLORBTN` focus-rectangle color. PB64Basic compiles 50/50 samples; of 37 comparable windows 35 are pixel-identical and 2 are near-identical (0.03-0.04%). No keyword change; coverage stays at 952 rows / 918 implemented. Self-check: examples/batch412_test.bas.
@@ -1096,6 +1097,26 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.205 (2026-11-28)
+
+This release implements the real 80-bit x87 Extended type and closes the remaining Gary Beene batch 5 differences.
+
+#### Extended precision
+
+- `EXT` scalars, arrays, UDT fields and parameters now occupy 10 bytes and are loaded/stored as `x86_fp80`. Global EXT scalars reserve 12 bytes in `.bss` with 4-byte alignment, matching PBWin's global stride; arrays and UDT fields keep the 10-byte element size.
+- `LEN()`, `MKE$`, `CVE$`, `VAL()`, `STR$`, array/UDT layout, BYVAL/BYREF passing and EXT function returns all operate on the 80-bit representation. `examples/batch421_ext_test.bas` asserts the public surface on x86_64 and i686.
+- The process and every spawned thread set the x87 control word to `0x037F` (64-bit significand, round-to-nearest). Without this, Windows x64 starts with 53-bit precision and every `fsqrt`/`fdiv`/`fyl2x` result was silently rounded to double.
+- New internal x87 helpers cover `SQR`, `EXP`, `LOG`, `SIN`, `COS`, `TAN`, `ATN`, `ATN2`, `^`, and half-to-even rounding. Integer `/` converts both operands to f80 before `fdiv`, so `1/3` prints `.333333333333333333`.
+- Decimal literals now carry a precision class through the lexer, AST and code generator. Without a suffix, up to six mantissa digits produce a SINGLE constant, seven to sixteen produce a DOUBLE constant, and seventeen or more produce an exact f80 constant; `!`, `#` and `##` override the class. `^` always evaluates on the x87 stack, so `10 ^ 0.3` with PBWin's default SINGLE literal prints `1.99526236973674247`.
+
+#### Linker and samples
+
+- `#LINK` resolves relative to the current directory, then the source file directory, then the output directory.
+- All f80 helper functions are `internal`, so linking a host module with an `.sll` no longer reports duplicate symbols.
+- Batch 5 rerun with the final release: 50 of 50 samples compile with both compilers, launch, and produce pixel-identical screenshots at 0.0 percent with equal size.
+- Batch 2 rerun: PB64 compiles 50/50, PBWin10 compiles 44/50, semantic identical 39, dependency skip 3, dynamic pass 2, not run 6. The matrix is unchanged from the previous baseline.
+- Self-checks: `examples/batch421_ext_test.bas`, `examples/batch424_ext_thread_test.bas`, and the updated version-prefix assertions in `batch414_test.bas` / `batch415_test.bas`.
+
 ### v0.2.204 (2026-11-28)
 
 This release closes the five remaining Gary Beene GUI residuals and one ListView case from the earlier batch. All six samples now compile with both compilers, launch at the same window size, and produce pixel-identical screenshots at 0.0 percent difference; the two PNG files also have the same SHA-256 hash.

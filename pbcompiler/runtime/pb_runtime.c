@@ -18,6 +18,7 @@
 
 #define _CRT_SECURE_NO_WARNINGS 1
 #include <stdio.h>
+#include <float.h>
 /* Image-list handles are 1-based runtime slots (see the table below); the
    resolver is declared here because TOOLBAR SET IMAGELIST appears earlier in
    the file than the image-list implementation. */
@@ -1854,9 +1855,8 @@ static int pb_ull_digits(unsigned long long n) {
 }
 
 /* core scaling: returns the integer digits and the decimal exponent */
-static unsigned long long pb_x87_core(unsigned long long bits, int digits,
+static unsigned long long pb_x87_core(pb_x87_t x, int digits,
                                       int *out_de, int *out_sign) {
-    pb_x87_t x = pb_x87_from_bits(bits);
     int de_raw = pb_imul_high(x.e, 0x4d10);
     /* Total power of 10 by which the value is scaled (preserved across the
        0x1000 factor staging below). The rounded integer r = value*10^ax_total. */
@@ -1878,12 +1878,17 @@ static unsigned long long pb_x87_core(unsigned long long bits, int digits,
         x = ax > 0 ? pb_x87_mul(x, f) : pb_x87_div(x, f);
     }
     pb_x87_t r = pb_x87_frndint(x);
-    pb_x87_t p18;
-    p18.m = 0xDE0B6B3A76400000ULL; p18.e = 59; p18.sign = 0; p18.zero = 0;
+    /* Keep the rounded integer below 10^19 so it always fits in uint64.
+       With digits=18 the staging factor above can produce 20-21 decimal
+       digits (0.333... became 3.3e20 and its low 64 bits printed as
+       0.148865...).  Dividing until < 10^19 leaves at most 19 digits; the
+       caller still has its rounding digit and `extra_div` keeps `de`
+       exact. */
+    pb_x87_t p19 = pb_x87_from_int(10000000000000000000ULL);
     int extra_div = 0;
-    if (pb_x87_cmp(r, p18) >= 0) {
+    while (pb_x87_cmp(r, p19) >= 0) {
         r = pb_x87_div(r, pb_x87_from_int(10));
-        extra_div = 1;
+        extra_div++;
     }
     unsigned long long ri = pb_x87_to_int(r);
     /* True decimal exponent derived from the actual integer. Because
@@ -1922,16 +1927,14 @@ static int pb_signed_str(int v, char *out) {
 }
 
 /* shared renderer: digits significant digits; lead_space selects STR$ vs TRIM$ */
-static char* pb_num_render(double v, int digits, int lead_space) {
-    unsigned long long bits;
-    memcpy(&bits, &v, sizeof(bits));
-    if (bits == 0) {
+static char* pb_num_render_x87(pb_x87_t x, int digits, int lead_space) {
+    if (x.zero) {
         if (lead_space) return pb_bstr_alloc(" 0", 2);
         return pb_bstr_alloc("0", 1);
     }
-    int sign = (int)((bits >> 63) & 1ULL);
+    int sign = x.sign;
     int de, rsign;
-    unsigned long long n = pb_x87_core(bits, digits, &de, &rsign);
+    unsigned long long n = pb_x87_core(x, digits, &de, &rsign);
     if (n == 0) {
         if (lead_space) return pb_bstr_alloc(" 0", 2);
         return pb_bstr_alloc("0", 1);
@@ -2007,6 +2010,43 @@ static char* pb_num_render(double v, int digits, int lead_space) {
     }
     out[k] = '\0';
     return pb_bstr_alloc(out, (unsigned int)k);
+}
+
+static char* pb_num_render(double v, int digits, int lead_space) {
+    unsigned long long bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return pb_num_render_x87(pb_x87_from_bits(bits), digits, lead_space);
+}
+
+/* Build the internal x87 form from a PB 10-byte EXT value.  The 64-bit
+   significand (including its explicit integer bit) is stored little-endian
+   in bytes 0..7, the 15-bit exponent and sign in bytes 8..9. */
+static pb_x87_t pb_x87_from_tbyte(const unsigned char* p) {
+    pb_x87_t r;
+    unsigned long long m = 0;
+    int i;
+    for (i = 0; i < 8; i++) m |= ((unsigned long long)p[i]) << (8 * i);
+    int se = p[8] | (p[9] << 8);
+    int ef = se & 0x7FFF;
+    r.m = m;
+    r.sign = (se >> 15) & 1;
+    r.zero = (ef == 0 && m == 0) ? 1 : 0;
+    r.e = (ef == 0) ? -16382 : ef - 16383;
+    return r;
+}
+
+/* STR$/TRIM$ for a native 80-bit EXT, preserving all 64 significand bits.
+   `bytes` points at the caller's packed 10-byte value. */
+char* pb_str_ext_bytes(const unsigned char* bytes, int digits) {
+    if (digits <= 0) digits = 15;
+    if (digits > 18) digits = 18;
+    return pb_num_render_x87(pb_x87_from_tbyte(bytes), digits, 1);
+}
+
+char* pb_trim_ext_bytes(const unsigned char* bytes, int digits) {
+    if (digits <= 0) digits = 15;
+    if (digits > 18) digits = 18;
+    return pb_num_render_x87(pb_x87_from_tbyte(bytes), digits, 0);
 }
 
 /* STR$(double) - PBWin10 measured formatting: leading space for positive
@@ -4944,6 +4984,133 @@ void pb_input_file_dbl(int filenum, double* dest) {
     }
     buf[i] = '\0';
     *dest = atof(buf);
+}
+
+/* Write a normalized pb_x87_t into PB's 10-byte tbyte image. */
+static void pb_x87_to_tbyte_image(pb_x87_t v, unsigned char* out) {
+    int i;
+    if (v.zero) {
+        for (i = 0; i < 10; i++) out[i] = 0;
+        return;
+    }
+    unsigned long long m = v.m;
+    int ef = v.e + 16383;
+    if (ef < 0) ef = 0;
+    if (ef > 0x7FFF) ef = 0x7FFF;
+    for (i = 0; i < 8; i++) out[i] = (unsigned char)(m >> (8 * i));
+    out[8] = (unsigned char)(ef & 0xFF);
+    out[9] = (unsigned char)(((ef >> 8) & 0x7F) | (v.sign ? 0x80 : 0));
+}
+
+/* Decimal token -> 80-bit extended, matching PBWin literal/INPUT precision
+   for the common <=19-significant-digit case.  Longer exponents fall back
+   to the double path instead of inventing digits. */
+static int pb_parse_x87_decimal(const char* s, pb_x87_t* out) {
+    const char* p = s;
+    int sign = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '+' || *p == '-') { sign = (*p == '-'); p++; }
+    unsigned long long mant = 0;
+    int sig = 0, frac = 0, extra = 0, seen_dot = 0;
+    while (*p) {
+        char c = *p;
+        if (c >= '0' && c <= '9') {
+            int d = c - '0';
+            if (seen_dot) frac++;
+            if (sig == 0 && d == 0) {
+                /* leading zero: no significant digit yet */
+            } else if (sig < 19) {
+                mant = mant * 10ULL + (unsigned long long)d;
+                sig++;
+            } else {
+                extra++;
+            }
+            p++;
+        } else if (c == '.' && !seen_dot) {
+            seen_dot = 1;
+            p++;
+        } else {
+            break;
+        }
+    }
+    int exp = 0;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int esign = 1;
+        if (*p == '+' || *p == '-') { esign = (*p == '-' ? -1 : 1); p++; }
+        while (*p >= '0' && *p <= '9') { exp = exp * 10 + (*p - '0'); p++; }
+        exp *= esign;
+    }
+    if (mant == 0) {
+        out->m = 0; out->e = 0; out->sign = sign; out->zero = 1;
+        return 1;
+    }
+    int dexp = exp - frac + extra;
+    static const unsigned long long p10[20] = {
+        1ULL, 10ULL, 100ULL, 1000ULL, 10000ULL, 100000ULL, 1000000ULL,
+        10000000ULL, 100000000ULL, 1000000000ULL, 10000000000ULL,
+        100000000000ULL, 1000000000000ULL, 10000000000000ULL,
+        100000000000000ULL, 1000000000000000ULL, 10000000000000000ULL,
+        100000000000000000ULL, 1000000000000000000ULL,
+        10000000000000000000ULL
+    };
+    pb_x87_t a = pb_x87_from_int(mant);
+    if (dexp >= 0 && dexp <= 19) {
+        pb_x87_t b = pb_x87_from_int(p10[dexp]);
+        *out = pb_x87_mul(a, b);
+    } else if (dexp < 0 && -dexp <= 19) {
+        pb_x87_t b = pb_x87_from_int(p10[-dexp]);
+        *out = pb_x87_div(a, b);
+    } else {
+        return 0;
+    }
+    out->sign = sign;
+    return 1;
+}
+
+void pb_input_file_ext(int filenum, unsigned char* dest) {
+    if (filenum < 1 || filenum >= MAX_FILE_HANDLES || !file_handles[filenum]) return;
+    char buf[64];
+    if (file_wide[filenum]) {
+        pb_read_wide_num(filenum, buf, sizeof(buf));
+    } else {
+        int i = 0;
+        int ch;
+        while ((ch = fgetc(file_handles[filenum])) != EOF) {
+            if (ch == ',' || ch == '\n' || ch == ' ') {
+                if (ch == ' ' && i == 0) continue;
+                break;
+            }
+            if (ch == '\r') continue;
+            if (i < (int)sizeof(buf) - 1) buf[i++] = (char)ch;
+        }
+        buf[i] = '\0';
+    }
+    pb_x87_t v;
+    if (!pb_parse_x87_decimal(buf, &v)) {
+        union { double d; unsigned long long u; } du;
+        du.d = atof(buf);
+        v = pb_x87_from_bits(du.u);
+    }
+    pb_x87_to_tbyte_image(v, dest);
+}
+
+/* VAL/Val() in PBWin yields EXT, not DOUBLE: VAL("0.3333333333333333")
+   prints all 16 digits at STR$(...,18).  Parse the decimal directly to the
+   80-bit image; hex/invalid forms fall back to the legacy double parser. */
+void pb_val_ext(const char* s, int offset, unsigned char* out) {
+    const char* p = s;
+    if (offset > 1) p += offset - 1;
+    while (*p == ' ' || *p == '\t') p++;
+    pb_x87_t v;
+    int ok = 0;
+    if (*p != '&') ok = pb_parse_x87_decimal(p, &v);
+    if (!ok) {
+        union { double d; unsigned long long u; } du;
+        du.d = pb_val(s, offset);
+        v = pb_x87_from_bits(du.u);
+    }
+    pb_x87_to_tbyte_image(v, out);
 }
 
 /* pb_err / pb_err_var are defined later in this file (global ERR variables). */
@@ -11353,9 +11520,29 @@ typedef struct pb_thread_boot32 {
 } pb_thread_boot32;
 
 static unsigned long __stdcall pb_thread_boot32_proc(void* raw) {
+    unsigned short fcw = 0x037F;
     pb_thread_boot32 boot = *(pb_thread_boot32*)raw;
     free(raw);
+    __asm__ __volatile__("fldcw %0" : : "m"(fcw));
     return boot.fn ? boot.fn(boot.param) : 0;
+}
+#else
+/* 64-bit THREAD CREATE bridge.  Windows starts every new thread with the x87
+   precision control field of the default FPU state (53-bit mantissa), so EXT
+   arithmetic inside a THREAD would silently round to double.  Raise it to the
+   80-bit significand (PBWin's x87 state) before entering the PB procedure. */
+typedef unsigned long long (__cdecl* pb_thread_fn64)(unsigned long long);
+typedef struct pb_thread_boot64 {
+    pb_thread_fn64 fn;
+    unsigned long long param;
+} pb_thread_boot64;
+
+static unsigned long __stdcall pb_thread_boot64_proc(void* raw) {
+    unsigned short fcw = 0x037F;
+    pb_thread_boot64 boot = *(pb_thread_boot64*)raw;
+    free(raw);
+    __asm__ __volatile__("fldcw %0" : : "m"(fcw));
+    return (unsigned long)(boot.fn ? boot.fn(boot.param) : 0);
 }
 #endif
 
@@ -11366,18 +11553,24 @@ int pb_thread_create(void* func, unsigned long param,
     DWORD tid = 0;
     if (func == NULL) { pb_err_var = pb_err = 5; return -1; }
 #ifdef _WIN64
+    pb_thread_boot64* boot;
     for (i = 0; i < 256; i++) {
         if (!pb_thr[i].h) break;
     }
     if (i >= 256) { pb_err_var = pb_err = 5; return -1; }
     /* CHW THREAD CREATE: the thread function takes one BYVAL LONG/DWORD passed
        by value.  CreateThread hands it over as lpParameter; on x64 the PB
-       function reads its single i32 argument from the low 32 bits of RCX. */
+       function reads its single i32 argument from the low 32 bits of RCX.
+       The trampoline also raises the x87 precision control to 80 bits. */
     /* dwStackSize is the optional StackSize (0 = main thread size);
        dwCreationFlags carries CREATE_SUSPENDED (0x4) when SUSPEND is used. */
-    pb_thr[i].h = CreateThread(NULL, stack_size, (void* (__stdcall*)(void*))func,
-                               (void*)(unsigned long long)param, create_flags, &tid);
-    if (!pb_thr[i].h) { pb_err_var = pb_err = 7; return -1; }
+    boot = (pb_thread_boot64*)malloc(sizeof(pb_thread_boot64));
+    if (boot == NULL) { pb_err_var = pb_err = 7; return -1; }
+    boot->fn = (pb_thread_fn64)func;
+    boot->param = (unsigned long long)param;
+    pb_thr[i].h = CreateThread(NULL, stack_size, pb_thread_boot64_proc,
+                               boot, create_flags, &tid);
+    if (!pb_thr[i].h) { free(boot); pb_err_var = pb_err = 7; return -1; }
     pb_thr[i].tid = tid;
     pb_thr[i].state = 1;
     /* CHW: hThread is the real Windows thread handle (a DWORD/LONG).  Real
@@ -16026,7 +16219,11 @@ long long pb_statusbar_set_parts(void* hDlg, long long id, int* widths,
        made 75,75,99999 a zero-width second part (PBWin shows all three). */
     for (long long i = 0; i < count; i++) {
         acc += widths[i];
-        edges[i] = (int)acc;
+        /* PBWin measures a part from the status bar's 1-px inner client
+           origin, so its divider sits one pixel left of the raw cumulative
+           width.  Matching that removes the 1-px shift seen in 0292 without
+           changing the requested part widths. */
+        edges[i] = (int)(acc > 1 ? acc - 1 : 1);
     }
     return (long long)SendMessageA(h, (unsigned int)PB_SB_SETPARTS,
                                    (unsigned int)count, (pb_lparam_t)edges);
@@ -21036,22 +21233,30 @@ int pb_show_modal_to(void* hDlg) {
         {
             void* cur = GetFocus();
             void* target = pb_modal_initial_focus(hDlg);
-            if (target && (!cur || cur == hDlg || !pb_focus_is_explicit(cur)))
+            int assigned = 0;
+            if (target && (!cur || cur == hDlg || !pb_focus_is_explicit(cur))) {
                 SetFocus(target);
+                assigned = 1;
+            }
             if (target) {
                 pb_lastfocus_set(hDlg, target);
                 { int ipf = pb_ip_focus_get(target);
                   if (ipf >= 0)
                       SendMessageA(target, 0x0400u + 104 /* IPM_SETFOCUS */,
                                    (pb_wparam_t)ipf, 0); }
-                /* PBWin selects the existing contents of the first edit
-                   control when a modal dialog is shown. */
-                char cls[64];
-                GetClassNameA(target, cls, 64);
-                if ((cls[0]=='E'||cls[0]=='e') &&
-                    GetWindowTextLengthA(target) > 0) {
-                    SendMessageA(target, 0x00B1 /* EM_SETSEL */, 0,
-                                 (pb_lparam_t)(intptr_t)-1);
+                /* PBWin selects the existing contents only when it assigns
+                   the initial focus itself.  A CONTROL SET FOCUS issued in
+                   WM_INITDIALOG keeps the caret/selection it chose (0480:
+                   the explicit text box must not become fully selected). */
+                if (assigned) {
+                    char cls[64];
+                    GetClassNameA(target, cls, 64);
+                    int edit_like = (cls[0]=='E'||cls[0]=='e') ||
+                                    (cls[0]=='R'||cls[0]=='r');
+                    if (edit_like && GetWindowTextLengthA(target) > 0) {
+                        SendMessageA(target, 0x00B1 /* EM_SETSEL */, 0,
+                                     (pb_lparam_t)(intptr_t)-1);
+                    }
                 }
             }
         }
@@ -23140,6 +23345,19 @@ void pb_control_set_color(void* hDlg, long long id, long long fore, long long ba
     void* h = pb_pb_hwnd(hDlg, id);
     int i, free_i = -1;
     if (!h) return;
+    /* A progress bar does not answer WM_CTLCOLOR*: PBWin forwards the colour
+       pair to PBM_SETBARCOLOR / PBM_SETBKCOLOR.  Without this the bar kept
+       its themed default and 0312 lost the red bar / blue trough. */
+    {
+        char cls[64];
+        GetClassNameA(h, cls, 64);
+        if (_stricmp(cls, "msctls_progress32") == 0) {
+            unsigned long bar = (fore < 0) ? 0xFF000000u : (unsigned long)fore;
+            unsigned long bk  = (back < 0) ? 0xFF000000u : (unsigned long)back;
+            SendMessageA(h, 0x0409 /* PBM_SETBARCOLOR */, 0, (pb_lparam_t)bar);
+            SendMessageA(h, 0x2001 /* PBM_SETBKCOLOR  */, 0, (pb_lparam_t)bk);
+        }
+    }
     for (i = 0; i < PB_CTL_COLOR_SLOTS; i++) {
         if (pb_ctl_clr_set[i] && pb_ctl_clr_ctl[i] == h) {
             /* only the exact pair (-1, -1) means "both defaults"; -2 is a */
@@ -23634,8 +23852,15 @@ void* pb_control_add_listview(void* parent, long id, int x, int y, int w, int ht
        always creates a visible DDT control, so force both bits here. */
     unsigned long style = user_style
         ? (user_style | 0x40000000u /* WS_CHILD */ | 0x10000000u /* WS_VISIBLE */
-           | (((user_style & 0x3u) == 0) ? 0x1u /* LVS_REPORT */ : 0u))
+           | (((user_style & 0x3u) == 0u && (user_style & 0x20000000u) == 0u)
+                  ? 0x1u /* LVS_REPORT */ : 0u))
         : (0x1u | 0x4u | 0x8u | 0x40000000u | 0x10000000u);
+    /* 0x20000000 is an internal codegen marker, not a window style: it says
+       the source named %LVS_ICON explicitly.  LVS_ICON is zero, so without
+       this marker an explicit icon-mode style looks identical to a style
+       with no LVS type bits (0294's %WS_BORDER, which PBWin shows in report
+       mode). */
+    style &= ~0x20000000u;
     void* h;
     pb_icc(PB_ICC_LISTVIEW_CLASSES);
     pb_dlu_to_px_for(parent, &x, &y, &w, &ht);
@@ -24597,12 +24822,29 @@ static void* pb_modal_initial_focus(void* hDlg) {
         if (remembered && IsWindow(remembered) && pb_focus_is_explicit(remembered))
             return remembered;
     }
-    /* GetNextDlgTabItem walks z-order, whose head is the most recently created
-       control (Close), not PB's CONTROL ADD order (Company).  GetWindow's
-       GW_CHILD/GW_HWNDNEXT chain here is creation order, so the first visible,
-       enabled tab-stop is the control PBWin focuses. */
+    /* PBWin gives a tab control priority over the dialog's other controls:
+       0292 has buttons, a text box and list boxes before the tab, yet the
+       active page's dotted focus ring sits on the tab strip (the page only
+       holds a STATIC label).  When the page holds a focusable field, PBWin
+       focuses that field instead (0315/0411).  Find the tab first, then fall
+       back to the ordinary first-tab-stop scan for dialogs without one. */
     first = 0;
     {
+        void* child = GetWindow(hDlg, 5 /* GW_CHILD */);
+        while (child) {
+            long st = GetWindowLongA(child, -16 /* GWL_STYLE */);
+            char c[64];
+            GetClassNameA(child, c, 64);
+            if ((st & 0x10000000 /* WS_VISIBLE */) && IsWindowEnabled(child) &&
+                c[0]=='S' && c[1]=='y' && c[2]=='s' && c[3]=='T' &&
+                c[4]=='a' && c[5]=='b') {
+                first = child;
+                break;
+            }
+            child = GetWindow(child, 2 /* GW_HWNDNEXT */);
+        }
+    }
+    if (!first) {
         void* child = GetWindow(hDlg, 5 /* GW_CHILD */);
         while (child) {
             long st = GetWindowLongA(child, -16 /* GWL_STYLE */);
@@ -24638,8 +24880,43 @@ static void* pb_modal_initial_focus(void* hDlg) {
         long sel = (long)(intptr_t)SendMessageA(first, 0x130B /* TCM_GETCURSEL */, 0, 0);
         int i = (sel >= 0) ? pb_tab_page_find(first, (int)sel + 1) : -1;
         if (i >= 0 && pb_tab_page_dlg[i]) {
-            void* deep = pb_modal_initial_focus(pb_tab_page_dlg[i]);
-            if (deep) return deep;
+            void* page = pb_tab_page_dlg[i];
+            /* An empty active page makes PBWin skip the tab strip and focus
+               the first ordinary tab-stop (0409: the Press button).  A page
+               that contains at least a STATIC label keeps the focus ring on
+               the tab strip (0292/0315/0411). */
+            if (!GetWindow(page, 5 /* GW_CHILD */)) {
+                void* alt = 0;
+                void* c = GetWindow(hDlg, 5 /* GW_CHILD */);
+                while (c) {
+                    long st = GetWindowLongA(c, -16 /* GWL_STYLE */);
+                    if (c != first && (st & 0x10000 /* WS_TABSTOP */) &&
+                        (st & 0x10000000 /* WS_VISIBLE */) && IsWindowEnabled(c)) {
+                        alt = c;
+                        break;
+                    }
+                    c = GetWindow(c, 2 /* GW_HWNDNEXT */);
+                }
+                if (alt) return alt;
+                return first;
+            }
+            {
+                void* deep = pb_modal_initial_focus(page);
+            if (deep) {
+                char dcls[64];
+                long dst = GetWindowLongA(deep, -16 /* GWL_STYLE */);
+                GetClassNameA(deep, dcls, 64);
+                /* A page whose only controls are STATIC labels must leave the
+                   focus on the tab strip, as PBWin does (0315/0411/0292).
+                   A focusable non-STATIC child (SysDateTimePick32 and the
+                   like) still wins even without WS_TABSTOP, matching 0296. */
+                if ((dst & 0x10000 /* WS_TABSTOP */) ||
+                    !(dcls[0]=='S' && dcls[1]=='t' && dcls[2]=='a' &&
+                      dcls[3]=='t' && dcls[4]=='i' && dcls[5]=='c')) {
+                    return deep;
+                }
+            }
+            }
         }
     }
     return first;
@@ -24720,6 +24997,41 @@ static long __stdcall pb_tabpage_wndproc(void* hWnd, unsigned int Msg,
             r = f(dlg, Msg, (unsigned long long)wParam, (unsigned long long)lParam);
             if (r) return (long)r;
         }
+    }
+    /* A page dialog with no controls has no WM_CTLCOLORDLG/WM_ERASEBKGND
+       handler of its own; DefWindowProc then erases to COLOR_WINDOW and an
+       empty page paints white (0412).  PBWin's page is the standard
+       COLOR_BTNFACE dialog face. */
+    if (Msg == 0x0114 /* WM_ERASEBKGND */) {
+        struct { long l, t, r, b; } rc;
+        rc.l = rc.t = rc.r = rc.b = 0;
+        GetClientRect(hWnd, &rc);
+        FillRect((void*)wParam, &rc,
+                 GetSysColorBrush(15 /* COLOR_BTNFACE */));
+        return 1;
+    }
+    if (Msg == 0x0136 /* WM_CTLCOLORDLG */) {
+        SetBkColor((void*)wParam, GetSysColor(15 /* COLOR_BTNFACE */));
+        return (long)(size_t)GetSysColorBrush(15);
+    }
+    if (Msg == 0x000F /* WM_PAINT */) {
+        /* The page is created WS_VISIBLE, so its first paint is completed by
+           the dialog class before SetWindowLongPtr installs this procedure;
+           DefDlgProc then validates the update region without ever sending a
+           later WM_ERASEBKGND.  Paint the face here as well so an empty page
+           is grey on its first visible frame (0412). */
+        unsigned char ps[72];
+        long rcs[4];
+        int k;
+        for (k = 0; k < 72; k++) ps[k] = 0;
+        for (k = 0; k < 4; k++) rcs[k] = 0;
+        void* dc = BeginPaint(hWnd, (void*)ps);
+        if (dc) {
+            GetClientRect(hWnd, rcs);
+            FillRect(dc, rcs, GetSysColorBrush(15 /* COLOR_BTNFACE */));
+        }
+        EndPaint(hWnd, (void*)ps);
+        return 0;
     }
     __try {
         return DefWindowProcA(hWnd, Msg, wParam, lParam);
@@ -24903,7 +25215,15 @@ long long pb_tab_insert_page(void* hDlg, long id, int page, int image,
        dialog procedure does not post WM_QUIT on WM_DESTROY and would not route
        WM_COMMAND to the TAB callback, so subclass it with the page procedure
        right after creation.  Class identity now matches PBWin (0086). */
-    (void)pb_set_winlong(hPage, -4 /* GWLP_WNDPROC */, (long long)(size_t)pb_tabpage_wndproc);
+    {
+        (void)pb_set_winlong(hPage, -4 /* GWLP_WNDPROC */,
+                             (long long)(size_t)pb_tabpage_wndproc);
+    }
+    /* The page was created WS_VISIBLE, so its first WM_ERASEBKGND ran
+       before the subclass above and left the dialog-class COLOR_WINDOW
+       brush on screen.  Repaint the client area once through the page
+       procedure so the COLOR_BTNFACE face is actually painted (0412). */
+    InvalidateRect(hPage, 0, 1);
     /* A tab page is a child container, but PBWin creates it as a dialog
        (#32770), so it inherits the owner dialog's font and unit system.  Store
        the same snapshot: otherwise every CONTROL ADD on the page treats

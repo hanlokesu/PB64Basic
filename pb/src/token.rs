@@ -7,10 +7,12 @@
 pub enum Token {
     // Literals
     IntegerLiteral(i64),
-    /// Floating-point literal: the rounded f64 value plus the original source
-    /// number text (no type suffix). The source text preserves the literal's
-    /// fixed/scientific form, which WRITE# needs (e.g. "100000000" vs "1E+8").
-    FloatLiteral(f64, String),
+    /// Floating-point literal: the rounded f64 value, the original source
+    /// number text (no type suffix), and the PB precision class
+    /// (0=SINGLE, 1=DOUBLE, 2=EXT) chosen from the suffix or mantissa width.
+    /// The source text preserves the literal's fixed/scientific form, which
+    /// WRITE# needs (e.g. "100000000" vs "1E+8").
+    FloatLiteral(f64, String, u8),
     StringLiteral(String),
     /// `"..."$$` — a WIDE (UTF-16) string literal (CHW WSTRING_Data_Type).
     /// The lexer consumes the trailing `$$` so the parser can build a

@@ -147,7 +147,7 @@ impl Interpreter {
     fn eval_const_expr(&self, expr: &Expr) -> i64 {
         match expr {
             Expr::IntegerLit(n) => *n,
-            Expr::FloatLit(f, _) => *f as i64,
+            Expr::FloatLit(f, _, _) => *f as i64,
             Expr::PercentConst(name) => self.env.get_constant(name).unwrap_or(0),
             Expr::Negate(inner) => -self.eval_const_expr(inner),
             Expr::BinaryOp(op, a, b) => {
@@ -944,7 +944,7 @@ impl Interpreter {
     pub fn eval_expr(&mut self, expr: &Expr) -> PbResult<Value> {
         match expr {
             Expr::IntegerLit(n) => Ok(Value::Long(*n as i32)),
-            Expr::FloatLit(f, _) => Ok(Value::Double(*f)),
+            Expr::FloatLit(f, _, _) => Ok(Value::Double(*f)),
             Expr::StringLit(s) => Ok(Value::Str(s.clone())),
             Expr::WideStringLit(s) => Ok(Value::Str(s.clone())),
             Expr::Empty => Ok(Value::Null),

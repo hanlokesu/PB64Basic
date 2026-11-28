@@ -878,10 +878,11 @@ pub struct OnCallTarget {
 #[derive(Debug, Clone)]
 pub enum Expr {
     IntegerLit(i64),
-    /// Floating-point literal: rounded f64 value plus the original source text
-    /// (no type suffix). WRITE# uses the source text to preserve the literal's
+    /// Floating-point literal: rounded f64 value, original source text
+    /// (no type suffix), and precision class (0=SINGLE, 1=DOUBLE, 2=EXT).
+    /// WRITE# uses the source text to preserve the literal's
     /// fixed/scientific form (CHW WRITE# numeric literal formatting).
-    FloatLit(f64, String),
+    FloatLit(f64, String, u8),
     StringLit(String),
     /// `"..."$$` — a WIDE (UTF-16) string literal (batch280).  Lowered to a
     /// UTF-16 BSTR constant; WSTRING variables hold UTF-16 BSTR pointers.

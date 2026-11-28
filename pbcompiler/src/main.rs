@@ -333,6 +333,10 @@ fn real_main() {
         console_mode: None,
         com_progid,
         export_names: Vec::new(),
+        source_dir: Path::new(&file_path)
+            .parent()
+            .map(|p| p.to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty()),
     };
 
     match compile_file(

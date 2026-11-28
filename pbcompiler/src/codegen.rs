@@ -774,6 +774,9 @@ pub struct CompileOptions {
     /// `#EXPORT name [, name ...]` — procedures that receive the DLL export
     /// attribute even without the EXPORT keyword (CHW #EXPORT).
     pub export_names: Vec<String>,
+    /// Directory of the primary source file.  `#LINK "name.sll"` is resolved
+    /// against this directory as well as the process cwd, matching PBWin.
+    pub source_dir: Option<PathBuf>,
 }
 
 /// Resolve the final EXE/DLL output path from the #COMPILE directive.
@@ -1257,15 +1260,27 @@ fn link_dll(
         let p = std::path::Path::new(lf);
         if p.is_absolute() || p.exists() {
             args.push(lf.clone());
-        } else if let Some(parent) = dll_path.parent() {
-            let cand = parent.join(lf);
-            if cand.exists() {
+        } else {
+            let mut resolved = None;
+            if let Some(dir) = opts.source_dir.as_deref() {
+                let cand = dir.join(lf);
+                if cand.exists() {
+                    resolved = Some(cand);
+                }
+            }
+            if resolved.is_none() {
+                if let Some(parent) = dll_path.parent() {
+                    let cand = parent.join(lf);
+                    if cand.exists() {
+                        resolved = Some(cand);
+                    }
+                }
+            }
+            if let Some(cand) = resolved {
                 args.push(cand.to_string_lossy().to_string());
             } else {
                 args.push(lf.clone());
             }
-        } else {
-            args.push(lf.clone());
         }
     }
 
@@ -1503,15 +1518,30 @@ fn link_exe(
         let p = std::path::Path::new(lf);
         if p.is_absolute() || p.exists() {
             args.push(lf.clone());
-        } else if let Some(parent) = exe_path.parent() {
-            let cand = parent.join(lf);
-            if cand.exists() {
+        } else {
+            let mut resolved = None;
+            // Prefer the primary source file's directory: `#LINK "x.sll"`
+            // next to the .bas must work no matter where the compiler runs
+            // or where -o points.
+            if let Some(dir) = opts.source_dir.as_deref() {
+                let cand = dir.join(lf);
+                if cand.exists() {
+                    resolved = Some(cand);
+                }
+            }
+            if resolved.is_none() {
+                if let Some(parent) = exe_path.parent() {
+                    let cand = parent.join(lf);
+                    if cand.exists() {
+                        resolved = Some(cand);
+                    }
+                }
+            }
+            if let Some(cand) = resolved {
                 args.push(cand.to_string_lossy().to_string());
             } else {
                 args.push(lf.clone()); // let the linker report the missing file
             }
-        } else {
-            args.push(lf.clone());
         }
     }
 
@@ -2453,7 +2483,8 @@ impl Compiler {
             PbType::Integer | PbType::Word => IrType::I16,
             PbType::Byte => IrType::I8,
             PbType::Quad => IrType::I64,
-            PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX => IrType::Double,
+            PbType::Double | PbType::Cur | PbType::CurX => IrType::Double,
+            PbType::Ext => IrType::X86Fp80,
             PbType::Single => IrType::Float,
             PbType::String
             | PbType::FixedString(_)
@@ -2476,6 +2507,17 @@ impl Compiler {
         }
     }
 
+    /// Storage-only IR type: EXT fields/array elements occupy exactly 10
+    /// bytes, so a struct must spell them `[10 x i8]` rather than `x86_fp80`
+    /// (whose LLVM alloc size is 16).  Arithmetic still uses x86_fp80 values.
+    fn storage_ir_type(ir: &IrType) -> IrType {
+        match ir {
+            IrType::X86Fp80 => IrType::ExtBytes,
+            IrType::Array(n, elem) => IrType::Array(*n, Box::new(Self::storage_ir_type(elem))),
+            other => other.clone(),
+        }
+    }
+
     /// Byte size of an IR type for a given pointer width.
     fn ir_size_bytes_arch(ir: &IrType, ptr_width: u32) -> u32 {
         match ir {
@@ -2483,6 +2525,11 @@ impl Compiler {
             IrType::I16 => 2,
             IrType::I32 | IrType::Float => 4,
             IrType::I64 | IrType::Double => 8,
+            /* PBWin's EXT storage is exactly 10 bytes.  LLVM's `x86_fp80`
+            alloc size is 16; scalar allocas and struct fields use the
+            explicit 10-byte image instead, so layout math must use 10. */
+            IrType::X86Fp80 | IrType::ExtBytes => 10,
+            IrType::ExtGlobalBytes => 12,
             IrType::Ptr => ptr_width,
             IrType::Array(n, elem) => (*n as u32) * Self::ir_size_bytes_arch(elem, ptr_width),
             _ => 4,
@@ -2510,6 +2557,8 @@ impl Compiler {
             IrType::I16 => 2,
             IrType::I32 | IrType::Float => 4,
             IrType::I64 | IrType::Double => 8,
+            IrType::X86Fp80 | IrType::ExtBytes => 2,
+            IrType::ExtGlobalBytes => 4,
             IrType::Ptr => ptr_width.min(8),
             IrType::Array(_, elem) => Self::ir_align_bytes_arch(elem, ptr_width).min(8),
             _ => 4,
@@ -2557,7 +2606,8 @@ impl Compiler {
             PbType::Byte => 1,
             PbType::Integer | PbType::Word => 2,
             PbType::Long | PbType::Dword | PbType::Single => 4,
-            PbType::Double | PbType::Ext | PbType::Cur | PbType::CurX | PbType::Quad => 8,
+            PbType::Double | PbType::Cur | PbType::CurX | PbType::Quad => 8,
+            PbType::Ext => 10,
             PbType::FixedString(n) | PbType::AsciiZ(n) => *n as i32,
             // CHW Fixed-length_strings: N wide characters = 2N bytes.
             PbType::FixedWString(n, _) => (*n as i32) * 2,
@@ -3259,6 +3309,7 @@ impl Compiler {
             .declare_function("log1p", &IrType::Double, &[IrType::Double], false);
         self.module
             .declare_function("erf", &IrType::Double, &[IrType::Double], false);
+        self.add_ext_math_helpers();
 
         // C stdlib for RND
         self.module
@@ -3632,6 +3683,12 @@ impl Compiler {
             &[IrType::I32, IrType::Ptr],
             false,
         );
+        self.module.declare_function(
+            "pb_input_file_ext",
+            &IrType::Void,
+            &[IrType::I32, IrType::Ptr],
+            false,
+        );
         self.module
             .declare_function("pb_kill", &IrType::I32, &[IrType::Ptr], false);
         self.module
@@ -3862,6 +3919,12 @@ impl Compiler {
             "pb_val",
             &IrType::Double,
             &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_val_ext",
+            &IrType::Void,
+            &[IrType::Ptr, IrType::I32, IrType::Ptr],
             false,
         );
         self.module.declare_function(
@@ -8623,6 +8686,18 @@ impl Compiler {
         self.module
             .declare_function("pb_str_dbl", &IrType::Ptr, &[IrType::Double], false);
         self.module.declare_function(
+            "pb_str_ext_bytes",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
+            "pb_trim_ext_bytes",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::I32],
+            false,
+        );
+        self.module.declare_function(
             "pb_str_dbl_d",
             &IrType::Ptr,
             &[IrType::Double, IrType::I32],
@@ -9961,6 +10036,7 @@ impl Compiler {
             let hinst = Val::new("%hinst".to_string(), IrType::I64);
             let reason = Val::new("%reason".to_string(), IrType::I32);
             let reserved = Val::new("%reserved".to_string(), IrType::I64);
+            fb.call_void("__pb_fpu_init", &[]);
             let libmain = self
                 .functions
                 .get("LIBMAIN")
@@ -10006,6 +10082,7 @@ impl Compiler {
                 .module
                 .create_function_builder("main", &IrType::I32, &[]);
             fb.call_void("pb_install_crash_handler", &[]);
+            fb.call_void("__pb_fpu_init", &[]);
             fb.call_void("pb_profile_enable", &[]);
             if self.debug_mode {
                 let (cat, _) = self.module.add_string_constant("BUILD");
@@ -10044,6 +10121,7 @@ impl Compiler {
                 .module
                 .create_function_builder("main", &IrType::I32, &[]);
             fb.call_void("pb_install_crash_handler", &[]);
+            fb.call_void("__pb_fpu_init", &[]);
             fb.call_void("pb_profile_enable", &[]);
             if self.debug_mode {
                 let (cat, _) = self.module.add_string_constant("BUILD");
@@ -10667,7 +10745,8 @@ impl Compiler {
             cur_offset += tail;
         }
         if !self.type_layouts.contains_key(&name) {
-            self.module.define_packed_struct_type(&name, &ir_types);
+            let storage_types: Vec<IrType> = ir_types.iter().map(Self::storage_ir_type).collect();
+            self.module.define_packed_struct_type(&name, &storage_types);
         }
         self.type_layouts.insert(
             name.clone(),
@@ -11846,8 +11925,16 @@ impl Compiler {
                     ),
                 );
             } else {
+                // Global scalar EXT gets PBWin's 12-byte slot (10-byte
+                // value + padding to a 4-byte boundary).  Locals, arrays and
+                // UDT fields keep the exact 10-byte image.
+                let storage = if matches!(ir_type, IrType::X86Fp80) {
+                    IrType::ExtGlobalBytes
+                } else {
+                    Self::storage_ir_type(&ir_type)
+                };
                 self.module
-                    .add_global(&name, &ir_type, &ir_type.zero_literal());
+                    .add_global(&name, &storage, &storage.zero_literal());
             }
             self.symbols.insert_global(name, ir_type, pb_type);
         }
@@ -14051,6 +14138,29 @@ impl Compiler {
 
     // ========== Assign ==========
 
+    /// True when a style expression mentions a named %CONSTANT anywhere in its
+    /// tree.  Used for style bits whose numeric value is zero (%LVS_ICON), so
+    /// the compiled value alone cannot tell "explicitly requested" from
+    /// "not supplied".
+    fn expr_mentions_const(e: &Expr, name: &str) -> bool {
+        match e {
+            Expr::PercentConst(s) => {
+                let t = s.trim_start_matches('%');
+                t.eq_ignore_ascii_case(name)
+            }
+            Expr::UnaryOp(_, inner) | Expr::Negate(inner) | Expr::Deref(inner) => {
+                Self::expr_mentions_const(inner, name)
+            }
+            Expr::BinaryOp(_, l, r) => {
+                Self::expr_mentions_const(l, name) || Self::expr_mentions_const(r, name)
+            }
+            Expr::FunctionCall(_, args) | Expr::ArrayAccess(_, args) => {
+                args.iter().any(|a| Self::expr_mentions_const(a, name))
+            }
+            _ => false,
+        }
+    }
+
     /// True when the expression statically evaluates to a WSTRING (UTF-16 BSTR):
     /// a WSTRING variable, a `"..."$$` literal, a wide-returning string function
     /// (MID$/LEFT$/RIGHT$ on a wide source), or a concat with a wide side
@@ -14433,21 +14543,26 @@ impl Compiler {
                                     .unwrap_or(0);
                                 if size > 0 {
                                     let dest = Val::new(ptr_name, IrType::Ptr);
-                                    // `value` here is a loaded struct VALUE, not an
-                                    // address.  Passing it straight to memcpy's
-                                    // pointer parameter emitted `call @memcpy(ptr,
-                                    // %RECT, i32)`, which LLVM lowered with a
-                                    // bogus by-value aggregate ABI: the rectangle
-                                    // stayed zero and ownerdraw listboxes painted
-                                    // nothing (0383).  Spill the value to a
-                                    // temporary first so the second argument is a
-                                    // real pointer.
-                                    let src_tmp = fb.alloca(&target_ir);
-                                    fb.store(&value, &src_tmp);
+                                    // `@p[5]` (pointer dereference of a UDT)
+                                    // already compiles to the pointed-to
+                                    // ADDRESS, not to a struct value.  Writing
+                                    // that pointer into a temporary and then
+                                    // memcpy'ing the struct size copied the
+                                    // pointer's bytes and garbage, so temp.s
+                                    // read as binary 0x16 0x02 (batch2 1399).
+                                    // Use the address directly in that case;
+                                    // only spill a genuine aggregate value.
+                                    let src_ptr = if value.ty == IrType::Ptr {
+                                        value
+                                    } else {
+                                        let src_tmp = fb.alloca(&target_ir);
+                                        fb.store(&value, &src_tmp);
+                                        src_tmp
+                                    };
                                     fb.call(
                                         &IrType::Ptr,
                                         "memcpy",
-                                        &[dest, src_tmp, fb.const_i32(size as i32)],
+                                        &[dest, src_ptr, fb.const_i32(size as i32)],
                                     );
                                     return Ok(());
                                 }
@@ -16978,8 +17093,9 @@ impl Compiler {
                     ),
                 );
             } else {
+                let storage = Self::storage_ir_type(&ir_type);
                 self.module
-                    .add_global(&global_name, &ir_type, &ir_type.zero_literal());
+                    .add_global(&global_name, &storage, &storage.zero_literal());
             }
             self.symbols.insert_local(
                 name,
@@ -17101,7 +17217,7 @@ impl Compiler {
         for arg in args.iter().skip(1) {
             // Float literal: PBWin emits the source form (fixed vs scientific),
             // not the runtime R4/R8 conversion.
-            if let Expr::FloatLit(_, src) = arg {
+            if let Expr::FloatLit(_, src, _) = arg {
                 let lit_text = pb_write_float_lit_text(src);
                 let (str_name, _) = self.module.add_string_constant(&lit_text);
                 let sv = Val::new(str_name, IrType::Ptr);
@@ -23935,7 +24051,7 @@ impl Compiler {
                     let w = self.compile_expr(fb, &call.args[4])?;
                     let h = self.compile_expr(fb, &call.args[5])?;
                     // args: hwnd,id,x,y,w,h[,style[,exstyle]],target
-                    let (style, exstyle, target_idx) = if call.args.len() >= 9 {
+                    let (mut style, exstyle, target_idx) = if call.args.len() >= 9 {
                         (
                             self.compile_expr(fb, &call.args[6])?,
                             self.compile_expr(fb, &call.args[7])?,
@@ -23946,6 +24062,16 @@ impl Compiler {
                     } else {
                         (fb.const_i32(0), fb.const_i32(0), 6)
                     };
+                    /* %LVS_ICON is zero, so an explicit style of
+                    %WS_VISIBLE Or %LVS_ICON is indistinguishable from a
+                    style with no LVS type bits.  PBWin keeps icon mode in
+                    the former case and falls back to report in the latter
+                    (0294 passes only %WS_BORDER).  Mark the explicit-icon
+                    expression so the runtime does not force LVS_REPORT. */
+                    if call.args.len() >= 8 && Self::expr_mentions_const(&call.args[6], "LVS_ICON")
+                    {
+                        style = fb.or(&style, &fb.const_i32(0x20000000));
+                    }
                     let hc = fb.call(
                         &IrType::Ptr,
                         "pb_control_add_listview",
@@ -30029,6 +30155,12 @@ impl Compiler {
                         // a pointer instead of a float (batch402: FONT NEW
                         // through a BYVAL SINGLE helper produced a 1x2 font).
                         self.convert_value(fb, &val, &target_ir, &param.pb_type)
+                    } else if val.ty.is_float() && target_ir.is_float() && val.ty != target_ir {
+                        // EXT argument -> DOUBLE/SINGLE parameter.  Passing the
+                        // raw x86_fp80 let the callee read the low 8 bytes of
+                        // the 10-byte value as a double (batch330 CheckNum saw
+                        // 9.958e-43 for 1.5); narrow explicitly.
+                        self.convert_value(fb, &val, &target_ir, &param.pb_type)
                     } else if val.ty == IrType::I1 {
                         self.to_i32(fb, &val)
                     } else if self.module.is_32bit()
@@ -30722,7 +30854,7 @@ impl Compiler {
             .iter()
             .map(|p| match p {
                 CasePattern::Value(Expr::IntegerLit(n)) => format!("{}", n),
-                CasePattern::Value(Expr::FloatLit(f, _)) => format!("{}", f),
+                CasePattern::Value(Expr::FloatLit(f, _, _)) => format!("{}", f),
                 CasePattern::Value(Expr::StringLit(s)) => format!("\"{}\"", s),
                 CasePattern::Value(_) => "<expr>".to_string(),
                 CasePattern::Range(Expr::IntegerLit(lo), Expr::IntegerLit(hi)) => {
@@ -31178,6 +31310,11 @@ impl Compiler {
                     let val_i32 = self.to_i32(fb, &val);
                     fb.call_void("pb_print_i32", &[val_i32]);
                 }
+            } else if val.ty == IrType::X86Fp80 {
+                let slot = fb.alloca(&IrType::X86Fp80);
+                fb.store(&val, &slot);
+                let s = fb.call(&IrType::Ptr, "pb_str_ext_bytes", &[slot, fb.const_i32(15)]);
+                fb.call_void("pb_print_str", &[s]);
             } else if val.ty.is_float() {
                 let val_f64 = self.to_f64(fb, &val);
                 fb.call_void("pb_print_f64", &[val_f64]);
@@ -31604,6 +31741,8 @@ impl Compiler {
             IrType::I16 => 2,
             IrType::I32 | IrType::Float => 4,
             IrType::I64 | IrType::Double => 8,
+            IrType::X86Fp80 | IrType::ExtBytes => 10,
+            IrType::ExtGlobalBytes => 12,
             IrType::Ptr => self.pointer_width(),
             IrType::Array(n, elem) => (*n as i32).saturating_mul(self.array_elem_size_arch(elem)),
             // User TYPE elements: the IR type alone does not carry the layout,
@@ -31761,7 +31900,12 @@ impl Compiler {
                     let n64 = fb.const_i64(n as i64);
                     fb.call_void("pb_input_file_fixed_w", &[filenum_i32.clone(), ptr, n64]);
                 }
-                PbType::Double | PbType::Single | PbType::Ext | PbType::Cur | PbType::CurX => {
+                PbType::Ext => {
+                    // EXT storage is 10 bytes; the double input helper writes
+                    // only 8 and leaves the exponent/sign bytes stale.
+                    fb.call_void("pb_input_file_ext", &[filenum_i32.clone(), ptr]);
+                }
+                PbType::Double | PbType::Single | PbType::Cur | PbType::CurX => {
                     fb.call_void("pb_input_file_dbl", &[filenum_i32.clone(), ptr]);
                 }
                 _ => {
@@ -32806,7 +32950,18 @@ impl Compiler {
                     Ok(fb.const_i64(*n))
                 }
             }
-            Expr::FloatLit(f, _) => Ok(fb.const_f64(*f)),
+            Expr::FloatLit(f, src, prec) => match prec {
+                0 => Ok(fb.const_f32(*f as f32)),
+                1 => Ok(fb.const_f64(*f)),
+                _ => {
+                    if let Some(hex) = Self::f80_literal_hex(src) {
+                        Ok(Val::new(hex, IrType::X86Fp80))
+                    } else {
+                        let d = fb.const_f64(*f);
+                        Ok(fb.fpext(&d, &IrType::X86Fp80))
+                    }
+                }
+            },
             Expr::StringLit(s) => {
                 let (str_name, _) = self.module.add_string_constant(s);
                 Ok(Val::new(str_name, IrType::Ptr))
@@ -34017,8 +34172,19 @@ impl Compiler {
             return self.compile_string_binop(fb, op, lhs, rhs, lwide, rwide);
         }
 
-        // Float promotion if either side is float
+        // Float promotion if either side is float.  An EXT operand promotes
+        // the operation to x87 80-bit instead of rounding both sides through
+        // a double.  PBWin10 evaluates `^` on the x87 stack even when both
+        // operands are SINGLE/DOUBLE (measured: 10 ^ 0.3 with a default
+        // SINGLE literal prints 1.99526236973674247), so Pow always uses the
+        // f80 path as well.
         if lhs.ty.is_float() || rhs.ty.is_float() {
+            if lhs.ty == IrType::X86Fp80 || rhs.ty == IrType::X86Fp80 || matches!(op, BinaryOp::Pow)
+            {
+                let l = self.to_f80(fb, lhs);
+                let r = self.to_f80(fb, rhs);
+                return self.compile_float_binop(fb, op, &l, &r);
+            }
             let l = self.to_f64(fb, lhs);
             let r = self.to_f64(fb, rhs);
             return self.compile_float_binop(fb, op, &l, &r);
@@ -34132,9 +34298,12 @@ impl Compiler {
                 }
             }
             BinaryOp::Div => {
-                // PB `/` produces float result
-                let lf = fb.sitofp(&l, &IrType::Double);
-                let rf = fb.sitofp(&r, &IrType::Double);
+                // PB `/` produces a floating result.  With two integer
+                // operands PBWin evaluates at its default EXT precision, so
+                // `1 / 3` lands directly in 80 bits instead of being rounded
+                // through a 53-bit double first.
+                let lf = fb.sitofp(&l, &IrType::X86Fp80);
+                let rf = fb.sitofp(&r, &IrType::X86Fp80);
                 Ok(fb.fdiv(&lf, &rf))
             }
             BinaryOp::IntDiv => {
@@ -34260,7 +34429,29 @@ impl Compiler {
                 Ok(fb.fptosi(&div, &IrType::I32))
             }
             BinaryOp::Mod => Ok(fb.frem(l, r)),
-            BinaryOp::Pow => Ok(fb.call(&IrType::Double, "llvm.pow.f64", &[l.clone(), r.clone()])),
+            BinaryOp::Pow => {
+                if l.ty == IrType::X86Fp80 {
+                    // Negative bases: PBWin computes |x|^y and negates the
+                    // result only when y is an odd integer.  A fractional
+                    // exponent on a negative base is Error 5 at runtime; the
+                    // fyl2x path would otherwise produce a quiet NaN.
+                    let zero = fb.fpext(&fb.const_f64(0.0), &IrType::X86Fp80);
+                    let is_neg = fb.fcmp("olt", l, &zero);
+                    let abs = fb.call(&IrType::X86Fp80, "__pb_fabs_f80", std::slice::from_ref(l));
+                    let pow_abs = fb.call(&IrType::X86Fp80, "__pb_pow_f80", &[abs, r.clone()]);
+                    let ri = fb.fptosi(r, &IrType::I64);
+                    let rf = fb.sitofp(&ri, &IrType::X86Fp80);
+                    let is_int = fb.fcmp("oeq", &rf, r);
+                    let odd = fb.and(&ri, &fb.const_i64(1));
+                    let is_odd = fb.icmp("ne", &odd, &fb.const_i64(0));
+                    let negate = fb.and(&is_neg, &is_int);
+                    let negate = fb.and(&negate, &is_odd);
+                    let neg_pow = fb.fneg(&pow_abs);
+                    Ok(fb.select(&negate, &neg_pow, &pow_abs))
+                } else {
+                    Ok(fb.call(&IrType::Double, "llvm.pow.f64", &[l.clone(), r.clone()]))
+                }
+            }
             BinaryOp::Eq => Ok(fb.fcmp("oeq", l, r)),
             BinaryOp::Neq => Ok(fb.fcmp("one", l, r)),
             BinaryOp::Lt => Ok(fb.fcmp("olt", l, r)),
@@ -34519,6 +34710,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("eq", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("oeq", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34532,6 +34727,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("ne", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("one", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34545,6 +34744,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("slt", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("olt", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34558,6 +34761,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("sgt", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("ogt", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34571,6 +34778,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("sle", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("ole", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34584,6 +34795,10 @@ impl Compiler {
         } else if a.ty.is_int() && b.ty.is_int() {
             let (l, r) = self.promote_ints(fb, a, b);
             fb.icmp("sge", &l, &r)
+        } else if a.ty == IrType::X86Fp80 || b.ty == IrType::X86Fp80 {
+            let l = self.to_f80(fb, a);
+            let r = self.to_f80(fb, b);
+            fb.fcmp("oge", &l, &r)
         } else {
             let l = self.to_f64(fb, a);
             let r = self.to_f64(fb, b);
@@ -34617,7 +34832,7 @@ impl Compiler {
             IrType::I8 => fb.zext(val, &IrType::I32),
             IrType::I16 => fb.zext(val, &IrType::I32),
             IrType::I64 => fb.trunc(val, &IrType::I32),
-            IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I32),
+            IrType::Double | IrType::Float | IrType::X86Fp80 => fb.fptosi(val, &IrType::I32),
             _ => val.clone(),
         }
     }
@@ -34647,6 +34862,7 @@ impl Compiler {
         match &val.ty {
             IrType::Double => val.clone(),
             IrType::Float => fb.fpext(val, &IrType::Double),
+            IrType::X86Fp80 => fb.fptrunc(val, &IrType::Double),
             // BYTE (I8) and WORD (I16) are unsigned in PB: widen via uitofp.
             // Without the I8 arm the catch-all returned the i8 value, which a
             // Double callee then read as a subnormal bit pattern (TYPE SET
@@ -34661,6 +34877,133 @@ impl Compiler {
             }
             IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::Double),
             _ => val.clone(),
+        }
+    }
+
+    /// Parse a decimal float literal directly into the exact 80-bit x87
+    /// representation.  PBWin treats unsuffixed float literals as EXT values,
+    /// so parsing through f64 first loses the low 11 significand bits
+    /// (0.3333333333333333 became ...315 instead of ...333).
+    fn f80_literal_hex(src: &str) -> Option<String> {
+        let s = src.trim();
+        let neg = s.starts_with('-');
+        let body = s.trim_start_matches(['+', '-']);
+        let (mant, exp_part) = match body.find(['e', 'E']) {
+            Some(i) => (&body[..i], &body[i + 1..]),
+            None => (body, "0"),
+        };
+        let exp: i32 = exp_part.parse().ok()?;
+        let mut digits = String::new();
+        let mut frac = 0i32;
+        let mut seen_dot = false;
+        for ch in mant.chars() {
+            match ch {
+                '0'..='9' => {
+                    digits.push(ch);
+                    if seen_dot {
+                        frac += 1;
+                    }
+                }
+                '.' if !seen_dot => seen_dot = true,
+                _ => return None,
+            }
+        }
+        let digits = digits.trim_start_matches('0');
+        if digits.is_empty() {
+            return Some("0xK00000000000000000000".to_string());
+        }
+        if digits.len() > 38 {
+            return None;
+        }
+        let n = digits.parse::<u128>().ok()?;
+        if n == 0 {
+            return Some("0xK00000000000000000000".to_string());
+        }
+        let scale = exp - frac;
+
+        /* m = round(n * 10^scale * 2^(63-e)), with 2^63 <= m < 2^64. */
+        let (mut e, mut q, mut rem, mut den);
+        if scale >= 0 {
+            let mut big = n;
+            for _ in 0..scale {
+                big = big.checked_mul(10)?;
+            }
+            e = 127 - big.leading_zeros() as i32;
+            let shift = 63 - e;
+            if shift >= 0 {
+                let num = big.checked_shl(shift as u32)?;
+                q = num;
+                rem = 0;
+                den = 1;
+            } else {
+                den = 1u128.checked_shl((-shift) as u32)?;
+                q = big / den;
+                rem = big % den;
+            }
+        } else {
+            let mut d = 1u128;
+            for _ in 0..(-scale) {
+                d = d.checked_mul(10)?;
+            }
+            let den0 = d;
+            e = (127 - n.leading_zeros() as i32) - (127 - den0.leading_zeros() as i32);
+            loop {
+                den = den0;
+                let shift = 63 - e;
+                if shift >= 0 {
+                    let num = n.checked_shl(shift as u32)?;
+                    q = num / den;
+                    rem = num % den;
+                } else {
+                    let d2 = den.checked_shl((-shift) as u32)?;
+                    q = n / d2;
+                    rem = n % d2;
+                    den = d2;
+                }
+                if q >= (1u128 << 64) {
+                    e += 1;
+                } else if q < (1u128 << 63) {
+                    e -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        /* round half to even */
+        if rem != 0 {
+            let twice = rem.checked_mul(2)?;
+            if twice >= den && (twice > den || (q & 1) == 1) {
+                q += 1;
+                if q == (1u128 << 64) {
+                    q >>= 1;
+                    e += 1;
+                }
+            }
+        }
+        let ef = e + 16383;
+        if !(1..=0x7FFE).contains(&ef) {
+            return None;
+        }
+        let se = (ef as u32) | if neg { 0x8000 } else { 0 };
+        Some(format!("0xK{:04X}{:016X}", se, q as u64))
+    }
+
+    /// arithmetic.  Unlike `to_f64` this does not round through a double.
+    fn to_f80(&self, fb: &mut FunctionBuilder, val: &Val) -> Val {
+        match &val.ty {
+            IrType::X86Fp80 => val.clone(),
+            IrType::Double | IrType::Float => fb.fpext(val, &IrType::X86Fp80),
+            IrType::I8 => fb.uitofp(val, &IrType::X86Fp80),
+            IrType::I16 => fb.uitofp(val, &IrType::X86Fp80),
+            IrType::I1 => {
+                let i32v = fb.select(val, &fb.const_i32(-1), &fb.const_i32(0));
+                fb.sitofp(&i32v, &IrType::X86Fp80)
+            }
+            IrType::I32 | IrType::I64 => fb.sitofp(val, &IrType::X86Fp80),
+            _ => {
+                let d = self.to_f64(fb, val);
+                fb.fpext(&d, &IrType::X86Fp80)
+            }
         }
     }
 
@@ -36199,8 +36542,14 @@ impl Compiler {
                 }
                 let v = self.compile_expr(fb, &args[0]);
                 Some(v.map(|val| {
-                    let d = self.to_f64(fb, &val);
-                    fb.call(&IrType::Ptr, "pb_mkext", &[d])
+                    let x = self.to_f80(fb, &val);
+                    let slot = fb.alloca(&IrType::X86Fp80);
+                    fb.store(&x, &slot);
+                    fb.call(
+                        &IrType::Ptr,
+                        "pb_bstr_from_bytes",
+                        &[slot, fb.const_i32(10)],
+                    )
                 }))
             }
             "MKBYT" => {
@@ -37165,6 +37514,127 @@ impl Compiler {
         Ok(fb.fptosi(&truncated, &IrType::I32))
     }
 
+    /// Define x87 helpers that keep EXT math in 80-bit precision.  LLVM
+    /// lowers `llvm.log.f80`/`exp.f80`/`sin.f80`/`cos.f80` to `logl`/`expl`/
+    /// `sinl`/`cosl`, which the Windows x64 CRT does not export.  The helpers
+    /// below use the x87 instructions directly and match PBWin10's EXT math.
+    fn add_ext_math_helpers(&mut self) {
+        let unary: &[(&str, &str)] = &[
+            ("__pb_sqrt_f80", "fsqrt"),
+            ("__pb_fabs_f80", "fabs"),
+            ("__pb_log_f80", "fldln2; fxch; fyl2x"),
+            (
+                "__pb_exp_f80",
+                "fldl2e; fmulp %st, %st(1); fld %st(0); frndint; fxch %st(1); \
+                 fsub %st(1), %st(0); f2xm1; fld1; faddp; fscale; fstp %st(1)",
+            ),
+            ("__pb_sin_f80", "fsin"),
+            ("__pb_cos_f80", "fcos"),
+            ("__pb_tan_f80", "fptan; fstp %st(0)"),
+            ("__pb_atan_f80", "fld1; fpatan"),
+            // x87 FRNDINT rounds to nearest, ties to even — the PB CQUD/CINT
+            // rule for EXT operands (CQUD(-3.7) = -4, not truncation).
+            ("__pb_round_f80", "frndint"),
+        ];
+        for (name, instr) in unary {
+            let mut fb = self.module.create_function_builder(
+                name,
+                &IrType::X86Fp80,
+                &[("x".to_string(), IrType::X86Fp80)],
+            );
+            fb.set_internal();
+            let px = fb.alloca(&IrType::X86Fp80);
+            fb.store(&Val::new("%x", IrType::X86Fp80), &px);
+            let pr = fb.alloca(&IrType::X86Fp80);
+            fb.raw_line(&format!(
+                "call void asm sideeffect \"fldt $1; {}; fstpt $0\", \
+                 \"=*m,*m\"(ptr elementtype([10 x i8]) {}, \
+                 ptr elementtype([10 x i8]) {})",
+                instr, pr.name, px.name
+            ));
+            let r = fb.load(&IrType::X86Fp80, &pr);
+            fb.ret(&r);
+            let body = fb.finish();
+            self.module.add_function_body(body);
+        }
+
+        // ATN2(y, x) needs both operands on the x87 stack in the order
+        // st1=y, st0=x before FPATAN.
+        let mut fb = self.module.create_function_builder(
+            "__pb_atan2_f80",
+            &IrType::X86Fp80,
+            &[
+                ("y".to_string(), IrType::X86Fp80),
+                ("x".to_string(), IrType::X86Fp80),
+            ],
+        );
+        fb.set_internal();
+        let py = fb.alloca(&IrType::X86Fp80);
+        fb.store(&Val::new("%y", IrType::X86Fp80), &py);
+        let px = fb.alloca(&IrType::X86Fp80);
+        fb.store(&Val::new("%x", IrType::X86Fp80), &px);
+        let pr = fb.alloca(&IrType::X86Fp80);
+        fb.raw_line(&format!(
+            "call void asm sideeffect \"fldt $1; fldt $2; fpatan; fstpt $0\", \
+             \"=*m,*m,*m\"(ptr elementtype([10 x i8]) {}, \
+             ptr elementtype([10 x i8]) {}, \
+             ptr elementtype([10 x i8]) {})",
+            pr.name, py.name, px.name
+        ));
+        let r = fb.load(&IrType::X86Fp80, &pr);
+        fb.ret(&r);
+        let body = fb.finish();
+        self.module.add_function_body(body);
+
+        // x^y = 2^(y * log2(x)).  FYL2X computes the exponent directly in
+        // 80-bit precision; reusing the EXP sequence below keeps the whole
+        // operation on the x87 stack and matches PBWin10's `^` operator.
+        let mut fb = self.module.create_function_builder(
+            "__pb_pow_f80",
+            &IrType::X86Fp80,
+            &[
+                ("x".to_string(), IrType::X86Fp80),
+                ("y".to_string(), IrType::X86Fp80),
+            ],
+        );
+        fb.set_internal();
+        let px = fb.alloca(&IrType::X86Fp80);
+        fb.store(&Val::new("%x", IrType::X86Fp80), &px);
+        let py = fb.alloca(&IrType::X86Fp80);
+        fb.store(&Val::new("%y", IrType::X86Fp80), &py);
+        let pr = fb.alloca(&IrType::X86Fp80);
+        fb.raw_line(&format!(
+            "call void asm sideeffect \"fldt $2; fldt $1; fyl2x; fld %st(0); \
+             frndint; fxch %st(1); fsub %st(1), %st(0); f2xm1; fld1; faddp; \
+             fscale; fstp %st(1); fstpt $0\", \
+             \"=*m,*m,*m\"(ptr elementtype([10 x i8]) {}, \
+             ptr elementtype([10 x i8]) {}, \
+             ptr elementtype([10 x i8]) {})",
+            pr.name, px.name, py.name
+        ));
+        let r = fb.load(&IrType::X86Fp80, &pr);
+        fb.ret(&r);
+        let body = fb.finish();
+        self.module.add_function_body(body);
+
+        // Windows x64 starts threads with x87 precision control = 53 bits.
+        // PBWin10 is a 32-bit process and uses the full 64-bit significand,
+        // so restore the standard 0x037F control word at process start.
+        let mut fb = self
+            .module
+            .create_function_builder("__pb_fpu_init", &IrType::Void, &[]);
+        fb.set_internal();
+        let fcw = fb.alloca(&IrType::I16);
+        fb.store(&fb.const_i16(0x037F), &fcw);
+        fb.raw_line(&format!(
+            "call void asm sideeffect \"fldcw $0\", \"*m\"(ptr elementtype(i16) {})",
+            fcw.name
+        ));
+        fb.ret_void();
+        let body = fb.finish();
+        self.module.add_function_body(body);
+    }
+
     fn builtin_unary_math(
         &mut self,
         fb: &mut FunctionBuilder,
@@ -37172,16 +37642,39 @@ impl Compiler {
         func_name: &str,
     ) -> PbResult<Val> {
         let val = self.compile_expr(fb, &args[0])?;
-        let f64_val = self.to_f64(fb, &val);
+        let ext_math = matches!(
+            val.ty,
+            IrType::X86Fp80 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64
+        );
+        let f80_name = match func_name {
+            "llvm.sqrt.f64" => Some("__pb_sqrt_f80"),
+            "llvm.log.f64" => Some("__pb_log_f80"),
+            "llvm.exp.f64" => Some("__pb_exp_f80"),
+            "llvm.sin.f64" => Some("__pb_sin_f80"),
+            "llvm.cos.f64" => Some("__pb_cos_f80"),
+            "tan" => Some("__pb_tan_f80"),
+            "atan" => Some("__pb_atan_f80"),
+            _ => None,
+        };
+        let use_f80 = ext_math && f80_name.is_some();
+        let f_val = if use_f80 {
+            self.to_f80(fb, &val)
+        } else {
+            self.to_f64(fb, &val)
+        };
         // SQR(negative) and LOG(<=0) are illegal function calls -> Error 5.
         if func_name == "llvm.sqrt.f64" || func_name == "llvm.log.f64" {
-            let zero = fb.const_f64(0.0);
-            let cmp = if func_name == "llvm.sqrt.f64" {
-                // f64_val < 0.0
-                fb.fcmp("olt", &f64_val, &zero)
+            let zero = if use_f80 {
+                fb.fpext(&fb.const_f64(0.0), &IrType::X86Fp80)
             } else {
-                // f64_val <= 0.0 (LOG of 0 or negative is illegal)
-                fb.fcmp("ole", &f64_val, &zero)
+                fb.const_f64(0.0)
+            };
+            let cmp = if func_name == "llvm.sqrt.f64" {
+                // f_val < 0.0
+                fb.fcmp("olt", &f_val, &zero)
+            } else {
+                // f_val <= 0.0 (LOG of 0 or negative is illegal)
+                fb.fcmp("ole", &f_val, &zero)
             };
             let l_ok = fb.next_label("math.ok");
             let l_err = fb.next_label("math.err");
@@ -37190,7 +37683,11 @@ impl Compiler {
             fb.raise_error(5);
             fb.label(&l_ok);
         }
-        Ok(fb.call(&IrType::Double, func_name, &[f64_val]))
+        if use_f80 {
+            Ok(fb.call(&IrType::X86Fp80, f80_name.unwrap(), &[f_val]))
+        } else {
+            Ok(fb.call(&IrType::Double, func_name, &[f_val]))
+        }
     }
 
     // Batch 94: two-argument math (ATN2(y, x) -> atan2)
@@ -37202,6 +37699,18 @@ impl Compiler {
     ) -> PbResult<Val> {
         let a = self.compile_expr(fb, &args[0])?;
         let b = self.compile_expr(fb, &args[1])?;
+        let ext_math = matches!(
+            a.ty,
+            IrType::X86Fp80 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64
+        ) && matches!(
+            b.ty,
+            IrType::X86Fp80 | IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64
+        );
+        if func_name == "atan2" && ext_math {
+            let fa = self.to_f80(fb, &a);
+            let fb_val = self.to_f80(fb, &b);
+            return Ok(fb.call(&IrType::X86Fp80, "__pb_atan2_f80", &[fa, fb_val]));
+        }
         let fa = self.to_f64(fb, &a);
         let fb_val = self.to_f64(fb, &b);
         Ok(fb.call(&IrType::Double, func_name, &[fa, fb_val]))
@@ -37314,7 +37823,16 @@ impl Compiler {
         let val = self.compile_expr(fb, &args[0])?;
         self.guard_whole_array(&args[0], kw)?;
         self.guard_numeric_operand(&val, kw)?;
-        if matches!(val.ty, IrType::Double | IrType::Float) {
+        if val.ty == IrType::X86Fp80 {
+            // EXT path: FRNDINT rounds to nearest-even without narrowing the
+            // operand to double (CQUD(-3.7) must be -4, not -3).
+            let rounded = fb.call(
+                &IrType::X86Fp80,
+                "__pb_round_f80",
+                std::slice::from_ref(&val),
+            );
+            Ok(fb.fptosi(&rounded, &IrType::I64))
+        } else if matches!(val.ty, IrType::Double | IrType::Float) {
             let f64_val = self.to_f64(fb, &val);
             // Banker's rounding (ties to even) — matches PB CINT/CLNG.
             let rounded = fb.call(&IrType::Double, "llvm.nearbyint.f64", &[f64_val]);
@@ -37457,7 +37975,7 @@ impl Compiler {
         ))
     }
 
-    // Batch 283b: CVE$ — read a 10-byte 80-bit extended back as a double.
+    // CVE$ — read a 10-byte 80-bit extended back as an EXT value.
     fn builtin_cv_ext(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
         if args.is_empty() {
             return Err(PbError::runtime("CVE$ requires 1 argument"));
@@ -37465,11 +37983,20 @@ impl Compiler {
         let sval = self.compile_expr(fb, &args[0])?;
         let off = if args.len() >= 2 {
             let o = self.compile_expr(fb, &args[1])?;
-            self.to_i64(fb, &o)
+            self.to_i32(fb, &o)
         } else {
             fb.const_i32(1)
         };
-        Ok(fb.call(&IrType::Double, "pb_cv_ext", &[sval, off]))
+        let zero = fb.const_i32(1);
+        let delta = fb.sub(&off, &zero);
+        let src = fb.gep_byte(&sval, &delta);
+        let slot = fb.alloca(&IrType::X86Fp80);
+        fb.call(
+            &IrType::Ptr,
+            "memcpy",
+            &[slot.clone(), src, fb.const_i32(10)],
+        );
+        Ok(fb.load(&IrType::X86Fp80, &slot))
     }
 
     // Batch 38: string / math builtins
@@ -37759,7 +38286,10 @@ impl Compiler {
         // banker's rounding, CHW DEC$_function.htm "Any fractional part of the
         // value is rounded").  BIN$/OCT$ keep the plain truncation they had
         // before (their CHW pages say "integral value", untested for halves).
-        let vi = if base == 10 && matches!(v.ty, IrType::Double | IrType::Float) {
+        let vi = if base == 10 && v.ty == IrType::X86Fp80 {
+            let r = fb.call(&IrType::X86Fp80, "__pb_round_f80", std::slice::from_ref(&v));
+            fb.fptosi(&r, &IrType::I64)
+        } else if base == 10 && matches!(v.ty, IrType::Double | IrType::Float) {
             let d = if v.ty == IrType::Float {
                 fb.fpext(&v, &IrType::Double)
             } else {
@@ -39220,6 +39750,22 @@ impl Compiler {
                     &[IrType::Ptr, IrType::I32, IrType::Ptr, IrType::I32],
                 );
             }
+        } else if val.ty == IrType::X86Fp80 {
+            let slot = fb.alloca(&IrType::X86Fp80);
+            fb.store(&val, &slot);
+            let di = if args.len() >= 2 {
+                let d = self.compile_expr(fb, &args[1])?;
+                self.to_i32(fb, &d)
+            } else if let Expr::FloatLit(_, src, _) = &args[0] {
+                fb.const_i32(if Self::float_lit_is_single_prec(src) {
+                    7
+                } else {
+                    15
+                })
+            } else {
+                fb.const_i32(15)
+            };
+            return Ok(fb.call(&IrType::Ptr, "pb_str_ext_bytes", &[slot, di]));
         } else {
             let f64_val = self.to_f64(fb, &val);
             // CHW STR_function.htm: optional digits = max significant digits
@@ -39229,7 +39775,7 @@ impl Compiler {
                 let d = self.compile_expr(fb, &args[1])?;
                 let di = self.to_i32(fb, &d);
                 fb.call(&IrType::Ptr, "pb_str_dbl_d", &[f64_val, di])
-            } else if let Expr::FloatLit(_, src) = &args[0] {
+            } else if let Expr::FloatLit(_, src, _) = &args[0] {
                 // SINGLE-precision literal: PBWin renders seven significant
                 // digits ("STR$(1e20)" -> " 1E+20", "STR$(0.1)" -> " .1").
                 if Self::float_lit_is_single_prec(src) {
@@ -39307,7 +39853,7 @@ impl Compiler {
     /// STR$-style rendering that keeps the declared precision of a literal.
     fn num_to_string_of(&mut self, fb: &mut FunctionBuilder, val: &Val, expr: &Expr) -> Val {
         if val.ty == IrType::Double {
-            if let Expr::FloatLit(_, src) = expr {
+            if let Expr::FloatLit(_, src, _) = expr {
                 if Self::float_lit_is_single_prec(src) {
                     let f = self.to_f64(fb, val);
                     let seven = fb.const_i32(7);
@@ -39321,6 +39867,11 @@ impl Compiler {
     /// Convert a numeric value to a string (like STR$), for use in & concatenation
     fn num_to_string(&mut self, fb: &mut FunctionBuilder, val: &Val) -> Val {
         let buf_size = fb.const_i32(32);
+        if val.ty == IrType::X86Fp80 {
+            let slot = fb.alloca(&IrType::X86Fp80);
+            fb.store(val, &slot);
+            return fb.call(&IrType::Ptr, "pb_str_ext_bytes", &[slot, fb.const_i32(15)]);
+        }
         let buf = self.malloc_or_raise(fb, &buf_size);
         if val.ty.is_int() {
             // Integers keep exact formatting: % lld for QUAD, % d otherwise.
@@ -39378,7 +39929,9 @@ impl Compiler {
         } else {
             fb.const_i32(1)
         };
-        Ok(fb.call(&IrType::Double, "pb_val", &[s, off]))
+        let slot = fb.alloca(&IrType::X86Fp80);
+        fb.call_void("pb_val_ext", &[s, off, slot.clone()]);
+        Ok(fb.load(&IrType::X86Fp80, &slot))
     }
 
     fn builtin_left(&mut self, fb: &mut FunctionBuilder, args: &[Expr]) -> PbResult<Val> {
@@ -39770,13 +40323,18 @@ impl Compiler {
             return Ok(fb.call(&IrType::Ptr, "pb_ltrim", &[r, any_i32, match_ptr]));
         }
         // Numeric form: convert to double, optional Digits (0 = default).
-        let f64_val = self.to_f64(fb, &first);
         let digits = if args.len() >= 2 {
             let d = self.compile_expr(fb, &args[1])?;
             self.to_i32(fb, &d)
         } else {
             fb.const_i32(0)
         };
+        if first.ty == IrType::X86Fp80 {
+            let slot = fb.alloca(&IrType::X86Fp80);
+            fb.store(&first, &slot);
+            return Ok(fb.call(&IrType::Ptr, "pb_trim_ext_bytes", &[slot, digits]));
+        }
+        let f64_val = self.to_f64(fb, &first);
         Ok(fb.call(&IrType::Ptr, "pb_trim_num", &[f64_val, digits]))
     }
 
@@ -40193,7 +40751,7 @@ impl Compiler {
     fn eval_const_expr(expr: &Expr) -> Result<i64, &'static str> {
         match expr {
             Expr::IntegerLit(n) => Ok(*n),
-            Expr::FloatLit(f, _) => Ok(*f as i64),
+            Expr::FloatLit(f, _, _) => Ok(*f as i64),
             Expr::Negate(inner) | Expr::UnaryOp(UnaryOp::Neg, inner) => {
                 Ok(-Self::eval_const_expr(inner)?)
             }
@@ -40226,6 +40784,10 @@ impl Compiler {
             // the sign-extended 0xFFFFFFFFFFFFFFDD (batch391 x86 ROR probe).
             IrType::I8 => fb.zext(val, &IrType::I64),
             IrType::Double | IrType::Float => fb.fptosi(val, &IrType::I64),
+            // EXT is a first-class x87 scalar now; it must be converted to
+            // i64 explicitly, never returned as an f80 where an integer ABI
+            // slot is expected (DEC$/PEEK/etc).
+            IrType::X86Fp80 => fb.fptosi(val, &IrType::I64),
             _ => val.clone(),
         }
     }
@@ -40235,6 +40797,8 @@ impl Compiler {
     fn float_to_rounded_i64(fb: &mut FunctionBuilder, v: &Val) -> Val {
         let d = if v.ty == IrType::Float {
             fb.fpext(v, &IrType::Double)
+        } else if v.ty == IrType::X86Fp80 {
+            fb.fptrunc(v, &IrType::Double)
         } else {
             v.clone()
         };

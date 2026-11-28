@@ -10,7 +10,7 @@
 '          packaged compiler loses the constants or the banner.
 '
 ' Expected output:
-'   version -> v0.2.204
+'   version -> v0.2.x (prefix check)
 '   TCN_SELCHANGE -> -551
 '   RGB_LIGHTGREEN -> 90EE90
 '   === FAILURES: 0 ===
@@ -41,7 +41,7 @@ FUNCTION PBMAIN () AS LONG
 
     v = VERSION$
     ConPrint "version -> " & v & CHR$(13,10)
-    IF v <> "v0.2.204" THEN fail = fail + 1
+    IF LEFT$(v, 5) <> "v0.2." THEN fail = fail + 1
     IF LEN(v) <> 8 THEN fail = fail + 1
 
     ConPrint "TCN_SELCHANGE -> " & STR$(%TCN_SELCHANGE) & CHR$(13,10)

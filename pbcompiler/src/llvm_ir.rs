@@ -22,6 +22,21 @@ pub enum IrType {
     I64,
     Float,
     Double,
+    /// x87 80-bit extended precision (`x86_fp80`).  PB `EXT` maps here so
+    /// arithmetic and comparisons keep the full 64-bit significand instead
+    /// of being rounded through a 53-bit double.
+    X86Fp80,
+    /// The 10-byte storage image of an `EXT` value.  LLVM's `x86_fp80`
+    /// alloc size is 16, but PBWin packs EXT fields and array elements at
+    /// exactly 10 bytes.  Struct/union storage uses this type; arithmetic
+    /// still loads/stores `x86_fp80` with align 2 through an opaque pointer.
+    ExtBytes,
+    /// Storage image for a *global scalar* `EXT`.  PBWin gives consecutive
+    /// global EXT variables a 12-byte stride: the 10-byte value plus two
+    /// bytes of padding to the next 4-byte boundary.  All globals of this
+    /// type are emitted into the same `.bss` section so the linker cannot
+    /// insert its default 16-byte per-section alignment between them.
+    ExtGlobalBytes,
     Void,
     Ptr,                       // opaque pointer (LLVM 17+ default)
     Array(usize, Box<IrType>), // [N x T]
@@ -38,6 +53,9 @@ impl std::fmt::Display for IrType {
             IrType::I64 => write!(f, "i64"),
             IrType::Float => write!(f, "float"),
             IrType::Double => write!(f, "double"),
+            IrType::X86Fp80 => write!(f, "x86_fp80"),
+            IrType::ExtBytes => write!(f, "[10 x i8]"),
+            IrType::ExtGlobalBytes => write!(f, "[12 x i8]"),
             IrType::Void => write!(f, "void"),
             IrType::Ptr => write!(f, "ptr"),
             IrType::Array(count, elem_ty) => write!(f, "[{} x {}]", count, elem_ty),
@@ -48,7 +66,7 @@ impl std::fmt::Display for IrType {
 
 impl IrType {
     pub fn is_float(&self) -> bool {
-        matches!(self, IrType::Float | IrType::Double)
+        matches!(self, IrType::Float | IrType::Double | IrType::X86Fp80)
     }
 
     pub fn is_int(&self) -> bool {
@@ -77,6 +95,8 @@ impl IrType {
             IrType::I64 => 64,
             IrType::Float => 32,
             IrType::Double => 64,
+            IrType::X86Fp80 => 80,
+            IrType::ExtBytes | IrType::ExtGlobalBytes => 80,
             _ => 0,
         }
     }
@@ -87,6 +107,7 @@ impl IrType {
             IrType::Ptr => "null".to_string(),
             IrType::Float => "0.0".to_string(),
             IrType::Double => "0.0".to_string(),
+            IrType::X86Fp80 => "0xK00000000000000000000".to_string(),
             _ => "zeroinitializer".to_string(),
         }
     }
@@ -291,7 +312,18 @@ impl ModuleBuilder {
         if !self.global_names.insert(name.to_string()) {
             return;
         }
-        writeln!(self.globals, "@{} = global {} {}", name, ty, init).unwrap();
+        // PBWin10 lays consecutive global EXT variables 12 bytes apart:
+        // a 10-byte image aligned on a 4-byte boundary (2 bytes padding).
+        // `-fdata-sections` otherwise gives every global its own `.bss`
+        // section and the linker aligns each one to 16, so global EXT scalars
+        // share an explicit `.bss` section to preserve the 12-byte stride.
+        let align = match ty {
+            IrType::ExtGlobalBytes => ", align 4, section \".bss\"",
+            IrType::ExtBytes => ", align 4",
+            IrType::Array(_, elem) if matches!(**elem, IrType::ExtBytes) => ", align 4",
+            _ => "",
+        };
+        writeln!(self.globals, "@{} = global {} {}{}", name, ty, init, align).unwrap();
     }
 
     /// Add a read-only byte-array constant (ASMDATA block).
@@ -524,6 +556,9 @@ pub struct FunctionBuilder {
     lock_guard: Option<LockGuard>,
     /// Emit the `noinline` attribute on the definition header.
     noinline: bool,
+    /// Emit `internal` linkage so helper functions in separately linked
+    /// objects (SLL + host) do not collide at link time.
+    internal: bool,
 }
 
 impl FunctionBuilder {
@@ -558,6 +593,7 @@ impl FunctionBuilder {
             terminated: false,
             lock_guard: None,
             noinline: false,
+            internal: false,
         };
         writeln!(fb.body, "entry:").unwrap();
         fb.entry_end_pos = fb.body.len();
@@ -569,6 +605,11 @@ impl FunctionBuilder {
     pub fn finish(mut self) -> String {
         if !self.allocas.is_empty() {
             self.body.insert_str(self.entry_end_pos, &self.allocas);
+        }
+        if self.internal {
+            if let Some(pos) = self.body.find("define ") {
+                self.body.insert_str(pos + "define ".len(), "internal ");
+            }
         }
         if self.noinline {
             if let Some(pos) = self.body.find(" {\n") {
@@ -585,6 +626,11 @@ impl FunctionBuilder {
     /// which makes clang report the inline-asm label as already defined.
     pub fn set_noinline(&mut self) {
         self.noinline = true;
+    }
+
+    /// Mark the function `internal`, giving each object its own private copy.
+    pub fn set_internal(&mut self) {
+        self.internal = true;
     }
 
     /// Get a fresh SSA register name.
@@ -623,19 +669,47 @@ impl FunctionBuilder {
     /// `%r = alloca ty` — always emitted in the entry block.
     pub fn alloca(&mut self, ty: &IrType) -> Val {
         let r = self.next_reg();
-        writeln!(self.allocas, "  {} = alloca {}", r, ty).unwrap();
+        /* PB EXT is a packed 10-byte x87 value.  An `alloca x86_fp80`
+        reserves 16 bytes because LLVM's ABI alignment is 16, which would
+        make VARPTR/array strides disagree with PBWin.  Keep the value's
+        in-memory representation exactly 10 bytes and use unaligned
+        load/store in the helpers below. */
+        if matches!(ty, IrType::X86Fp80) {
+            writeln!(self.allocas, "  {} = alloca [10 x i8], align 2", r).unwrap();
+        } else {
+            writeln!(self.allocas, "  {} = alloca {}", r, ty).unwrap();
+        }
         Val::new(r, IrType::Ptr)
     }
 
     /// `store ty %val, ptr %ptr`
     pub fn store(&mut self, val: &Val, ptr: &Val) {
-        writeln!(self.body, "  store {}, ptr {}", val.typed(), ptr.name).unwrap();
+        if matches!(val.ty, IrType::X86Fp80) {
+            writeln!(
+                self.body,
+                "  store {}, ptr {}, align 2",
+                val.typed(),
+                ptr.name
+            )
+            .unwrap();
+        } else {
+            writeln!(self.body, "  store {}, ptr {}", val.typed(), ptr.name).unwrap();
+        }
     }
 
     /// `%r = load ty, ptr %ptr`
     pub fn load(&mut self, ty: &IrType, ptr: &Val) -> Val {
         let r = self.next_reg();
-        writeln!(self.body, "  {} = load {}, ptr {}", r, ty, ptr.name).unwrap();
+        if matches!(ty, IrType::X86Fp80) {
+            writeln!(
+                self.body,
+                "  {} = load {}, ptr {}, align 2",
+                r, ty, ptr.name
+            )
+            .unwrap();
+        } else {
+            writeln!(self.body, "  {} = load {}, ptr {}", r, ty, ptr.name).unwrap();
+        }
         Val::new(r, ty.clone())
     }
 
@@ -646,6 +720,18 @@ impl FunctionBuilder {
     /// the GEP type.  The address computation is still correct; dropping
     /// `inbounds` keeps LLVM from treating the runtime growth as UB.
     pub fn gep_array(&mut self, array_ty: &IrType, base: &Val, index: &Val) -> Val {
+        // PB EXT arrays are exactly 10 bytes per element (verified against
+        // PBWin10: VARPTR(a(1)) - VARPTR(a(0)) = 10).  LLVM's x86_fp80 type is
+        // 16 bytes with 16-byte alignment, so typed array GEPs would stride 16.
+        // Emit the element address as a byte GEP at the PB stride instead; the
+        // backing alloca stays oversized, which is harmless.
+        if let IrType::Array(_, elem) = array_ty {
+            if matches!(**elem, IrType::X86Fp80) {
+                let stride = self.const_i32(10);
+                let off = self.mul(index, &stride);
+                return self.gep_byte(base, &off);
+            }
+        }
         let r = self.next_reg();
         writeln!(
             self.body,
@@ -974,6 +1060,10 @@ impl FunctionBuilder {
     /// zero and therefore loses the half-way rounding (HitGame's
     /// `(h - 230) / 2 - 5` produced 63 instead of PBWin's 64).
     pub fn fptosi_round(&mut self, val: &Val, to: &IrType) -> Val {
+        if matches!(val.ty, IrType::X86Fp80) {
+            let narrowed = self.fptrunc(val, &IrType::Double);
+            return self.fptosi_round(&narrowed, to);
+        }
         let native = if to.bit_width() > 32 {
             IrType::I64
         } else {

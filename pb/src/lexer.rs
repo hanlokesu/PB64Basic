@@ -25,33 +25,42 @@ fn mantissa_digit_count(num_str: &str) -> usize {
     mantissa.chars().filter(|c| c.is_ascii_digit()).count()
 }
 
-/// Convert a decimal numeric literal to its stored f64 value, reproducing
+/// Convert a decimal numeric literal to its stored f64 approximation, reproducing
 /// PowerBASIC's literal-precision rule.
 ///
 /// Without an explicit type suffix, a decimal-point literal with up to six
 /// written digits is first rounded to Single precision (32-bit) and then
-/// widened; 7-16 digits use Double precision; 17-18 digits would use Extended.
-/// The fork has no 80-bit Extended type, so Extended is kept as the best f64
-/// effort. An explicit suffix (!, #, ##) forces the precision.
+/// widened; 7-16 digits use Double precision; 17+ digits use Extended. The
+/// returned f64 is only used for value-oriented consumers; the precision code
+/// carried alongside it tells codegen whether to emit an f32, f64, or exact
+/// x87 f80 constant. An explicit suffix (!, #, ##) forces the precision.
 fn pb_float_value(num_str: &str, forced: Option<FloatPrec>) -> f64 {
     let parsed: f64 = num_str.parse().unwrap_or(0.0);
-    let prec = match forced {
-        Some(p) => p,
+    match float_prec_code(num_str, forced) {
+        0 => (parsed as f32) as f64,
+        1 | 2 => parsed,
+        _ => parsed,
+    }
+}
+
+/// Precision class carried into the AST: 0=SINGLE, 1=DOUBLE, 2=EXT.
+/// Explicit suffix wins; otherwise the CHM mantissa-width rule applies
+/// (<=6 digits SINGLE, 7-16 DOUBLE, 17+ EXT).
+fn float_prec_code(num_str: &str, forced: Option<FloatPrec>) -> u8 {
+    match forced {
+        Some(FloatPrec::Single) => 0,
+        Some(FloatPrec::Double) => 1,
+        Some(FloatPrec::Ext) => 2,
         None => {
             let digits = mantissa_digit_count(num_str);
             if digits <= 6 {
-                FloatPrec::Single
+                0
             } else if digits <= 16 {
-                FloatPrec::Double
+                1
             } else {
-                FloatPrec::Ext
+                2
             }
         }
-    };
-    match prec {
-        FloatPrec::Single => (parsed as f32) as f64,
-        FloatPrec::Double => parsed,
-        FloatPrec::Ext => parsed,
     }
 }
 
@@ -506,8 +515,9 @@ impl Lexer {
                         let forced = self.forced_float_prec();
                         self.consume_numeric_suffix();
                         let val: f64 = pb_float_value(&num_str, forced);
+                        let prec = float_prec_code(&num_str, forced);
                         tokens.push(self.make_located(
-                            Token::FloatLiteral(val, num_str),
+                            Token::FloatLiteral(val, num_str, prec),
                             start_line,
                             start_col,
                         ));
@@ -753,7 +763,12 @@ impl Lexer {
 
         if is_float {
             let val: f64 = pb_float_value(&num_str, forced);
-            Ok(self.make_located(Token::FloatLiteral(val, num_str), start_line, start_col))
+            let prec = float_prec_code(&num_str, forced);
+            Ok(self.make_located(
+                Token::FloatLiteral(val, num_str, prec),
+                start_line,
+                start_col,
+            ))
         } else {
             let val: i64 = num_str.parse().unwrap_or(0);
             Ok(self.make_located(Token::IntegerLiteral(val), start_line, start_col))

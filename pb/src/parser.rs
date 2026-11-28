@@ -1233,7 +1233,7 @@ impl Parser {
                 self.consume_to_eol();
                 Ok(None)
             }
-            Token::FloatLiteral(f, _) => {
+            Token::FloatLiteral(f, _, _) => {
                 eprintln!(
                     "Error: Parse error at line {}: unexpected number at top level: {}",
                     line, f
@@ -2009,7 +2009,7 @@ impl Parser {
     fn eval_const_expr(&self, e: &Expr) -> Option<i64> {
         match e {
             Expr::IntegerLit(i) => Some(*i),
-            Expr::FloatLit(f, _) => Some(*f as i64),
+            Expr::FloatLit(f, _, _) => Some(*f as i64),
             Expr::PercentConst(name) => self.percent_consts.get(name).copied().or_else(|| {
                 let bare = name.trim_start_matches('%');
                 self.percent_consts
@@ -3676,7 +3676,7 @@ impl Parser {
                     });
                     self.advance();
                 }
-                Token::FloatLiteral(f, _) => {
+                Token::FloatLiteral(f, _, _) => {
                     items.push(DataItem {
                         text: f.to_string(),
                         quoted: false,
@@ -3700,7 +3700,7 @@ impl Parser {
                             });
                             self.advance();
                         }
-                        Token::FloatLiteral(f, _) => {
+                        Token::FloatLiteral(f, _, _) => {
                             items.push(DataItem {
                                 text: format!("-{}", f),
                                 quoted: false,
@@ -20503,9 +20503,9 @@ impl Parser {
                 self.advance();
                 Ok(Expr::IntegerLit(n))
             }
-            Token::FloatLiteral(f, src) => {
+            Token::FloatLiteral(f, src, prec) => {
                 self.advance();
-                Ok(Expr::FloatLit(f, src))
+                Ok(Expr::FloatLit(f, src, prec))
             }
             Token::StringLiteral(s) => {
                 self.advance();
