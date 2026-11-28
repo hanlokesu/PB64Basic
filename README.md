@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 426 (v0.2.206). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 427 (v0.2.207). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 427 (v0.2.207) - Close the remaining dialog defects from Gary Beene batches 3 and 4: empty-argument `CALL DlgProc()` in DIALOG SHOW MODAL/MODELESS, numeric `CB.HNDL` in superclass procedures, `ES_MULTILINE` initial focus for superclassed edits, and re-entrant `WM_INITDIALOG` when a modeless child is created inside the parent handler. Batch 6 is 50/50 identical (0 near, 0 diff); samples 1359/1360, 0287/0289 and 0335 now open and compare. Batch 4 rerun is 42 identical / 2 near / 1 diff (0335 2.613%), with six PBWin10-only compile failures.
 > batch 426 (v0.2.206) - Fix x86_64 0263 array and pointer crash paths: multi-variable REDIM, STATIC array descriptor lifetime, ARRAYATTR totals, and POKE pointer addresses. Add examples/batch426_array_static_test.bas; all six 0263 buttons now complete under the full 100000-iteration loop, and 505 examples compile with 0 failures.
 > batch 425 (v0.2.205) - Implemented a true 10-byte x87 Extended type: LEN=10, MKE$/CVE$, 80-bit scalar/array/UDT/global layout, 80-bit arithmetic and output, VAL(), and function argument/return passing. The x87 control word is initialised to 0x037F at process and thread entry, and f80 helpers cover SQR/EXP/LOG/trig/pow/round. Floating literals now carry PBWin's default precision class (<=6 digits SINGLE, 7-16 DOUBLE, 17+ EXT; !/#/## override), and `^` always evaluates on the x87 stack. Gary Beene batch 5 is now 50 of 50 pixel-identical; batch 2 rerun is 39 identical / 3 dependency skip / 2 dynamic pass / 6 PBWin10 compile failures. Self-check: examples/batch421_ext_test.bas and examples/batch424_ext_thread_test.bas.
 > batch 415 (v0.2.204) - Close the six remaining Gary Beene GUI residuals: 0398 and 0513 ListView header and delete-row geometry, 0899 subsystem 4.0 border width, 1135 global dynamic array shadowing, 0263 inline-asm Long Pointer and label merging (including the x86_64 noinline rule), and 0361 WM_GETMINMAXINFO plus GRAPHIC RENDER edge semantics. All six are pixel-identical at 0.0 percent with equal screenshot size and equal PNG SHA-256. Batch 5 was 42 of 50 at that release; the eight remaining items were closed in v0.2.205. Self-check: examples/batch415_test.bas.
@@ -1098,6 +1099,27 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.207 (2026-11-28)
+
+This release closes the remaining dialog defects found in Gary Beene batches 3 and 4 and ships the sixth batch as a complete 50-sample regression.
+
+#### Dialog callbacks
+
+- `DIALOG SHOW MODAL hDlg CALL DlgProc()` and the MODELESS form now accept an empty parameter list. The parser normalises `DlgProc()` to a callback name before codegen. Earlier the modal branch saw a general expression, registered no callback, and returned from `PBMain` without entering the message loop; samples 1359 and 1360 exited with code 0 and produced no window.
+- `CB.HNDL` is now lowered as a numeric pointer value rather than a string. Comparing it with zero inside a superclass procedure no longer emits `pb_str_cmp` against an empty BSTR; sample 0335 no longer terminates with `0xC000041D` when it forwards the old window procedure.
+- The runtime recognises superclassed edit controls through `ES_MULTILINE` when choosing the initial modal focus target. Sample 0335 now selects its edit text on entry. A 2.613% pixel difference remains in the selection width and font metrics; it is a visual boundary, not a crash or a missing control.
+- `pb_dispatch_init` is guarded against re-entry. A modeless child created inside the parent's `WM_INITDIALOG` no longer reuses the parent callback recursively; samples 0287 and 0289 now open their windows and compare identical.
+
+#### String lifetime
+
+- WSTRING assignment now copies a concatenation or `CHR$$` temporary into a standalone buffer. The previous pointer store aliased the statement-scoped temporary arena; the next `pb_str_tmp_reset()` rewound that arena, so a later `RIGHT$` could read a corrupted BSTR header and crash intermittently in `batch281_wstr_probe`. The sample now completes 20/20 runs, and `examples/batch427_test.bas` checks the same WSTRING concatenation/RIGHT$ path.
+
+#### Batch results
+
+- Batch 6: 50/50 compile, 50/50 launch, 50/50 identical, 0 near, 0 diff.
+- Batch 4 rerun: 42 identical, 2 near (0294 0.056%, 0301 0.03%), 1 diff (0335 2.613%), 6 PBWin10-only compile failures (0321, 0396, 1358, 1186, 1196, 1173). Samples 1359 and 1360 are now identical.
+- Batch 3 rerun: 40 identical, 1 near (1165 0.816%, timer capture phase), 1 diff (0509 13.095%, PBWin10 ANSI baseline), 4 both-compile failures (0514 damaged source, 0608 unknown CHARRANGE, 1185/1190 missing GDIPlus include), 4 PBWin10-only compile failures (1355, 1148, 1149, 1200). Samples 0287 and 0289 are now identical and 0285 is identical after clearing the clipboard.
+
 ### v0.2.206 (2026-11-28)
 
 This release fixes the x86_64 crash path in sample 0263 and the compiler defects that path exposed. The sample's first screen was already pixel-identical; every failure was inside the button handlers, so this release validates the interactive paths rather than the initial window only.

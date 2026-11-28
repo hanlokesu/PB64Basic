@@ -326,12 +326,36 @@ typedef struct {
     const char* lpszTitle;
     unsigned long ulFlags;
     void* lpfn;
-    long long lParam;
+    intptr_t lParam;
     int iImage;
 } BROWSEINFOA;
 
 __declspec(dllimport) void* __stdcall SHBrowseForFolderA(BROWSEINFOA* lpbi);
 __declspec(dllimport) int __stdcall SHGetPathFromIDListA(void* pidl, char* pszPath);
+__declspec(dllimport) int __stdcall SHGetFolderPathA(void* hwnd, int csidl, void* token,
+                                                    unsigned long flags, char* path);
+__declspec(dllimport) int __stdcall SHGetFolderLocation(void* hwnd, int csidl, void* token,
+                                                        unsigned long flags, void** pidl);
+__declspec(dllimport) void __stdcall CoTaskMemFree(void* mem);
+__declspec(dllimport) int __stdcall EnumChildWindows(void* parent, void* cb, intptr_t lp);
+__declspec(dllimport) int __stdcall GetWindowTextA(void* hwnd, char* text, int max);
+__declspec(dllimport) size_t __stdcall SetTimer(void* hwnd, size_t id, unsigned elapse, void* proc);
+__declspec(dllimport) int __stdcall KillTimer(void* hwnd, size_t id);
+__declspec(dllimport) long __stdcall GetWindowLongW(void* hwnd, int index);
+__declspec(dllimport) long __stdcall SetWindowLongW(void* hwnd, int index, long value);
+
+typedef struct {
+    unsigned int mask;
+    void* hItem;
+    unsigned int state;
+    unsigned int stateMask;
+    wchar_t* pszText;
+    int cchTextMax;
+    int iImage;
+    int iSelectedImage;
+    int cChildren;
+    intptr_t lParam;
+} PB_TVITEMW;
 __declspec(dllimport) int __stdcall ChooseColorA(CHOOSECOLORA* lpcc);
 __declspec(dllimport) int __stdcall ChooseFontA(CHOOSEFONTA* lpcf);
 
@@ -6759,7 +6783,7 @@ __declspec(noreturn) void pb_raise_error(int code) {
         msg = pb_error_msgs[code];
     }
     if (!msg) msg = "Runtime error";
-    fprintf(stderr, "Error %d: %s\n", code, msg);
+    fprintf(stderr, "Error %d: %s at line %d\n", code, msg, pb_debug_line);
     fflush(stderr);
     exit(code);
 }
@@ -6852,6 +6876,62 @@ char* pb_exe_name(void) {
     empty[0] = '\0';
     return bstr_from_buf(empty);
 #endif
+}
+
+/* ===== Statement-scoped temporary BSTR arena =====
+   0564 builds 1,000,000 rows with nine CHR$ calls and eight concatenations
+   per row.  Every intermediate was a real SysAllocStringByteLen allocation
+   that nothing freed: the process sat at 728 MB and had not opened its
+   window after 200 s.  The code generator emits pb_str_tmp_reset() after
+   every statement; CHR$ and the concatenation operator allocate from this
+   arena.  Strings that survive the statement are copied into a normal BSTR
+   by the assignment helpers, so the arena can be rewound safely. */
+static char*  g_str_tmp_buf = 0;
+static size_t g_str_tmp_cap = 0;
+static size_t g_str_tmp_used = 0;
+static void* pb_str_tmp_alloc(size_t n) {
+    const size_t align = 16;
+    n = (n + align - 1) & ~(align - 1);
+    if (!g_str_tmp_buf || g_str_tmp_used + n > g_str_tmp_cap) {
+        size_t need = n > (1u << 20) ? n : (1u << 20);
+        if (need < g_str_tmp_cap) need = g_str_tmp_cap;
+        char* nb = (char*)realloc(g_str_tmp_buf, need);
+        if (!nb) return 0;
+        g_str_tmp_buf = nb;
+        g_str_tmp_cap = need;
+        g_str_tmp_used = 0;
+    }
+    char* p = g_str_tmp_buf + g_str_tmp_used;
+    g_str_tmp_used += n;
+    return p;
+}
+void pb_str_tmp_reset(void) { g_str_tmp_used = 0; }
+char* pb_chr_alloc(int code) {
+    char* h = (char*)pb_str_tmp_alloc(6);
+    if (!h) return 0;
+    *(unsigned int*)h = 1;
+    h[4] = (char)code;
+    h[5] = '\0';
+    return h + 4;
+}
+char* pb_str_concat_tmp(const char* a, const char* b) {
+    static const char empty[] = "";
+    if (!a) a = empty;
+    if (!b) b = empty;
+#ifdef _WIN32
+    unsigned int len_a = (unsigned int)SysStringByteLen(a);
+    unsigned int len_b = (unsigned int)SysStringByteLen(b);
+#else
+    unsigned int len_a = (unsigned int)pb_str_len(a);
+    unsigned int len_b = (unsigned int)pb_str_len(b);
+#endif
+    char* h = (char*)pb_str_tmp_alloc((size_t)len_a + len_b + 5);
+    if (!h) return 0;
+    *(unsigned int*)h = len_a + len_b;
+    memcpy(h + 4, a, len_a);
+    memcpy(h + 4 + len_a, b, len_b);
+    h[4 + len_a + len_b] = '\0';
+    return h + 4;
 }
 
 /* ===== Null-safe string concatenation ===== */
@@ -6958,29 +7038,26 @@ double pb_timer(void) {
 }
 
 /* Per-thread PB-style PRNG. CHW RANDOMIZE: "each thread has its own,
- * independent random number seed." The fork previously used the process-wide
- * libc srand/rand. The state below is thread-local; RANDOMIZE n makes the
- * stream reproducible, and RND reads this same state (pb_rnd_value is the
- * shared entry point the R2 shard builds on). */
-static __declspec(thread) unsigned long long pb_prng_state = 0;
+ * independent random number seed." PBWin 10 uses the Delphi-compatible
+ * 32-bit LCG below; the observed default stream starts from 0xAF758A4A and
+ * each RND returns (state >> 1) / 2^31. RANDOMIZE n stores the IEEE-754
+ * Single bit pattern of n as the state (measured with PBWin 10: seed 1 ->
+ * 0x3F800000, seed 2 -> 0x40000000, seed 3 -> 0x40400000). */
+static __declspec(thread) unsigned int pb_prng_state = 0xAF758A4Au;
 static __declspec(thread) int pb_prng_seeded = 0;
 
-void pb_randomize(unsigned int seed) {
-    /* SplitMix64-style mixer so any seed (including 0 / 0xFFFFFFFF) lands in
-     * a good xorshift state; guarantees RANDOMIZE n -> reproducible stream. */
-    unsigned long long x = (unsigned long long)seed + 0x9E3779B97F4A7C15ULL;
-    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
-    pb_prng_state = x ^ (x >> 31);
-    if (pb_prng_state == 0) pb_prng_state = 1;
+void pb_randomize(double seed) {
+    union { float f; unsigned int u; } c;
+    c.f = (float)seed;
+    pb_prng_state = c.u;
     pb_prng_seeded = 1;
 }
 
 /* Bare RANDOMIZE: seed from TIMER (CHW: "If number is not specified, the
- * value returned by the TIMER function is used"). The float->integer mapping
- * is fork-internal (CHW does not specify it). */
+ * value returned by the TIMER function is used"). PB TIMER is a Single, so
+ * its bit pattern becomes the LCG state just like RANDOMIZE n. */
 void pb_randomize_timer(void) {
-    pb_randomize((unsigned int)(pb_timer() * 1000.0));
+    pb_randomize(pb_timer());
 }
 
 /* R2 RND: cached last value so RND(0) can repeat it without advancing.
@@ -6990,25 +7067,33 @@ void pb_randomize_timer(void) {
 static __declspec(thread) double pb_prng_last = 0.0;
 
 double pb_rnd_value(void) {
+    if (!pb_prng_seeded) pb_prng_seeded = 1;
+    pb_prng_state = pb_prng_state * 0x08088405u + 1u;
+    double v = (double)(pb_prng_state >> 1) * (1.0 / 2147483648.0);
+    pb_prng_last = v;
+    return v;
+}
+
+/* RND(lo, hi): PBWin 10 returns lo + Int((state / 2^32) * (hi-lo+1))
+ * after one LCG step.  Its first interval draw starts from state 0xFFFFFFFF
+ * (measured: 122, 102, 110 for Rnd(97,122)), while a bare first RND starts
+ * from the already-advanced 0xAF758A4A default. */
+double pb_rnd_range(double lo, double hi) {
     if (!pb_prng_seeded) {
-        /* CHW default seed: RANDOMIZE CVS(CHR$(255,255,255,255)) */
-        pb_randomize(0xFFFFFFFFu);
+        pb_prng_state = 0xFFFFFFFFu;
+        pb_prng_seeded = 1;
     }
-    unsigned long long x = pb_prng_state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    pb_prng_state = x;
-    double v = (double)(x >> 11) * (1.0 / 9007199254740992.0);
+    pb_prng_state = pb_prng_state * 0x08088405u + 1u;
+    double r = (double)pb_prng_state * (1.0 / 4294967296.0);
+    double span = hi - lo + 1.0;
+    double v = lo + floor(r * span);
     pb_prng_last = v;
     return v;
 }
 
 /* RND(0): repeat the most recently generated value without advancing. */
 double pb_rnd_last(void) {
-    if (!pb_prng_seeded) {
-        pb_randomize(0xFFFFFFFFu);
-    }
+    if (!pb_prng_seeded) pb_prng_seeded = 1;
     return pb_prng_last;
 }
 
@@ -7017,7 +7102,7 @@ double pb_rnd_last(void) {
  * re-seeded"). The caller then issues a normal next-value call to consume
  * the first sample of the new stream. */
 void pb_rnd_reseed(int seed) {
-    pb_randomize((unsigned int)seed);
+    pb_randomize((double)(seed < 0 ? -seed : seed));
 }
 
 /* R2 RND 1-arg CHW dispatch (CHW RND_function.htm):
@@ -10173,16 +10258,38 @@ static int str_cmp_sort(const char* x, const char* y, long long from, long long 
     return 0;
 }
 
-static void swap_elem(char* a, char* b, int es) {
-    char tmp[16];
-    memcpy(tmp, a, (size_t)es);
-    memcpy(a, b, (size_t)es);
-    memcpy(b, tmp, (size_t)es);
-}
-
 /* ARRAY SORT arr([index]) [FOR count] [,TAGARRAY t()] [,DESCEND] ? CHW range
    sort with optional tag-along array.  index/count are 1-based; count 0/absent
-   = index .. end.  Tag array swaps in lockstep with the data array. */
+   = index .. end.  Tag array swaps in lockstep with the data array.
+
+   0564 sorts 1,000,000 rows through a CALL comparator.  The old implementation
+   was a selection sort: a million rows meant ~5e11 comparisons and the sample
+   never reached its window.  Use a stable bottom-up merge sort instead; the
+   tag array is merged in lockstep. */
+typedef struct PbSortCtx {
+    int (*cmp_user)(const void*, const void*);
+    int type;
+    int descend;
+    long long from;
+    long long to;
+    const unsigned char* tbl;
+} PbSortCtx;
+
+static int pb_sort_cmp(const char* a, const char* b, const PbSortCtx* c) {
+    int r;
+    if (c->cmp_user) {
+        r = c->cmp_user(a, b);
+    } else if (c->type == 3) {
+        const char* x = *(char* const*)a;
+        const char* y = *(char* const*)b;
+        r = str_cmp_sort(x, y, c->from, c->to, c->tbl);
+    } else {
+        r = arr_cmp_e((char*)a, (char*)b, c->type);
+    }
+    if (c->descend) r = -r;
+    return r;
+}
+
 void pb_array_sort2(char* base, int elem_size, long long total, long long index,
                     long long count, int type, int descend,
                     char* tag_base, int tag_elem_size,
@@ -10195,47 +10302,77 @@ void pb_array_sort2(char* base, int elem_size, long long total, long long index,
     if (end > total) end = total;
     long long n = end - index + 1;
     if (n <= 1) return;
-    const unsigned char* tbl = NULL;
+    PbSortCtx ctx;
+    ctx.cmp_user = (int (*)(const void*, const void*))cmp_fn;
+    ctx.type = type;
+    ctx.descend = descend;
+    ctx.from = from;
+    ctx.to = to;
+    ctx.tbl = NULL;
     if (collate_mode == 1) {
         if (!ucase_w_init) ucase_w_build();
-        tbl = ucase_w;
+        ctx.tbl = ucase_w;
     } else if (collate_mode == 2 && collate) {
-        tbl = (const unsigned char*)collate;
+        ctx.tbl = (const unsigned char*)collate;
     }
-    /* custom CALL sort: cmp_fn is the address of a user comparison function
-       taking two BYREF element pointers and returning -1/0/1 (CHW
-       ARRAY_SORT_statement.htm CALL form).  Elements are passed by address
-       exactly like a BYREF variable slot, so a fixed-string element (a BSTR
-       pointer slot) is passed as its own address. */
-    int (*cmp_user)(const void*, const void*) = (int (*)(const void*, const void*))cmp_fn;
-    long long i, j;
-    for (i = 0; i < n - 1; i++) {
-        long long best = i;
-        for (j = i + 1; j < n; j++) {
-            int c;
-            if (cmp_fn) {
-                c = cmp_user(base + (index - 1 + best) * elem_size,
-                             base + (index - 1 + j) * elem_size);
-            } else if (type == 3) {
-                const char* x = *(char* const*)(base + (index - 1 + best) * elem_size);
-                const char* y = *(char* const*)(base + (index - 1 + j) * elem_size);
-                c = str_cmp_sort(x, y, from, to, tbl);
-            } else {
-                c = arr_cmp_e(base + (index - 1 + best) * elem_size,
-                              base + (index - 1 + j) * elem_size, type);
-            }
-            if (descend) c = -c;
-            if (c > 0) best = j;
-        }
-        if (best != i) {
-            swap_elem(base + (index - 1 + i) * elem_size,
-                      base + (index - 1 + best) * elem_size, elem_size);
-            if (tag_base && tag_elem_size > 0) {
-                swap_elem(tag_base + (index - 1 + i) * tag_elem_size,
-                          tag_base + (index - 1 + best) * tag_elem_size, tag_elem_size);
-            }
-        }
+
+    size_t es = (size_t)elem_size;
+    size_t tes = (size_t)tag_elem_size;
+    int have_tag = (tag_base && tag_elem_size > 0);
+    char* a = base + (index - 1) * es;
+    char* b = (char*)malloc((size_t)n * es);
+    char* ta = have_tag ? tag_base + (index - 1) * tes : NULL;
+    char* tb = have_tag ? (char*)malloc((size_t)n * tes) : NULL;
+    if (!b || (have_tag && !tb)) {
+        free(b);
+        free(tb);
+        return;
     }
+    char* src = a;
+    char* dst = b;
+    char* tsrc = ta;
+    char* tdst = tb;
+    long long width;
+    for (width = 1; width < n; width <<= 1) {
+        long long lo;
+        for (lo = 0; lo < n; lo += 2 * width) {
+            long long mid = lo + width;
+            if (mid > n) mid = n;
+            long long hi = lo + 2 * width;
+            if (hi > n) hi = n;
+            long long i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) {
+                if (pb_sort_cmp(src + i * es, src + j * es, &ctx) <= 0) {
+                    memcpy(dst + k * es, src + i * es, es);
+                    if (have_tag) memcpy(tdst + k * tes, tsrc + i * tes, tes);
+                    i++;
+                } else {
+                    memcpy(dst + k * es, src + j * es, es);
+                    if (have_tag) memcpy(tdst + k * tes, tsrc + j * tes, tes);
+                    j++;
+                }
+                k++;
+            }
+            while (i < mid) {
+                memcpy(dst + k * es, src + i * es, es);
+                if (have_tag) memcpy(tdst + k * tes, tsrc + i * tes, tes);
+                i++; k++;
+            }
+            while (j < hi) {
+                memcpy(dst + k * es, src + j * es, es);
+                if (have_tag) memcpy(tdst + k * tes, tsrc + j * tes, tes);
+                j++; k++;
+            }
+        }
+        char* sw = src; src = dst; dst = sw;
+        if (have_tag) { sw = tsrc; tsrc = tdst; tdst = sw; }
+    }
+    if (src != a) {
+        memcpy(a, src, (size_t)n * es);
+        if (have_tag) memcpy(ta, tsrc, (size_t)n * tes);
+    }
+    free(b);
+    free(tb);
 }
 
 /* compare helper: returns -1/0/1 */
@@ -13168,6 +13305,13 @@ typedef struct {
     int   last_w, last_h;
     unsigned long fore, back;
     int   overlap;
+    /* GRAPHIC SET VIRTUAL creates real SCROLLBAR children, exactly like
+       PBWin (0364): H bar 261x17 at (0,131), V bar 17x131 at (261,0) and a
+       17x17 corner STATIC.  A window style alone is not enough because the
+       graphic control is a STATIC. */
+    void* hbar; void* vbar; void* corner;
+    int   vw, vh;
+    int   scroll_x, scroll_y;
 } PbGrCtlBuf;
 static PbGrCtlBuf g_gr_ctls[PB_GR_CTL_MAX];
 static int g_gr_ctl_count = 0;
@@ -13176,6 +13320,7 @@ static PbGrCtlBuf* pb_gr_ctl_find(void* h) {
         if (g_gr_ctls[i].hwnd == h) return &g_gr_ctls[i];
     return 0;
 }
+static void pb_graphic_set_scroll_pos(PbGrCtlBuf* c, int horizontal, int pos);
 /* Drop one control's off-screen buffer when the control itself is destroyed.
    The old code only reset the globals when a different target was attached,
    so closing a graphic control leaked its DC and DIB and left g_gr_ctl_hwnd
@@ -13223,12 +13368,37 @@ static PB_CTL_RET __stdcall pb_graphic_ctl_proc(void* h, unsigned int Msg,
                                                PB_CTL_WP wParam,
                                                PB_CTL_LP lParam) {
     PbGrCtlBuf* c = pb_gr_ctl_find(h);
+    if (c && (Msg == 0x0114 /* WM_HSCROLL */ || Msg == 0x0115 /* WM_VSCROLL */)) {
+        int horizontal = (Msg == 0x0114);
+        int pos = horizontal ? c->scroll_x : c->scroll_y;
+        int page = horizontal ? (c->w - (c->vbar ? 17 : 0))
+                              : (c->h - (c->hbar ? 17 : 0));
+        int max = (horizontal ? c->vw : c->vh) - 1;
+        unsigned int code = (unsigned int)(wParam & 0xFFFFu);
+        int delta = 0;
+        if (code == 0 /* SB_LINEUP/LEFT */) delta = -1;
+        else if (code == 1 /* SB_LINEDOWN/RIGHT */) delta = 1;
+        else if (code == 2 /* SB_PAGEUP/LEFT */) delta = -page;
+        else if (code == 3 /* SB_PAGEDOWN/RIGHT */) delta = page;
+        else if (code == 4 /* SB_THUMBTRACK */ || code == 5 /* SB_THUMBPOSITION */)
+            pos = (int)(short)((wParam >> 16) & 0xFFFFu);
+        else if (code == 6 /* SB_TOP/LEFT */) pos = 0;
+        else if (code == 7 /* SB_BOTTOM/RIGHT */) pos = max;
+        pos += delta;
+        if (pos < 0) pos = 0;
+        if (pos > max - page + 1) pos = max - page + 1;
+        if (pos < 0) pos = 0;
+        if (horizontal) c->scroll_x = pos; else c->scroll_y = pos;
+        pb_graphic_set_scroll_pos(c, horizontal, pos);
+        InvalidateRect(h, 0, 0);
+        return 0;
+    }
     if (Msg == 0x000F /* WM_PAINT */) {
         if (c && c->bmp) {
             void* dc = GetDC(h);
             if (dc) {
                 BitBlt(dc, 0, 0, c->w, c->h, c->dc,
-                       0, 0, 0x00CC0020);
+                       -c->scroll_x, -c->scroll_y, 0x00CC0020);
                 ReleaseDC(h, dc);
             }
             ValidateRect(h, 0);
@@ -13973,7 +14143,23 @@ int pb_graphic_set_clip(float l, float t, float r, float b) {
 }
 static long g_gr_virtual_w = 0, g_gr_virtual_h = 0;
 static long g_gr_wordwrap = 1; /* GRAPHIC SET/GET WORDWRAP state (batch 65) */
-int pb_graphic_set_virtual(int w, int h) { g_gr_virtual_w = w; g_gr_virtual_h = h; return 1; }
+/* PBWin implements GRAPHIC SET VIRTUAL with three child windows inside the
+   graphic control (probe 0364): horizontal SCROLLBAR style 0x50000004,
+   vertical SCROLLBAR style 0x50000005 and a 0x50000000 corner STATIC.  They
+   occupy the last 17 pixels of the client.  Merely adding WS_HSCROLL /
+   WS_VSCROLL cannot work because the graphic is a STATIC.  The helper is
+   defined after the Win32 declarations further down. */
+static void pb_graphic_build_scrollbars(PbGrCtlBuf* c);
+int pb_graphic_set_virtual(int w, int h) {
+    g_gr_virtual_w = w; g_gr_virtual_h = h;
+    PbGrCtlBuf* c = pb_gr_ctl_find(g_gr_ctl_hwnd);
+    if (c) {
+        c->vw = w; c->vh = h;
+        pb_graphic_build_scrollbars(c);
+        InvalidateRect(c->hwnd, 0, 0);
+    }
+    return 1;
+}
 static long g_gr_fixed = 0;
 static void* g_gr_font = 0;
 int pb_graphic_set_fixed(void) {
@@ -15078,6 +15264,9 @@ int pb_graphic_attach_ctl(void* hDlg, long long id, long long redraw) {
     n->h = ch;
     n->last_img = 0;
     n->last_w = n->last_h = 0;
+    n->hbar = n->vbar = n->corner = 0;
+    n->vw = n->vh = 0;
+    n->scroll_x = n->scroll_y = 0;
     n->old_proc = 0;
     n->fore = 0;
     n->back = 0xF0F0F0;
@@ -16541,35 +16730,168 @@ int pb_display_browse(const char* title, const char* initialdir, char** out) {
 __declspec(dllimport) int __stdcall PostMessageA(void* hWnd, unsigned long Msg,
                                                 pb_wparam_t wParam,
                                                 pb_lparam_t lParam);
-/* PBWin's folder dialog gives the initial focus to the OK button; the
-   Explorer-style dialog opened with BIF_NEWDIALOGSTYLE otherwise leaves it
-   on the tree view, which changes both the selection colours and the focus
-   rectangle in a screenshot comparison. */
+/* PBWin's folder dialog gives the initial focus to the OK button and hides
+   the "Make New Folder" button even though BIF_NONEWFOLDERBUTTON is not
+   always honoured by the shell's Explorer-style template. */
+static int __stdcall pb_browse_hide_newfolder(void* hwnd, intptr_t lp) {
+    (void)lp;
+    char cls[32] = {0};
+    char txt[96] = {0};
+    GetClassNameA((void*)hwnd, cls, 32);
+    GetWindowTextA((void*)hwnd, txt, 96);
+    if (cls[0] && txt[0] &&
+        (cls[0] == 'B' || cls[0] == 'b') &&
+        (txt[0] == '&' ? txt[1] == 'M' : txt[0] == 'M')) {
+        ShowWindow((void*)hwnd, 0 /* SW_HIDE */);
+    }
+    return 1;
+}
+static char g_browse_select[MAX_PATH] = {0};
+static char g_browse_root_label[64] = {0};
+static void* g_browse_tree = NULL;
+
+static int pb_ascii_eq_ci(const char* a, const char* b) {
+    while (*a && *b) {
+        unsigned char x = (unsigned char)*a;
+        unsigned char y = (unsigned char)*b;
+        if (x >= 'A' && x <= 'Z') x = (unsigned char)(x + ('a' - 'A'));
+        if (y >= 'A' && y <= 'Z') y = (unsigned char)(y + ('a' - 'A'));
+        if (x != y) return 0;
+        ++a; ++b;
+    }
+    return *a == 0 && *b == 0;
+}
+static int __stdcall pb_browse_find_tree(void* hwnd, intptr_t lp) {
+    (void)lp;
+    char cls[64] = {0};
+    GetClassNameA(hwnd, cls, 64);
+    if (pb_ascii_eq_ci(cls, "SysTreeView32")) g_browse_tree = hwnd;
+    return 1;
+}
+/* Scroll the shell tree so the first path component below the root is
+   visible, matching PBWin's initial view without moving the selection. */
+static void __stdcall pb_browse_scroll_timer(void* hwnd, unsigned int msg,
+                                             size_t id, unsigned long tick) {
+    (void)msg; (void)tick;
+    if (id != 1) return;
+    KillTimer(hwnd, 1);
+    if (!g_browse_tree) return;
+    const char* want = g_browse_select;
+    const char* slash = strrchr(want, '\\');
+    if (slash) want = slash + 1;
+    if (!want[0]) return;
+    void* root = SendMessageW(g_browse_tree, 0x110A /* TVM_GETNEXTITEM */,
+                              0 /* TVGN_ROOT */, 0);
+    void* item = SendMessageW(g_browse_tree, 0x110A, 4 /* TVGN_CHILD */,
+                              (pb_lparam_t)root);
+    while (item) {
+        PB_TVITEMW it = {0};
+        wchar_t buf[128] = {0};
+        char ansi[128] = {0};
+        it.mask = 1 /* TVIF_TEXT */;
+        it.hItem = item;
+        it.pszText = buf;
+        it.cchTextMax = 128;
+        SendMessageW(g_browse_tree, 0x113E /* TVM_GETITEMW */, 0,
+                     (pb_lparam_t)&it);
+        if (buf[0]) {
+            WideCharToMultiByte(0, 0, (const short*)buf, -1, ansi, 128, 0, 0);
+            if (pb_ascii_eq_ci(ansi, want)) {
+                SendMessageW(g_browse_tree, 0x1114 /* TVM_ENSUREVISIBLE */, 0,
+                             (pb_lparam_t)item);
+                break;
+            }
+        }
+        item = SendMessageW(g_browse_tree, 0x110A, 1 /* TVGN_NEXT */,
+                            (pb_lparam_t)item);
+    }
+}
 static int __stdcall pb_browse_focus_cb(void* hwnd, unsigned int msg,
                                         long long lp, long long data) {
     (void)lp; (void)data;
     if (msg == 1 /* BFFM_INITIALIZED */) {
+        EnumChildWindows((void*)hwnd, (void*)pb_browse_hide_newfolder, 0);
+        g_browse_tree = NULL;
+        EnumChildWindows((void*)hwnd, (void*)pb_browse_find_tree, 0);
+        SetTimer((void*)hwnd, 1, 250, (void*)pb_browse_scroll_timer);
         PostMessageA(hwnd, 0x0028 /* WM_NEXTDLGCTL */,
                      (pb_wparam_t)(size_t)GetDlgItem(hwnd, 1 /* IDOK */), 1);
     }
     return 0;
 }
+static int pb_path_starts_with_ci(const char* path, const char* prefix) {
+    while (*prefix) {
+        unsigned char a = (unsigned char)*path;
+        unsigned char b = (unsigned char)*prefix;
+        if (!a) return 0;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+        if (a != b) return 0;
+        ++path; ++prefix;
+    }
+    return 1;
+}
 int pb_display_browse_full(void* parent, int x, int y, const char* title,
                            const char* initialdir, int flags, char** out) {
     (void)x;
     (void)y;
-    (void)initialdir; /* BROWSEINFO has no plain initial-directory field */
     if (!out) return 0;
     char display_name[MAX_PATH] = {0};
     char path[MAX_PATH] = {0};
     BROWSEINFOA bi = {0};
     bi.hwndOwner = (void*)parent;
-    bi.pidlRoot = 0;
+    /* PBWin's DISPLAY BROWSE uses the Explorer-style shell template
+       (BIF_NEWDIALOGSTYLE) but hides "Make New Folder" and roots the tree at
+       the user profile when the starting directory lives there.  Selecting
+       the first path component below that root reproduces PBWin's initial
+       scroll position. */
+    char profile[MAX_PATH] = {0};
+    char select_path[MAX_PATH] = {0};
+    void* root = NULL;
+    if (initialdir && initialdir[0] &&
+        SHGetFolderPathA(NULL, 0x0028 /* CSIDL_PROFILE */, NULL, 0, profile) == 0 &&
+        profile[0] && pb_path_starts_with_ci(initialdir, profile) &&
+        (initialdir[strlen(profile)] == '\0' || initialdir[strlen(profile)] == '\\')) {
+        SHGetFolderLocation(NULL, 0x0028 /* CSIDL_PROFILE */, NULL, 0, &root);
+        size_t plen = strlen(profile);
+        const char* rest = initialdir + plen;
+        while (*rest == '\\') ++rest;
+        const char* slash = rest;
+        while (*slash && *slash != '\\') ++slash;
+        size_t seg = (size_t)(slash - rest);
+        if (seg && plen + 1 + seg < MAX_PATH) {
+            memcpy(select_path, profile, plen);
+            select_path[plen] = '\\';
+            memcpy(select_path + plen + 1, rest, seg);
+            select_path[plen + 1 + seg] = '\0';
+        }
+    } else if (initialdir && initialdir[0] && initialdir[1] == ':' &&
+               initialdir[2] == '\\') {
+        select_path[0] = initialdir[0];
+        select_path[1] = ':';
+        select_path[2] = '\\';
+        select_path[3] = '\0';
+    }
+    g_browse_root_label[0] = '\0';
+    if (profile[0]) {
+        const char* base = strrchr(profile, '\\');
+        if (base && base[1]) {
+            size_t n = strlen(base + 1);
+            if (n >= sizeof(g_browse_root_label)) n = sizeof(g_browse_root_label) - 1;
+            memcpy(g_browse_root_label, base + 1, n);
+            g_browse_root_label[n] = '\0';
+        }
+    }
+    memcpy(g_browse_select, select_path, sizeof(g_browse_select));
+    g_browse_select[sizeof(g_browse_select) - 1] = '\0';
+    bi.pidlRoot = root;  /* PBWin roots the tree at the user profile */
     bi.pszDisplayName = display_name;
     bi.lpszTitle = title && title[0] ? title : "Select Folder";
     bi.lpfn = (void*)pb_browse_focus_cb;
-    bi.ulFlags = (unsigned int)(flags ? flags : 0x00000001) | 0x00000040 /* BIF_NEWDIALOGSTYLE: PBWin DISPLAY BROWSE default */;
+    bi.lParam = (long long)(size_t)select_path;
+    bi.ulFlags = (unsigned int)(flags ? flags : 0x00000001) | 0x00000040 /* BIF_NEWDIALOGSTYLE */;
     void* pidl = SHBrowseForFolderA(&bi);
+    if (root) CoTaskMemFree(root);
     if (pidl) {
         if (SHGetPathFromIDListA(pidl, path)) {
             *out = SysAllocStringByteLen(path, (unsigned int)strlen(path));
@@ -16739,7 +17061,16 @@ void pb_variant_from_array(void* v, int elem_vt, void* out) {
 
 long long pb_dynamic_array_total(void* v) {
     pb_dyn_array* d = (pb_dyn_array*)v;
-    return d ? d->count : 0;
+    if (!d || d->ndims <= 0) return 0;
+    /* `count` is the allocation length and includes the lower-bound offset
+       for a 1-based REDIM (1 To 1000000 allocates 1000001 slots).  The
+       logical element count used by ARRAY SORT / MAT is the product of the
+       dimension counts; returning `count` made 0564 sort one element past
+       the end (T(1000001) = 0 landed at position 1). */
+    long long total = 1;
+    int i;
+    for (i = 0; i < d->ndims; i++) total *= d->dim_count[i];
+    return total;
 }
 
 /* ERASE dynamic array: PBWin releases the element block and leaves the
@@ -18902,6 +19233,11 @@ static unsigned long long cb_wparam = 0;
 static unsigned long long cb_lparam = 0;
 /* Dialog callback function (CB.MSG etc. are visible inside it) */
 static void* pb_dialog_cb = 0;
+/* CB.NM* snapshot validity.  Declared here because pb_set_cb_state must clear
+   it for every non-WM_NOTIFY message; otherwise a stale NM_CLICK code from an
+   earlier notification makes `IF CB.NMCODE = %NM_CLICK` fire on a later
+   WM_COMMAND/WM_SIZE (batch 6, sample 0314 StatusBar). */
+static int cb_nm_valid = 0;
 /* CALLBACK FUNCTION now carries the Win64 four-parameter entry (implicit
    hWnd/uMsg/wParam/lParam for a no-parameter declaration).  The dialog
    dispatcher must therefore pass the real values, not an empty argument
@@ -18968,6 +19304,10 @@ void pb_set_cb_state(long long hwnd, long long msg, long long wparam, long long 
     cb_msg = (unsigned int)msg;
     cb_wparam = (unsigned long long)wparam;
     cb_lparam = (unsigned long long)lparam;
+    /* CB.NMCODE/NMHWND/NMID only describe a WM_NOTIFY call.  Clear the
+       snapshot for every other message so a stale NM_CLICK/-2 cannot make
+       CB.NMCODE match %NM_CLICK inside a plain WM_COMMAND callback. */
+    if ((unsigned int)msg != 0x004E) cb_nm_valid = 0;
     if (pb_callstk_depth > 0) {
         pb_callstk_frame_t* f = &pb_callstk_frames[pb_callstk_depth - 1];
         f->cb_hwnd = (void*)(unsigned long long)hwnd;
@@ -18986,7 +19326,6 @@ void pb_set_cb_state(long long hwnd, long long msg, long long wparam, long long 
    idFrom DWord, code Long) so CB.NMHDR$, CB.NMCODE, CB.NMHWND and CB.NMID
    return PBWin-equivalent values on both 32-bit PBWin and 64-bit fork. */
 static unsigned char cb_nm_buf[12] = {0,0,0,0, 0,0,0,0, 0,0,0,0};
-static int cb_nm_valid = 0;
 
 void* pb_get_cb_nmhdr(void) { return cb_nm_valid ? (void*)cb_nm_buf : 0; }
 char* pb_get_cb_nmhdr_str(int size) {
@@ -19352,25 +19691,50 @@ static long __stdcall pb_wndproc(void* hWnd, unsigned int Msg, unsigned int wPar
            the clip to the current item before the user's owner-draw code. */
         (void)di;
         if (di && g_gr_ctl_bmp && di->hwndItem == g_gr_ctl_hwnd && di->hDC) {
+            PbGrCtlBuf* gc = pb_gr_ctl_find(g_gr_ctl_hwnd);
+            int sx = gc ? gc->scroll_x : 0;
+            int sy = gc ? gc->scroll_y : 0;
             BitBlt(di->hDC, 0, 0, g_gr_ctl_w, g_gr_ctl_h, g_gr_ctl_dc,
-                   0, 0, 0x00CC0020 /* SRCCOPY */);
+                   -sx, -sy, 0x00CC0020 /* SRCCOPY */);
             return 1;
         }
         /* Not a GRAPHIC control: an owner-drawn LISTBOX/COMBOBOX item must
            still reach the user's CB.WPARAM/CB.LPARAM handler.  Returning 0
-           here made BmpList render as an empty white box. */
+           here made BmpList render as an empty white box.
+           PBWin treats a WM_DRAWITEM that reached the DIALOG callback as
+           handled even when the PB function falls through with result 0.
+           Letting DefWindowProcA paint afterwards erased the user's drawing:
+           0341 (owner-drawn BUTTON, no explicit `FUNCTION = 1`) showed the
+           default "Push" face instead of its black/white FillRect.  Call the
+           dialog callback here and consume the message unconditionally. */
+        if (pb_dialog_cb) {
+            cb_msg = Msg;
+            cb_hwnd = hWnd;
+            cb_ctl = di ? di->CtlID : 0;
+            cb_ctlmsg = 0;
+            cb_wparam = wParam;
+            cb_lparam = lParam;
+            {
+                pb_dlg_cb_fn df = (pb_dlg_cb_fn)pb_dialog_cb;
+                (void)df(hWnd, Msg, wParam, lParam);
+            }
+            return 1;
+        }
     }
     if (Msg == 0x0024) /* WM_GETMINMAXINFO - PBWin dialogs ignore the normal-window minimum tracking width */ {
         /* A #32770 dialog with WS_THICKFRAME may be created narrower than
            SM_CXMINTRACK (0361 asks for a 100px client and PBWin realises a
            116px outer window).  PBWIN_DLG_CLASS is a normal registered class,
            so DefWindowProc clamps it to the 136px minimum tracking width and
-           the client grows to 120px.  Clear only ptMinTrackSize; leave the
-           maximised/max-track values from DefWindowProc untouched. */
+           the client grows to 120px.  The clamp also applies to fixed-frame
+           dialogs: a 120px PIXELS dialog created as a 126px outer window is
+           widened to 136px, giving a 130px client instead of PBWin's 120px
+           (batch 6, sample 0362 Graphic Control).  Clear ptMinTrackSize for
+           every PBWIN_DLG_CLASS dialog; leave the maximised/max-track values
+           from DefWindowProc untouched. */
         char mmcls[32];
         if (GetClassNameA(hWnd, mmcls, (int)sizeof(mmcls)) > 0
-            && strcmp(mmcls, "PBWIN_DLG_CLASS") == 0
-            && (GetWindowLongA(hWnd, -16) & 0x00040000L) /* WS_THICKFRAME */) {
+            && strcmp(mmcls, "PBWIN_DLG_CLASS") == 0) {
             (void)DefWindowProcA(hWnd, Msg, wParam, lParam);
             /* MINMAXINFO: 5 POINTs; ptMinTrackSize is the 4th (indices 6/7). */
             ((long*)lParam)[6] = 0;
@@ -21100,6 +21464,13 @@ static void pb_dispatch_init(void* hDlg) {
        hand-built dialog loop never did, so samples that draw in their
        WM_INITDIALOG handler (RULER) stayed blank. */
     if (!pb_dialog_cb) return;
+    /* A modeless child shown from inside the parent's WM_INITDIALOG (0287/
+       0289) used to re-enter this function with the same global callback,
+       recursively creating another child and never reaching ShowWindow for
+       the parent.  WM_INITDIALOG is not re-entrant for the same callback. */
+    static int pb_dispatch_init_busy = 0;
+    if (pb_dispatch_init_busy) return;
+    pb_dispatch_init_busy = 1;
     cb_msg = 0x0110; /* WM_INITDIALOG */
     cb_hwnd = hDlg;
     cb_ctl = 0;
@@ -21127,6 +21498,7 @@ static void pb_dispatch_init(void* hDlg) {
             ((pb_dlg_cb_fn)pb_dialog_cb)(hDlg, 0x0005, 0, lp);
         }
     }
+    pb_dispatch_init_busy = 0;
 }
 
 /* SysIPAddress32 forgets the IPM_SETFOCUS field whenever the control gets a
@@ -21251,8 +21623,13 @@ int pb_show_modal_to(void* hDlg) {
                 if (assigned) {
                     char cls[64];
                     GetClassNameA(target, cls, 64);
+                    /* A DDT custom control may be a superclass of Edit (for
+                       example "SuperEdit" in 0335).  Its class name does not
+                       start with E/R, but it still carries ES_MULTILINE and
+                       must select its initial contents like an edit control. */
                     int edit_like = (cls[0]=='E'||cls[0]=='e') ||
-                                    (cls[0]=='R'||cls[0]=='r');
+                                    (cls[0]=='R'||cls[0]=='r') ||
+                                    ((GetWindowLongA(target, -16) & 0x0004L) != 0);
                     if (edit_like && GetWindowTextLengthA(target) > 0) {
                         SendMessageA(target, 0x00B1 /* EM_SETSEL */, 0,
                                      (pb_lparam_t)(intptr_t)-1);
@@ -21309,10 +21686,16 @@ void* pb_control_add_text_w(void* parent, long id, const char* text,
     unsigned long s = (unsigned long)style | 0x40000000u | 0x10000000u;
     int is_button = 0;
     if (cls && cls[0]=='B' && cls[1]=='U' && cls[2]=='T') {
-        int is_default = (s & 0x00000001u) != 0;
+        int is_default = (s & 0x0000000Fu) == 0x00000001u;
         is_button = 1;
-        s &= ~0x00000001u; /* PBWin strips the visual default bit */
-        if (is_default && id == 1) s |= 0x00000001u;
+        /* Only the actual BS_DEFPUSHBUTTON type (low nibble 1) carries the
+           visual default bit.  Unconditionally clearing bit 0 turned
+           BS_OWNERDRAW (0x0B) into BS_PUSHBOX (0x0A): Windows then painted
+           a frameless "Push" and never sent WM_DRAWITEM (0341). */
+        if (is_default) {
+            s &= ~0x00000001u;
+            if (id == 1) s |= 0x00000001u;
+        }
     }
     void* hw = pb_ctl_create_w(cls, text, s, (unsigned long)exstyle,
                                x, y, w, h, parent, id);
@@ -21370,9 +21753,11 @@ void* pb_control_add_button_ex(void* parent, long id, const char* text,
        extra 0x01 made PB64 paint a blue default frame (Say 1.345%).  Strip
        the visual bit and register the default id on the dialog instead. */
     {
-        int is_default = (s & 0x00000001u) != 0;
-        s &= ~0x00000001u;
-        if (is_default && id == 1) s |= 0x00000001u;
+        int is_default = (s & 0x0000000Fu) == 0x00000001u;
+        if (is_default) {
+            s &= ~0x00000001u;
+            if (id == 1) s |= 0x00000001u;
+        }
     }
     s |= 0x40000000u | 0x10000000u; /* WS_CHILD | WS_VISIBLE */
     void* hw = CreateWindowExA((unsigned long)exstyle, "BUTTON", text, s,
@@ -21635,6 +22020,21 @@ void* pb_control_add_combobox(void* parent, long id, int x, int y, int w, int h)
     return hw;
 }
 
+/* PBWin never lets a ListBox extend below the dialog client: 0392 asks for
+   y=10 height=200 in a 200-px client and PBWin creates a 186-px window (14
+   integral 13-px rows).  PB64 kept 199 px and painted a 15th clipped row. */
+static void pb_listbox_fit_parent(void* parent, int y, int* h) {
+    if (!parent || !*h) return;
+    unsigned char rc[16];
+    for (int i = 0; i < 16; i++) rc[i] = 0;
+    if (!GetClientRect(parent, (void*)rc)) return;
+    int pch = (int)(*(unsigned long*)(void*)(rc + 12));
+    if (pch > 0 && y + *h > pch) {
+        *h = pch - y;
+        if (*h < 1) *h = 1;
+    }
+}
+
 void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) {
     /* CHW control_add_listbox.htm: default style = %LBS_SORT(0x2) OR
        %LBS_NOTIFY(0x1) OR %WS_TABSTOP(0x10000) OR %WS_VSCROLL(0x200000);
@@ -21649,6 +22049,7 @@ void* pb_control_add_listbox(void* parent, long id, int x, int y, int w, int h) 
         h -= 11;
         if (h < 1) h = 1;
     }
+    pb_listbox_fit_parent(parent, y, &h);
     void* hw = CreateWindowExA(ex, "LISTBOX", "", style,
                             x, y, w, h, parent,
                             (void*)(long long)id, GetModuleHandleA(0), 0);
@@ -21703,6 +22104,7 @@ void* pb_control_add_listbox_ex(void* parent, long id, void* items, long long co
         h -= 11;  /* integral-row snap, measured from the original SYNCLIST */
         if (h < 1) h = 1;
     }
+    pb_listbox_fit_parent(parent, y, &h);
     int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
@@ -21750,6 +22152,7 @@ void* pb_control_add_listbox_ex_w(void* parent, long id, void* items, long long 
         h -= 11;
         if (h < 1) h = 1;
     }
+    pb_listbox_fit_parent(parent, y, &h);
     int hpx = h;
     unsigned long ex = (style == 0 && exstyle == 0) ? 0x200u
                                                     : (unsigned long)exstyle;
@@ -22209,6 +22612,35 @@ int pb_control_set_image(void* parent, long id, const char* name,
    without reading the style word, which is how the false WS_BORDER
    conclusion survived.  The corrected probe writes the values above.
    txt$ may be empty. */
+/* PBWin's DDT text box reports EM_GETMARGINS = 0x00050005 (left 5, right 5)
+   for a large font such as Tahoma 72 pt, but 0 for the 9 pt UI font used by
+   ordinary dialogs (0364).  Native Win32 computes the default margins from
+   the selected font's text metrics, so reproduce that instead of applying a
+   blanket 5 px inset. */
+typedef struct {
+    long tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+    long tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang;
+    long tmDigitizedAspectX, tmDigitizedAspectY;
+    unsigned char tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+    unsigned char tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+} PB_TEXTMETRICA;
+__declspec(dllimport) int __stdcall GetTextMetricsA(void* hdc, void* tm);
+
+static void pb_edit_apply_pbwin_margins(void* hw) {
+    void* hf = (void*)(size_t)SendMessageA(hw, 0x0031 /* WM_GETFONT */, 0, 0);
+    void* dc = GetDC(hw);
+    void* old = hf ? SelectObject(dc, hf) : 0;
+    PB_TEXTMETRICA tm;
+    tm.tmHeight = 0;
+    if (dc) GetTextMetricsA(dc, (void*)&tm);
+    if (old) SelectObject(dc, old);
+    if (dc) ReleaseDC(hw, dc);
+    int m = (tm.tmHeight >= 20) ? 5 : 0;
+    SendMessageA(hw, 0x00D3 /* EM_SETMARGINS */,
+                3 /* EC_LEFTMARGIN | EC_RIGHTMARGIN */,
+                (unsigned long)((m << 16) | m));
+}
+
 void* pb_control_add_textbox(void* parent, long id, const char* text,
                              int x, int y, int w, int h) {
     /* TEXTBOX: the rectangle is converted edge-by-edge like every other
@@ -22219,7 +22651,8 @@ void* pb_control_add_textbox(void* parent, long id, const char* text,
     void* hw = CreateWindowExA(ex, "EDIT", text, style,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
-    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+              pb_edit_apply_pbwin_margins(hw); }
     return hw;
 }
 
@@ -22229,7 +22662,8 @@ void* pb_control_add_textbox_w(void* parent, long id, const char* text,
     unsigned long style = 0x80 | 0x10000 | 0x40000000 | 0x10000000;
     unsigned long ex = 0x200;
     void* hw = pb_ctl_create_w("EDIT", text, style, ex, x, y, w, h, parent, id);
-    if (hw) SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+    if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+              pb_edit_apply_pbwin_margins(hw); }
     return hw;
 }
 
@@ -22247,6 +22681,7 @@ void* pb_control_add_textbox_ex_w(void* parent, long id, const char* text,
     void* hw = pb_ctl_create_w("EDIT", text, s, ex, x, y, w, h, parent, id);
     if (hw) {
         SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+        pb_edit_apply_pbwin_margins(hw);
         if (fn) pb_register_callback_hwnd(hw, fn);
     }
     return hw;
@@ -22814,6 +23249,61 @@ typedef struct {
 __declspec(dllimport) int __stdcall GetScrollInfo(void* hWnd, int nBar, PB_SCROLLINFO* lpsi);
 __declspec(dllimport) int __stdcall SetScrollInfo(void* hWnd, int nBar, const PB_SCROLLINFO* lpsi, int redraw);
 
+/* Defines the GRAPHIC SET VIRTUAL scrollbar layout promised above. */
+static void pb_graphic_build_scrollbars(PbGrCtlBuf* c) {
+    if (!c || !c->hwnd || c->vw <= 0 || c->vh <= 0) return;
+    int cw = c->w, ch = c->h;
+    int sw = GetSystemMetrics(2 /* SM_CXVSCROLL */);
+    int sh = GetSystemMetrics(3 /* SM_CYVSCROLL */);
+    int need_h = c->vw > cw;
+    int need_v = c->vh > ch;
+    if (!need_h && !need_v) return;
+    int cw_vis = cw - (need_v ? sw : 0);
+    int ch_vis = ch - (need_h ? sh : 0);
+    if (need_h && !c->hbar) {
+        c->hbar = CreateWindowExA(0, "SCROLLBAR", "", 0x50000004u,
+                                  0, ch - sh, cw_vis, sh,
+                                  c->hwnd, 0, GetModuleHandleA(0), 0);
+    }
+    if (need_v && !c->vbar) {
+        c->vbar = CreateWindowExA(0, "SCROLLBAR", "", 0x50000005u,
+                                  cw - sw, 0, sw, ch_vis,
+                                  c->hwnd, 0, GetModuleHandleA(0), 0);
+    }
+    if (need_h && need_v && !c->corner) {
+        c->corner = CreateWindowExA(0, "STATIC", "", 0x50000000u,
+                                    cw - sw, ch - sh, sw, sh,
+                                    c->hwnd, 0, GetModuleHandleA(0), 0);
+    }
+    PB_SCROLLINFO si;
+    memset(&si, 0, sizeof(si));
+    si.cbSize = (unsigned int)sizeof(si);
+    si.fMask = PB_SIF_RANGE | PB_SIF_PAGE | PB_SIF_POS;
+    si.nTrackPos = 0;
+    if (c->hbar) {
+        si.nMin = 0; si.nMax = c->vw - 1; si.nPage = (unsigned int)cw_vis;
+        si.nPos = c->scroll_x;
+        SetScrollInfo(c->hbar, PB_SB_CTL, &si, 1);
+    }
+    if (c->vbar) {
+        si.nMin = 0; si.nMax = c->vh - 1; si.nPage = (unsigned int)ch_vis;
+        si.nPos = c->scroll_y;
+        SetScrollInfo(c->vbar, PB_SB_CTL, &si, 1);
+    }
+}
+static void pb_graphic_set_scroll_pos(PbGrCtlBuf* c, int horizontal, int pos) {
+    if (!c) return;
+    if (horizontal) c->scroll_x = pos; else c->scroll_y = pos;
+    void* bar = horizontal ? c->hbar : c->vbar;
+    if (!bar) return;
+    PB_SCROLLINFO si;
+    memset(&si, 0, sizeof(si));
+    si.cbSize = (unsigned int)sizeof(si);
+    si.fMask = PB_SIF_POS;
+    si.nPos = pos;
+    SetScrollInfo(bar, PB_SB_CTL, &si, 1);
+}
+
 __declspec(dllimport) int __stdcall GetClassNameA(void* hWnd, char* lpClassName, int nMaxCount);
 long long pb_control_send(void* hDlg, long long id, long long msg, long long wp, long long lp) {    void* h = pb_pb_hwnd(hDlg, id);
     if (!h) return 0;
@@ -22869,7 +23359,26 @@ void pb_control_redraw(void* hDlg, long long id) {
    Windows makes its parent dialog the foreground window. */
 void pb_control_set_focus(void* hDlg, long long id) {
     void* h = pb_pb_hwnd(hDlg, id);
-    if (h) { pb_focus_record(h); SetFocus(h); }
+    if (h) {
+        pb_focus_record(h);
+        /* SetFocus during WM_INITDIALOG cannot take effect while the dialog is
+           still hidden; remember the target so pb_show_modal_to applies it
+           after ShowWindow (0346 focuses the third ComboBox). */
+        pb_lastfocus_set(GetParent(h), h);
+        SetFocus(h);
+        /* PBWin leaves a focused ComboBox edit with its text fully selected
+           even when the focus came from an explicit CONTROL SET FOCUS
+           (batch6 0346).  Plain Edit controls intentionally keep their caret
+           (0480), so only the ComboBox class gets CB_SETEDITSEL here. */
+        char cls[32] = {0};
+        GetClassNameA(h, cls, 32);
+        if ((cls[0]=='C'||cls[0]=='c') &&
+            (cls[1]=='o'||cls[1]=='O') &&
+            (cls[2]=='m'||cls[2]=='M')) {
+            SendMessageA(h, 0x0142 /* CB_SETEDITSEL */, 0,
+                         (pb_lparam_t)(long long)(int)0xFFFF0000);
+        }
+    }
 }
 
 /* CONTROL SET FONT hDlg, id&, FontHndl& - a FontHndl& of zero restores the
@@ -23430,7 +23939,8 @@ void pb_dialog_default_font(const char* name, int points, int style, int charset
     if (dc) ReleaseDC(0, dc);
     pb_default_font = CreateFontA(height, 0, 0, 0, 400 /* FW_NORMAL */,
                                   (unsigned char)(style == 2 ? 1 : 0), 0, 0,
-                                  (unsigned char)charset, 0, 0, 0, 0, name);
+                                  (unsigned char)charset, 0, 0, 0,
+                                  0x22 /* DEFAULT_PITCH | FF_SWISS, PBWin LOGFONT */, name);
 }
 
 /* ===================================================================
@@ -23760,6 +24270,7 @@ static int pb_header_height(void* hh) {
 static long long __stdcall pb_header_font_subproc(void* h, unsigned int msg,
                                                   unsigned long long wp, long long lp,
                                                   unsigned long long id, unsigned long long ref) {
+    (void)id;
     if (msg == 0x0030 /* WM_SETFONT */) {
         void* lv = ref ? (void*)(size_t)ref : 0;
         int forwarded = lv &&
@@ -25381,6 +25892,10 @@ void pb_listview_insert_item(void* hDlg, long id, int item, int image,
     void* h = pb_lv_hwnd(hDlg, id);
     wchar_t* wt = pb_lv_ansi_dup(text);
     if (!h) { free(wt); return; }
+    /* PBWin documents item& as 1=first; an index of 0 is invalid and PBWin
+       silently skips the insertion (batch6 0553 therefore has ten rows, not
+       eleven).  Clamping 0 to the first slot duplicated that row at the end. */
+    if (item < 1) { free(wt); return; }
     memset(&it, 0, sizeof(it));
     it.mask     = PB_LVIF_TEXT | PB_LVIF_IMAGE;
     it.iItem    = pb_lv_idx(item);
@@ -26377,6 +26892,7 @@ void* pb_control_add_textbox_ex(void* parent, long id, const char* text,
                            x, y, w, h, parent,
                            (void*)(long long)id, GetModuleHandleA(0), 0);
     if (hw) { SendMessageA(hw, 0x0030, (unsigned long long)(size_t)pb_dialog_font_for(parent), 1);
+              pb_edit_apply_pbwin_margins(hw);
               if (fn) pb_register_callback_hwnd(hw, fn); }
     return hw;
 }

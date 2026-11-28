@@ -129,6 +129,52 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%WS_THICKFRAME", 0x00040000),
     ("%WS_VISIBLE", 0x10000000),
     ("%WS_VSCROLL", 0x00200000),
+    /* BROWSEINFO flags used by DISPLAY BROWSE.  Without these, `%BIF_*`
+    folded to 0 and 0770 opened the default new-style dialog with a
+    "Make New Folder" button instead of PBWin's flag-selected UI. */
+    ("%BIF_RETURNONLYFSDIRS", 0x0001),
+    ("%BIF_DONTGOBELOWDOMAIN", 0x0002),
+    ("%BIF_STATUSTEXT", 0x0004),
+    ("%BIF_RETURNFSANCESTORS", 0x0008),
+    ("%BIF_EDITBOX", 0x0010),
+    ("%BIF_VALIDATE", 0x0020),
+    ("%BIF_NEWDIALOGSTYLE", 0x0040),
+    ("%BIF_BROWSEINCLUDEURLS", 0x0080),
+    ("%BIF_USENEWUI", 0x0050),
+    ("%BIF_UAHINT", 0x0100),
+    ("%BIF_NONEWFOLDERBUTTON", 0x0200),
+    ("%BIF_NOTRANSLATETARGETS", 0x0400),
+    ("%BIF_BROWSEFORCOMPUTER", 0x1000),
+    ("%BIF_BROWSEFORPRINTER", 0x2000),
+    ("%BIF_BROWSEINCLUDEFILES", 0x4000),
+    ("%BIF_SHAREABLE", 0x8000),
+    /* Generic WM_NOTIFY codes.  PBWin exposes these without requiring
+    CommCtrl.inc, so sources such as gbSnippets 0314 (which only includes
+    Win32API.inc) use %NM_CLICK directly.  An unknown %EQUATE used to fold
+    to 0, making `IF CB.NMCODE = %NM_CLICK` fire on every callback and pop
+    the sample's "click" MsgBox at startup. */
+    ("%NM_FIRST", 0),
+    ("%NM_OUTOFMEMORY", -1),
+    ("%NM_CLICK", -2),
+    ("%NM_DBLCLK", -3),
+    ("%NM_RETURN", -4),
+    ("%NM_RCLICK", -5),
+    ("%NM_RDBLCLK", -6),
+    ("%NM_SETFOCUS", -7),
+    ("%NM_KILLFOCUS", -8),
+    ("%NM_CUSTOMDRAW", -12),
+    ("%NM_HOVER", -13),
+    ("%NM_NCHITTEST", -14),
+    ("%NM_KEYDOWN", -15),
+    ("%NM_RELEASEDCAPTURE", -16),
+    ("%NM_SETCURSOR", -17),
+    ("%NM_CHAR", -18),
+    ("%NM_TOOLTIPSCREATED", -19),
+    ("%NM_LDOWN", -20),
+    ("%NM_RDOWN", -21),
+    ("%NM_THEMECHANGED", -22),
+    ("%NM_FONTCHANGED", -23),
+    ("%NM_CUSTOMTEXT", -24),
     ("%WS_EX_ACCEPTFILES", 0x00000010),
     ("%WS_EX_CLIENTEDGE", 0x00000200),
     ("%WS_EX_CONTEXTHELP", 0x00000400),
@@ -180,6 +226,9 @@ const PB_BUILTIN_EQUATES: &[(&str, i64)] = &[
     ("%ES_CENTER", 0x00000001),
     ("%ES_LEFT", 0x00000000),
     ("%ES_MULTILINE", 0x00000004),
+    ("%ES_UPPERCASE", 0x00000008),
+    ("%ES_LOWERCASE", 0x00000010),
+    ("%ES_OEMCONVERT", 0x00000400),
     ("%ES_NOHIDESEL", 0x00000100),
     ("%ES_PASSWORD", 0x00000020),
     ("%ES_READONLY", 0x00000800),
@@ -2025,6 +2074,10 @@ struct Compiler {
     /// the same function; symbols that turn out to be defined in this unit
     /// never need the declare, the rest are declared just before emit).
     defined_ir: std::collections::HashSet<String>,
+    /// Functions used as ARRAY SORT custom comparators: they are called once
+    /// per comparison (millions of times), so per-call CALLSTK/Debug scaffolding
+    /// is suppressed to keep the sort O(n log n) in practice, not just theory.
+    sort_comparators: std::collections::HashSet<String>,
     /// i686 thunks emitted for CODEPTR targets.  PowerBASIC's documented
     /// default external ABI is SDECL (stdcall), but this fork keeps cdecl for
     /// internal EXE calls; a function pointer handed to USER32 must still
@@ -2423,6 +2476,7 @@ impl Compiler {
             functions: HashMap::new(),
             subs: HashMap::new(),
             defined_ir: std::collections::HashSet::new(),
+            sort_comparators: std::collections::HashSet::new(),
             codptr_thunks: HashSet::new(),
             current_fn_name: None,
             current_fn_return_type: None,
@@ -3490,6 +3544,16 @@ impl Compiler {
             &[IrType::Ptr, IrType::Ptr],
             false,
         );
+        self.module.declare_function(
+            "pb_str_concat_tmp",
+            &IrType::Ptr,
+            &[IrType::Ptr, IrType::Ptr],
+            false,
+        );
+        self.module
+            .declare_function("pb_chr_alloc", &IrType::Ptr, &[IrType::I32], false);
+        self.module
+            .declare_function("pb_str_tmp_reset", &IrType::Void, &[], false);
         self.module
             .declare_function("pb_command_arg", &IrType::Ptr, &[IrType::I64], false);
         self.module
@@ -3979,11 +4043,18 @@ impl Compiler {
         self.module
             .declare_function("pb_timer", &IrType::Double, &[], false);
         self.module
-            .declare_function("pb_randomize", &IrType::Void, &[IrType::I32], false);
+            .declare_function("pb_randomize", &IrType::Void, &[IrType::Double], false);
         self.module
             .declare_function("pb_randomize_timer", &IrType::Void, &[], false);
         self.module
             .declare_function("pb_rnd_value", &IrType::Double, &[], false);
+        // RND(lo, hi): PBWin range form uses the full 32-bit LCG state.
+        self.module.declare_function(
+            "pb_rnd_range",
+            &IrType::Double,
+            &[IrType::Double, IrType::Double],
+            false,
+        );
         // R2 RND: RND(0) repeats the last sample; RND(-n) reseeds.
         self.module
             .declare_function("pb_rnd_last", &IrType::Double, &[], false);
@@ -8603,6 +8674,7 @@ impl Compiler {
                 IrType::I64, // to
                 IrType::I32, // collate_mode 0=none 1=UCASE 2=custom
                 IrType::Ptr, // collate string
+                IrType::I64, // custom comparator address
             ],
             false,
         );
@@ -12459,17 +12531,24 @@ impl Compiler {
             fb.begin_lock_guard(lock_operand, &info.ret_type);
         }
 
-        // Debug: record current function name
+        // ARRAY SORT custom comparators run once per comparison (up to ~2n
+        // calls on a million-row array).  Building the CALLSTK argument
+        // snapshot there allocated two BSTRs per call and dominated the sort
+        // (measured >90 s for 1,000,000 rows vs 0.24 s for data generation).
+        let hot_comparator = self.sort_comparators.contains(&name);
         let (fn_name_str, _) = self.module.add_string_constant(&fd.name);
-        fb.call_void(
-            "pb_debug_enter",
-            &[Val::new(fn_name_str.clone(), IrType::Ptr)],
-        );
-        // CALLSTK tracing (batch 33): push this procedure's name.
-        // The "()" suffix is added by pb_callstk_get/dump, which also splice
-        // in the parameter snapshot (batch258d).  Name stored WITHOUT parens.
-        let (callstk_name, _) = self.module.add_string_constant(&fd.name);
-        fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
+        if !hot_comparator {
+            // Debug: record current function name
+            fb.call_void(
+                "pb_debug_enter",
+                &[Val::new(fn_name_str.clone(), IrType::Ptr)],
+            );
+            // CALLSTK tracing (batch 33): push this procedure's name.
+            // The "()" suffix is added by pb_callstk_get/dump, which also splice
+            // in the parameter snapshot (batch258d).  Name stored WITHOUT parens.
+            let (callstk_name, _) = self.module.add_string_constant(&fd.name);
+            fb.call_void("pb_callstk_push", &[Val::new(callstk_name, IrType::Ptr)]);
+        }
 
         // Noop EZLIB/EZGUI functions → old Win32 UI, replaced by Electron
         if Self::should_noop_function(&name) {
@@ -12530,7 +12609,9 @@ impl Compiler {
             fb.call_void("pb_set_cb_state", &cb_vals);
         }
         // batch258d: CALLSTK$/CALLSTK parameter snapshot (entry block)
-        self.emit_callstk_args(&mut fb, &info.params);
+        if !hot_comparator {
+            self.emit_callstk_args(&mut fb, &info.params);
+        }
 
         // Set up GOSUB context (must happen before compile_body)
         self.setup_gosub_context(&mut fb, &fd.body);
@@ -12570,7 +12651,9 @@ impl Compiler {
 
         // Return
         if !fb.is_terminated() {
-            fb.call_void("pb_callstk_pop", &[]);
+            if !self.sort_comparators.contains(&name) {
+                fb.call_void("pb_callstk_pop", &[]);
+            }
             let retval_ptr = self.current_fn_retval_ptr.clone().unwrap();
             let ret_val = fb.load(&ret_ir, &retval_ptr);
             fb.ret(&ret_val);
@@ -13131,6 +13214,12 @@ impl Compiler {
                 continue;
             }
             self.compile_statement(fb, stmt)?;
+            // Statement-scoped temporary strings: any expression result that
+            // lived only for this statement is released before the next one.
+            // Assignments have already copied their value into a real BSTR.
+            if !fb.is_terminated() {
+                fb.call_void("pb_str_tmp_reset", &[]);
+            }
             idx += 1;
         }
         Ok(())
@@ -14729,6 +14818,33 @@ impl Compiler {
                         } else {
                             self.emit_variant_store(fb, &dst, &value);
                         }
+                    } else if matches!(target_pb, PbType::String) && value.ty == IrType::Ptr {
+                        // Dynamic STRING variable: copy rather than alias.  The
+                        // value may be a literal, a user variable or a temporary
+                        // from the statement arena (CHR$/concatenation).
+                        let src = value;
+                        let slot = Val::new(ptr_name, IrType::Ptr);
+                        let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                        fb.call_void("pb_str_assign_copy", &[slot, src, slen]);
+                    } else if matches!(target_pb, PbType::WString) && value.ty == IrType::Ptr {
+                        // Dynamic WSTRING variable: the value may come from the
+                        // statement-scoped temporary arena (string concatenation,
+                        // CHR$$).  A plain pointer store aliases that arena, and
+                        // the next pb_str_tmp_reset() rewinds it; later uses then
+                        // read a corrupted BSTR header (batch281 RIGHT$ crash).
+                        // Copy the UTF-16 payload into a standalone buffer.
+                        let src = if self.expr_is_wstring(&assign.value) {
+                            value
+                        } else {
+                            fb.call(
+                                &IrType::Ptr,
+                                "pb_ansi_to_wide",
+                                std::slice::from_ref(&value),
+                            )
+                        };
+                        let slot = Val::new(ptr_name, IrType::Ptr);
+                        let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                        fb.call_void("pb_str_assign_copy", &[slot, src, slen]);
                     } else {
                         // WSTRING destination: a non-wide (ANSI STRING / literal)
                         // value must be converted to UTF-16 first (batch 281;
@@ -14785,6 +14901,11 @@ impl Compiler {
                                 )
                             };
                             fb.store(&wsrc, &field_ptr);
+                        } else if matches!(field_pb, PbType::String) && value.ty == IrType::Ptr {
+                            let src = value;
+                            let slen =
+                                fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                            fb.call_void("pb_str_assign_copy", &[field_ptr, src, slen]);
                         } else {
                             let field_ir = self
                                 .member_field_ir_type(&member_expr)
@@ -14995,6 +15116,15 @@ impl Compiler {
                             std::slice::from_ref(&value),
                         );
                         fb.store(&wide, &elem_ptr);
+                    } else if matches!(arr_info.pb_type, PbType::String) && value.ty == IrType::Ptr
+                    {
+                        // Dynamic STRING array element: copy the value into the
+                        // slot.  A raw pointer store aliases read-only literals
+                        // and statement-scoped temporaries; 0564 then showed the
+                        // same last row string in every ListView row.
+                        let src = value;
+                        let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                        fb.call_void("pb_str_assign_copy", &[elem_ptr, src, slen]);
                     } else {
                         let converted = self.convert_value(
                             fb,
@@ -15068,6 +15198,12 @@ impl Compiler {
                     let new_shifted = fb.shl(&new_masked, &off_v);
                     let merged = fb.or(&cleared, &new_shifted);
                     fb.store(&merged, &field_ptr);
+                } else if matches!(field_pb, PbType::String) && value.ty == IrType::Ptr {
+                    // Dynamic STRING TYPE member: copy instead of aliasing a
+                    // literal or a statement-scoped temporary.
+                    let src = value;
+                    let slen = fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                    fb.call_void("pb_str_assign_copy", &[field_ptr, src, slen]);
                 } else {
                     let field_ir = self
                         .member_field_ir_type(&assign.target)
@@ -15128,19 +15264,26 @@ impl Compiler {
                             };
                             let flat = self.compute_flat_index(fb, &compiled, &arr_info);
                             let ptr = fb.gep_array(&arr_info.array_ir_type, &slot, &flat);
-                            let converted = if matches!(field_pb, PbType::WString)
-                                && value.ty == IrType::Ptr
-                                && !self.expr_is_wstring(&assign.value)
-                            {
-                                fb.call(
-                                    &IrType::Ptr,
-                                    "pb_ansi_to_wide",
-                                    std::slice::from_ref(&value),
-                                )
+                            if matches!(field_pb, PbType::String) && value.ty == IrType::Ptr {
+                                let src = value;
+                                let slen =
+                                    fb.call(&IrType::I32, "pb_str_len", std::slice::from_ref(&src));
+                                fb.call_void("pb_str_assign_copy", &[ptr, src, slen]);
                             } else {
-                                self.convert_value(fb, &value, &elem, &field_pb)
-                            };
-                            fb.store(&converted, &ptr);
+                                let converted = if matches!(field_pb, PbType::WString)
+                                    && value.ty == IrType::Ptr
+                                    && !self.expr_is_wstring(&assign.value)
+                                {
+                                    fb.call(
+                                        &IrType::Ptr,
+                                        "pb_ansi_to_wide",
+                                        std::slice::from_ref(&value),
+                                    )
+                                } else {
+                                    self.convert_value(fb, &value, &elem, &field_pb)
+                                };
+                                fb.store(&converted, &ptr);
+                            }
                         } else {
                             return Err(PbError::runtime(format!(
                                 "indexed TYPE member `{}.{}(...)` write: \
@@ -17420,8 +17563,8 @@ impl Compiler {
                 // is reproducible; bare RANDOMIZE seeds from TIMER.
                 if !call.args.is_empty() {
                     let seed = self.compile_expr(fb, &call.args[0])?;
-                    let seed_i32 = self.to_i32(fb, &seed);
-                    fb.call_void("pb_randomize", &[seed_i32]);
+                    let seed_f64 = self.to_f64(fb, &seed);
+                    fb.call_void("pb_randomize", &[seed_f64]);
                 } else {
                     fb.call_void("pb_randomize_timer", &[]);
                 }
@@ -25912,7 +26055,14 @@ impl Compiler {
                 if call.args.len() >= 2 {
                     let hdlg = self.compile_expr(fb, &call.args[0])?;
                     let text = self.compile_expr(fb, &call.args[1])?;
-                    let hdlg64 = fb.inttoptr(&hdlg);
+                    // CB.HNDL and other DWORD/Ptr handles can already arrive as
+                    // an LLVM pointer.  inttoptr on a pointer is invalid IR; only
+                    // widen a non-pointer handle before calling the runtime.
+                    let hdlg64 = if hdlg.ty != IrType::Ptr {
+                        self.value_as_ptr(fb, &hdlg)
+                    } else {
+                        hdlg
+                    };
                     fb.call_void("pb_dialog_set_text", &[hdlg64, text]);
                 }
                 return Ok(());
@@ -27889,10 +28039,13 @@ impl Compiler {
                                     cfname
                                 )));
                             }
-                            if let Some(info) = self.functions.get(&cfname) {
+                            if let Some(info) = self.functions.get(&cfname).cloned() {
+                                self.sort_comparators.insert(cfname.clone());
+                                self.note_reference(&cfname, &info);
                                 let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
                                 fb.ptrtoint64(&gv)
-                            } else if let Some(info) = self.subs.get(&cfname) {
+                            } else if let Some(info) = self.subs.get(&cfname).cloned() {
+                                self.note_reference(&cfname, &info);
                                 let gv = Val::new(format!("@{}", info.ir_name), IrType::Ptr);
                                 fb.ptrtoint64(&gv)
                             } else {
@@ -30131,6 +30284,56 @@ impl Compiler {
                     widened here; otherwise the callee receives a UTF-16
                     pointer that actually holds ANSI bytes (BmpList
                     AddBitMapToList txt AS WSTRING showed mojibake). */
+                    // A numeric BYVAL override on a WSTRINGZ parameter is the
+                    // Win32 resource-id idiom: LoadIcon(ByVal %NULL, ByVal
+                    // %IDI_INFORMATION) passes 32516 as LPCTSTR, not the text
+                    // "32516".  Widening that integer made pb_ansi_to_wide read
+                    // address 0x7F04 and crash inside OLEAUT32 (batch 6, 0353).
+                    let is_text_arg = matches!(
+                        self.expr_pb_type(inner_arg),
+                        Some(
+                            PbType::String
+                                | PbType::WString
+                                | PbType::FixedString(_)
+                                | PbType::AsciiZ(_)
+                                | PbType::FixedWString(_, _)
+                        )
+                    );
+                    if is_byval_override {
+                        // `DrawText hdc, ByVal StrPtr(s$)` passes the address
+                        // of an ANSI BSTR to a WSTRINGZ parameter.  PB64 stores
+                        // STRING bytes as ANSI, so without conversion DrawTextW
+                        // reinterpreted "Not Pressed" as UTF-16 and rendered CJK
+                        // glyphs (0341).  Widen only the StrPtr operand.
+                        if let Expr::FunctionCall(sname, sargs) = inner_arg {
+                            if normalize_name(sname) == "STRPTR"
+                                && sargs.len() == 1
+                                && !matches!(
+                                    self.expr_pb_type(&sargs[0]),
+                                    Some(PbType::WString | PbType::FixedWString(_, _))
+                                )
+                            {
+                                let s = self.compile_expr(fb, &sargs[0])?;
+                                let wide = fb.call(
+                                    &IrType::Ptr,
+                                    "pb_ansi_to_wide",
+                                    std::slice::from_ref(&s),
+                                );
+                                compiled.push(wide);
+                                continue;
+                            }
+                        }
+                    }
+                    if is_byval_override && !is_text_arg {
+                        let val = self.compile_expr(fb, inner_arg)?;
+                        let val = if val.ty == IrType::Ptr {
+                            val
+                        } else {
+                            fb.inttoptr(&val)
+                        };
+                        compiled.push(val);
+                        continue;
+                    }
                     let val = self.compile_expr(fb, inner_arg)?;
                     if self.expr_is_wstring(inner_arg) {
                         compiled.push(val);
@@ -34691,10 +34894,10 @@ impl Compiler {
                 fb.call(&IrType::Ptr, "pb_ansi_to_wide", std::slice::from_ref(b))
             };
             // Use null-safe runtime concat (handles null pointers from uninitialized strings)
-            return fb.call(&IrType::Ptr, "pb_str_concat", &[aw, bw]);
+            return fb.call(&IrType::Ptr, "pb_str_concat_tmp", &[aw, bw]);
         }
         // Use null-safe runtime concat (handles null pointers from uninitialized strings)
-        fb.call(&IrType::Ptr, "pb_str_concat", &[a.clone(), b.clone()])
+        fb.call(&IrType::Ptr, "pb_str_concat_tmp", &[a.clone(), b.clone()])
     }
 
     // ========== Boolean conversion ==========
@@ -35892,7 +36095,15 @@ impl Compiler {
                 Some(Ok(v))
             }
             "PB_GET_XPRINT_JOB" => Some(Ok(fb.call(&IrType::Ptr, "pb_xprint_job_name", &[]))),
-            "PB_GET_CB_HNDL" => Some(Ok(fb.call(&IrType::Ptr, "pb_get_cb_hwnd", &[]))),
+            "PB_GET_CB_HNDL" => {
+                // CB.HNDL is a numeric HWND, not a string pointer.  Leaving it
+                // as IrType::Ptr made `IF CB.HNDL = 0` lower to pb_str_cmp(),
+                // which compares a null HWND against the empty BSTR and returns
+                // non-zero; a null check in a raw WNDPROC trampoline then never
+                // fired and CallWindowProc(0,...) crashed (batch4 0335).
+                let hwnd = fb.call(&IrType::Ptr, "pb_get_cb_hwnd", &[]);
+                Some(Ok(fb.ptrtoint(&hwnd)))
+            }
             "PB_GET_CB_CTL" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_ctl", &[]))),
             "PB_GET_CB_CTLMSG" => Some(Ok(fb.call(&IrType::I32, "pb_get_cb_ctlmsg", &[]))),
             "PB_GET_CB_WPARAM" => Some(Ok(fb.call(&IrType::I64, "pb_get_cb_wparam", &[]))),
@@ -39148,14 +39359,8 @@ impl Compiler {
             let hi = self.compile_expr(fb, &args[1])?;
             let lo_f64 = self.to_f64(fb, &lo);
             let hi_f64 = self.to_f64(fb, &hi);
-            let r = fb.call(&IrType::Double, "pb_rnd_value", &[]);
-            let range = fb.fsub(&hi_f64, &lo_f64);
-            let one = fb.const_f64(1.0);
-            let range_plus = fb.fadd(&range, &one);
-            let prod = fb.fmul(&r, &range_plus);
-            let off = fb.fptosi(&prod, &IrType::I32);
-            let lo_i32 = self.to_i32(fb, &lo);
-            Ok(fb.add(&lo_i32, &off))
+            let r = fb.call(&IrType::Double, "pb_rnd_range", &[lo_f64, hi_f64]);
+            Ok(self.to_i32(fb, &r))
         }
     }
 
@@ -39521,7 +39726,7 @@ impl Compiler {
             };
             acc = Some(match acc {
                 None => part,
-                Some(prev) => fb.call(&IrType::Ptr, "pb_str_concat", &[prev, part]),
+                Some(prev) => fb.call(&IrType::Ptr, "pb_str_concat_tmp", &[prev, part]),
             });
         }
         if let Some(v) = acc {
@@ -39577,12 +39782,20 @@ impl Compiler {
                 };
                 acc = Some(match acc {
                     None => part,
-                    Some(prev) => fb.call(&IrType::Ptr, "pb_str_concat", &[prev, part]),
+                    Some(prev) => fb.call(&IrType::Ptr, "pb_str_concat_tmp", &[prev, part]),
                 });
             }
             return Ok(acc.unwrap());
         }
-        // Multi-arg CHR$(a, b, c) concatenates one byte per argument
+        // Multi-arg CHR$(a, b, c) concatenates one byte per argument.
+        // A single code is the overwhelmingly common case in data-building
+        // loops (0564 calls it nine times per row); build the one-byte BSTR
+        // directly in the statement arena instead of malloc + BSTR copy.
+        if args.len() == 1 {
+            let code = self.compile_expr(fb, &args[0])?;
+            let code_i32 = self.to_i32(fb, &code);
+            return Ok(fb.call(&IrType::Ptr, "pb_chr_alloc", &[code_i32]));
+        }
         let len = args.len() as i32;
         let len_val = fb.const_i32(len);
         let buf = self.malloc_or_raise(fb, &len_val);

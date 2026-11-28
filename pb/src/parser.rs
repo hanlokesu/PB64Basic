@@ -126,6 +126,11 @@ pub struct Parser {
     /// optional at-sign prefix; codegen only gets that right when the parser
     /// recognises the simple-identifier form here.
     declared_procs: std::collections::HashSet<String>,
+    /// Non-zero while parsing the statement list of a single-line IF.  A
+    /// statement parser that normally consumes to EOL must stop before the
+    /// ELSE keyword so `IF c THEN MSGBOX "a" ELSE MSGBOX "b"` keeps its
+    /// else-branch (batch 6, sample 0753).
+    single_line_if_depth: usize,
 }
 
 impl Parser {
@@ -170,6 +175,7 @@ impl Parser {
             class_base_map: std::collections::HashMap::new(),
             declared_types,
             declared_procs,
+            single_line_if_depth: 0,
         };
         // batch271: pre-register the built-in COM interface names (CHW
         // Object_Data_Types.htm: IDISPATCH = generic IDispatch object variable;
@@ -13969,7 +13975,7 @@ impl Parser {
                     //   optional TO clause after the callback)
                     if self.peek() == &Token::Call {
                         self.advance();
-                        let proc = self.parse_expression()?;
+                        let proc = self.parse_dialog_callback()?;
                         // PBWin also tolerates the separator comma before TO.
                         if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
                             self.advance();
@@ -14345,7 +14351,7 @@ impl Parser {
                     }
                     if self.peek() == &Token::Call {
                         self.advance();
-                        let proc = self.parse_expression()?;
+                        let proc = self.parse_dialog_callback()?;
                         if self.peek() == &Token::Comma && self.peek_at(1) == Some(&Token::To) {
                             self.advance();
                         }
@@ -15203,8 +15209,13 @@ impl Parser {
                         if self.peek() == &Token::Comma {
                             self.advance();
                         }
-                        if let Token::Identifier(w) = self.peek() {
-                            let wu = w.to_uppercase();
+                        let sort_kw = match self.peek() {
+                            Token::Identifier(w) => w.to_uppercase(),
+                            Token::Call => "CALL".to_string(),
+                            _ => String::new(),
+                        };
+                        if !sort_kw.is_empty() {
+                            let wu = sort_kw.as_str();
                             if wu == "TAGARRAY" {
                                 self.advance();
                                 tag = self.parse_expression()?;
@@ -16435,8 +16446,13 @@ impl Parser {
                         });
                     }
                 }
-                // Check for leftover tokens (syntax error like MSGBOX "text"hgkugyj)
-                if !matches!(self.peek(), Token::Eol | Token::Eof | Token::Colon) {
+                // Check for leftover tokens (syntax error like MSGBOX "text"hgkugyj).
+                // Inside a single-line IF, ELSE belongs to the enclosing IF and
+                // is not a leftover argument token.
+                let single_line_else = self.single_line_if_depth > 0 && self.peek() == &Token::Else;
+                if !matches!(self.peek(), Token::Eol | Token::Eof | Token::Colon)
+                    && !single_line_else
+                {
                     let loc = self.peek_located();
                     let leftover = format!("Unexpected token after arguments: {:?}", self.peek());
                     return Err(PbError::parser_at(
@@ -16446,7 +16462,12 @@ impl Parser {
                         loc.col,
                     ));
                 }
-                self.consume_to_eol();
+                if single_line_else {
+                    // Leave ELSE for parse_if_statement; consuming to EOL here
+                    // would swallow the else-branch.
+                } else {
+                    self.consume_to_eol();
+                }
                 Ok(Statement::Call(CallStmt {
                     name: name_clone,
                     args,
@@ -16606,6 +16627,7 @@ impl Parser {
             // Single-line IF — parse one or more colon-separated THEN statements
             let if_line = self.current_line();
             let mut then_body = Vec::new();
+            self.single_line_if_depth += 1;
             loop {
                 let stmt = self.parse_statement()?;
                 then_body.push(stmt);
@@ -16639,6 +16661,7 @@ impl Parser {
                     }
                 }
             }
+            self.single_line_if_depth -= 1;
 
             return Ok(Statement::If(IfStmt {
                 condition,
@@ -20094,6 +20117,21 @@ impl Parser {
 
     fn parse_expression(&mut self) -> PbResult<Expr> {
         self.parse_imp_expr()
+    }
+
+    /// `DIALOG SHOW MODAL|MODELESS hDlg CALL DlgProc()`
+    /// PBWin accepts the empty call parentheses in the CALL clause, but the
+    /// codegen callback branch expects a procedure name (`Expr::Variable`).
+    /// Treat a zero-argument function-call expression as that bare name so the
+    /// modal/modeless loop is actually registered instead of silently skipped.
+    fn parse_dialog_callback(&mut self) -> PbResult<Expr> {
+        let expr = self.parse_expression()?;
+        if let Expr::FunctionCall(name, args) = &expr {
+            if args.is_empty() {
+                return Ok(Expr::Variable(name.clone()));
+            }
+        }
+        Ok(expr)
     }
 
     fn parse_imp_expr(&mut self) -> PbResult<Expr> {
