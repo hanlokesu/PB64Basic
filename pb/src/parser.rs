@@ -598,8 +598,8 @@ impl Parser {
                 Ok(Some(TopLevel::DimDeclList(stmts)))
             }
             Token::Redim => {
-                let stmt = self.parse_redim_statement()?;
-                Ok(Some(TopLevel::DimDecl(stmt)))
+                let stmts = self.parse_redim_statement()?;
+                Ok(Some(TopLevel::DimDeclList(stmts)))
             }
             Token::PercentConstant(_) => {
                 let c = self.parse_percent_const_decl(line)?;
@@ -1588,7 +1588,7 @@ impl Parser {
         Ok(stmts)
     }
 
-    fn parse_redim_statement(&mut self) -> PbResult<DimStatement> {
+    fn parse_redim_statement(&mut self) -> PbResult<Vec<DimStatement>> {
         let line = self.current_line();
         self.advance(); // consume REDIM
 
@@ -1600,78 +1600,89 @@ impl Parser {
             false
         };
 
-        let name = self.consume_identifier()?;
+        let mut out = Vec::new();
+        loop {
+            let name = self.consume_identifier()?;
 
-        let mut bounds = Vec::new();
-        let mut is_array = false;
-        if self.peek() == &Token::LParen {
-            is_array = true;
-            self.advance();
-            if self.peek() != &Token::RParen {
-                bounds = self.parse_dim_bounds()?;
-            }
-            self.expect(&Token::RParen)?;
-        }
-
-        let explicit_type = self.peek() == &Token::As;
-        let mut scope = DimScope::Dim;
-        let pb_type = if explicit_type {
-            self.advance();
-            // `REDIM PRESERVE arr(n) AS GLOBAL WSTRING` — scope word after AS
-            // (PBWin FileFind.bas).
-            if self.peek() == &Token::Global {
+            let mut bounds = Vec::new();
+            let mut is_array = false;
+            if self.peek() == &Token::LParen {
+                is_array = true;
                 self.advance();
-                scope = DimScope::Global;
-            } else if let Token::Identifier(k) = self.peek().clone() {
-                if k.eq_ignore_ascii_case("GLOBAL") {
+                if self.peek() != &Token::RParen {
+                    bounds = self.parse_dim_bounds()?;
+                }
+                self.expect(&Token::RParen)?;
+            }
+
+            let explicit_type = self.peek() == &Token::As;
+            let mut scope = DimScope::Dim;
+            let pb_type = if explicit_type {
+                self.advance();
+                // `REDIM PRESERVE arr(n) AS GLOBAL WSTRING` — scope word after AS
+                // (PBWin FileFind.bas).
+                if self.peek() == &Token::Global {
                     self.advance();
                     scope = DimScope::Global;
+                } else if let Token::Identifier(k) = self.peek().clone() {
+                    if k.eq_ignore_ascii_case("GLOBAL") {
+                        self.advance();
+                        scope = DimScope::Global;
+                    }
                 }
-            }
-            // `REDIM ... AS INSTANCE WSTRING` — INSTANCE is a scope word
-            // naming per-object storage, not a data type.
-            if matches!(self.peek(), Token::Identifier(k)
-                        if k.eq_ignore_ascii_case("INSTANCE"))
+                // `REDIM ... AS INSTANCE WSTRING` — INSTANCE is a scope word
+                // naming per-object storage, not a data type.
+                if matches!(self.peek(), Token::Identifier(k)
+                            if k.eq_ignore_ascii_case("INSTANCE"))
+                {
+                    self.advance();
+                }
+                self.parse_type()?
+            } else {
+                let t = type_from_suffix(&name);
+                // REDIM without an explicit type: if the name has no type suffix,
+                // mark it Variant so codegen can inherit the type declared earlier
+                // (e.g. `LOCAL sarr() AS STRING` + `REDIM sarr(1 TO 4)`).
+                if has_type_suffix(&name) {
+                    t
+                } else {
+                    PbType::Variant
+                }
+            };
+
+            // CHW REDIM_statement.htm: `REDIM arr(bounds) AT address&` declares an
+            // absolute array. The backing store is the given address.
+            let at_address = if matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("AT"))
             {
                 self.advance();
-            }
-            self.parse_type()?
-        } else {
-            let t = type_from_suffix(&name);
-            // REDIM without an explicit type: if the name has no type suffix,
-            // mark it Variant so codegen can inherit the type declared earlier
-            // (e.g. `LOCAL sarr() AS STRING` + `REDIM sarr(1 TO 4)`).
-            if has_type_suffix(&name) {
-                t
+                Some(Box::new(self.parse_expression()?))
             } else {
-                PbType::Variant
-            }
-        };
+                None
+            };
 
-        // CHW REDIM_statement.htm: `REDIM arr(bounds) AT address&` declares an
-        // absolute array. The backing store is the given address.
-        let at_address = if matches!(self.peek(), Token::Identifier(id) if id.eq_ignore_ascii_case("AT"))
-        {
-            self.advance();
-            Some(Box::new(self.parse_expression()?))
-        } else {
-            None
-        };
+            out.push(DimStatement {
+                scope,
+                name,
+                pb_type,
+                bounds,
+                line,
+                is_redim: true,
+                is_array,
+                explicit_type,
+                preserve,
+                is_register: false,
+                at_address,
+            });
+
+            if self.peek() == &Token::Comma {
+                self.advance();
+                continue;
+            }
+            break;
+        }
 
         self.consume_to_eol();
-        Ok(DimStatement {
-            scope,
-            name,
-            pb_type,
-            bounds,
-            line,
-            is_redim: true,
-            is_array,
-            explicit_type,
-            preserve,
-            is_register: false,
-            at_address,
-        })
+        Ok(out)
     }
 
     fn parse_dim_bounds(&mut self) -> PbResult<Vec<DimBound>> {
@@ -5066,8 +5077,14 @@ impl Parser {
                 }
             }
             Token::Redim => {
-                let dim = self.parse_redim_statement()?;
-                Ok(Statement::Redim(dim))
+                let dims = self.parse_redim_statement()?;
+                if dims.len() == 1 {
+                    Ok(Statement::Redim(dims.into_iter().next().unwrap()))
+                } else {
+                    Ok(Statement::Block(
+                        dims.into_iter().map(Statement::Redim).collect(),
+                    ))
+                }
             }
             Token::Static => {
                 let dims = self.parse_dim_statement(DimScope::Static)?;

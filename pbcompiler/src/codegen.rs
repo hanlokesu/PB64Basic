@@ -15908,6 +15908,39 @@ impl Compiler {
         self.pending_global_arrays.remove(&name);
     }
 
+    /// `STATIC a()` inside a procedure: the descriptor slot must live in
+    /// module storage, not in the procedure's stack frame.  A stack slot
+    /// disappears when the callback/sub returns, so the next invocation
+    /// loaded an uninitialized pointer and every LBOUND/UBOUND/element access
+    /// through the parameter read garbage.  Keep the pointer slot as a
+    /// zero-initialized global; REDIM then materializes the descriptor once
+    /// and later invocations reuse it.
+    fn declare_static_dynamic_array(&mut self, vd: &VarDecl) {
+        let name = normalize_name(&vd.name);
+        if self.symbols.lookup_array(&name).is_some() {
+            return;
+        }
+        let global_name = match &self.current_fn_name {
+            Some(fn_name) => format!("__static_{}_{}", fn_name, name),
+            None => format!("__static_{}", name),
+        };
+        let elem_ir = Self::array_elem_ir(&vd.pb_type);
+        self.module.add_global(&global_name, &IrType::Ptr, "null");
+        self.symbols.insert_local_array(
+            name,
+            ArrayInfo {
+                ptr_name: format!("@{}", global_name),
+                array_ir_type: IrType::Array(0, Box::new(elem_ir.clone())),
+                elem_ir_type: elem_ir,
+                pb_type: vd.pb_type.clone(),
+                dims: Vec::new(),
+                total_elements: 0,
+                indirect_base: false,
+                dynamic: true,
+            },
+        );
+    }
+
     /// Dimension a module-level `GLOBAL arr()` descriptor at run time.
     ///
     /// PBWin treats `GLOBAL arr()` followed by `DIM arr(1 TO n) AS GLOBAL`
@@ -16477,6 +16510,22 @@ impl Compiler {
     fn compile_dim(&mut self, fb: &mut FunctionBuilder, dim: &DimStatement) -> PbResult<()> {
         let name = normalize_name(&dim.name);
         let (scalar_ir, scalar_pb) = self.effective_var_type(&dim.name, &dim.pb_type);
+
+        // STATIC array without declared bounds: keep its descriptor slot in
+        // module storage so the value survives across callback/procedure
+        // invocations.  The earlier empty-array branch allocated a stack slot,
+        // which made `STATIC a()` + REDIM in WM_INITDIALOG dangle on the next
+        // WM_COMMAND (UBOUND returned garbage and ASM paths crashed).
+        if dim.scope == DimScope::Static && dim.is_array && dim.bounds.is_empty() {
+            let vd = VarDecl {
+                name: dim.name.clone(),
+                pb_type: dim.pb_type.clone(),
+                is_array: true,
+                line: dim.line,
+            };
+            self.declare_static_dynamic_array(&vd);
+            return Ok(());
+        }
 
         // A `DIM ... AS GLOBAL` array inside a procedure was already laid out
         // as a module-level global by scan_body_for_global_dims.  Do not
@@ -20798,12 +20847,20 @@ impl Compiler {
                     };
                     if let Some(addr_expr) = addr_arg {
                         let av = self.compile_expr(fb, addr_expr)?;
-                        let av64 = if av.ty == IrType::I32 {
-                            fb.sext(&av, &IrType::I64)
-                        } else {
+                        // Same pointer-width rule as POKE: a Long Pointer /
+                        // VARPTR result is already a pointer.  Running
+                        // inttoptr on it emitted `inttoptr ptr to ptr`, which
+                        // clang rejects on x64.
+                        let addr = if av.ty == IrType::Ptr {
                             av
+                        } else {
+                            let av64 = if av.ty == IrType::I32 {
+                                fb.sext(&av, &IrType::I64)
+                            } else {
+                                av
+                            };
+                            fb.inttoptr(&av64)
                         };
-                        let addr = fb.inttoptr(&av64);
                         if let Some(s) = str_arg {
                             let sv = self.compile_expr(fb, s)?;
                             let fn_name = if raw_upper == "POKE$" {
@@ -20846,12 +20903,20 @@ impl Compiler {
                 };
                 if let Some(addr_expr) = rest.first() {
                     let av = self.compile_expr(fb, addr_expr)?;
-                    let av64 = if av.ty == IrType::I32 {
-                        fb.sext(&av, &IrType::I64)
-                    } else {
+                    // A Long Pointer / DWORD PTR / VARPTR expression already
+                    // has pointer type.  Unconditionally running inttoptr on
+                    // it emitted `inttoptr ptr to ptr`, which clang rejects,
+                    // and made `POKE LONG, p1, value` uncompilable on x64.
+                    let base_addr = if av.ty == IrType::Ptr {
                         av
+                    } else {
+                        let av64 = if av.ty == IrType::I32 {
+                            fb.sext(&av, &IrType::I64)
+                        } else {
+                            av
+                        };
+                        fb.inttoptr(&av64)
                     };
-                    let base_addr = fb.inttoptr(&av64);
                     let size = match dt.as_str() {
                         "BYTE" => 1,
                         "INTEGER" | "WORD" => 2,
@@ -29938,7 +30003,20 @@ impl Compiler {
                         // declaration (`call_arg_array_names`), so their live
                         // bounds survive the call.
                         let data = self.array_base(fb, info);
-                        let total = fb.const_i64(info.total_elements as i64);
+                        let total_n = if info.total_elements > 0 {
+                            info.total_elements
+                        } else if info.dims.is_empty() {
+                            // Undimensioned `DIM a()` has no elements yet; the
+                            // product of an empty iterator is 1, which would
+                            // lie to the callee's ARRAYATTR/UBOUND.
+                            0
+                        } else {
+                            info.dims
+                                .iter()
+                                .map(|(_, count)| (*count).max(0) as usize)
+                                .product::<usize>()
+                        };
+                        let total = fb.const_i64(total_n as i64);
                         let elem_size = fb.const_i32(self.array_elem_size_arch(&info.elem_ir_type));
                         let desc = fb.call(
                             &IrType::Ptr,
@@ -37340,12 +37418,42 @@ impl Compiler {
             };
             return Ok(v);
         }
+        if info.dynamic {
+            // Runtime descriptor: total elements and dimension count change
+            // with every REDIM.  Reporting the compile-time `total_elements`
+            // (always 0 for a BYREF array parameter) made ARRAYATTR(arr(),4)
+            // return 0 even when UBOUND said 1000.
+            let desc = self.dynamic_desc(fb, &info);
+            let v = match attr {
+                0 => fb.const_i64(-1),
+                1 => fb.const_i64(Self::varclass_of(&info.pb_type)),
+                2 => fb.const_i64(0),
+                3 => fb.call(&IrType::I64, "pb_dynamic_array_ndims", &[desc]),
+                4 => fb.call(&IrType::I64, "pb_dynamic_array_total", &[desc]),
+                5 => fb.const_i64(self.elem_size_of(&info.elem_ir_type)),
+                _ => fb.const_i64(0),
+            };
+            return Ok(v);
+        }
         let v: i64 = match attr {
             0 => -1, // always dimensioned (static arrays)
             1 => Self::varclass_of(&info.pb_type),
             2 => 0, // not a pointer array
             3 => info.dims.len() as i64,
-            4 => info.total_elements as i64,
+            4 => {
+                if info.total_elements > 0 {
+                    info.total_elements as i64
+                } else if info.dims.is_empty() {
+                    // Undimensioned `DIM a()`: no elements, not the empty
+                    // iterator's multiplicative identity (1).
+                    0
+                } else {
+                    info.dims
+                        .iter()
+                        .map(|(_, count)| (*count).max(0))
+                        .product::<i64>()
+                }
+            }
             5 => self.elem_size_of(&info.elem_ir_type),
             _ => 0,
         };

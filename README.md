@@ -446,7 +446,8 @@ exit code 0:
 > - **0** documented keywords not yet implemented
 >
 > Counts are computed directly from [statement-coverage.csv](docs/statement-coverage.csv) (952 rows, deduplicated). **0** official keywords are not implemented yet; **32** entry is a fork extension, implemented here but not an official PB keyword (ACOS, ACOSH, ARRAY SELECT, ASIN, ASINH, ATANH, ATN2, CBRT, COSH, COT, COTH, CSC, CSCH, DIALOG CENTER, ERF, EXPM1, FLOOR, GRAPHIC BITMAP CAPTURE, HYPOT, ISEVEN, ISODD, LOG1P, NUL, OBJEXTERN, PRINT AT, RESOURCE SAVE FILE, SEC, SECH, SINH, TANH, TRUNC, VERSION$). Rows whose internal codegen name uses an underscore are shown here in their spaced form - `GRAPHIC_CIRCLE` appears as `GRAPHIC CIRCLE`; the raw names are in [statement-coverage.md](docs/statement-coverage.md).
-> Updated through batch 425 (v0.2.205). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> Updated through batch 426 (v0.2.206). **No official keyword remains unimplemented - every non-Tier-3 official keyword is implemented.**
+> batch 426 (v0.2.206) - Fix x86_64 0263 array and pointer crash paths: multi-variable REDIM, STATIC array descriptor lifetime, ARRAYATTR totals, and POKE pointer addresses. Add examples/batch426_array_static_test.bas; all six 0263 buttons now complete under the full 100000-iteration loop, and 505 examples compile with 0 failures.
 > batch 425 (v0.2.205) - Implemented a true 10-byte x87 Extended type: LEN=10, MKE$/CVE$, 80-bit scalar/array/UDT/global layout, 80-bit arithmetic and output, VAL(), and function argument/return passing. The x87 control word is initialised to 0x037F at process and thread entry, and f80 helpers cover SQR/EXP/LOG/trig/pow/round. Floating literals now carry PBWin's default precision class (<=6 digits SINGLE, 7-16 DOUBLE, 17+ EXT; !/#/## override), and `^` always evaluates on the x87 stack. Gary Beene batch 5 is now 50 of 50 pixel-identical; batch 2 rerun is 39 identical / 3 dependency skip / 2 dynamic pass / 6 PBWin10 compile failures. Self-check: examples/batch421_ext_test.bas and examples/batch424_ext_thread_test.bas.
 > batch 415 (v0.2.204) - Close the six remaining Gary Beene GUI residuals: 0398 and 0513 ListView header and delete-row geometry, 0899 subsystem 4.0 border width, 1135 global dynamic array shadowing, 0263 inline-asm Long Pointer and label merging (including the x86_64 noinline rule), and 0361 WM_GETMINMAXINFO plus GRAPHIC RENDER edge semantics. All six are pixel-identical at 0.0 percent with equal screenshot size and equal PNG SHA-256. Batch 5 was 42 of 50 at that release; the eight remaining items were closed in v0.2.205. Self-check: examples/batch415_test.bas.
 > batch 414 (v0.2.203) - Fifth Gary Beene GUI batch: 50 previously unused samples. All 50 compile with both compilers and all 50 launch. 49 of 50 are pixel-identical (0.0%, same screenshot size); sample 0398 remains at 6.7% because its ListView header text composition still differs. Fixed COMCTL notification constants, ProgressBar bar colour, Tab-page background/focus, ListView header height/font and top seam, Font New handle semantics, status-bar 1px offset, graphic quadrant and closed-interval rendering, empty ListView style slots, and removed the implicit full-row select that PBWin does not use. 0737 was excluded because PBWin10 itself fails with Error 519 and the published icons are gone; it was replaced by self-contained 0740. Three stale ListView fixtures now assert PBWin10's measured zero extended style. Self-check: examples/batch414_test.bas.
@@ -1097,6 +1098,35 @@ pattern (AllocConsole/WriteFile) exactly like the batch 234 examples.
 | `PRINT` | Console output flushed immediately after each line (visible under redirection / on abort). |
 
 ## Changelog
+### v0.2.206 (2026-11-28)
+
+This release fixes the x86_64 crash path in sample 0263 and the compiler defects that path exposed. The sample's first screen was already pixel-identical; every failure was inside the button handlers, so this release validates the interactive paths rather than the initial window only.
+
+#### Arrays and REDIM
+
+- `REDIM` now applies to every comma-separated array in a statement. Earlier only the first name was resized, leaving later arrays as empty descriptors; sample 0263's `REDIM myArray(1000), ParentArray(1000)` therefore crashed before the main window appeared.
+- `STATIC name()` arrays now use a module-level descriptor slot. The descriptor survives callback returns instead of being recreated as a stack temporary, so `UBOUND` and `ARRAYATTR` remain valid on the next `WM_COMMAND`.
+- `ARRAYATTR(array(), 4)` now returns the runtime element count for dynamic arrays and the product of the declared dimensions for fixed static arrays. An undimensioned `DIM a()` reports zero instead of the empty-product value one. Static array arguments now pass the same total to the callee descriptor.
+
+#### Pointer paths
+
+- `POKE` and `POKE$` accept an address that is already an LLVM pointer without applying a second `inttoptr`. This makes `POKE LONG, p, value` valid on x86_64.
+- Sample 0263's x64 branch keeps `VarPtr(arr(lbnd))` in a `Long Pointer` and uses 64-bit registers in the inline assembly. The 32-bit PBWin branch is unchanged.
+- `Reverse_PEEK` indexes with `VarPtr(theArray(i))` on every iteration, avoiding the compiler's incorrect `Long Pointer` `+=` and `-=` lowering.
+
+#### Verification
+
+- New `examples/batch426_array_static_test.bas` covers multi-variable `REDIM`, `REDIM PRESERVE`, `STATIC` arrays across calls, dynamic and static `ARRAYATTR`, `POKE LONG`, and `POKE$` plus `PEEK`. It reports `FAILURES: 0` on x86_64 and i686.
+- Sample 0263 with the full 100000-iteration loop reaches the timing message box for all six buttons; `hutch_meta.txt` records `lbnd=0`, `acnt=1001`, `arr0=1000`, `arr1000=0`, proving the array was actually reversed.
+- Full gates: `--compile-all` 505 compiled / 0 failed; `--all-headless` 346 compiled / 342 ran / 0 failed / 4 no-exe; x86_64 and i686 link smoke 0 failures; 34 negative probes / 0 bad; `cargo test --release` 9 passed; `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean.
+- The fixed source also compiles with PBWin10 (`pb64_0263_fixed.EXE`, 62,464 bytes). This is a compile check, not a PBWin10 UI run.
+
+#### Remaining boundaries
+
+- The compiler still lowers `Long Pointer` `+=` and `-=` as string concatenation. Sample 0263 avoids that path; the general operator bug is not claimed fixed.
+- `STATIC a(1 TO 10)` fixed-bound arrays were not covered by the new module-level descriptor path; only `STATIC a()` followed by `REDIM` was validated.
+- The 0263 source keeps its original copy-pasted `Reverse_Peek` captions for `Reverse_ASM_Paul` and `Reverse_ASM_Hutch` so the PBWin10 comparison remains text-identical.
+
 ### v0.2.205 (2026-11-28)
 
 This release implements the real 80-bit x87 Extended type and closes the remaining Gary Beene batch 5 differences.
